@@ -49,7 +49,7 @@ PROGRESS_QUEUE_SIZE = 20_000
 #: running across an update answers 404 to every new route and 405 to every new
 #: method -- which reads as a broken request rather than as a stale service.
 #: The screen compares this against what it was built for and says so plainly.
-API_REVISION = 8
+API_REVISION = 9
 
 #: What this revision can do, so the screen can name what is missing rather than
 #: only that something is.
@@ -65,6 +65,7 @@ API_FEATURES = (
     "job-delete",
     "output-edit",
     "batch-edit",
+    "document-edit",
 )
 
 settings = Settings.from_env()
@@ -633,6 +634,68 @@ async def documents(q: str | None = None, limit: int = 500, offset: int = 0) -> 
         "offset": offset,
         "limit": limit,
     }
+
+
+@app.patch("/api/documents/{job_id}")
+async def rename_document(job_id: str, payload: dict) -> dict[str, object]:
+    """Rename a processed document wherever it is remembered.
+
+    The name is on every inventory row of the document and, while the job is
+    still on screen, on the job as well. Both are corrected in the same request:
+    a rename that landed in only one of them would show the document twice in
+    the archive, once under each name.
+
+    The generated PDFs keep their own names, which come from the resolution
+    number and not from the document that carried it.
+    """
+    name = str(payload.get("source_document") or payload.get("filename") or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="El nombre no puede quedar vacío")
+    if len(name) > 255:
+        raise HTTPException(
+            status_code=422, detail="El nombre no puede pasar de 255 caracteres"
+        )
+    # Es un nombre que se dibuja en la pantalla, no una ruta: una barra
+    # convertiría un renombre en un salto a otra carpeta.
+    if "/" in name or "\\" in name or not name.isprintable():
+        raise HTTPException(
+            status_code=422, detail="El nombre no puede contener barras"
+        )
+
+    rows = ledger.rename_document(job_id, name)
+    job = registry.get(job_id)
+    if job is not None:
+        job.filename = name
+        registry.publish(job)
+    if rows == 0 and job is None:
+        raise HTTPException(status_code=404, detail="El documento no existe")
+    return {"job_id": job_id, "source_document": name, "rows": rows}
+
+
+@app.delete("/api/documents/{job_id}")
+async def delete_document(job_id: str) -> dict[str, object]:
+    """Erase a processed document: its PDFs, its inventory rows and its card.
+
+    This is the one deletion that leaves nothing behind, which is why it is a
+    separate route from clearing the screen: clearing forgets a job and keeps
+    the work, this discards the work itself.
+    """
+    job = registry.get(job_id)
+    directory = settings.output_dir / job_id
+    recorded = job_id in ledger.job_ids()
+    if job is None and not recorded and not directory.is_dir():
+        raise HTTPException(status_code=404, detail="El documento no existe")
+
+    # Se comprueba antes de borrar nada: un documento a medio procesar todavía
+    # está escribiendo en esa carpeta.
+    if job is not None and registry.remove(job_id) is None:
+        raise HTTPException(
+            status_code=409, detail="El documento todavía se está procesando"
+        )
+
+    rows = ledger.remove_document(job_id)
+    _discard_outputs(job_id)
+    return {"job_id": job_id, "rows": rows, "from_screen": job is not None}
 
 
 @app.get("/api/inventory.xlsx")

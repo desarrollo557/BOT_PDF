@@ -295,3 +295,188 @@ class TestCorrectionsSurviveAScreenClear:
 
         assert response.status_code == 200
         assert client.get("/api/inventory").json()["rows"][0]["code"] == "00086"
+
+
+def a_document_with_two_resolutions(name: str = "expediente.pdf"):
+    """A finished job whose two resolutions are both on disk and in the ledger."""
+    from resolutions.api import main
+
+    job = main.registry.create(name, Path(name))
+    files = ["00086__acta.pdf", "00087__resuelve.pdf"]
+    report = {
+        "document": name,
+        "page_count": 4,
+        "groups": [
+            {"code": "00086", "title": "Acta", "pages": [1, 2], "size": 2},
+            {"code": "00087", "title": "Resuelve", "pages": [3, 4], "size": 2},
+        ],
+        "review_queue": [],
+        "outputs": files,
+        "inventory": {
+            "source_document": name,
+            "source_pages": 4,
+            "items": [
+                {
+                    "file_name": files[0],
+                    "code": "00086",
+                    "title": "Acta",
+                    "page_count": 2,
+                    "first_page": 1,
+                    "last_page": 2,
+                    "page_numbers": [1, 2],
+                },
+                {
+                    "file_name": files[1],
+                    "code": "00087",
+                    "title": "Resuelve",
+                    "page_count": 2,
+                    "first_page": 3,
+                    "last_page": 4,
+                    "page_numbers": [3, 4],
+                },
+            ],
+        },
+    }
+    main.registry.mark_done(job, report)
+    main.ledger.record(job.id, report)
+
+    directory = main.settings.output_dir / job.id
+    directory.mkdir(parents=True, exist_ok=True)
+    for file_name in files:
+        (directory / file_name).write_bytes(b"%PDF-1.4 out")
+    return job, files, directory
+
+
+class TestRenamingAProcessedDocument:
+    """`PATCH /api/documents/{id}`: the name the archive shows, corrected.
+
+    Distinct from renaming the job, which only reaches the card while it is
+    still on screen. This one has to reach the record, because the archive is
+    read from the ledger long after the screen was cleared.
+    """
+
+    def test_every_row_of_the_document_takes_the_new_name(self, client):
+        job, _, _ = a_document_with_two_resolutions()
+
+        response = client.patch(
+            f"/api/documents/{job.id}", json={"source_document": "Marzo 2024.pdf"}
+        )
+
+        assert response.status_code == 200
+        assert response.json()["rows"] == 2
+        rows = client.get("/api/inventory").json()["rows"]
+        assert {row["source_document"] for row in rows} == {"Marzo 2024.pdf"}
+
+    def test_the_archive_lists_it_once_under_the_new_name(self, client):
+        job, _, _ = a_document_with_two_resolutions()
+        client.patch(f"/api/documents/{job.id}", json={"source_document": "Marzo 2024.pdf"})
+
+        documents = client.get("/api/documents").json()["documents"]
+
+        assert [document["source_document"] for document in documents] == ["Marzo 2024.pdf"]
+
+    def test_the_card_on_screen_takes_it_too(self, client):
+        job, _, _ = a_document_with_two_resolutions()
+        client.patch(f"/api/documents/{job.id}", json={"source_document": "Marzo 2024.pdf"})
+        assert client.get(f"/api/jobs/{job.id}").json()["filename"] == "Marzo 2024.pdf"
+
+    def test_a_document_only_in_the_ledger_can_still_be_renamed(self, client):
+        job, _, _ = a_document_with_two_resolutions()
+        client.request("DELETE", "/api/jobs")
+
+        response = client.patch(
+            f"/api/documents/{job.id}", json={"source_document": "Marzo 2024.pdf"}
+        )
+
+        assert response.status_code == 200
+        assert client.get("/api/documents").json()["documents"][0][
+            "source_document"
+        ] == "Marzo 2024.pdf"
+
+    def test_an_empty_name_is_refused(self, client):
+        job, _, _ = a_document_with_two_resolutions()
+        assert (
+            client.patch(f"/api/documents/{job.id}", json={"source_document": "  "}).status_code
+            == 422
+        )
+
+    def test_a_name_that_is_a_path_is_refused(self, client):
+        # The name is drawn on a screen and written to the ledger; it is not a
+        # place on disk, and a separator in it would say otherwise.
+        job, _, _ = a_document_with_two_resolutions()
+        for attempt in ("../otro.pdf", "carpeta/otro.pdf"):
+            response = client.patch(
+                f"/api/documents/{job.id}", json={"source_document": attempt}
+            )
+            assert response.status_code == 422, attempt
+
+    def test_renaming_an_unknown_document_is_not_found(self, client):
+        assert (
+            client.patch("/api/documents/ghost", json={"source_document": "x.pdf"}).status_code
+            == 404
+        )
+
+
+class TestErasingAProcessedDocument:
+    """`DELETE /api/documents/{id}`: the one deletion that leaves nothing.
+
+    Clearing the screen forgets a job and keeps the work. This discards the
+    work: the generated PDFs, the inventory rows and the card, together, so
+    nothing is left pointing at something that is gone.
+    """
+
+    def test_the_files_the_rows_and_the_card_all_go(self, client):
+        job, files, directory = a_document_with_two_resolutions()
+
+        response = client.request("DELETE", f"/api/documents/{job.id}")
+
+        assert response.status_code == 200
+        assert response.json()["rows"] == 2
+        assert not directory.exists()
+        assert client.get("/api/inventory").json()["rows"] == []
+        assert client.get("/api/documents").json()["documents"] == []
+        assert client.get(f"/api/jobs/{job.id}").status_code == 404
+
+    def test_the_other_documents_are_untouched(self, client):
+        first, _, first_directory = a_document_with_two_resolutions("enero.pdf")
+        a_document_with_two_resolutions("febrero.pdf")
+
+        client.request("DELETE", f"/api/documents/{first.id}")
+
+        assert not first_directory.exists()
+        documents = client.get("/api/documents").json()["documents"]
+        assert [document["source_document"] for document in documents] == ["febrero.pdf"]
+
+    def test_a_document_only_in_the_ledger_can_still_be_erased(self, client):
+        job, _, directory = a_document_with_two_resolutions()
+        client.request("DELETE", "/api/jobs")
+
+        response = client.request("DELETE", f"/api/documents/{job.id}")
+
+        assert response.status_code == 200
+        assert response.json()["from_screen"] is False
+        assert not directory.exists()
+        assert client.get("/api/inventory").json()["rows"] == []
+
+    def test_a_document_still_being_processed_is_refused(self, client):
+        from resolutions.api import main
+
+        job = main.registry.create("a.pdf", Path("a.pdf"))
+        main.registry.mark_running(job)
+
+        assert client.request("DELETE", f"/api/documents/{job.id}").status_code == 409
+        assert client.get(f"/api/jobs/{job.id}").status_code == 200
+
+    def test_erasing_one_that_is_not_there_is_not_found(self, client):
+        assert client.request("DELETE", "/api/documents/ghost").status_code == 404
+
+    def test_the_swept_scratch_no_longer_counts_it_as_referenced(self, client):
+        # The janitor keeps output whose job is still in the ledger. Once the
+        # document is erased, nothing refers to it and nothing is left behind.
+        from resolutions.api import main
+
+        job, _, directory = a_document_with_two_resolutions()
+        client.request("DELETE", f"/api/documents/{job.id}")
+
+        assert job.id not in main.ledger.job_ids()
+        assert not directory.exists()

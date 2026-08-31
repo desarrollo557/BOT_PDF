@@ -194,7 +194,7 @@ export function documentInventoryUrl(jobId: string): string {
  * depending on a new endpoint. A service older than this is not broken, it is
  * stale, and saying which is the difference between a restart and a bug hunt.
  */
-export const REQUIRED_API_REVISION = 8;
+export const REQUIRED_API_REVISION = 9;
 
 export interface Health {
   status: string;
@@ -247,6 +247,26 @@ export function renameOutput(
 /** Delete one generated resolution: the file and its inventory row. */
 export function deleteOutput(jobId: string, name: string): Promise<{ deleted: string }> {
   return send(`${BASE}/jobs/${jobId}/outputs/${encodeURIComponent(name)}`, 'DELETE');
+}
+
+/**
+ * Rename a processed document, on screen and in the inventory at once.
+ *
+ * Distinct from `renameJob`, which only touches the card while it is still on
+ * screen: this one reaches the record, so the new name survives a restart.
+ */
+export function renameDocument(
+  jobId: string,
+  sourceDocument: string
+): Promise<{ job_id: string; source_document: string; rows: number }> {
+  return send(`${BASE}/documents/${jobId}`, 'PATCH', { source_document: sourceDocument });
+}
+
+/** Erase a processed document: its PDFs, its inventory rows and its card. */
+export function deleteDocument(
+  jobId: string
+): Promise<{ job_id: string; rows: number; from_screen: boolean }> {
+  return send(`${BASE}/documents/${jobId}`, 'DELETE');
 }
 
 export function renameJob(jobId: string, filename: string): Promise<Job> {

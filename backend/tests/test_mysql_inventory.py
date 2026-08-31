@@ -255,3 +255,36 @@ class TestContraLaBaseDeVerdad:
             assert grabada["source_bytes"] == 1234
         finally:
             tienda.remove(job, "00099__prueba.pdf")
+
+
+class TestElDocumentoEntero:
+    """Borrar y renombrar un documento completo, no una resolución suelta.
+
+    La pantalla de Archivo trabaja con documentos; el inventario, con
+    resoluciones. Estas dos operaciones son las que traducen entre las dos
+    unidades, y tienen que hacerlo en una sola transacción: un documento medio
+    borrado deja filas apuntando a un archivo que ya no está.
+    """
+
+    def test_borrar_el_documento_se_lleva_sus_resoluciones(self):
+        tienda, conector = almacen(FILAS)
+
+        borradas = tienda.remove_document("job-1")
+
+        sentencias = [sql for sql, _ in conector.conexion.cursor().ejecutado]
+        assert any(sql.startswith("DELETE r FROM resolucion") for sql in sentencias)
+        assert any(sql.startswith("DELETE FROM documento") for sql in sentencias)
+        assert borradas == 1
+        assert conector.conexion.commits == 1
+
+    def test_renombrar_cambia_el_nombre_en_el_documento(self):
+        tienda, conector = almacen(FILAS)
+
+        tienda.rename_document("job-1", "Marzo 2024.pdf")
+
+        sentencias = conector.conexion.cursor().ejecutado
+        assert any(
+            sql.startswith("UPDATE documento SET nombre") and params[0] == "Marzo 2024.pdf"
+            for sql, params in sentencias
+        )
+        assert conector.conexion.commits == 1

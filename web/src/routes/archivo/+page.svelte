@@ -343,7 +343,7 @@
 
       <div class="cards">
         {#each day.entries as entry (entry.key)}
-          <ProcessedCard {entry} />
+          <ProcessedCard {entry} onchange={() => load(applied, grain)} />
         {/each}
       </div>
     </section>

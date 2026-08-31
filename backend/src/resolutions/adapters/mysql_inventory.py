@@ -364,6 +364,55 @@ class MySQLInventory(InventoryReads):
                 connection.close()
         return gone
 
+    def remove_document(self, job_id: str) -> int:
+        """Borra un documento entero del inventario. Devuelve filas eliminadas.
+
+        Se borra la fila de ``documento``; las revisiones y correcciones se van
+        con ella por las claves foráneas en cascada del esquema, que es donde esa
+        regla tiene que vivir para que nadie la reimplemente distinto desde otro
+        lado.
+        """
+        with self._lock:
+            connection = self._connect()
+            try:
+                with connection.cursor() as cursor:
+                    # Las resoluciones se borran a mano aunque la cascada las
+                    # arrastraría igual: es la única forma de saber cuántas eran
+                    # y poder decírselo a quien lo pidió.
+                    cursor.execute(
+                        "DELETE r FROM resolucion r JOIN documento d "
+                        "ON d.id = r.documento_id WHERE d.uuid = %s",
+                        (job_id[:32],),
+                    )
+                    resoluciones = cursor.rowcount
+                    cursor.execute("DELETE FROM documento WHERE uuid = %s", (job_id[:32],))
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+        return resoluciones
+
+    def rename_document(self, job_id: str, source_document: str) -> int:
+        """Cambia el nombre del documento de origen. Devuelve filas tocadas."""
+        with self._lock:
+            connection = self._connect()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE documento SET nombre = %s WHERE uuid = %s",
+                        (source_document[:255], job_id[:32]),
+                    )
+                    cambiados = cursor.rowcount
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+        return cambiados
+
     # -- lectura ---------------------------------------------------------------
 
     def rows(self) -> list[dict]:

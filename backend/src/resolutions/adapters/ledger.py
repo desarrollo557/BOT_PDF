@@ -201,6 +201,63 @@ class InventoryLedger(InventoryReads):
         """Drop one recorded row. Returns what was removed, or ``None``."""
         return self._rewrite(job_id, file_name, None)
 
+    def remove_document(self, job_id: str) -> int:
+        """Drop every row of one document. Returns how many rows went.
+
+        A document is not a row here -- it is however many resolutions came out
+        of it -- so forgetting one means forgetting all of them at once. Doing it
+        row by row would leave a half-erased document on screen if the second
+        call failed.
+        """
+        return self._rewrite_document(job_id, None)
+
+    def rename_document(self, job_id: str, source_document: str) -> int:
+        """Rename a processed document. Returns how many rows were touched.
+
+        The name lives on every row of the document, so the correction has to
+        reach all of them: a document whose rows disagree about their own origin
+        shows up twice in the archive.
+        """
+        return self._rewrite_document(job_id, {"source_document": source_document})
+
+    def _rewrite_document(self, job_id: str, changes: dict | None) -> int:
+        with self._lock:
+            try:
+                lines = self._path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                return 0
+
+            kept: list[str] = []
+            touched = 0
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    row = json.loads(stripped)
+                except json.JSONDecodeError:
+                    kept.append(stripped)
+                    continue
+
+                if row.get("job_id") != job_id:
+                    kept.append(stripped)
+                    continue
+
+                touched += 1
+                if changes is None:
+                    continue
+                kept.append(json.dumps({**row, **changes}, ensure_ascii=False))
+
+            if not touched:
+                return 0
+
+            scratch = self._path.with_suffix(".jsonl.tmp")
+            body = "\n".join(kept)
+            scratch.write_text(f"{body}\n" if kept else "", encoding="utf-8")
+            scratch.replace(self._path)
+            self._cache = None
+            return touched
+
     def _rewrite(self, job_id: str, file_name: str, changes: dict | None) -> dict | None:
         with self._lock:
             try:
