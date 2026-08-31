@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 # Lo mismo que corre CI, en la máquina, en el mismo orden.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+
+# Absoluta desde el principio: los pasos entran y salen de backend/ y web/, y
+# una ruta relativa deja de apuntar al intérprete en cuanto se cambia de
+# carpeta -- que es exactamente como este script se rompió la primera vez.
+RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$RAIZ"
+
+PY="$RAIZ/backend/.venv/Scripts/python.exe"
+[ -x "$PY" ] || PY="$RAIZ/backend/.venv/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3 || command -v python)"
 
 fallos=0
 paso() {
@@ -11,16 +20,15 @@ paso() {
   if "$@"; then echo "   ok"; else echo "   FALLÓ"; fallos=$((fallos + 1)); fi
 }
 
-PY=python
-[ -x backend/.venv/bin/python ] && PY=backend/.venv/bin/python
-[ -x backend/.venv/Scripts/python.exe ] && PY=backend/.venv/Scripts/python.exe
+backend() { (cd "$RAIZ/backend" && "$PY" "$@"); }
+web() { (cd "$RAIZ/web" && npm run "$@" --silent); }
 
-paso "Capas" "$PY" scripts/check_layers.py
-paso "Lint del backend" bash -c "cd backend && '$PY' -m ruff check ."
-paso "Pruebas del backend" bash -c "cd backend && '$PY' -m pytest -q"
-paso "Tipos del front" bash -c "cd web && npm run check --silent"
-paso "Pruebas del front" bash -c "cd web && npm run test --silent"
-paso "Build del front" bash -c "cd web && npm run build --silent"
+paso "Capas" "$PY" "$RAIZ/scripts/check_layers.py"
+paso "Lint del backend" backend -m ruff check .
+paso "Pruebas del backend" backend -m pytest -q
+paso "Tipos del front" web check
+paso "Pruebas del front" web test
+paso "Build del front" web build
 
 echo
 if [ "$fallos" -eq 0 ]; then
