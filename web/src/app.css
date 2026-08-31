@@ -4,18 +4,25 @@
  * Chart and chrome tokens. The four series slots are the validated categorical
  * order (blue, orange, aqua, yellow) with their own steps for the dark surface --
  * a selected dark palette, not an automatic flip of the light one.
+ *
+ * Everything outside those four is chrome for an operations console: two surface
+ * levels so a card can sit on a plane without a shadow doing the work, one
+ * accent, and one focus ring. Chrome never borrows a series colour, because a
+ * series colour means "this slice of the data" and nothing else.
  */
 :root {
   color-scheme: light;
 
   --surface-1: #fcfcfb;
-  --plane: #f9f9f7;
+  --surface-2: #ffffff;
+  --plane: #f4f4f1;
   --ink: #0b0b0b;
   --ink-2: #52514e;
   --muted: #898781;
   --grid: #e1e0d9;
   --axis: #c3c2b7;
-  --hairline: rgb(11 11 11 / 0.1);
+  --hairline: rgb(11 11 11 / 0.09);
+  --rule: rgb(11 11 11 / 0.05);
 
   --s1: #2a78d6;
   --s2: #eb6834;
@@ -25,48 +32,71 @@
   --good: #0ca30c;
   --warning: #fab219;
   --critical: #d03b3b;
+
+  --accent: #1f6fd0;
+  --accent-soft: rgb(31 111 208 / 0.09);
+  --ring: rgb(31 111 208 / 0.35);
+  --shadow: 0 1px 2px rgb(11 11 11 / 0.04), 0 8px 24px rgb(11 11 11 / 0.05);
+  --texture: rgb(11 11 11 / 0.028);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme='light'])) {
     color-scheme: dark;
 
-    --surface-1: #1a1a19;
-    --plane: #0d0d0d;
-    --ink: #ffffff;
-    --ink-2: #c3c2b7;
-    --muted: #898781;
-    --grid: #2c2c2a;
-    --axis: #383835;
-    --hairline: rgb(255 255 255 / 0.1);
+    --surface-1: #16181b;
+    --surface-2: #1c1f23;
+    --plane: #0a0c0e;
+    --ink: #f4f6f7;
+    --ink-2: #b6bec6;
+    --muted: #7d858d;
+    --grid: #262a2f;
+    --axis: #343940;
+    --hairline: rgb(255 255 255 / 0.09);
+    --rule: rgb(255 255 255 / 0.05);
 
     --s1: #3987e5;
     --s2: #d95926;
     --s3: #199e70;
     --s4: #c98500;
+
+    --accent: #4b9bf5;
+    --accent-soft: rgb(75 155 245 / 0.12);
+    --ring: rgb(75 155 245 / 0.4);
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 10px 30px rgb(0 0 0 / 0.35);
+    --texture: rgb(255 255 255 / 0.022);
   }
 }
 
 :root[data-theme='dark'] {
   color-scheme: dark;
 
-  --surface-1: #1a1a19;
-  --plane: #0d0d0d;
-  --ink: #ffffff;
-  --ink-2: #c3c2b7;
-  --muted: #898781;
-  --grid: #2c2c2a;
-  --axis: #383835;
-  --hairline: rgb(255 255 255 / 0.1);
+  --surface-1: #16181b;
+  --surface-2: #1c1f23;
+  --plane: #0a0c0e;
+  --ink: #f4f6f7;
+  --ink-2: #b6bec6;
+  --muted: #7d858d;
+  --grid: #262a2f;
+  --axis: #343940;
+  --hairline: rgb(255 255 255 / 0.09);
+  --rule: rgb(255 255 255 / 0.05);
 
   --s1: #3987e5;
   --s2: #d95926;
   --s3: #199e70;
   --s4: #c98500;
+
+  --accent: #4b9bf5;
+  --accent-soft: rgb(75 155 245 / 0.12);
+  --ring: rgb(75 155 245 / 0.4);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 10px 30px rgb(0 0 0 / 0.35);
+  --texture: rgb(255 255 255 / 0.022);
 }
 
 @theme inline {
   --color-surface: var(--surface-1);
+  --color-raised: var(--surface-2);
   --color-plane: var(--plane);
   --color-ink: var(--ink);
   --color-ink-2: var(--ink-2);
@@ -74,6 +104,7 @@
   --color-grid: var(--grid);
   --color-axis: var(--axis);
   --color-hairline: var(--hairline);
+  --color-rule: var(--rule);
 
   --color-s1: var(--s1);
   --color-s2: var(--s2);
@@ -83,13 +114,36 @@
   --color-good: var(--good);
   --color-warning: var(--warning);
   --color-critical: var(--critical);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
 
   --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: ui-monospace, 'SFMono-Regular', 'Cascadia Code', monospace;
 }
 
+html,
 body {
-  background: var(--plane);
+  min-height: 100%;
+}
+
+body {
+  /* A 32px engineering grid at the threshold of visibility. It gives the plane
+     a sense of scale behind the cards without ever competing with them. */
+  background:
+    linear-gradient(var(--texture) 1px, transparent 1px) 0 0 / 32px 32px,
+    linear-gradient(90deg, var(--texture) 1px, transparent 1px) 0 0 / 32px 32px,
+    var(--plane);
   color: var(--ink);
   font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numbers that change in place must not reflow the label beside them. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+:where(a, button, input, [tabindex]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }

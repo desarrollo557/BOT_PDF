@@ -1,7 +1,14 @@
 from pathlib import Path
 
 import pytest
-from fakes import BODY, FakeAssembler, FakeDocumentStore, FakeOcr, FakePage, FakePageSource
+from fakes import (
+    BODY,
+    FakeAssembler,
+    FakeDocumentStore,
+    FakeOcr,
+    FakePage,
+    FakePageSource,
+)
 
 from resolutions.application.pipeline import ClassificationPipeline, PipelineConfig
 from resolutions.application.process_document import ProcessDocument

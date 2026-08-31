@@ -16,17 +16,20 @@ pymupdf = pytest.importorskip("pymupdf")
 from resolutions.adapters.file_inventory import FileInventoryStore  # noqa: E402
 from resolutions.adapters.pymupdf_assembler import PyMuPDFAssembler  # noqa: E402
 from resolutions.adapters.pymupdf_source import PyMuPDFDocumentStore  # noqa: E402
-from resolutions.application.pipeline import ClassificationPipeline, PipelineConfig  # noqa: E402
+from resolutions.application.pipeline import (  # noqa: E402
+    ClassificationPipeline,
+    PipelineConfig,
+)
 from resolutions.application.process_document import ProcessDocument  # noqa: E402
 
 PAGES = [
-    "RESOLUCION N° 0412/2024\nASUNTO: Compra de insumos informaticos\n" + BODY,
+    "RESOLUCION No. 00412\nASUNTO: Compra de insumos informaticos\n" + BODY,
     BODY,
     BODY,
-    "RESOLUCION N° 0555/2024\nASUNTO: Designacion de personal\n" + BODY,
+    "RESOLUCION No. 00555\nASUNTO: Designacion de personal\n" + BODY,
     BODY,
     # The code comes back after another resolution: same file, per the rules.
-    "RESOLUCION N° 0412/2024\nVISTO la Resolucion N° 0555/2024\n" + BODY,
+    "RESOLUCION No. 00412\nVISTO la Resolucion No. 00555\n" + BODY,
 ]
 
 
@@ -57,20 +60,20 @@ def report(source_pdf, tmp_path):
 
 def test_it_splits_the_document_by_resolution(report):
     assert {group.code.value: group.page_numbers for group in report.grouping.groups} == {
-        "0412/2024": [1, 2, 3, 6],
-        "0555/2024": [4, 5],
+        "00412": [1, 2, 3, 6],
+        "00555": [4, 5],
     }
 
 
 def test_the_cited_resolution_never_steals_the_page(report):
     # Page 6 names 0555 under VISTO and 0412 as its heading. It belongs to 0412.
-    assert report.classifications[5].code.value == "0412/2024"
+    assert report.classifications[5].code.value == "00412"
 
 
 def test_the_files_are_named_after_code_and_subject(report):
     assert sorted(path.name for path in report.outputs) == [
-        "0412-2024__compra-de-insumos-informaticos.pdf",
-        "0555-2024__designacion-de-personal.pdf",
+        "00412__compra-de-insumos-informaticos.pdf",
+        "00555__designacion-de-personal.pdf",
     ]
 
 
@@ -80,8 +83,8 @@ def test_the_written_pdfs_hold_the_expected_pages(report):
         with pymupdf.open(path) as document:
             sizes[path.name] = document.page_count
     assert sizes == {
-        "0412-2024__compra-de-insumos-informaticos.pdf": 4,
-        "0555-2024__designacion-de-personal.pdf": 2,
+        "00412__compra-de-insumos-informaticos.pdf": 4,
+        "00555__designacion-de-personal.pdf": 2,
     }
 
 
@@ -95,8 +98,8 @@ def test_the_inventory_lands_next_to_the_files(report, tmp_path):
     assert payload["source_document"] == "expediente.pdf"
     assert payload["generated_files"] == 2
     assert [item["file_name"] for item in payload["items"]] == [
-        "0412-2024__compra-de-insumos-informaticos.pdf",
-        "0555-2024__designacion-de-personal.pdf",
+        "00412__compra-de-insumos-informaticos.pdf",
+        "00555__designacion-de-personal.pdf",
     ]
 
     csv_text = (tmp_path / "out" / "inventory.csv").read_text(encoding="utf-8-sig")

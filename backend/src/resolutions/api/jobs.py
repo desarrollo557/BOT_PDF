@@ -136,6 +136,18 @@ class Job:
     filename: str
     source: Path
     batch_id: str | None = None
+    #: Whether the API owns the file at ``source`` and may delete it when the
+    #: job ends. True for uploads, which live in the upload directory. False for
+    #: a document taken from a folder the operator gave us: that file is theirs.
+    owns_source: bool = True
+    #: Size of the source PDF. Recorded at intake because the file is deleted
+    #: when the job ends, and "how much did this batch weigh" is a question the
+    #: operator asks afterwards.
+    bytes: int = 0
+    #: Who was at the console. There is no password behind this name, so it is
+    #: attribution and never authorisation -- useful for "who ran this", worth
+    #: nothing as a control, and the screens say so.
+    operator: str | None = None
     state: JobState = JobState.QUEUED
     created_at: str = field(default_factory=_now)
     started_at: str | None = None
@@ -147,9 +159,12 @@ class Job:
 
     def as_dict(self) -> dict[str, object]:
         return {
+            "kind": "job",
             "id": self.id,
             "batch_id": self.batch_id,
             "filename": self.filename,
+            "bytes": self.bytes,
+            "operator": self.operator,
             "state": str(self.state),
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -181,6 +196,18 @@ class JobRegistry:
         self._batches: dict[str, Batch] = {}
         self._subscribers: set[asyncio.Queue[dict]] = set()
         self._dirty: set[str] = set()
+        #: Bumped whenever a job appears, finishes or is removed. The idle
+        #: janitor compares this against what it last swept, so a system at rest
+        #: costs one integer comparison instead of a directory listing.
+        self._revision = 0
+
+    @property
+    def revision(self) -> int:
+        return self._revision
+
+    def snapshot(self) -> list[Job]:
+        """Every job as it stands right now, in no particular order."""
+        return list(self._jobs.values())
 
     # -- batches --------------------------------------------------------------
 
@@ -200,6 +227,7 @@ class JobRegistry:
         states = [job.state for job in jobs]
         pages_total = sum(job.progress.page_count for job in jobs)
         pages_done = sum(job.progress.pages_done for job in jobs)
+        bytes_total = sum(job.bytes for job in jobs)
         resolutions = sum(
             len(job.report["groups"]) for job in jobs if job.report and "groups" in job.report
         )
@@ -217,6 +245,7 @@ class JobRegistry:
             "queued": states.count(JobState.QUEUED),
             "pages_total": pages_total,
             "pages_done": pages_done,
+            "bytes_total": bytes_total,
             "percent": round(100.0 * pages_done / pages_total, 2) if pages_total else 0.0,
             "resolutions": resolutions,
             "review_items": review,
@@ -225,9 +254,26 @@ class JobRegistry:
 
     # -- jobs -----------------------------------------------------------------
 
-    def create(self, filename: str, source: Path, batch_id: str | None = None) -> Job:
-        job = Job(id=uuid4().hex, filename=filename, source=source, batch_id=batch_id)
+    def create(
+        self,
+        filename: str,
+        source: Path,
+        batch_id: str | None = None,
+        owns_source: bool = True,
+        size: int = 0,
+        operator: str | None = None,
+    ) -> Job:
+        job = Job(
+            id=uuid4().hex,
+            filename=filename,
+            source=source,
+            batch_id=batch_id,
+            owns_source=owns_source,
+            bytes=size,
+            operator=operator,
+        )
         self._jobs[job.id] = job
+        self._revision += 1
         if batch_id and batch_id in self._batches:
             self._batches[batch_id].job_ids.append(job.id)
         return job
@@ -246,11 +292,13 @@ class JobRegistry:
 
     def mark_running(self, job: Job) -> None:
         job.state = JobState.RUNNING
+        self._revision += 1
         job.started_at = _now()
         self.publish(job)
 
     def mark_done(self, job: Job, report: dict) -> None:
         job.state = JobState.DONE
+        self._revision += 1
         job.report = report
         job.finished_at = _now()
         job.progress.stage = "done"
@@ -258,10 +306,45 @@ class JobRegistry:
 
     def mark_failed(self, job: Job, error: str) -> None:
         job.state = JobState.FAILED
+        self._revision += 1
         job.error = error
         job.finished_at = _now()
         job.progress.stage = "failed"
         self.publish(job)
+
+    # -- clearing -------------------------------------------------------------
+
+    def remove(self, job_id: str) -> Job | None:
+        """Forget one finished job. A job still in flight is never removed.
+
+        Dropping a running job would leave its worker emitting progress for an
+        id nobody owns, and its output directory half written.
+        """
+        job = self._jobs.get(job_id)
+        if job is None or job.state in (JobState.QUEUED, JobState.RUNNING):
+            return None
+
+        del self._jobs[job_id]
+        self._dirty.discard(job_id)
+        self._revision += 1
+        for batch in list(self._batches.values()):
+            if job_id in batch.job_ids:
+                batch.job_ids.remove(job_id)
+            # A batch with nothing left in it is a label with no referent.
+            if not batch.job_ids:
+                del self._batches[batch.id]
+
+        self.publish_removal(job)
+        return job
+
+    def remove_finished(self) -> list[Job]:
+        """Forget every job that is done or failed, leaving the queue untouched."""
+        finished = [
+            job.id
+            for job in self._jobs.values()
+            if job.state in (JobState.DONE, JobState.FAILED)
+        ]
+        return [removed for job_id in finished if (removed := self.remove(job_id))]
 
     # -- live progress --------------------------------------------------------
 
@@ -298,7 +381,21 @@ class JobRegistry:
         self._subscribers.discard(queue)
 
     def publish(self, job: Job) -> None:
-        payload = job.as_dict()
+        self._fan_out(job.as_dict())
+
+    def publish_removal(self, job: Job) -> None:
+        """Tell every open tab the job is gone, so a second one does not keep it."""
+        self._fan_out({**job.as_dict(), "deleted": True})
+
+    def announce(self, payload: dict) -> None:
+        """Fan out something that is not a job -- a folder run, for instance.
+
+        Every frame carries a ``kind`` so a client can tell them apart, and the
+        stream stays one connection rather than one per kind of thing to watch.
+        """
+        self._fan_out(payload)
+
+    def _fan_out(self, payload: dict) -> None:
         for queue in list(self._subscribers):
             try:
                 queue.put_nowait(payload)

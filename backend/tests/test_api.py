@@ -34,3 +34,31 @@ def test_a_traversal_attempt_cannot_escape_the_job_directory(client):
 
 def test_the_job_list_starts_empty(client):
     assert client.get("/api/jobs").json() == {"jobs": []}
+
+
+def test_health_declares_what_this_build_can_do(client):
+    """A running service has to be able to say which version of itself it is.
+
+    Python holds the code it imported at start-up, so a service left running
+    across an update answers 404 to every new route. Without a version on
+    health, that reads as a broken request instead of a stale process.
+    """
+    payload = client.get("/api/health").json()
+    assert payload["api_revision"] >= 4
+    assert "folder-runs" in payload["features"]
+    assert "inventory" in payload["features"]
+
+
+def test_every_feature_health_claims_actually_answers(client):
+    # The list is a promise to the screen; a promise nothing checks is a lie
+    # waiting to happen.
+    payload = client.get("/api/health").json()
+    probes = {
+        "inventory": ("GET", "/api/inventory"),
+        "documents": ("GET", "/api/documents"),
+        "folder-runs": ("GET", "/api/folder-runs"),
+        "cache-sweep": ("GET", "/api/cache"),
+    }
+    for feature, (method, url) in probes.items():
+        assert feature in payload["features"]
+        assert client.request(method, url).status_code == 200

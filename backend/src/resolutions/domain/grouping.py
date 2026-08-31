@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from typing import Sequence
 
 from .errors import IntegrityError
 from .page import PageClassification

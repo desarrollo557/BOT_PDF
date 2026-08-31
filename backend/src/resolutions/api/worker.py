@@ -9,7 +9,11 @@ def process_document_job(payload: dict) -> dict:
     Adapters are imported here rather than at module scope: the API process has
     no business loading MuPDF or Tesseract just to accept an upload.
     """
-    from ..adapters.claude_vision import ClaudeVisionConfig, ClaudeVisionOracle, NullVisionOracle
+    from ..adapters.claude_vision import (
+        ClaudeVisionConfig,
+        ClaudeVisionOracle,
+        NullVisionOracle,
+    )
     from ..adapters.file_inventory import FileInventoryStore
     from ..adapters.pymupdf_assembler import PyMuPDFAssembler
     from ..adapters.pymupdf_source import PyMuPDFDocumentStore
@@ -50,11 +54,26 @@ def process_document_job(payload: dict) -> dict:
         progress=progress,
     )
 
+    try:
+        from ..adapters.excel_inventory import ExcelInventory
+
+        sheets = ExcelInventory()
+    except ImportError:
+        # openpyxl is not installed: the document still gets split, it just
+        # ships without its spreadsheet.
+        sheets = None
+
     use_case = ProcessDocument(
         store=PyMuPDFDocumentStore(),
         pipeline=pipeline,
         assembler=PyMuPDFAssembler(),
         inventory=FileInventoryStore(),
         progress=progress,
+        sheets=sheets,
     )
-    return use_case.execute(source, destination).as_dict()
+    return use_case.execute(
+        source,
+        destination,
+        source_name=payload.get("filename"),
+        operator=payload.get("operator"),
+    ).as_dict()

@@ -1,12 +1,50 @@
-import type { Batch, Job } from './types';
+import type {
+  Batch,
+  FolderRun,
+  InventoryPage,
+  FolderListing,
+  Job,
+  ProcessedDocument,
+  SourceDisposition
+} from './types';
 
 const BASE = '/api';
 
 export class ApiError extends Error {}
 
+/**
+ * Who to attribute new work to. Set by the session, read on every intake.
+ *
+ * Percent-encoded on the way out: HTTP header values are ASCII, and a name
+ * with an accent -- Martínez, Muñoz, María -- throws in fetch before the
+ * request leaves the browser.
+ */
+let operator: string | null = null;
+
+export function setOperator(name: string | null): void {
+  operator = name;
+}
+
+function attribution(): Record<string, string> {
+  return operator ? { 'X-Operator': encodeURIComponent(operator) } : {};
+}
+
 async function detailOf(response: Response): Promise<string> {
   const payload = await response.json().catch(() => null);
-  return payload?.detail ?? `Error ${response.status}`;
+  if (payload?.detail) return payload.detail;
+
+  // A 404 or 405 on an endpoint this build knows about means the service
+  // answering is older than the screen asking. That is a restart, not a bad
+  // request, and saying so is the difference between a one-line fix and an
+  // afternoon spent doubting the input.
+  if (response.status === 404 || response.status === 405) {
+    return (
+      `El servicio no reconoce esta operación (${response.status}). ` +
+      'Probablemente esté corriendo una versión anterior: reinicie el backend ' +
+      '(uvicorn resolutions.api.main:app --port 8000) y vuelva a intentar.'
+    );
+  }
+  return `Error ${response.status}`;
 }
 
 export async function createBatch(name: string): Promise<{ id: string; name: string }> {
@@ -24,7 +62,7 @@ export async function uploadDocument(file: File, batchId?: string): Promise<{ id
   body.append('file', file);
 
   const url = batchId ? `${BASE}/jobs?batch_id=${encodeURIComponent(batchId)}` : `${BASE}/jobs`;
-  const response = await fetch(url, { method: 'POST', body });
+  const response = await fetch(url, { method: 'POST', body, headers: attribution() });
   if (!response.ok) throw new ApiError(await detailOf(response));
   return response.json();
 }
@@ -47,11 +85,18 @@ export async function listBatches(): Promise<Batch[]> {
  * The server pushes coalesced frames; the client never polls. Polling a queue of
  * long-running jobs is a request storm that says nothing new most of the time.
  */
-export function streamJobs(onJob: (job: Job) => void): () => void {
+export function streamEvents(handlers: {
+  job: (job: Job) => void;
+  folderRun?: (run: FolderRun) => void;
+}): () => void {
   const events = new EventSource(`${BASE}/events`);
   events.onmessage = (event) => {
     try {
-      onJob(JSON.parse(event.data) as Job);
+      const frame = JSON.parse(event.data);
+      // Frames from before `kind` existed are jobs; that is the only default
+      // that keeps an older service readable by a newer screen.
+      if (frame?.kind === 'folder_run') handlers.folderRun?.(frame as FolderRun);
+      else handlers.job(frame as Job);
     } catch {
       // A malformed frame is not worth tearing the stream down for.
     }
@@ -82,4 +127,197 @@ export async function withConcurrency<T>(
     }
   });
   await Promise.all(runners);
+}
+
+/**
+ * Clear the screen: the API forgets every finished document.
+ *
+ * The generated PDFs and the inventory are untouched. Anything queued or
+ * running is left alone, so this is safe to press mid-batch.
+ */
+export async function clearScreen(): Promise<{ removed: number }> {
+  const response = await fetch(`${BASE}/jobs`, { method: 'DELETE' });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
+}
+
+/** Forget one document. With `purge`, its generated PDFs go too. */
+export async function deleteJob(jobId: string, purge = false): Promise<void> {
+  const url = `${BASE}/jobs/${jobId}${purge ? '?purge=true' : ''}`;
+  const response = await fetch(url, { method: 'DELETE' });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+}
+
+export async function fetchInventory(
+  query = '',
+  limit = 500,
+  offset = 0
+): Promise<InventoryPage> {
+  const parameters = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (query) parameters.set('q', query);
+  const response = await fetch(`${BASE}/inventory?${parameters}`);
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
+}
+
+export async function fetchProcessedDocuments(
+  query = '',
+  limit = 500
+): Promise<{ documents: ProcessedDocument[]; total: number }> {
+  const parameters = new URLSearchParams({ limit: String(limit) });
+  if (query) parameters.set('q', query);
+  const response = await fetch(`${BASE}/documents?${parameters}`);
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
+}
+
+/**
+ * El inventario completo como libro de Excel, con el filtro de la pantalla.
+ *
+ * Era un CSV, y un CSV lo abre Excel como texto crudo: sin anchos, sin bordes y
+ * -- lo que de verdad estorba -- convirtiendo 00072 en 72, que es justo el dato
+ * que hay que poder leer.
+ */
+export function inventoryUrl(query = ''): string {
+  return query ? `${BASE}/inventory.xlsx?q=${encodeURIComponent(query)}` : `${BASE}/inventory.xlsx`;
+}
+
+/** La hoja de un solo documento, la misma que quedó junto a sus PDF. */
+export function documentInventoryUrl(jobId: string): string {
+  return `${BASE}/jobs/${jobId}/inventory.xlsx`;
+}
+
+/**
+ * The API revision this build of the screen needs.
+ *
+ * Raised alongside `API_REVISION` in the service whenever a screen starts
+ * depending on a new endpoint. A service older than this is not broken, it is
+ * stale, and saying which is the difference between a restart and a bug hunt.
+ */
+export const REQUIRED_API_REVISION = 8;
+
+export interface Health {
+  status: string;
+  /** Absent on any service older than the revision scheme itself. */
+  api_revision?: number;
+  features?: string[];
+  document_workers: number;
+  page_workers: number;
+  vision: 'claude' | 'disabled';
+  queued: number;
+  queue_limit: number;
+}
+
+/** One cheap call. Used by the status rail, which polls it slowly on purpose. */
+export async function fetchHealth(): Promise<Health | null> {
+  try {
+    const response = await fetch(`${BASE}/health`);
+    return response.ok ? await response.json() : null;
+  } catch {
+    // The rail reports "sin conexión" from a null; it never throws at the UI.
+    return null;
+  }
+}
+
+
+// -- mutations ---------------------------------------------------------------
+
+async function send<T>(url: string, method: string, body?: unknown): Promise<T> {
+  const response = await fetch(url, {
+    method,
+    headers: {
+      ...attribution(),
+      ...(body === undefined ? {} : { 'content-type': 'application/json' })
+    },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
+}
+
+/** Correct a resolution's number, its title, or both. */
+export function renameOutput(
+  jobId: string,
+  name: string,
+  changes: { code?: string; title?: string | null }
+): Promise<{ file_name: string; code: string; title: string | null }> {
+  return send(`${BASE}/jobs/${jobId}/outputs/${encodeURIComponent(name)}`, 'PATCH', changes);
+}
+
+/** Delete one generated resolution: the file and its inventory row. */
+export function deleteOutput(jobId: string, name: string): Promise<{ deleted: string }> {
+  return send(`${BASE}/jobs/${jobId}/outputs/${encodeURIComponent(name)}`, 'DELETE');
+}
+
+export function renameJob(jobId: string, filename: string): Promise<Job> {
+  return send(`${BASE}/jobs/${jobId}`, 'PATCH', { filename });
+}
+
+export function renameBatch(batchId: string, name: string): Promise<Batch> {
+  return send(`${BASE}/batches/${batchId}`, 'PATCH', { name });
+}
+
+export function deleteBatch(batchId: string, purge = false): Promise<{ removed: number }> {
+  return send(`${BASE}/batches/${batchId}${purge ? '?purge=true' : ''}`, 'DELETE');
+}
+
+// -- local folders -----------------------------------------------------------
+
+export function startFolderRun(options: {
+  source: string;
+  destination: string;
+  disposition?: SourceDisposition;
+  watch?: boolean;
+}): Promise<FolderRun> {
+  return send(`${BASE}/folder-runs`, 'POST', options);
+}
+
+export function stopFolderRun(runId: string): Promise<FolderRun> {
+  return send(`${BASE}/folder-runs/${runId}/stop`, 'POST');
+}
+
+/**
+ * Lista las carpetas de una ruta.
+ *
+ * Lo pregunta el servicio y no el navegador porque un navegador no puede
+ * entregar una ruta absoluta: ni el selector de carpetas ni `webkitdirectory`
+ * la exponen. El servicio corre junto a las carpetas, así que la ruta que
+ * devuelve es la real.
+ */
+export async function browseFolders(path: string | null): Promise<FolderListing> {
+  const url = path ? `${BASE}/folders?path=${encodeURIComponent(path)}` : `${BASE}/folders`;
+  const response = await fetch(url);
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
+}
+
+/**
+ * Abre el explorador de carpetas de Windows y espera a que elijan.
+ *
+ * Lo abre el servicio, no el navegador: ninguna API web entrega una ruta
+ * absoluta. Sólo tiene sentido mientras el servicio corra en la misma máquina
+ * que la pantalla; cuando no puede, responde 501 y la pantalla cae en su propio
+ * explorador.
+ */
+export async function pickFolderNatively(
+  title: string,
+  initial?: string
+): Promise<{ path: string | null; cancelled: boolean }> {
+  const response = await fetch(`${BASE}/folders/pick`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title, initial: initial || null })
+  });
+  if (response.status === 501) throw new PickerUnavailable(await detailOf(response));
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
+}
+
+/** El servicio no puede abrir una ventana: hay que usar el explorador propio. */
+export class PickerUnavailable extends Error {}
+
+export async function listFolderRuns(): Promise<FolderRun[]> {
+  const response = await fetch(`${BASE}/folder-runs`);
+  if (!response.ok) return [];
+  return (await response.json()).runs ?? [];
 }

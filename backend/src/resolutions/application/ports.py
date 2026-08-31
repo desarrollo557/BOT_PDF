@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from ..domain.grouping import GroupingResult
 from .inventory import Inventory
@@ -98,6 +98,23 @@ class RoiRegistry(Protocol):
     def remember(self, fingerprint: str, band: Band) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class AssemblyResult:
+    """What was written, and which pages could not be.
+
+    A page that cannot be copied is named rather than silently missing: the
+    document ships with everything that could be salvaged, and the operator gets
+    a list instead of a page-count discrepancy to discover on their own.
+    """
+
+    outputs: list[Path] = field(default_factory=list)
+    unwritable_pages: dict[int, str] = field(default_factory=dict)
+    #: Resolution code -> the file name actually written for it. The writer may
+    #: shorten a name to fit the filesystem, so the inventory records what is on
+    #: disk rather than recomputing what it thinks should be.
+    written: dict[str, str] = field(default_factory=dict)
+
+
 @runtime_checkable
 class DocumentAssembler(Protocol):
     def write(
@@ -105,7 +122,7 @@ class DocumentAssembler(Protocol):
         source: Path,
         result: GroupingResult,
         destination: Path,
-    ) -> Iterable[Path]: ...
+    ) -> AssemblyResult: ...
 
 
 @runtime_checkable

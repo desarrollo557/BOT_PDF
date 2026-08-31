@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from resolutions.application.inventory import Inventory
-from resolutions.application.ports import Band, Crop, OcrResult
+from resolutions.application.ports import AssemblyResult, Band, Crop, OcrResult
 from resolutions.domain.grouping import GroupingResult
 from resolutions.domain.naming import output_filename
 
@@ -88,10 +88,16 @@ class FakeVision:
 @dataclass
 class FakeAssembler:
     written: list[tuple[str, list[int]]] = field(default_factory=list)
+    #: Pages this assembler pretends it could not copy, as the real one reports
+    #: a page whose objects are damaged beyond salvage.
+    unwritable: dict[int, str] = field(default_factory=dict)
 
-    def write(self, source: Path, result: GroupingResult, destination: Path) -> list[Path]:
+    def write(self, source: Path, result: GroupingResult, destination: Path) -> AssemblyResult:
         self.written = [(g.code.value, g.page_numbers) for g in result.groups]
-        return [destination / output_filename(g.code, g.title) for g in result.groups]
+        return AssemblyResult(
+            outputs=[destination / output_filename(g.code, g.title) for g in result.groups],
+            unwritable_pages=dict(self.unwritable),
+        )
 
 
 @dataclass

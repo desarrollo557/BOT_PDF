@@ -74,13 +74,23 @@ def build_inventory(
     result: GroupingResult,
     review_pages: list[int],
     stats: dict[str, object],
+    file_names: dict[str, str] | None = None,
 ) -> Inventory:
+    """Describe what one document produced.
+
+    ``file_names`` is what the writer actually put on disk. It is preferred over
+    recomputing the name, because the writer is allowed to shorten one to fit
+    the filesystem and an inventory that names a file nobody can open is worse
+    than no inventory.
+    """
+    names = file_names or {}
     return Inventory(
         source_document=source_document,
         source_pages=source_pages,
         items=[
             InventoryItem(
-                file_name=output_filename(group.code, group.title),
+                file_name=names.get(group.code.value)
+                or output_filename(group.code, group.title),
                 code=group.code.value,
                 title=group.title,
                 page_count=group.size,

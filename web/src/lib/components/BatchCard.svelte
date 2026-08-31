@@ -42,7 +42,7 @@
   });
 </script>
 
-<article class="mb-5 rounded-xl border border-hairline bg-surface p-5">
+<article class="mb-5 rounded-xl border border-hairline bg-raised shadow-[var(--shadow)] p-5">
   <header class="flex flex-wrap items-baseline justify-between gap-3">
     <h3 class="text-base font-semibold">{name}</h3>
     <span class="text-sm text-muted">
@@ -54,7 +54,7 @@
   <!-- One measure, one bar: pages read out of pages known. -->
   <div class="mt-3 h-2 overflow-hidden rounded bg-grid">
     <div
-      class="h-full rounded-r-[4px] bg-s1 transition-[width] duration-300"
+      class="h-full rounded-r-[4px] bg-accent transition-[width] duration-300"
       style:width={`${percent}%`}
     ></div>
   </div>

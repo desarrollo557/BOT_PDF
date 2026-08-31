@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { downloadUrl } from '$lib/api';
+  import { documentInventoryUrl, downloadUrl } from '$lib/api';
   import GroupsChart from '$lib/components/GroupsChart.svelte';
   import PageRibbon from '$lib/components/PageRibbon.svelte';
+  import ResolutionRow from '$lib/components/ResolutionRow.svelte';
   import ProvenanceBar from '$lib/components/ProvenanceBar.svelte';
   import StatTile from '$lib/components/StatTile.svelte';
   import { STAGE_LABELS, STATE_LABELS } from '$lib/rungs';
@@ -20,7 +21,7 @@
 
   const BADGE: Record<string, string> = {
     queued: 'text-muted',
-    running: 'text-s1',
+    running: 'text-accent',
     done: 'text-good',
     failed: 'text-critical'
   };
@@ -48,7 +49,7 @@
   }
 </script>
 
-<article class="mb-4 rounded-xl border border-hairline bg-surface p-5">
+<article class="mb-4 rounded-xl border border-hairline bg-raised shadow-[var(--shadow)] p-5">
   <header class="flex items-start justify-between gap-4">
     <div class="min-w-0">
       <h3 class="truncate text-base font-semibold">{job.filename}</h3>
@@ -82,7 +83,7 @@
     <div class="mt-4">
       <div class="mb-3 h-1.5 overflow-hidden rounded bg-grid">
         <div
-          class="h-full rounded-r-[4px] bg-s1 transition-[width] duration-300"
+          class="h-full rounded-r-[4px] bg-accent transition-[width] duration-300"
           style:width={`${progress.percent}%`}
         ></div>
       </div>
@@ -90,7 +91,7 @@
     </div>
   {:else if job.state === 'queued'}
     <div class="mt-4 h-[3px] overflow-hidden rounded bg-grid">
-      <div class="h-full w-1/3 animate-[slide_1.1s_ease-in-out_infinite] bg-s1"></div>
+      <div class="h-full w-1/3 animate-[slide_1.1s_ease-in-out_infinite] bg-accent"></div>
     </div>
   {/if}
 
@@ -129,30 +130,17 @@
             <th class="pb-2 text-left font-medium">Resolución</th>
             <th class="pb-2 text-left font-medium">Título</th>
             <th class="pb-2 text-left font-medium">Páginas</th>
-            <th class="pb-2"></th>
+            <th class="pb-2 text-right font-medium">Acciones</th>
           </tr>
         </thead>
         <tbody>
           {#each report.groups as group (group.code)}
-            <tr class="border-t border-hairline">
-              <td class="py-2 pr-3 font-mono text-xs whitespace-nowrap">{group.code}</td>
-              <td class="py-2 pr-3 text-ink-2">{group.title ?? '—'}</td>
-              <td class="py-2 pr-3 font-mono text-xs whitespace-nowrap tabular-nums">
-                {pageRange(group.pages)}
-                <span class="text-muted">({group.size})</span>
-              </td>
-              <td class="py-2 text-right">
-                {#if fileFor(group.code)}
-                  <a
-                    class="text-s1 hover:underline"
-                    href={downloadUrl(job.id, fileFor(group.code)!)}
-                    download
-                  >
-                    PDF
-                  </a>
-                {/if}
-              </td>
-            </tr>
+            <ResolutionRow
+              jobId={job.id}
+              {group}
+              fileName={fileFor(group.code)}
+              pageRange={pageRange(group.pages)}
+            />
           {/each}
         </tbody>
       </table>
@@ -187,7 +175,7 @@
         </ul>
         {#if report.quarantine.length}
           <a
-            class="mt-2 inline-block text-s1 hover:underline"
+            class="mt-2 inline-block text-accent hover:underline"
             href={downloadUrl(job.id, '_quarantine.pdf')}
             download
           >
@@ -206,10 +194,14 @@
           páginas contabilizadas
         </span>
         <span class="flex gap-4">
-          <a class="text-s1 hover:underline" href={downloadUrl(job.id, 'inventory.csv')} download>
-            CSV
+          <a
+            class="text-accent hover:underline"
+            href={documentInventoryUrl(job.id)}
+            download
+          >
+            Inventario en Excel
           </a>
-          <a class="text-s1 hover:underline" href={downloadUrl(job.id, 'inventory.json')} download>
+          <a class="text-accent hover:underline" href={downloadUrl(job.id, 'inventory.json')} download>
             JSON
           </a>
         </span>

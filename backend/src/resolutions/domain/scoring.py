@@ -6,11 +6,12 @@ from .extraction import RawCandidate
 from .resolution_code import ResolutionCode
 
 # A page's own resolution announces itself: near the top, set in capitals, on a
-# short line, with no citation verb in front of it. Every weight below encodes
-# one of those four observations.
+# short line, in the official form, with no citation verb in front of it. Every
+# weight below encodes one of those five observations.
 POSITION_WEIGHT = 0.35
 CAPITALS_WEIGHT = 0.45
 ISOLATION_WEIGHT = 0.20
+OFFICIAL_FORM_WEIGHT = 0.30
 CITATION_PENALTY = 0.55
 
 # Sequential context is free evidence, but it only arbitrates between weak
@@ -73,11 +74,28 @@ def _is_citation(candidate: RawCandidate) -> bool:
     return any(marker in candidate.context_before for marker in _CITATION_MARKERS)
 
 
+def _official_form(candidate: RawCandidate) -> float:
+    """Whether the candidate is written the way a real header writes it.
+
+    "RESOLUCION No. 00086" is the house format, and it stays the house format
+    when the page is typeset in title case. Recognising the structure is what
+    keeps ``Resolución No. 00072 de 2023`` off the escalation path, where the
+    capitals signal alone would have left it one hundredth above the floor.
+
+    A citation is written in exactly the same form, so the signal is withheld
+    there: the shape says "this is a resolution number", never "this page is it".
+    """
+    if not candidate.official_form or _is_citation(candidate):
+        return 0.0
+    return 1.0
+
+
 def signals_for(candidate: RawCandidate) -> dict[str, float]:
     return {
         "position": _position(candidate),
         "capitals": _capitals(candidate),
         "isolation": _isolation(candidate),
+        "official_form": _official_form(candidate),
         "citation": 1.0 if _is_citation(candidate) else 0.0,
     }
 
@@ -88,9 +106,43 @@ def score(candidate: RawCandidate) -> float:
         POSITION_WEIGHT * signals["position"]
         + CAPITALS_WEIGHT * signals["capitals"]
         + ISOLATION_WEIGHT * signals["isolation"]
+        + OFFICIAL_FORM_WEIGHT * signals["official_form"]
         - CITATION_PENALTY * signals["citation"]
     )
     return min(1.0, max(0.0, total))
+
+
+def opens_a_resolution(candidate: RawCandidate) -> bool:
+    """Si esta candidata puede abrir una resolución nueva (RF-01).
+
+    Sólo un encabezado oficial abre una resolución: el ancla, el token de
+    numeración y el número, tal como están escritos en los documentos reales
+    (``RESOLUCIÓN No. 00072 de 2023``). Un número suelto en medio del texto no
+    abre nada, por muy número que parezca.
+
+    Antes esto sólo sumaba puntos, y no alcanzaba: en un expediente de 222
+    páginas se abrían 34 resoluciones donde había unas 20, porque números
+    citados en el cuerpo superaban el umbral por su cuenta. Puntuar no basta
+    cuando el error parte un documento por la mitad; la forma oficial tiene que
+    ser una condición.
+
+    Un encabezado además **abre su renglón**. Lo que lo obligó fue el membrete
+    de la Universidad, que dice "Acreditación en Alta Calidad Resolución No,
+    1968 dei 12 de febrero de 2018, MEN." y va impreso en decenas de páginas:
+    trae ancla, token de numeración y número, así que pasaba por encabezado y
+    se llevó 68 páginas que eran de otras resoluciones. La diferencia no está
+    en cómo se escribe el número sino en dónde está: en las 222 páginas del
+    expediente, las 22 resoluciones reales empiezan el renglón con el ancla las
+    22 veces, y el membrete no lo hace ni una -- aparece en la columna 29, 30 o
+    49, detrás de otras palabras. Los tres formatos de la casa cumplen esto:
+    ``RESOLUCION NO. 00086``, ``Resolución No. 00072 de 2023`` y
+    ``RESOLUCIÓN No. 00083 de 2023`` empiezan por el ancla.
+    """
+    return (
+        candidate.official_form
+        and candidate.anchor.start == 0
+        and not _is_citation(candidate)
+    )
 
 
 def select_best(
@@ -103,6 +155,26 @@ def select_best(
 
     # Stable sort: equal scores keep reading order, so the earliest wins ties.
     ranked = sorted(((score(c), c) for c in candidates), key=lambda pair: -pair[0])
+
+    if previous_code is not None:
+        # RF-01: la página continúa la resolución anterior salvo que traiga un
+        # encabezado oficial propio. Seguir con el mismo código también vale:
+        # eso no abre nada, sólo confirma dónde sigue estando.
+        admitidas = [
+            pair
+            for pair in ranked
+            if pair[1].code == previous_code or opens_a_resolution(pair[1])
+        ]
+        if not admitidas:
+            return _continues(previous_code, ranked[0])
+        ranked = admitidas
+    else:
+        # Nada que continuar todavía: el documento tiene que empezar en algún
+        # lado, así que aquí la forma oficial ordena en vez de excluir.
+        oficiales = [pair for pair in ranked if opens_a_resolution(pair[1])]
+        if oficiales:
+            ranked = oficiales
+
     top_score, top = ranked[0]
 
     if previous_code is not None and top_score < CONFIDENT_FLOOR:
@@ -129,4 +201,36 @@ def select_best(
         ambiguous=ambiguous,
         runner_up=runner_up,
         signals=signals_for(top),
+    )
+
+
+def _continues(previous_code: ResolutionCode, suppressed: tuple[float, RawCandidate]) -> Selection:
+    """La página pertenece a la resolución anterior, y por qué.
+
+    Se marca ambigua sólo cuando el rechazo es discutible: la candidata abría su
+    renglón, no venía detrás de un verbo de cita, y aun así se descartó por no
+    traer el token de numeración -- que es exactamente lo que pasa cuando el OCR
+    se come el "No." de un encabezado verdadero. Eso tiene que verlo una persona.
+
+    Un rechazo estructural no es discutible y no ensucia la cola. El membrete de
+    la Universidad aparece en decenas de páginas y se rechaza por la misma razón
+    todas las veces; marcarlo mandaba 39 páginas a revisión donde había 8 dudas
+    reales, y una cola llena de ruido es una cola que nadie mira.
+
+    La confianza es la del enunciado que se está afirmando -- "esto continúa lo
+    anterior" -- y por eso baja a medida que la candidata rechazada se parecía
+    más a un encabezado.
+    """
+    rejected_score, rejected = suppressed
+    debatable = (
+        rejected_score >= CONFIDENT_FLOOR
+        and rejected.anchor.start == 0
+        and not _is_citation(rejected)
+    )
+    return Selection(
+        code=previous_code,
+        confidence=round(max(0.0, 1.0 - rejected_score), 4),
+        ambiguous=debatable,
+        runner_up=rejected.code,
+        signals=signals_for(rejected),
     )
