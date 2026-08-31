@@ -25,6 +25,15 @@
 
 <div class="stage">
   <div class="card">
+    <div class="owner">
+      <img
+        src="/siar.png"
+        alt="SIAR — Hacemos todo por su información"
+        width="148"
+        height="93"
+      />
+    </div>
+
     <header>
       <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
         <rect x="2.5" y="2.5" width="12" height="16" rx="2" />
@@ -85,6 +94,8 @@
         separar. Cualquiera en este equipo puede entrar con cualquier nombre.
       </p>
     {/if}
+
+    <p class="owner-note">Software de <b>SIAR</b></p>
   </div>
 </div>
 
@@ -105,12 +116,41 @@
     box-shadow: var(--shadow);
   }
 
+  .owner {
+    display: flex;
+    justify-content: center;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 1.25rem;
+  }
+  .owner img {
+    width: 148px;
+    height: auto;
+    border-radius: 8px;
+    /* Transparente en claro; en oscuro, una placa para no teñir la marca. */
+    background: var(--logo-plate);
+    padding: 6px 10px;
+  }
+
+  .owner-note {
+    margin: 1.1rem 0 0;
+    text-align: center;
+    font-size: 0.72rem;
+    letter-spacing: 0.02em;
+    color: var(--muted);
+  }
+  .owner-note b {
+    font-weight: 600;
+    color: var(--ink-2);
+  }
+
   header {
     display: flex;
     align-items: center;
     gap: 0.85rem;
+    border-top: 1px solid var(--rule);
     border-bottom: 1px solid var(--rule);
-    padding-bottom: 1.1rem;
+    margin-top: 1.25rem;
+    padding: 1.1rem 0;
   }
   .mark {
     width: 34px;
