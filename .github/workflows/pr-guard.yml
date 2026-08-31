@@ -1,0 +1,68 @@
+name: Validación del PR
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  reglas:
+    name: Rama, título y descripción
+    runs-on: ubuntu-latest
+    env:
+      ORIGEN: ${{ github.head_ref }}
+      DESTINO: ${{ github.base_ref }}
+      TITULO: ${{ github.event.pull_request.title }}
+      CUERPO: ${{ github.event.pull_request.body }}
+    steps:
+      - name: El flujo de ramas se respeta
+        run: |
+          echo "  $ORIGEN  ->  $DESTINO"
+          case "$DESTINO" in
+            produccion)
+              # A producción sólo entra lo que ya pasó por main, o un hotfix.
+              case "$ORIGEN" in
+                main|hotfix/*) ;;
+                *) echo "::error::A 'produccion' sólo se mergea 'main' o 'hotfix/*'. Esta rama es '$ORIGEN'."; exit 1 ;;
+              esac ;;
+            main)
+              case "$ORIGEN" in
+                develop|hotfix/*) ;;
+                *) echo "::error::A 'main' sólo se mergea 'develop' o 'hotfix/*'. Esta rama es '$ORIGEN'."; exit 1 ;;
+              esac ;;
+            develop)
+              case "$ORIGEN" in
+                feat/*|fix/*|refactor/*|docs/*|test/*|chore/*|perf/*|hotfix/*) ;;
+                *) echo "::error::El nombre de la rama debe empezar por feat/, fix/, refactor/, docs/, test/, chore/ o perf/. Esta es '$ORIGEN'."; exit 1 ;;
+              esac ;;
+            *)
+              echo "::error::'$DESTINO' no es una rama de integración. Los PR van a develop, main o produccion."; exit 1 ;;
+          esac
+          echo "Flujo correcto."
+
+      - name: El título dice qué cambia y dónde
+        run: |
+          # Conventional Commits: el título del PR es el mensaje del merge squash,
+          # así que el historial de main se lee sin abrir GitHub.
+          patron='^(feat|fix|refactor|docs|test|chore|perf|build|ci|revert)(\([a-z0-9./-]+\))?!?: .{10,}$'
+          if ! echo "$TITULO" | grep -Eq "$patron"; then
+            echo "::error::Título inválido: '$TITULO'"
+            echo "Formato: tipo(alcance): descripción de al menos 10 caracteres"
+            echo "Ejemplo: fix(grouping): una página sin número hereda la anterior"
+            exit 1
+          fi
+          echo "Título correcto."
+
+      - name: La descripción explica el porqué
+        run: |
+          # Sin las secciones de la plantilla no hay forma de revisar el cambio
+          # sin preguntar. Treinta caracteres es el mínimo, no la meta.
+          limpio=$(echo "$CUERPO" | sed 's/<!--.*-->//g' | tr -d '[:space:]')
+          if [ "${#limpio}" -lt 30 ]; then
+            echo "::error::La descripción está vacía o es demasiado corta. Usá la plantilla: qué cambia, por qué, y cómo se probó."
+            exit 1
+          fi
+          echo "Descripción presente."

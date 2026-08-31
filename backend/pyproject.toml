@@ -14,10 +14,14 @@ dependencies = [
     "pytesseract>=0.3.13",
     "pillow>=11.0",
     "anthropic>=0.40",
+    "openpyxl>=3.1",
+    # El inventario en MySQL. Sin esto el servicio arranca igual y guarda en
+    # el archivo JSONL, que es lo correcto en una máquina sin base.
+    "pymysql>=1.1",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "httpx>=0.27"]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "httpx>=0.27", "ruff>=0.14"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -30,3 +34,24 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-q"
+
+[tool.ruff]
+line-length = 90
+extend-exclude = [".venv", "**/__pycache__"]
+
+[tool.ruff.lint]
+# Errores de verdad (pyflakes), estilo del pep8, imports ordenados, modernismos
+# de Python 3.12 y las trampas de bugbear. Sin reglas de opinión pura: la que
+# marca un problema real se queda, la que sólo discute de gustos no entra.
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",  # el largo de línea lo decide el formateador, no el linter
+    "B008",  # Depends() en la firma es la forma correcta en FastAPI
+    # try/except/pass alrededor de la telemetría: el bloque explícito dice
+    # mejor que contextlib.suppress que tragarse el error es la intención.
+    "SIM105",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Las pruebas arman fixtures largos y a veces importan dentro de la función.
+"tests/*" = ["B011"]

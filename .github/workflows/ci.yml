@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, produccion]
+  pull_request:
+    branches: [main, develop, produccion]
+  workflow_dispatch:
+
+# Una corrida por rama: un push nuevo cancela el anterior en vez de hacer cola.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  arquitectura:
+    name: Arquitectura (dirección de las dependencias)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: El dominio no conoce a nadie
+        run: python scripts/check_layers.py
+
+  backend:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      # El pipeline OCR llama al binario, no sólo al wrapper de Python.
+      - name: Tesseract
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-spa
+      - name: Dependencias
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint
+        working-directory: backend
+        run: |
+          pip install ruff==0.14.0
+          ruff check .
+      - name: Pruebas
+        working-directory: backend
+        run: pytest -q
+
+  frontend:
+    name: Front (check, pruebas, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Dependencias
+        working-directory: web
+        run: npm ci
+      - name: Tipos y Svelte
+        working-directory: web
+        run: npm run check
+      - name: Pruebas
+        working-directory: web
+        run: npm run test
+      - name: Build
+        working-directory: web
+        run: npm run build
+
+  esquema:
+    name: Base de datos (el esquema levanta)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Aplicar db/schema.sql sobre una base vacía
+        run: mysql -h 127.0.0.1 -P 3306 -uroot -proot < db/schema.sql

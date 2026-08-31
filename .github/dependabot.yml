@@ -1,0 +1,33 @@
+version: 2
+updates:
+  # Las actualizaciones llegan a develop, nunca directo a main ni a produccion.
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+    target-branch: develop
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    target-branch: develop
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      # Svelte, Vite y Tailwind se mueven juntos; un PR por paquete es ruido.
+      frontend:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    target-branch: develop
+    commit-message:
+      prefix: "ci(deps)"

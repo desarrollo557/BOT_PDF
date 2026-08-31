@@ -1,0 +1,34 @@
+name: Error
+description: Algo procesa mal, muestra mal o se cae
+labels: [error]
+body:
+  - type: textarea
+    id: que-paso
+    attributes:
+      label: Qué pasó
+      description: Lo observado, y lo que esperabas en su lugar.
+    validations:
+      required: true
+  - type: textarea
+    id: reproducir
+    attributes:
+      label: Cómo reproducirlo
+      placeholder: |
+        1. Subir el PDF ... (páginas, si es escaneado o digital)
+        2. Ir a la pantalla ...
+        3. El resultado es ...
+    validations:
+      required: true
+  - type: dropdown
+    id: donde
+    attributes:
+      label: Dónde
+      options: [Procesar, Archivo, Revisión, Inventario, API, Base de datos, Otro]
+    validations:
+      required: true
+  - type: textarea
+    id: evidencia
+    attributes:
+      label: Evidencia
+      description: Líneas de `logs/`, respuesta del endpoint, o el id de la corrida.
+      render: text

@@ -15,3 +15,9 @@ venv/
 node_modules/
 .svelte-kit/
 build/
+
+# Salida de los servicios en la máquina del operador, no fuente
+logs/
+
+# Vite escribe esto mientras corre; desaparece solo
+vite.config.ts.timestamp-*
