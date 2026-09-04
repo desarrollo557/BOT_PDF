@@ -5,11 +5,13 @@ import {
   listFolderRuns,
   listJobs,
   startFolderRun,
+  clearFolderRuns,
+  forgetFolderRun,
   stopFolderRun,
   streamEvents
 } from './api';
 import { consoleLog } from './console.svelte';
-import type { FolderRun, Job, SourceDisposition } from './types';
+import type { FolderRun, Job, SourceDisposition, TaskKind } from './types';
 
 /**
  * The live workspace, shared by every route.
@@ -19,9 +21,58 @@ import type { FolderRun, Job, SourceDisposition } from './types';
  * navigation, taking the event stream with it and reconnecting on the way back.
  * One connection, opened by the layout, outlives every route change.
  */
+/**
+ * Lo terminado que todavía puede necesitar un ojo humano.
+ *
+ * Un documento que falló, porque su error sólo está en su ficha, y uno que dejó
+ * páginas marcadas, porque el motivo de cada una sólo está en su informe. Es lo
+ * que hay que conservar cuando la pantalla se limpia.
+ */
+export function pendingReview(jobs: Job[]): Job[] {
+  return jobs.filter(
+    (job) => job.state === 'failed' || (job.report?.review_queue?.length ?? 0) > 0
+  );
+}
+
+/**
+ * Lo que ve la página de Revisión: lo que sigue en pantalla y lo que se apartó
+ * de ella sin atender, sin repetir y con la versión viva por delante.
+ */
+export function mergeReviewable(finished: Job[], dismissed: Job[]): Job[] {
+  const ids = new Set(finished.map((job) => job.id));
+  return [...finished, ...dismissed.filter((job) => !ids.has(job.id))];
+}
+
 class JobStore {
   jobs = $state<Job[]>([]);
   runs = $state<FolderRun[]>([]);
+  /**
+   * Trabajos que salieron de la pantalla pero cuyo detalle todavía hace falta.
+   *
+   * Limpiar la pantalla olvida los trabajos en el servicio, y con ellos se iría
+   * la lista de páginas por revisar -- que sólo existe dentro del informe de
+   * cada documento. Como la pantalla es lo que se limpia y la revisión es lo
+   * que queda pendiente, el navegador se queda una copia de lo que necesita
+   * Revisión hasta que alguien la atienda.
+   *
+   * No es un duplicado del archivo: el archivo guarda qué se produjo, esto
+   * guarda qué falta por mirar, que es una pregunta distinta y de vida más
+   * corta.
+   */
+  dismissed = $state<Job[]>([]);
+  /**
+   * Sube cada vez que la mesa de trabajo vuelve a cero.
+   *
+   * Limpiar la pantalla borra lo que dibuja esta capa, pero no lo que el
+   * operador dejó escrito en los formularios -- las rutas de origen y destino
+   * de una carpeta, sobre todo -- y esas rutas encima de una pantalla vacía se
+   * leen como si la carpeta siguiera en marcha.
+   *
+   * Es un contador y no un booleano porque lo que interesa es el momento en que
+   * cambia, no el valor: dos reinicios seguidos son dos avisos, y un booleano
+   * que ya estaba en `true` no avisaría del segundo.
+   */
+  resetSignal = $state(0);
   batchNames = $state<Record<string, string>>({});
   connected = $state(false);
   clearing = $state(false);
@@ -35,12 +86,44 @@ class JobStore {
 
   /** Documents that finished, newest first. These are the folders on screen. */
   get finished(): Job[] {
-    return this.jobs.filter((job) => job.state === 'done' || job.state === 'failed');
+    return this.jobs.filter(
+      (job) => job.state === 'done' || job.state === 'failed' || job.state === 'cancelled'
+    );
+  }
+
+  /**
+   * Todo lo terminado que todavía puede necesitar un ojo: lo que sigue en
+   * pantalla y lo que se apartó de ella sin atender.
+   *
+   * Es lo que lee la página de Revisión, y por eso limpiar la pantalla ya no le
+   * quita nada. Los repetidos se resuelven a favor de lo que hay en pantalla,
+   * que es la versión viva.
+   */
+  get reviewable(): Job[] {
+    return mergeReviewable(this.finished, this.dismissed);
+  }
+
+  /**
+   * Devolver la mesa de trabajo a su estado inicial.
+   *
+   * Lo llama quien sabe que la tanda terminó de verdad -- el informe al
+   * cerrarse -- y no esta capa, que no puede distinguir una carpeta que acabó
+   * de una que sigue vigilando.
+   */
+  resetWorkspace(): void {
+    this.resetSignal += 1;
+  }
+
+  /** Quitar de la lista de pendientes lo que ya se atendió. */
+  forget(jobId: string): void {
+    this.dismissed = this.dismissed.filter((job) => job.id !== jobId);
   }
 
   /** Documents still queued or running. These keep their live card. */
   get inFlight(): Job[] {
-    return this.jobs.filter((job) => job.state === 'queued' || job.state === 'running');
+    return this.jobs.filter(
+      (job) => job.state === 'queued' || job.state === 'running' || job.state === 'paused'
+    );
   }
 
   nameBatch(id: string, name: string): void {
@@ -115,6 +198,8 @@ class JobStore {
     destination: string;
     disposition?: SourceDisposition;
     watch?: boolean;
+    /** Qué hacer con cada documento: la misma decisión que en una subida. */
+    task?: TaskKind;
   }): Promise<FolderRun> {
     const run = await startFolderRun(options);
     this.#upsertRun(run);
@@ -127,12 +212,51 @@ class JobStore {
     consoleLog.push('DIR', 'proceso de carpeta detenido', 'sys');
   }
 
+  /**
+   * Quitar de la pantalla una carpeta terminada, también en el servicio.
+   *
+   * Quitarla sólo aquí no servía: el servicio la seguía teniendo y volvía a
+   * aparecer en cuanto alguien recargaba la página. Por eso se olvida en los dos
+   * sitios o en ninguno; si el servicio se niega -- porque la carpeta sigue
+   * viva -- la tarjeta se queda donde está.
+   */
+  async forgetRun(runId: string): Promise<void> {
+    await forgetFolderRun(runId);
+    this.runs = this.runs.filter((run) => run.id !== runId);
+    consoleLog.push('DIR', 'carpeta retirada de la pantalla', 'sys');
+  }
+
+  /** Lo mismo para todas las terminadas de una vez. */
+  async forgetFinishedRuns(): Promise<number> {
+    const { removed } = await clearFolderRuns();
+    this.runs = this.activeRuns;
+    consoleLog.push('DIR', `${removed} carpeta(s) retiradas de la pantalla`, 'sys');
+    return removed;
+  }
+
   /** Empty the screen. Generated PDFs and the inventory are untouched. */
   async clear(): Promise<number> {
     this.clearing = true;
     try {
+      // Lo que se lleva pendientes se guarda antes de soltarlo: en cuanto el
+      // servicio olvide el trabajo, esta copia es la única que sabe qué páginas
+      // quedaron por revisar y por qué.
+      const pendientes = pendingReview(this.finished);
       const { removed } = await clearScreen();
+      this.dismissed = [
+        ...pendientes,
+        ...this.dismissed.filter((old) => !pendientes.some((job) => job.id === old.id))
+      ];
       this.jobs = this.inFlight;
+      // También en el servicio: quitarlas sólo de aquí las hacía reaparecer en
+      // cuanto alguien recargaba la página.
+      try {
+        await clearFolderRuns();
+      } catch {
+        // Vaciar la pantalla no puede fallar por esto. Si el servicio es
+        // anterior a esta capacidad, las carpetas vuelven al recargar y se ve,
+        // que es mejor que dejar los documentos sin limpiar.
+      }
       this.runs = this.activeRuns;
       consoleLog.push('SYS', `pantalla limpiada · ${removed} documentos archivados`, 'sys');
       return removed;

@@ -141,7 +141,7 @@ Para levantarlo contra la base, en PowerShell:
 ```powershell
 $env:RESOLUTIONS_DB_USER = "robotpdf_app"
 $env:RESOLUTIONS_DB_PASSWORD = "<la contraseña>"
-python -m uvicorn resolutions.api.main:app --port 8001
+python -m uvicorn resolutions.api.main:app --port 8000
 ```
 
 Y para comprobar contra qué está guardando, sin exponer la contraseña:

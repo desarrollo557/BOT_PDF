@@ -21,7 +21,9 @@ pymupdf = pytest.importorskip("pymupdf")
 from resolutions.adapters.pymupdf_assembler import (  # noqa: E402
     REPAIRED_FILE,
     PyMuPDFAssembler,
+    objeto_que_no_resuelve,
 )
+from resolutions.application.control import Cancelled  # noqa: E402
 from resolutions.domain.grouping import GroupingResult, PageGroup  # noqa: E402
 from resolutions.domain.resolution_code import ResolutionCode  # noqa: E402
 
@@ -37,6 +39,25 @@ def source(tmp_path):
     path = tmp_path / "expediente.pdf"
     document.save(path)
     document.close()
+    return path
+
+
+@pytest.fixture
+def dangling(source, tmp_path):
+    """Un PDF cuya página 4 remite a un objeto que no está en la tabla.
+
+    Es la avería real del material de la Universidad, en pequeño: la tabla de
+    referencias cruzadas se lee sin una queja y remite a un objeto que no
+    existe. Vive a nivel de módulo porque la usan las dos clases que describen
+    qué hace el escritor con ella.
+    """
+    document = pymupdf.open(source)
+    document.xref_set_key(document[3].xref, "Resources", "9999 0 R")
+    path = tmp_path / "colgante.pdf"
+    document.save(path)
+    document.close()
+    with pymupdf.open(path) as check:
+        assert not check.is_repaired, "el daño tiene que ser invisible al abrir"
     return path
 
 
@@ -101,16 +122,18 @@ class TestBlockFallback:
 
 
 def break_save(monkeypatch, times=1):
-    """Make the first ``times`` saves *to a file* raise, as a lazy graft does.
+    """Make the first ``times`` saves *of an output file* raise, as a lazy graft does.
 
-    Only file saves: ``tobytes`` routes through ``save`` internally, and failing
-    that too would be testing a different failure than the one being described.
+    Dos cosas quedan fuera a propósito. ``tobytes`` pasa por ``save`` con un
+    búfer en vez de una ruta, y la copia normalizada que el escritor saca del
+    origen tampoco es un archivo de salida: romper cualquiera de las dos sería
+    describir un fallo distinto del que se está probando.
     """
     original = pymupdf.Document.save
     calls = {"n": 0}
 
     def flaky(self, filename, **kwargs):
-        if isinstance(filename, (str, Path)):
+        if isinstance(filename, (str, Path)) and Path(filename).name != REPAIRED_FILE:
             calls["n"] += 1
             if calls["n"] <= times:
                 raise RuntimeError(GRAFT_ERROR)
@@ -127,12 +150,18 @@ class TestSaveTimeFailure:
     complaint and then raises "source object number out of range" when the
     output is written. Catching only the insert leaves that path uncovered, and
     the whole document is lost after every page has already been read.
+
+    Se rompen dos guardados y no uno porque el escritor tiene dos intentos por
+    el camino rápido: el primero sobre el origen tal como llegó y el segundo
+    sobre el origen ya normalizado. Romper sólo el primero probaría la
+    normalización, que tiene sus propias pruebas, y no el rescate página a
+    página que es lo que aquí se describe.
     """
 
     def test_a_save_that_fails_rebuilds_the_file_page_by_page(
         self, source, tmp_path, monkeypatch
     ):
-        break_save(monkeypatch)
+        break_save(monkeypatch, times=2)
 
         assembly = PyMuPDFAssembler().write(source, one_group([1, 2, 3, 4, 5, 6]), tmp_path / "out")
 
@@ -144,7 +173,7 @@ class TestSaveTimeFailure:
     def test_the_half_written_file_is_not_left_behind(self, source, tmp_path, monkeypatch):
         # A file the failed save may have already touched must not survive as a
         # truncated PDF that looks like a finished resolution.
-        break_save(monkeypatch)
+        break_save(monkeypatch, times=2)
         destination = tmp_path / "out"
         assembly = PyMuPDFAssembler().write(source, one_group([1, 2]), destination)
         assert assembly.outputs[0].is_file()
@@ -157,7 +186,7 @@ class TestSaveTimeFailure:
         # Isolating each page is what turns "the file cannot be written" into
         # "page 3 cannot be written", which is the difference between losing a
         # document and losing a page.
-        break_save(monkeypatch)
+        break_save(monkeypatch, times=2)
         original = pymupdf.Document.tobytes
 
         def flaky(self, **kwargs):
@@ -207,6 +236,181 @@ class TestDamagedSource:
         destination = tmp_path / "out"
         PyMuPDFAssembler().write(damaged, one_group([1, 2]), destination)
         assert not (destination / REPAIRED_FILE).exists()
+
+
+class TestDanoQueNoSeVeAlAbrir:
+    """El daño real que perdía páginas: una referencia colgante que MuPDF no marca.
+
+    Un escaneo puede traer una tabla de referencias cruzadas que se lee sin una
+    queja y que, dentro, remite a un objeto que no existe. ``is_repaired`` sale
+    en falso porque hasta que alguien no pide ese objeto no hay nada que falle,
+    así que el escritor no tenía motivo para normalizar el origen. El daño
+    aparecía al injertar, y el rescate página a página injertaba desde el mismo
+    documento roto y fallaba igual: la página se daba por perdida sin haber
+    probado lo único que la salvaba.
+
+    Aquí no se simula nada. El PDF de la prueba está roto de verdad, con la
+    misma avería que produjo ``code=4: source object number out of range`` sobre
+    el material de la Universidad.
+    """
+
+    def test_the_damage_is_real_and_would_lose_the_page(self, dangling):
+        # Sin la reparación no hay forma de copiar esas páginas: ni el bloque
+        # entero ni la página sola. Si esto dejara de fallar, el resto de la
+        # clase no estaría probando nada.
+        with (
+            pymupdf.open(dangling) as origin,
+            pymupdf.open() as output,
+            pytest.raises(Exception, match="out of range"),
+        ):
+            output.insert_pdf(origin, from_page=0, to_page=5)
+
+    def test_every_page_is_still_written(self, dangling, tmp_path):
+        assembly = PyMuPDFAssembler().write(
+            dangling, one_group([1, 2, 3, 4, 5, 6]), tmp_path / "out"
+        )
+
+        assert assembly.unwritable_pages == {}
+        with pymupdf.open(assembly.outputs[0]) as written:
+            assert written.page_count == 6
+
+    def test_the_damaged_page_arrives_with_its_content(self, dangling, tmp_path):
+        # Que el archivo tenga seis páginas no basta: la que estaba rota tiene
+        # que traer lo que traía, no una hoja en blanco que cuadre la cuenta.
+        assembly = PyMuPDFAssembler().write(
+            dangling, one_group([1, 2, 3, 4, 5, 6]), tmp_path / "out"
+        )
+        with pymupdf.open(assembly.outputs[0]) as written:
+            assert "pagina 4" in written[3].get_text()
+
+    def test_the_source_is_repaired_once_for_the_whole_document(self, dangling, tmp_path):
+        # Reparar es reescribir el archivo entero. Pagarlo una vez por
+        # resolución convertiría un documento de trescientas en trescientas
+        # pasadas sobre el disco.
+        saves = []
+        original = pymupdf.Document.save
+
+        def contar(self, filename, **kwargs):
+            if isinstance(filename, (str, Path)) and Path(filename).name == REPAIRED_FILE:
+                saves.append(filename)
+            return original(self, filename, **kwargs)
+
+        result = GroupingResult(
+            groups=[
+                PageGroup(code=ResolutionCode.parse("00086"), page_numbers=[1, 2]),
+                PageGroup(code=ResolutionCode.parse("00072"), page_numbers=[3, 4]),
+                PageGroup(code=ResolutionCode.parse("00083"), page_numbers=[5, 6]),
+            ]
+        )
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(pymupdf.Document, "save", contar)
+            assembly = PyMuPDFAssembler().write(dangling, result, tmp_path / "out")
+
+        assert len(saves) == 1
+        assert len(assembly.outputs) == 3
+        assert assembly.unwritable_pages == {}
+
+    def test_the_repair_scratch_file_does_not_survive(self, dangling, tmp_path):
+        destination = tmp_path / "out"
+        PyMuPDFAssembler().write(dangling, one_group([1, 2, 3, 4]), destination)
+        assert not (destination / REPAIRED_FILE).exists()
+
+
+class TestSeMiraAntesDeEscribir:
+    """La avería se busca al empezar, no se descubre a mitad de la entrega.
+
+    Esperar a que una escritura falle tenía tres costes que no hacía falta
+    pagar. El operador veía un aviso de fallo -- ``la copia por bloques de
+    RESOLUCION_00965.pdf falló`` -- por una avería que el sistema sí sabía
+    arreglar. Las resoluciones anteriores ya habían salido de un documento del
+    que MuPDF no podía copiarlo todo. Y el archivo a medio escribir había que
+    borrarlo y rehacerlo.
+
+    Recorrer la tabla de objetos cuesta menos de un segundo incluso en el libro
+    de 192 MB que levantó la avería, así que se paga siempre.
+    """
+
+    def test_the_probe_names_the_object_that_is_not_there(self, dangling, source):
+        assert objeto_que_no_resuelve(pymupdf.open(dangling)) == 9999
+        assert objeto_que_no_resuelve(pymupdf.open(source)) is None
+
+    def test_the_source_is_repaired_before_the_first_output_is_written(
+        self, dangling, tmp_path
+    ):
+        orden = []
+        original = pymupdf.Document.save
+
+        def anotar(self, filename, **kwargs):
+            if isinstance(filename, (str, Path)):
+                orden.append(Path(filename).name)
+            return original(self, filename, **kwargs)
+
+        result = GroupingResult(
+            groups=[
+                PageGroup(code=ResolutionCode.parse("00086"), page_numbers=[1, 2]),
+                PageGroup(code=ResolutionCode.parse("00072"), page_numbers=[3, 4]),
+            ]
+        )
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(pymupdf.Document, "save", anotar)
+            assembly = PyMuPDFAssembler().write(dangling, result, tmp_path / "out")
+
+        assert orden[0] == REPAIRED_FILE
+        assert REPAIRED_FILE not in orden[1:]
+        assert len(assembly.outputs) == 2
+        assert assembly.unwritable_pages == {}
+
+    def test_nothing_is_reported_as_a_failure(self, dangling, tmp_path, caplog):
+        # Un documento que el sistema arregla y entrega entero no puede dejar en
+        # la consola del operador la palabra "falló": lo que se avisa como
+        # pérdida tiene que ser lo que se perdió.
+        with caplog.at_level("WARNING", logger="resolutions.adapters.pymupdf_assembler"):
+            PyMuPDFAssembler().write(dangling, one_group([1, 2, 3, 4, 5, 6]), tmp_path / "out")
+        assert not [record for record in caplog.records if "falló" in record.getMessage()]
+
+    def test_the_repair_is_announced_so_the_screen_does_not_look_frozen(
+        self, dangling, tmp_path
+    ):
+        # Reescribir un libro de cientos de megas tarda, y durante ese rato la
+        # barra no se mueve. Si además no dice nada, el trabajo parece colgado.
+        class Anotador:
+            def __init__(self):
+                self.detalles = []
+
+            def emit(self, event):
+                self.detalles.append(event.detail)
+
+        progress = Anotador()
+        PyMuPDFAssembler(progress=progress).write(
+            dangling, one_group([1, 2]), tmp_path / "out"
+        )
+        assert any("reparando" in (detalle or "") for detalle in progress.detalles)
+
+    def test_a_cancellation_is_honoured_before_the_repair_starts(self, dangling, tmp_path):
+        # Reparar es el tramo más largo de la escritura. Empezarlo después de que
+        # el operador haya pulsado parar es hacerle esperar minutos por un
+        # trabajo que ya nadie quiere.
+        saves = []
+        original = pymupdf.Document.save
+
+        def contar(self, filename, **kwargs):
+            if isinstance(filename, (str, Path)) and Path(filename).name == REPAIRED_FILE:
+                saves.append(filename)
+            return original(self, filename, **kwargs)
+
+        class Cancela:
+            def check(self):
+                raise Cancelled("el operador canceló el trabajo")
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(pymupdf.Document, "save", contar)
+            with pytest.raises(Cancelled):
+                PyMuPDFAssembler(control=Cancela()).write(
+                    dangling, one_group([1, 2]), tmp_path / "out"
+                )
+
+        assert saves == []
+        assert not (tmp_path / "out" / REPAIRED_FILE).exists()
 
 
 class TestQuarantineStillShips:
@@ -271,6 +475,7 @@ class TestContainment:
 
 class _NoFailures:
     failures: dict[int, str] = {}
+    mis_decoded_pages: list[int] = []
 
 
 class TestPathLength:
@@ -333,8 +538,14 @@ class TestPathLength:
         from resolutions.domain.naming import output_filename
         from resolutions.domain.resolution_code import ResolutionCode
 
+        # El nombre corto de hoy -- "RESOLUCION_00072.pdf" -- cabe siempre; la
+        # regla que se fija aquí es la del nombre largo, que es el que puede
+        # pasarse y el que se sigue usando en los libros de folios.
         absurd = tmp_path / ("x" * 200)
         name = output_filename(
-            ResolutionCode.parse("00072"), "un titulo cualquiera", budget=name_budget(absurd)
+            ResolutionCode.parse("00072"),
+            "un titulo cualquiera",
+            budget=name_budget(absurd),
+            prefix=None,
         )
         assert name.startswith("00072")

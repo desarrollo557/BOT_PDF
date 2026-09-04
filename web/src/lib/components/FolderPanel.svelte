@@ -1,7 +1,20 @@
 <script lang="ts">
   import FolderPicker from '$lib/components/FolderPicker.svelte';
   import { jobStore } from '$lib/jobs.svelte';
-  import type { SourceDisposition } from '$lib/types';
+  import type { SourceDisposition, TaskKind } from '$lib/types';
+
+  interface Props {
+    /**
+     * Qué hacer con cada documento de la carpeta.
+     *
+     * Es la misma decisión que se toma al subir un archivo a mano, y la elige el
+     * mismo control: una carpeta que sólo supiera dividir dejaba a un libro de
+     * diplomas sin más salida que volver a subirlo uno por uno.
+     */
+    task?: TaskKind;
+  }
+
+  let { task = 'split' }: Props = $props();
 
   /**
    * Clean a pasted path in the field itself.
@@ -30,6 +43,29 @@
 
   /** Which field the folder browser is filling, or null when it is closed. */
   let picking = $state<'origen' | 'destino' | null>(null);
+
+  /**
+   * Vaciar el formulario cuando la mesa de trabajo vuelve a cero.
+   *
+   * Al cerrar el informe de una tanda terminada, la pantalla se limpia; si las
+   * rutas se quedaran escritas, quedarían flotando sobre una pantalla vacía y
+   * el operador no sabría si esa carpeta sigue procesándose o no.
+   *
+   * Sólo reacciona al cambio, nunca al montarse: el valor inicial es el estado
+   * de partida, no un reinicio.
+   */
+  let lastReset = $state(jobStore.resetSignal);
+  $effect(() => {
+    const signal = jobStore.resetSignal;
+    if (signal === lastReset) return;
+    lastReset = signal;
+    source = '';
+    destination = '';
+    disposition = 'leave';
+    watch = false;
+    error = null;
+    picking = null;
+  });
 
   /**
    * Abre el explorador de la aplicación, no el de Windows.
@@ -62,7 +98,8 @@
         source: cleanPath(source),
         destination: cleanPath(destination),
         disposition,
-        watch
+        watch,
+        task
       });
     } catch (problem) {
       error = (problem as Error).message;

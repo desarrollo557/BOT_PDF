@@ -19,13 +19,45 @@ def digital(header, body=BODY):
 
 
 class TestTextLayerRung:
-    def test_a_digital_pdf_never_reaches_the_ocr_engine(self):
+    def test_a_digital_pdf_only_reaches_the_ocr_on_the_pages_that_declare(self):
+        """El OCR contrasta lo que decide, y nada más.
+
+        La capa de texto de estos escaneos es una lectura previa que también se
+        equivoca, así que un número que sale de ella no está comprobado contra
+        nada. Se vuelve a leer con OCR la banda del encabezado -- pero sólo en
+        la página que declara un número nuevo, porque una página de continuación
+        hereda y su lectura no decide nada.
+        """
         _, stats, ocr, source = run(
             [digital("RESOLUCION No. 00412"), digital(""), digital("RESOLUCION No. 00555")]
         )
+        assert stats.by_provenance == {"text_layer": 3}
+        # Dos declaraciones, dos verificaciones. La página del medio no cuesta.
+        assert stats.verified == 2
+        assert ocr.calls == 2
+        assert (source.band_renders, source.full_renders) == (2, 0)
+
+    def test_a_continuation_page_is_never_re_read(self):
+        _, stats, ocr, _ = run([digital("RESOLUCION No. 00412")] + [digital("")] * 20)
+        assert stats.verified == 1
+        assert ocr.calls == 1
+
+    def test_the_verification_can_be_turned_off(self):
+        """Sigue existiendo la vía que no toca el OCR en un PDF digital."""
+        _, stats, ocr, source = run(
+            [digital("RESOLUCION No. 00412"), digital("")],
+            config=PipelineConfig(verify_declarations=False),
+        )
         assert ocr.calls == 0
         assert source.renders == []
-        assert stats.by_provenance == {"text_layer": 3}
+        assert stats.verified == 0
+
+    def test_two_readings_that_disagree_send_the_page_up_instead_of_choosing(self):
+        """Elegir entre dos lecturas contradictorias sería inventar una certeza."""
+        page = FakePage(text=f"RESOLUCION No. 00412\n{BODY}", header="RESOLUCION No. 00413")
+        classifications, stats, _, _ = run([page])
+        assert classifications[0].ambiguous is True
+        assert stats.disagreements == {1: "00412 / 00413"}
 
     def test_it_reads_the_code_straight_off_the_text_layer(self):
         classifications, _, _, _ = run([digital("RESOLUCION No. 00412")])

@@ -1,4 +1,4 @@
-export type JobState = 'queued' | 'running' | 'done' | 'failed';
+export type JobState = 'queued' | 'running' | 'paused' | 'done' | 'failed' | 'cancelled';
 
 export interface Group {
   code: string;
@@ -39,6 +39,8 @@ export interface Inventory {
   review_pages: number[];
 }
 
+export type DocumentTypeId = 'resolucion' | 'diploma' | 'matricula' | 'desconocido';
+
 export interface Stats {
   by_provenance: Record<string, number>;
   escalated: number;
@@ -46,33 +48,147 @@ export interface Stats {
   resolved_by_context: number;
   vision_page_ratio: number;
   failed_pages: Record<string, string>;
+  /** Páginas que declaran un número y se releyeron con OCR para contrastarlas. */
+  verified?: number;
+  /** Página → las dos lecturas que no coincidieron. */
+  disagreements?: Record<string, string>;
+  /** Qué resultó ser el documento, decidido sobre lo que se leyó de él. */
+  document_type?: DocumentTypeId;
+  type_confidence?: number;
 }
 
+/** Una cosa que no cuadra en la lectura, con el sitio exacto donde no cuadra. */
+export interface Issue {
+  field: string;
+  reason: string;
+  severity: 'error' | 'aviso';
+  page: number | null;
+  observed: string | null;
+}
+
+/** El recuento de la comprobación, para no tener que contar en la pantalla. */
+export interface Validation {
+  total: number;
+  errores: number;
+  avisos: number;
+  por_campo: Record<string, number>;
+  paginas: number[];
+}
+
+/**
+ * Lo que devuelve un trabajo terminado.
+ *
+ * Los tres tipos de documento producen el mismo informe, pero no todos llenan
+ * las mismas casillas: un libro de folios no tiene cuarentena porque ninguna
+ * página hereda de otra, y un inventario no escribe salidas. Por eso todo lo
+ * que puede faltar se declara opcional -- lo era de hecho desde que existen los
+ * libros de diplomas, y no decirlo hacía que la pantalla se rompiera al
+ * terminar uno en vez de fallar al compilar.
+ */
 export interface Report {
   document: string;
   page_count: number;
-  groups: Group[];
-  quarantine: number[];
-  repairs: Repair[];
-  review_queue: ReviewItem[];
-  outputs: string[];
-  stats: Stats;
-  inventory: Inventory | null;
+  groups?: Group[];
+  quarantine?: number[];
+  repairs?: Repair[];
+  review_queue?: ReviewItem[];
+  outputs?: string[];
+  stats?: Stats;
+  inventory?: Inventory | null;
+  /** Qué resultó ser el documento. Ausente en los informes anteriores al tipo. */
+  document_type?: DocumentTypeId;
+  document_type_label?: string;
+  type_confidence?: number;
+  /** Cuántas filas tiene el inventario levantado, cuando se levantó uno. */
+  records?: number;
+  /** Presente en los informes nuevos; los guardados antes no lo traen. */
+  task?: TaskKind;
+  validation?: Validation;
+  issues?: Issue[];
+  /** Nombre del FUID escrito, cuando la acción lo incluía. */
+  fuid?: string;
+  fuid_error?: string;
+}
+
+/** Lo que devuelve un trabajo de inventario, que no escribe ningún PDF. */
+export interface InventoryReport {
+  document: string;
+  page_count: number;
+  task: 'inventory';
+  /** Qué resultó ser el documento, decidido por lo que está impreso en él. */
+  document_type: 'resolucion' | 'diploma' | 'matricula' | 'desconocido';
+  document_type_label: string;
+  type_confidence: number;
+  /** Cuántas filas tiene el inventario. */
+  records: number;
+  /** Nombre del Excel escrito, ausente si no se pudo escribir. */
+  fuid?: string;
+  fuid_error?: string;
+  validation: Validation;
+  issues: Issue[];
+  incidents: string[];
 }
 
 /** Live state of one document while it is being processed. */
 export interface Progress {
-  stage: 'queued' | 'analysing' | 'grouping' | 'assembling' | 'done' | 'failed';
+  stage:
+    | 'queued'
+    | 'analysing'
+    | 'identifying'
+    | 'verifying'
+    | 'grouping'
+    | 'assembling'
+    | 'inventorying'
+    | 'delivering'
+    | 'done'
+    | 'failed';
   page_count: number;
   pages_done: number;
   failed_pages: number;
   by_provenance: Record<string, number>;
-  /** One character per page: . pending, t text, h header OCR, f full OCR, v model, x unreadable. */
+  /**
+   * Por qué hay que mirar cada página marcada, indexado por número de página.
+   *
+   * Una página marcada casi nunca es una página ilegible: es una que se leyó y
+   * cuyo contenido no se sostiene -- el folio del encabezado que no coincide
+   * con el del pie, un nombre que no se pudo aislar. Sin este motivo la
+   * pantalla sólo puede decir que algo pasa, y quien mira tiene que abrir el
+   * documento para averiguar qué.
+   *
+   * Ausente en cualquier servicio anterior a que esto existiera.
+   */
+  review?: Record<string, string>;
+  /** One character per page: . pending, t text, h header OCR, f full OCR, v model, x needs review. */
   ribbon: string;
   percent: number;
   pages_per_second: number;
   elapsed_seconds: number;
+  /**
+   * Qué está haciendo ahora mismo, en palabras.
+   *
+   * La etapa sola dice lo mismo en el archivo 1 que en el 287. Esto dice cuál,
+   * y es lo que convierte "Escribiendo los PDF" en una frase que responde a
+   * "¿por qué tarda?". Ausente en cualquier servicio anterior a que existiera.
+   */
+  detail?: string | null;
+  /** Cuánto lleva hecho la etapa actual y de cuánto. No siempre son páginas. */
+  stage_done?: number;
+  stage_total?: number;
+  /** Cuánto lleva en la etapa actual. Es la cifra que explica una espera. */
+  stage_elapsed_seconds?: number;
+  /** Cuánto hace que no llega noticia del worker. */
+  silent_seconds?: number;
 }
+
+/**
+ * Lo que se le pidió al sistema que hiciera con el documento.
+ *
+ * `split` parte el PDF en uno por unidad documental, que es lo que hacía
+ * siempre. `inventory` sólo lo lee y levanta su FUID, dejando el original
+ * entero: es la única opción para un libro empastado, que no se desencuaderna.
+ * `both` hace las dos cosas sobre una sola lectura.
+ */
+export type TaskKind = 'split' | 'inventory' | 'both';
 
 export interface Job {
   id: string;
@@ -84,6 +200,8 @@ export interface Job {
   bytes: number;
   /** Who was at the console. Attribution, never authorisation. */
   operator: string | null;
+  /** Qué se pidió hacer con él. Decidido al cargarlo. */
+  task: TaskKind;
   state: JobState;
   created_at: string;
   started_at: string | null;
@@ -101,6 +219,8 @@ export interface Batch {
   done: number;
   failed: number;
   running: number;
+  paused: number;
+  cancelled: number;
   queued: number;
   pages_total: number;
   pages_done: number;
@@ -160,6 +280,8 @@ export interface FolderRun {
   destination: string;
   disposition: SourceDisposition;
   watch: boolean;
+  /** Qué se le pidió hacer a cada documento de la carpeta. */
+  task?: TaskKind;
   operator: string | null;
   state: RunState;
   started_at: string;
@@ -206,4 +328,13 @@ export interface FolderListing {
   parent: string | null;
   drives: FolderEntry[];
   folders: FolderEntry[];
+}
+
+
+/** Si el inventario de un documento está escrito, y si algo falló al levantarlo. */
+export interface FuidStatus {
+  ready: boolean;
+  name: string | null;
+  error: string | null;
+  working: boolean;
 }

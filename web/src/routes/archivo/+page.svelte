@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    deleteDocuments,
     deleteOutput,
     downloadUrl,
     fetchInventory,
@@ -13,6 +14,10 @@
     EMPTY_FILTERS,
     merge,
     operators,
+    selectionTotals,
+    toggle,
+    toggleAll,
+    visibleSelection,
     type Filters,
     type Period,
     type Sort,
@@ -81,6 +86,79 @@
   const everything = $derived(merge(jobStore.finished, history));
   const shown = $derived(apply(everything, { ...filters, text: applied }));
   const days = $derived(byDay(shown, sort));
+
+  /* -------------------------------------------------------------------------
+     Selección múltiple
+     -------------------------------------------------------------------------
+     Borrar de a uno está bien para corregir un error; no lo está para vaciar
+     una caja mal procesada, que son decenas de documentos y decenas de
+     confirmaciones. Las reglas viven en `archive.svelte.ts` -- se prueban sin
+     dibujar nada -- y aquí sólo queda el estado y lo que se enseña.
+  */
+  let selected = $state<Set<string>>(new Set());
+  let confirmingBulk = $state(false);
+  let bulkBusy = $state(false);
+  let bulkOutcome = $state<{ deleted: number; rows: number; failed: { job_id: string; reason: string }[] } | null>(null);
+
+  /* Lo marcado que además sigue a la vista. Si el operador marca veinte, cambia
+     el filtro y pulsa eliminar, sólo se borra lo que está viendo: una selección
+     que sobrevive a su propia lista es una forma de borrar a ciegas. */
+  const picked = $derived(visibleSelection(selected, shown));
+  const pickedTotals = $derived(selectionTotals(selected, shown));
+  const allPicked = $derived(shown.length > 0 && picked.length === shown.length);
+
+  function pick(jobId: string) {
+    selected = toggle(selected, jobId);
+    confirmingBulk = false;
+    bulkOutcome = null;
+  }
+
+  function pickAll() {
+    selected = toggleAll(selected, shown);
+    confirmingBulk = false;
+    bulkOutcome = null;
+  }
+
+  /* El nombre del documento, para poder nombrar al que no se pudo borrar.
+     Un identificador de treinta y dos caracteres no le dice nada a nadie. */
+  function nameOf(jobId: string): string {
+    return everything.find((entry) => entry.jobId === jobId)?.name ?? jobId;
+  }
+
+  function clearSelection() {
+    selected = new Set();
+    confirmingBulk = false;
+    bulkOutcome = null;
+  }
+
+  async function removeSelected() {
+    if (!picked.length) return;
+    bulkBusy = true;
+    bulkOutcome = null;
+    try {
+      const result = await deleteDocuments(picked);
+      // Lo que se borró deja de estar marcado; lo que falló sigue marcado, para
+      // que el operador vea exactamente qué queda por resolver.
+      const survivors = new Set(selected);
+      for (const item of result.deleted) {
+        survivors.delete(item.job_id);
+        // Y deja de estar pendiente de revisión: ya no existe.
+        jobStore.forget(item.job_id);
+      }
+      selected = survivors;
+      confirmingBulk = false;
+      bulkOutcome = {
+        deleted: result.deleted.length,
+        rows: result.rows,
+        failed: result.failed
+      };
+      await load(applied, grain);
+    } catch (problem) {
+      error = `No se pudieron eliminar: ${(problem as Error).message}`;
+    } finally {
+      bulkBusy = false;
+    }
+  }
   const people = $derived(operators(everything));
 
   const totals = $derived({
@@ -331,10 +409,70 @@
     </div>
   {/if}
 
+  {#if picked.length}
+    <section class="bulk" aria-live="polite">
+      <span class="count">
+        <b class="tabular">{pickedTotals.documents}</b>
+        {pickedTotals.documents === 1 ? 'documento seleccionado' : 'documentos seleccionados'}
+        <span class="muted tabular">
+          · {pickedTotals.resolutions} res · {pickedTotals.pages} pág
+        </span>
+      </span>
+
+      {#if confirmingBulk}
+        <span class="confirm">
+          <span>
+            Se eliminarán <b>{pickedTotals.documents}</b>
+            {pickedTotals.documents === 1 ? 'documento' : 'documentos'} con sus PDF y sus filas
+            del inventario. No se puede deshacer.
+          </span>
+          <button class="danger" onclick={removeSelected} disabled={bulkBusy}>
+            {bulkBusy ? 'eliminando…' : 'sí, eliminar'}
+          </button>
+          <button class="ghost" onclick={() => (confirmingBulk = false)} disabled={bulkBusy}>
+            cancelar
+          </button>
+        </span>
+      {:else}
+        <button class="danger" onclick={() => (confirmingBulk = true)}>
+          eliminar seleccionados
+        </button>
+        <button class="ghost" onclick={clearSelection}>quitar selección</button>
+      {/if}
+    </section>
+  {/if}
+
+  {#if bulkOutcome}
+    <section class="outcome" aria-live="polite">
+      <p>
+        Se eliminaron <b>{bulkOutcome.deleted}</b>
+        {bulkOutcome.deleted === 1 ? 'documento' : 'documentos'}
+        {#if bulkOutcome.rows}
+          y <b>{bulkOutcome.rows}</b> filas del inventario{/if}.
+      </p>
+      {#if bulkOutcome.failed.length}
+        <!-- Los que no se pudieron borrar se nombran uno a uno con su motivo:
+             un lote que dice "hecho" habiendo fallado la mitad es peor que uno
+             que falla entero. -->
+        <ul class="failed">
+          {#each bulkOutcome.failed as item (item.job_id)}
+            <li>{nameOf(item.job_id)} — {item.reason}</li>
+          {/each}
+        </ul>
+      {/if}
+      <button class="ghost" onclick={() => (bulkOutcome = null)}>entendido</button>
+    </section>
+  {/if}
+
   {#each days as day (day.key)}
     <section class="day">
       <header class="day-head">
         <h3>{day.label}</h3>
+        {#if day === days[0]}
+          <button class="pick-all ghost" onclick={pickAll}>
+            {allPicked ? 'quitar selección' : `seleccionar los ${shown.length} visibles`}
+          </button>
+        {/if}
         <span class="day-totals tabular">
           {day.documents} doc · {day.resolutions} res · {day.pages} pág · {formatBytes(day.bytes)}
           {#if day.review}<b class="warn">· {day.review} en revisión</b>{/if}
@@ -343,7 +481,12 @@
 
       <div class="cards">
         {#each day.entries as entry (entry.key)}
-          <ProcessedCard {entry} onchange={() => load(applied, grain)} />
+          <ProcessedCard
+            {entry}
+            selected={selected.has(entry.jobId)}
+            onselect={pick}
+            onchange={() => load(applied, grain)}
+          />
         {/each}
       </div>
     </section>
@@ -581,6 +724,48 @@
     font: inherit;
     font-size: 0.8rem;
     color: var(--ink);
+  }
+
+  .bulk {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.9rem;
+    padding: 0.6rem 0.85rem;
+    border: 1px solid var(--hairline);
+    border-radius: 0.6rem;
+    background: var(--raised);
+    box-shadow: var(--shadow);
+  }
+
+  .bulk .count {
+    margin-right: auto;
+  }
+
+  .bulk .muted {
+    color: var(--muted);
+  }
+
+  .outcome {
+    margin-bottom: 0.9rem;
+    padding: 0.6rem 0.85rem;
+    border-left: 3px solid var(--accent);
+    border-radius: 0.4rem;
+    background: var(--plane);
+  }
+
+  .outcome .failed {
+    margin: 0.4rem 0 0.6rem;
+    padding-left: 1.1rem;
+    color: var(--warning);
+  }
+
+  .pick-all {
+    margin-left: auto;
   }
 
   .confirm {

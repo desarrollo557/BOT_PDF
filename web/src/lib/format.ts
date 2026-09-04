@@ -34,3 +34,30 @@ export function formatDuration(seconds: number): string {
   const hours = Math.floor(minutes / 60);
   return `${hours} h ${String(minutes % 60).padStart(2, '0')} min`;
 }
+
+/**
+ * Cómo se llama lo que produjo un documento, según lo que resultó ser.
+ *
+ * La pantalla nació sabiendo contar una sola cosa -- resoluciones -- y desde
+ * que procesa libros de registro y expedientes académicos, "12 resoluciones"
+ * delante de un libro de diplomas es una cifra correcta con la palabra
+ * equivocada. El tipo lo decide el backend sobre lo que está impreso en las
+ * páginas, así que aquí sólo se traduce.
+ *
+ * Un informe anterior a que el tipo existiera no lo trae, y entonces se dice
+ * "unidades documentales", que es lo que son en cualquiera de los tres casos.
+ */
+const UNIT_NAMES: Record<string, [string, string]> = {
+  resolucion: ['resolución', 'resoluciones'],
+  diploma: ['registro de diploma', 'registros de diploma'],
+  matricula: ['expediente', 'expedientes']
+};
+
+export function unitFor(
+  report: { document_type?: string } | null | undefined,
+  count: number
+): string {
+  const names = UNIT_NAMES[report?.document_type ?? ''];
+  if (!names) return count === 1 ? 'unidad documental' : 'unidades documentales';
+  return count === 1 ? names[0] : names[1];
+}

@@ -27,7 +27,9 @@
       ['documents', 'el historial de procesados'],
       ['job-delete', 'limpiar la pantalla'],
       ['output-edit', 'editar y eliminar resoluciones'],
-      ['browse', 'el selector de carpetas']
+      ['browse', 'el selector de carpetas'],
+      ['inventory-task', 'inventariar sin dividir'],
+      ['job-fuid', 'descargar el FUID de un documento']
     ].filter(([key]) => !has.has(key));
   });
 

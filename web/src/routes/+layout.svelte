@@ -40,7 +40,7 @@
 
   const ready = $derived(jobStore.finished.length);
   const pending = $derived(
-    jobStore.finished.reduce((sum, job) => sum + (job.report?.review_queue.length ?? 0), 0)
+    jobStore.finished.reduce((sum, job) => sum + (job.report?.review_queue?.length ?? 0), 0)
   );
 
   /**

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { merge, Reports, summarise } from './report.svelte';
+import { merge, Reports, summarise, type Completion } from './report.svelte';
+import { jobStore, mergeReviewable, pendingReview } from './jobs.svelte';
+import type { FolderRun } from './types';
 import type { Job } from './types';
 
 /**
@@ -18,6 +20,7 @@ function job(overrides: Partial<Job> = {}): Job {
     filename: 'expediente.pdf',
     bytes: 1024,
     operator: null,
+    task: 'split',
     state: 'done',
     created_at: '2026-08-31T12:00:00Z',
     started_at: '2026-08-31T12:00:00Z',
@@ -229,5 +232,164 @@ describe('un solo informe por tanda, no uno por archivo', () => {
     expect(uno.elapsedSeconds).toBe(10);
     expect(tanda.elapsedSeconds).toBe(10);
     expect(tanda.finishedAt).toBe(base);
+  });
+});
+
+/**
+ * El informe de un libro de folios no tiene la forma del de resoluciones.
+ *
+ * Un trabajo de inventario no agrupa por número heredado ni escribe salidas, así
+ * que su informe no trae `groups`, `review_queue`, `repairs` ni `quarantine`.
+ * La pantalla las leía a pelo y moría al terminar el documento: sin modal de
+ * cierre, y con la barra de navegación caída detrás. El resumen tiene que
+ * sobrevivir a un informe al que le falte cualquiera de esas claves.
+ */
+describe('un informe de inventario', () => {
+  function inventario(): Job {
+    return job({
+      task: 'inventory',
+      report: {
+        document: 'REGISTRO DE DIPLOMAS N°08 2013.pdf',
+        page_count: 287,
+        document_type: 'diploma',
+        document_type_label: 'Registro de diplomas',
+        type_confidence: 1,
+        records: 287,
+        task: 'inventory'
+      } as Job['report']
+    });
+  }
+
+  it('no rompe el resumen aunque no traiga ninguna de las listas', () => {
+    expect(() => summarise('doc:libro', 'documento', 'libro.pdf', [inventario()])).not.toThrow();
+  });
+
+  it('cuenta sus páginas y deja en cero lo que ese informe no mide', () => {
+    const resumen = summarise('doc:libro', 'documento', 'libro.pdf', [inventario()]);
+    expect(resumen.pages).toBe(287);
+    expect(resumen.resolutions).toBe(0);
+    expect(resumen.reviewItems).toBe(0);
+  });
+
+  it('convive con un informe de división en el mismo lote', () => {
+    const resumen = summarise('lote:1', 'lote', 'caja 3269', [inventario(), job({ id: 'job-2' })]);
+    expect(resumen.pages).toBe(294);
+    expect(resumen.resolutions).toBe(1);
+  });
+});
+
+
+/**
+ * Cerrar el informe deja la pantalla lista para el siguiente lote. Siempre.
+ *
+ * Es lo que pidió el operador: procesa caja tras caja y no quiere empezar la
+ * siguiente con las fichas de la anterior debajo. Lo que no puede pasar es que
+ * al limpiar se lleve por delante lo que todavía hay que mirar, y por eso lo
+ * pendiente se conserva aparte.
+ */
+describe('limpiar la pantalla al cerrar el informe', () => {
+  function done(overrides: Partial<Job> = {}): Job {
+    return job({ state: 'done', ...overrides });
+  }
+
+  it('conserva el documento que dejó páginas por revisar', () => {
+    const conRevision = done({
+      id: 'j2',
+      report: { ...job().report!, review_queue: [{ page: 4, reason: 'folio ilegible' }] }
+    });
+    expect(pendingReview([done(), conRevision]).map((j) => j.id)).toEqual(['j2']);
+  });
+
+  it('conserva el documento que falló, por su mensaje de error', () => {
+    const fallido = done({ id: 'j3', state: 'failed', error: 'PDF ilegible' });
+    expect(pendingReview([done(), fallido]).map((j) => j.id)).toEqual(['j3']);
+  });
+
+  it('no conserva lo que salió limpio', () => {
+    expect(pendingReview([done()])).toEqual([]);
+  });
+
+  it('Revisión ve lo vivo y lo apartado, sin repetir', () => {
+    const vivo = done({ id: 'a' });
+    const apartado = done({ id: 'b' });
+    expect(mergeReviewable([vivo], [apartado, vivo]).map((j) => j.id)).toEqual(['a', 'b']);
+  });
+
+  it('el informe sobrevive a la limpieza', () => {
+    // Limpiar olvida los trabajos, no los informes: se vuelve a abrir desde el
+    // archivo, que es lo que el operador pidió que no se perdiera.
+    const reports = new Reports();
+    const completion: Completion = summarise('doc:1', 'documento', 'a.pdf', [job()]);
+    reports.register(completion);
+    reports.close();
+    expect(reports.history).toHaveLength(1);
+    reports.open(completion.id);
+    expect(reports.showing?.id).toBe(completion.id);
+  });
+});
+
+
+/**
+ * Cuándo se borran las rutas del formulario de carpeta.
+ *
+ * Al cerrar el informe la pantalla se limpia, y unas rutas escritas encima de
+ * una pantalla vacía se leen como si esa carpeta siguiera procesándose. Pero no
+ * siempre hay que borrarlas: una carpeta vigilada sigue esperando archivos, y
+ * el operador la quiere ahí.
+ *
+ * La regla no mira la casilla "Vigilar la carpeta" sino el estado real de la
+ * corrida, que además acierta cuando la vigilancia se detuvo a mano.
+ */
+describe('el reinicio de la mesa de trabajo', () => {
+  function run(state: FolderRun['state'], id: string): FolderRun {
+    return {
+      kind: 'folder_run',
+      id,
+      source: 'C:/entrada',
+      destination: 'C:/salida',
+      disposition: 'leave',
+      watch: state === 'watching',
+      operator: null,
+      state,
+      started_at: '2026-09-01T12:00:00Z',
+      finished_at: null,
+      error: null,
+      queue: [],
+      current: null,
+      current_job_id: null,
+      job_ids: [],
+      discovered: 2,
+      processed: 2,
+      bytes_total: 0,
+      pages_total: 0,
+      failed: 0,
+      delivered: 0,
+      resolutions: 0,
+      deliveries: []
+    };
+  }
+
+  it('una carpeta que terminó no deja nada activo, así que se reinicia', () => {
+    jobStore.runs = [run('done', 'a')];
+    expect(jobStore.activeRuns).toEqual([]);
+  });
+
+  it('una carpeta detenida a mano tampoco', () => {
+    jobStore.runs = [run('stopped', 'a')];
+    expect(jobStore.activeRuns).toEqual([]);
+  });
+
+  it('una carpeta vigilando sigue activa, y las rutas se quedan', () => {
+    jobStore.runs = [run('watching', 'a')];
+    expect(jobStore.activeRuns.map((r) => r.id)).toEqual(['a']);
+  });
+
+  it('la señal de reinicio avisa de cada reinicio, no del estado', () => {
+    // Dos tandas seguidas son dos avisos. Un booleano ya puesto en true no
+    // avisaría del segundo.
+    const antes = jobStore.resetSignal;
+    jobStore.resetWorkspace();
+    jobStore.resetWorkspace();
+    expect(jobStore.resetSignal).toBe(antes + 2);
   });
 });

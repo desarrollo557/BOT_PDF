@@ -7,6 +7,9 @@ from pathlib import Path
 
 from ..domain.grouping import GroupingEngine, GroupingResult
 from ..domain.page import PageClassification
+from ..domain.validation import summarise, validate_resolutions
+from .control import NullRunControl, RunControl
+from .diagnostico import explicar
 from .inventory import Inventory, build_inventory
 from .pipeline import ClassificationPipeline, PipelineStats
 from .ports import DocumentAssembler, DocumentStore, InventoryStore
@@ -17,7 +20,21 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class ReviewItem:
-    """A page the machine refuses to guess at."""
+    """Una página que alguien tiene que mirar.
+
+    Empezó siendo sólo lo que la máquina se negaba a adivinar -- una página sin
+    número antes de ella, una que no se pudo leer -- y eso dejaba fuera el caso
+    que más daño hace: la página que sí se leyó, y se leyó mal. Sobre el libro
+    00072-00094 de la Universidad la cola decía siete páginas mientras seis
+    resoluciones inventadas se habían escrito ya en el disco con números
+    copiados del cuerpo del texto.
+
+    Así que aquí llega todo aquello de lo que el sistema tiene constancia de que
+    pudo salir torcido, se haya recuperado o no. Cada motivo se escribe para que
+    la pantalla pueda agruparlos: no es lo mismo "hay que decidir a qué
+    resolución pertenece esta página" que "el PDF de origen viene defectuoso y
+    aquí se leyó de la imagen".
+    """
 
     page_number: int
     reason: str
@@ -38,6 +55,10 @@ class ProcessingReport:
     stats: dict[str, object] = field(default_factory=dict)
     inventory: Inventory | None = None
     inventory_path: Path | None = None
+
+    @property
+    def issues(self):
+        return validate_resolutions(self.classifications, self.grouping)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -67,6 +88,12 @@ class ProcessingReport:
             ],
             "outputs": [path.name for path in self.outputs],
             "stats": self.stats,
+            # Lo que la comprobación encontró en la lectura. Va en el informe de
+            # la división igual que en el del inventario: partir bien un
+            # documento que se leyó mal produce archivos correctos con el
+            # nombre equivocado, que es la peor de las salidas.
+            "validation": summarise(self.issues),
+            "issues": [issue.as_dict() for issue in self.issues],
             "inventory": self.inventory.as_dict() if self.inventory else None,
         }
 
@@ -83,6 +110,7 @@ class ProcessDocument:
         inventory: InventoryStore | None = None,
         progress: ProgressReporter | None = None,
         sheets: object | None = None,
+        control: RunControl | None = None,
     ) -> None:
         self._store = store
         self._pipeline = pipeline
@@ -90,6 +118,7 @@ class ProcessDocument:
         self._grouping = grouping or GroupingEngine()
         self._inventory = inventory
         self._progress = progress or NullProgressReporter()
+        self._control = control or NullRunControl()
         #: Writes the per-document delivery note. Optional: a missing spreadsheet
         #: library must not stop a document from being split.
         self._sheets = sheets
@@ -120,6 +149,9 @@ class ProcessDocument:
             # split is the one failure mode nobody would catch by eye.
             result.verify_integrity(total_pages=source.page_count)
 
+            # Última oportunidad de parar antes de escribir: a partir de aquí
+            # empiezan a aparecer archivos en la carpeta de destino.
+            self._control.check()
             self._report(
                 ProgressEvent(stage=Stage.ASSEMBLING, page_count=len(result.groups))
             )
@@ -175,7 +207,7 @@ class ProcessDocument:
                 ProgressEvent(
                     stage=Stage.FAILED,
                     failed=True,
-                    detail=f"{type(error).__name__}: {error}",
+                    detail=explicar(error),
                 )
             )
             raise
@@ -208,13 +240,34 @@ class ProcessDocument:
             if page not in quarantined
         ]
         failed = set(stats.failures)
+        # Sólo se llama a alguien cuando hay números que decidir.
+        #
+        # Una página que no se dejó leer no trae ningún número, así que no hay
+        # ningún conflicto que resolver: hereda la resolución que venía abierta,
+        # y en un expediente foliado a mano eso no es una suposición. El orden
+        # de las páginas es el orden de los folios, de modo que una página sin
+        # identificador entre el folio de una resolución y el siguiente
+        # pertenece a esa resolución. Es la regla del archivo, dicha por el
+        # operador: "si la página 1 tiene resolución y la página 2 es una
+        # factura o una imagen sin texto y el folio es el 2, ya sabemos que
+        # pertenece al pdf de la página 1".
+        #
+        # Las cinco que el libro 00072-00094 dejaba en revisión eran justo eso
+        # -- la fotografía de un recibo de consignación de Davivienda mandado
+        # por WhatsApp, dos comprobantes de pago del BBVA -- y la pantalla las
+        # acusaba de "códigos de resolución en conflicto" cuando no traían ni un
+        # número. Una cola llena de anexos correctamente archivados es una cola
+        # que nadie mira.
         items += [
             ReviewItem(
                 page_number=page.page_number,
                 reason="códigos de resolución en conflicto en la página",
             )
             for page in classifications
-            if page.ambiguous and page.page_number not in quarantined and page.page_number not in failed
+            if page.ambiguous
+            and page.code is not None
+            and page.page_number not in quarantined
+            and page.page_number not in failed
         ]
         # A page the writer could not copy is the one review reason the operator
         # cannot infer from the output: the file exists and simply has less in it.
@@ -225,6 +278,21 @@ class ProcessDocument:
             )
             for page, error in (unwritable_pages or {}).items()
         ]
+
+        # Las páginas cuya capa de texto no correspondía a lo impreso NO entran
+        # aquí, aunque la cuenta de ellas siga en el informe.
+        #
+        # Se probó a meterlas y estaba mal. En estos expedientes una capa de
+        # texto que no se deja leer casi nunca es un defecto: es un anexo
+        # escaneado -- un correo, un formato, la fotografía de una cédula -- o
+        # la vuelta de un folio, que el archivo escanea por las dos caras y
+        # marca con una "v" en la foliación a mano de la esquina superior
+        # derecha. Son diecinueve páginas de doscientas veintidós en el libro
+        # 00072-00094, todas normales, y ponerlas en la cola entierra las que
+        # de verdad necesitan que alguien las mire.
+        #
+        # Una página sin identificador no es un problema por sí sola: pertenece
+        # a la resolución que venía abierta y ahí es donde se archiva.
         return sorted(items, key=lambda item: item.page_number)
 
     @staticmethod

@@ -107,7 +107,18 @@
     </td>
     <td class="tools">
       {#if fileName}
-        <a href={downloadUrl(jobId, fileName)} download>PDF</a>
+        <a
+          class="icon-link"
+          href={downloadUrl(jobId, fileName)}
+          download
+          title={`Descargar ${fileName}`}
+          aria-label={`Descargar ${fileName}`}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 2v7m0 0 3-3m-3 3L5 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          </svg>
+        </a>
         <button onclick={edit} title="Corregir número o título">editar</button>
         <button class="quiet" onclick={() => (mode = 'confirming')} title="Eliminar el PDF">
           eliminar
@@ -121,6 +132,31 @@
 </tr>
 
 <style>
+  /* El icono dice "descargar" sin escribirlo, y deja el ancho de la columna
+     para lo que sí hay que leer: el número y el título de la resolución. */
+  .icon-link {
+    display: inline-grid;
+    place-items: center;
+    width: 1.7rem;
+    height: 1.7rem;
+    border-radius: 0.3rem;
+    color: var(--muted);
+    vertical-align: middle;
+    transition:
+      color 0.15s,
+      background 0.15s;
+  }
+
+  .icon-link:hover {
+    color: var(--accent);
+    background: var(--plane);
+  }
+
+  .icon-link svg {
+    width: 0.95rem;
+    height: 0.95rem;
+  }
+
   .row {
     border-top: 1px solid var(--hairline);
   }

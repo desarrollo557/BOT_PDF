@@ -1,9 +1,13 @@
 import type {
   Batch,
+  FuidStatus,
+  JobState,
+  TaskKind,
   FolderRun,
   InventoryPage,
   FolderListing,
   Job,
+  InventoryRow,
   ProcessedDocument,
   SourceDisposition
 } from './types';
@@ -57,11 +61,27 @@ export async function createBatch(name: string): Promise<{ id: string; name: str
   return response.json();
 }
 
-export async function uploadDocument(file: File, batchId?: string): Promise<{ id: string }> {
+/**
+ * Entrega un documento y dice qué hacer con él.
+ *
+ * `task` viaja en la consulta y no en el cuerpo porque el cuerpo es el archivo:
+ * el servicio necesita saber qué se le pide antes de terminar de recibirlo, y
+ * así puede rechazar una acción desconocida sin haber escrito nada en disco.
+ */
+export async function uploadDocument(
+  file: File,
+  batchId?: string,
+  task: TaskKind = 'split'
+): Promise<{ id: string }> {
   const body = new FormData();
   body.append('file', file);
 
-  const url = batchId ? `${BASE}/jobs?batch_id=${encodeURIComponent(batchId)}` : `${BASE}/jobs`;
+  const query = new URLSearchParams();
+  if (batchId) query.set('batch_id', batchId);
+  if (task !== 'split') query.set('task', task);
+  const suffix = query.toString();
+
+  const url = suffix ? `${BASE}/jobs?${suffix}` : `${BASE}/jobs`;
   const response = await fetch(url, { method: 'POST', body, headers: attribution() });
   if (!response.ok) throw new ApiError(await detailOf(response));
   return response.json();
@@ -182,9 +202,69 @@ export function inventoryUrl(query = ''): string {
   return query ? `${BASE}/inventory.xlsx?q=${encodeURIComponent(query)}` : `${BASE}/inventory.xlsx`;
 }
 
+/**
+ * Cambiar el rumbo de un documento que ya está corriendo.
+ *
+ * La orden no es instantánea y no pretende serlo: el worker la atiende entre
+ * una página y la siguiente, que es el único punto donde no hay nada a medio
+ * escribir. Con OCR eso es alrededor de un segundo.
+ */
+export async function steerJob(
+  jobId: string,
+  action: 'pause' | 'resume' | 'cancel'
+): Promise<{ state: JobState }> {
+  const response = await fetch(`${BASE}/jobs/${jobId}/${action}`, { method: 'POST' });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
+}
+
+/** Lo mismo para un lote entero: pausar cincuenta de uno en uno no es una función. */
+export async function steerBatch(
+  batchId: string,
+  action: 'pause' | 'resume' | 'cancel'
+): Promise<{ jobs: string[] }> {
+  const response = await fetch(`${BASE}/batches/${batchId}/${action}`, { method: 'POST' });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
+}
+
 /** La hoja de un solo documento, la misma que quedó junto a sus PDF. */
 export function documentInventoryUrl(jobId: string): string {
   return `${BASE}/jobs/${jobId}/inventory.xlsx`;
+}
+
+/**
+ * El FUID de un documento inventariado.
+ *
+ * Es la planilla oficial rellenada por el servicio, no una armada en el
+ * navegador: lo que se descarga es el archivo que quedó escrito en disco.
+ */
+export function documentFuidUrl(jobId: string): string {
+  return `${BASE}/jobs/${jobId}/fuid.xlsx`;
+}
+
+/**
+ * Levantar el inventario de un documento que ya se procesó.
+ *
+ * Es la misma acción que «Solo inventariar» de la pantalla de carga -- el mismo
+ * worker y la misma plantilla elegida por el tipo de documento que se reconozca
+ * -- aplicada a algo que ya pasó por el sistema. Devuelve enseguida: leer un
+ * libro de cuatrocientos folios son minutos, y el estado se consulta aparte.
+ */
+export async function makeDocumentFuid(jobId: string): Promise<FuidStatus> {
+  const response = await fetch(`${BASE}/jobs/${jobId}/fuid`, {
+    method: 'POST',
+    headers: attribution()
+  });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return { working: false, ...(await response.json()) };
+}
+
+/** Si ya está escrito. Se consulta mientras se levanta. */
+export async function documentFuidStatus(jobId: string): Promise<FuidStatus> {
+  const response = await fetch(`${BASE}/jobs/${jobId}/fuid`);
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return await response.json();
 }
 
 /**
@@ -194,7 +274,7 @@ export function documentInventoryUrl(jobId: string): string {
  * depending on a new endpoint. A service older than this is not broken, it is
  * stale, and saying which is the difference between a restart and a bug hunt.
  */
-export const REQUIRED_API_REVISION = 9;
+export const REQUIRED_API_REVISION = 14;
 
 export interface Health {
   status: string;
@@ -262,11 +342,47 @@ export function renameDocument(
   return send(`${BASE}/documents/${jobId}`, 'PATCH', { source_document: sourceDocument });
 }
 
+/**
+ * Un documento ya procesado, tal como lo recuerda el inventario.
+ *
+ * Es lo que permite abrir la ficha de un documento que ya salió del área de
+ * trabajo. Trae menos que el informe en memoria -- el reparto por peldaños y la
+ * cinta de páginas no se guardan -- y lo que trae es lo que se produjo.
+ */
+export interface ArchivedDocument extends ProcessedDocument {
+  rows: InventoryRow[];
+  on_screen: boolean;
+}
+
+export async function fetchDocument(jobId: string): Promise<ArchivedDocument> {
+  const response = await fetch(`${BASE}/documents/${jobId}`);
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
+}
+
 /** Erase a processed document: its PDFs, its inventory rows and its card. */
 export function deleteDocument(
   jobId: string
 ): Promise<{ job_id: string; rows: number; from_screen: boolean }> {
   return send(`${BASE}/documents/${jobId}`, 'DELETE');
+}
+
+/** Lo que devolvió un borrado en lote: qué se borró y qué no, uno por uno. */
+export interface BulkDeleteResult {
+  deleted: { job_id: string; rows: number; from_screen: boolean }[];
+  failed: { job_id: string; reason: string }[];
+  rows: number;
+}
+
+/**
+ * Borrar varios documentos de una vez.
+ *
+ * No es una transacción y el resultado no finge que lo sea: viene una fila por
+ * documento, y la pantalla enseña las que fallaron con su motivo. Un documento
+ * que todavía se está procesando se rechaza sin arrastrar a los demás.
+ */
+export function deleteDocuments(jobIds: string[]): Promise<BulkDeleteResult> {
+  return send(`${BASE}/documents`, 'DELETE', { job_ids: jobIds });
 }
 
 export function renameJob(jobId: string, filename: string): Promise<Job> {
@@ -288,12 +404,31 @@ export function startFolderRun(options: {
   destination: string;
   disposition?: SourceDisposition;
   watch?: boolean;
+  /** Qué hacer con cada documento: la misma decisión que en una subida. */
+  task?: TaskKind;
 }): Promise<FolderRun> {
   return send(`${BASE}/folder-runs`, 'POST', options);
 }
 
 export function stopFolderRun(runId: string): Promise<FolderRun> {
   return send(`${BASE}/folder-runs/${runId}/stop`, 'POST');
+}
+
+/**
+ * Quitar de la pantalla una carpeta que ya terminó.
+ *
+ * No es parar: una carpeta en marcha el servicio se niega a olvidarla, porque
+ * dejaría el trabajo corriendo sin nadie que informara de él. Y no deshace
+ * nada: lo entregado sigue en la carpeta de destino y el archivo conserva sus
+ * filas.
+ */
+export function forgetFolderRun(runId: string): Promise<{ removed: number; ids: string[] }> {
+  return send(`${BASE}/folder-runs/${runId}`, 'DELETE');
+}
+
+/** Quitar de golpe todas las carpetas terminadas, dejando las que siguen vivas. */
+export function clearFolderRuns(): Promise<{ removed: number; ids: string[] }> {
+  return send(`${BASE}/folder-runs`, 'DELETE');
 }
 
 /**

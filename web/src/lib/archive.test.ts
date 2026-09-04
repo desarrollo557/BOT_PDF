@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { apply, byDay, EMPTY_FILTERS, merge, operators, order } from './archive.svelte';
+import {
+  apply,
+  byDay,
+  EMPTY_FILTERS,
+  merge,
+  operators,
+  order,
+  selectionTotals,
+  toggle,
+  toggleAll,
+  visibleSelection
+} from './archive.svelte';
 import type { Entry } from './components/ProcessedCard.svelte';
 
 /**
@@ -239,5 +250,68 @@ describe('operadores', () => {
       entry({ key: 'd', operator: null })
     ]);
     expect(found).toEqual(['Ana', 'Beto']);
+  });
+});
+
+
+/**
+ * Seleccionar varios documentos para borrarlos de una vez.
+ *
+ * Borrar de a uno está bien para corregir un error; no lo está para vaciar una
+ * caja mal procesada. Lo que se fija aquí son las reglas que evitan el
+ * accidente, porque este botón no tiene deshacer.
+ */
+describe('la selección múltiple', () => {
+  const uno = entry({ key: 'a', jobId: 'a', name: 'uno.pdf', resolutions: 3, pages: 7 });
+  const dos = entry({ key: 'b', jobId: 'b', name: 'dos.pdf', resolutions: 5, pages: 11 });
+  const tres = entry({ key: 'c', jobId: 'c', name: 'tres.pdf', resolutions: 1, pages: 2 });
+
+  it('marca y desmarca uno', () => {
+    const marcado = toggle(new Set<string>(), 'a');
+    expect([...marcado]).toEqual(['a']);
+    expect([...toggle(marcado, 'a')]).toEqual([]);
+  });
+
+  it('no muta la selección que recibe', () => {
+    const antes = new Set(['a']);
+    toggle(antes, 'b');
+    expect([...antes]).toEqual(['a']);
+  });
+
+  it('marca todo lo visible de una vez', () => {
+    const marcado = toggleAll(new Set<string>(), [uno, dos, tres]);
+    expect([...marcado].sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('vuelve a pulsar y lo desmarca todo', () => {
+    const marcado = toggleAll(new Set<string>(), [uno, dos]);
+    expect([...toggleAll(marcado, [uno, dos])]).toEqual([]);
+  });
+
+  it('marcar todo no toca lo que no se está viendo', () => {
+    // "Todo" es siempre lo visible. Marcar por error los ochocientos documentos
+    // del archivo es justamente el accidente que esto no debe permitir.
+    const conFiltro = toggleAll(new Set(['z']), [uno]);
+    expect([...conFiltro].sort()).toEqual(['a', 'z']);
+  });
+
+  it('sólo se borra lo que sigue a la vista', () => {
+    // El operador marca tres, cambia el filtro, y pulsa eliminar. Una selección
+    // que sobrevive a su propia lista es una forma de borrar a ciegas.
+    const marcado = new Set(['a', 'b', 'c']);
+    expect(visibleSelection(marcado, [uno, tres])).toEqual(['a', 'c']);
+  });
+
+  it('devuelve lo visible en el orden de la lista', () => {
+    expect(visibleSelection(new Set(['c', 'a']), [uno, dos, tres])).toEqual(['a', 'c']);
+  });
+
+  it('cuenta lo que se va a borrar antes de borrarlo', () => {
+    const totales = selectionTotals(new Set(['a', 'b']), [uno, dos, tres]);
+    expect(totales).toEqual({ documents: 2, resolutions: 8, pages: 18 });
+  });
+
+  it('no cuenta lo que ya no está en la lista', () => {
+    expect(selectionTotals(new Set(['a', 'z']), [uno]).documents).toBe(1);
   });
 });

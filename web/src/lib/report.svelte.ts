@@ -82,15 +82,19 @@ export function summarise(
     const report = job.report;
     if (!report) continue;
     pages += report.page_count;
-    resolutions += report.groups.length;
-    reviewItems += report.review_queue.length;
-    repairs += report.repairs.length;
-    quarantine += report.quarantine.length;
+    // Cada clave se lee con red. Un informe de inventario no traía ninguna de
+    // éstas y tumbaba el resumen entero -- y con él el modal de cierre, que es
+    // lo único que le dice al operador que el trabajo terminó bien. Un informe
+    // guardado por una versión anterior tampoco tiene por qué traerlas.
+    resolutions += report.groups?.length ?? 0;
+    reviewItems += report.review_queue?.length ?? 0;
+    repairs += report.repairs?.length ?? 0;
+    quarantine += report.quarantine?.length ?? 0;
     escalated += report.stats?.escalated ?? 0;
     for (const [rung, count] of Object.entries(report.stats?.by_provenance ?? {})) {
       provenance[rung] = (provenance[rung] ?? 0) + count;
     }
-    for (const group of report.groups) {
+    for (const group of report.groups ?? []) {
       codes.push({
         code: group.code,
         title: group.title,
@@ -122,9 +126,9 @@ export function summarise(
       filename: job.filename,
       state: job.state,
       pages: job.report?.page_count ?? 0,
-      resolutions: job.report?.groups.length ?? 0,
+      resolutions: job.report?.groups?.length ?? 0,
       bytes: job.bytes ?? 0,
-      review: job.report?.review_queue.length ?? 0,
+      review: job.report?.review_queue?.length ?? 0,
       error: job.error
     })),
     codes

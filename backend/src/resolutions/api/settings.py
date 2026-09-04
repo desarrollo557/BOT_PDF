@@ -59,6 +59,22 @@ class Settings:
     #: job registry, so clearing the screen never erases the history of the work.
     ledger_path: Path = DEFAULT_ROOT / "inventory.jsonl"
 
+    #: La plantilla oficial del FUID. Vacío significa la que viaja con el
+    #: programa; se pone una ruta cuando la Universidad publique otra versión
+    #: del formato y no se quiera esperar a un despliegue.
+    fuid_template: str | None = None
+
+    #: Datos de ubicación física que el PDF no puede saber y que se repiten en
+    #: todas las filas de un lote. Lo que no se conoce va como N/A, que es lo
+    #: que manda el instructivo del formato.
+    #:
+    #: La caja es la excepción: la lleva la caja física que se está procesando
+    #: ahora mismo, y se cambia con RESOLUTIONS_FUID_CAJA cuando se pase a otra.
+    fuid_caja: str = "3269"
+    fuid_otro: str = "N/A"
+    fuid_codigo_trd: str = "N/A"
+    fuid_oficina: str | None = None
+
     @classmethod
     def from_env(cls) -> Settings:
         return cls(
@@ -76,6 +92,11 @@ class Settings:
                 os.environ.get("RESOLUTIONS_LEDGER", DEFAULT_ROOT / "inventory.jsonl")
             ),
             sweep_seconds=_float("RESOLUTIONS_SWEEP_SECONDS", 30.0),
+            fuid_template=os.environ.get("RESOLUTIONS_FUID_TEMPLATE") or None,
+            fuid_caja=os.environ.get("RESOLUTIONS_FUID_CAJA", "3269"),
+            fuid_otro=os.environ.get("RESOLUTIONS_FUID_OTRO", "N/A"),
+            fuid_codigo_trd=os.environ.get("RESOLUTIONS_FUID_TRD", "N/A"),
+            fuid_oficina=os.environ.get("RESOLUTIONS_FUID_OFICINA") or None,
         )
 
     def ensure_directories(self) -> None:
@@ -92,4 +113,9 @@ class Settings:
             "mosaic_size": self.mosaic_size,
             "anthropic_api_key": self.anthropic_api_key,
             "vision_model": self.vision_model,
+            "fuid_template": self.fuid_template,
+            "fuid_caja": self.fuid_caja,
+            "fuid_otro": self.fuid_otro,
+            "fuid_codigo_trd": self.fuid_codigo_trd,
+            "fuid_oficina": self.fuid_oficina,
         }

@@ -23,14 +23,16 @@ from ..adapters.mysql_inventory import (
     MySQLInventory,
     settings_from_env,
 )
+from ..application.control import Cancelled, RunState
+from ..application.task import TaskKind
 from ..domain.naming import output_filename
 from ..domain.resolution_code import ResolutionCode
 from . import native_picker
 from .folders import FolderError, FolderRunner, SourceDisposition, clean_path
 from .janitor import IdleJanitor
-from .jobs import Job, JobRegistry
+from .jobs import IN_FLIGHT, Job, JobRegistry, JobState
 from .settings import Settings
-from .worker import process_document_job
+from .worker import FUID_SUFFIX, process_document_job
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,12 @@ HEARTBEAT_SECONDS = 15.0
 #: emits 400 events; a screen can usefully absorb four frames a second. Batching
 #: at this cadence is what lets 50 documents stream at once without a flood.
 PUBLISH_INTERVAL = 0.25
+
+#: Cada cuánto se vuelve a publicar un trabajo en curso aunque no haya cambiado
+#: nada. Dos segundos: lo bastante seguido para que el reloj de la pantalla se
+#: mueva y se note que el proceso vive, lo bastante espaciado para que cincuenta
+#: documentos a la vez no supongan tráfico apreciable.
+HEARTBEAT_PUBLISH_SECONDS = 2.0
 PROGRESS_QUEUE_SIZE = 20_000
 
 #: Bumped whenever this file gains an endpoint the front end depends on.
@@ -49,7 +57,7 @@ PROGRESS_QUEUE_SIZE = 20_000
 #: running across an update answers 404 to every new route and 405 to every new
 #: method -- which reads as a broken request rather than as a stale service.
 #: The screen compares this against what it was built for and says so plainly.
-API_REVISION = 9
+API_REVISION = 15
 
 #: What this revision can do, so the screen can name what is missing rather than
 #: only that something is.
@@ -66,6 +74,17 @@ API_FEATURES = (
     "output-edit",
     "batch-edit",
     "document-edit",
+    "document-bulk-delete",
+    "document-detail",
+    "inventory-task",
+    "job-fuid",
+    "job-control",
+    # Levantar el FUID de un documento ya procesado, y pedir una carpeta con la
+    # misma acción que una subida.
+    "job-fuid-make",
+    "folder-task",
+    # Quitar de la pantalla una carpeta ya terminada, o todas de una vez.
+    "folder-run-clear",
 )
 
 settings = Settings.from_env()
@@ -111,6 +130,13 @@ async def lifespan(app: FastAPI):
     app.state.pool = ProcessPoolExecutor(max_workers=settings.document_workers)
     app.state.manager = multiprocessing.Manager()
     app.state.progress_queue = app.state.manager.Queue(maxsize=PROGRESS_QUEUE_SIZE)
+    # Lo que el worker consulta entre página y página para saber si sigue. Vive
+    # en el Manager y no en este proceso porque quien lo lee está en otro.
+    app.state.controls = app.state.manager.dict()
+    #: Documentos cuyo FUID se está levantando en este momento, y el motivo si
+    #: alguno falló. Vive aquí y no en el registro de trabajos porque no es un
+    #: trabajo nuevo: es una segunda salida del documento que ya se procesó.
+    app.state.fuid_jobs = {}
     app.state.tasks = [
         asyncio.create_task(_drain_progress(app)),
         asyncio.create_task(_publish_progress()),
@@ -218,10 +244,15 @@ async def delete_batch(batch_id: str, purge: bool = False) -> dict[str, object]:
 async def enqueue(
     file: UploadFile,
     batch_id: str | None = None,
+    task: str | None = None,
     x_operator: str | None = Header(default=None),
 ) -> dict[str, object]:
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=415, detail="Solo se aceptan archivos PDF")
+    try:
+        kind = TaskKind.parse(task)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     if batch_id and registry.get_batch(batch_id) is None:
         raise HTTPException(status_code=404, detail="El lote no existe")
     if registry.pending >= settings.queue_limit:
@@ -243,10 +274,92 @@ async def enqueue(
         batch_id=batch_id,
         size=written,
         operator=_operator(x_operator),
+        task=str(kind),
     )
     registry.publish(job)
     asyncio.create_task(_run(job))
-    return {"id": job.id, "batch_id": job.batch_id, "state": str(job.state), "bytes": written}
+    return {
+        "id": job.id,
+        "batch_id": job.batch_id,
+        "state": str(job.state),
+        "task": job.task,
+        "bytes": written,
+    }
+
+
+def _steer(job_id: str, state: RunState) -> Job:
+    """Cambia el rumbo de un trabajo en curso, o dice por qué no se puede."""
+    job = registry.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="El documento no existe")
+    if job.state not in IN_FLIGHT:
+        raise HTTPException(
+            status_code=409,
+            detail=f"El documento ya terminó ({job.state}); no hay nada que detener",
+        )
+    app.state.controls[job_id] = str(state)
+    return job
+
+
+@app.post("/api/jobs/{job_id}/pause")
+async def pause_job(job_id: str) -> dict[str, object]:
+    """Detener el trabajo entre una página y la siguiente.
+
+    No mata nada: el worker sigue vivo con el documento abierto, y por eso
+    reanudar continúa por donde iba en vez de empezar de nuevo. La orden tarda
+    lo que tarde la página en curso, que con OCR es alrededor de un segundo.
+    """
+    job = _steer(job_id, RunState.PAUSED)
+    if job.state is JobState.RUNNING:
+        registry.mark_paused(job)
+    return {"id": job.id, "state": str(job.state)}
+
+
+@app.post("/api/jobs/{job_id}/resume")
+async def resume_job(job_id: str) -> dict[str, object]:
+    job = _steer(job_id, RunState.RUNNING)
+    if job.state is JobState.PAUSED:
+        registry.mark_resumed(job)
+    return {"id": job.id, "state": str(job.state)}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str) -> dict[str, object]:
+    """Abandonar el trabajo. Lo que ya se escribió se conserva y se declara."""
+    job = _steer(job_id, RunState.CANCELLED)
+    return {"id": job.id, "state": str(job.state), "cancelling": True}
+
+
+@app.post("/api/batches/{batch_id}/{action}")
+async def steer_batch(batch_id: str, action: str) -> dict[str, object]:
+    """Lo mismo para un lote entero, que es como se procesa de verdad.
+
+    Pausar de uno en uno cincuenta documentos no es una función, es un castigo.
+    """
+    estados = {
+        "pause": RunState.PAUSED,
+        "resume": RunState.RUNNING,
+        "cancel": RunState.CANCELLED,
+    }
+    if action not in estados:
+        raise HTTPException(status_code=404, detail=f"Acción desconocida: {action}")
+
+    batch = registry.get_batch(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="El lote no existe")
+
+    afectados: list[str] = []
+    for job_id in list(batch.job_ids):
+        job = registry.get(job_id)
+        if job is None or job.state not in IN_FLIGHT:
+            continue
+        app.state.controls[job_id] = str(estados[action])
+        if action == "pause" and job.state is JobState.RUNNING:
+            registry.mark_paused(job)
+        elif action == "resume" and job.state is JobState.PAUSED:
+            registry.mark_resumed(job)
+        afectados.append(job_id)
+    return {"batch_id": batch_id, "action": action, "jobs": afectados}
 
 
 @app.get("/api/jobs")
@@ -331,6 +444,14 @@ async def start_folder_run(
             status_code=422, detail=f"Destino del original desconocido: {raw}"
         ) from None
 
+    # Una carpeta puede pedir lo mismo que una subida. Hasta ahora sólo sabía
+    # dividir, así que un libro de diplomas tomado de una carpeta no podía dejar
+    # su inventario sin volver a subirlo a mano.
+    try:
+        kind = TaskKind.parse(payload.get("task"))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
     try:
         run = folders.start(
             str(payload.get("source") or ""),
@@ -338,6 +459,7 @@ async def start_folder_run(
             disposition=disposition,
             watch=bool(payload.get("watch")),
             operator=_operator(x_operator),
+            task=str(kind),
         )
     except FolderError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None
@@ -365,6 +487,33 @@ async def stop_folder_run(run_id: str) -> dict[str, object]:
     if run is None:
         raise HTTPException(status_code=409, detail="Ese proceso ya habia terminado")
     return run.as_dict()
+
+
+@app.delete("/api/folder-runs")
+async def clear_folder_runs() -> dict[str, object]:
+    """Vaciar la pantalla de carpetas ya terminadas.
+
+    Sólo se van las que terminaron, pararon o fallaron, así que hacer esto con
+    una carpeta en marcha nunca cuesta trabajo empezado. Lo entregado sigue en
+    la carpeta de destino y el archivo conserva sus filas: esto vacía una
+    pantalla, no deshace nada.
+    """
+    removed = folders.forget_finished()
+    return {"removed": len(removed), "ids": [run.id for run in removed]}
+
+
+@app.delete("/api/folder-runs/{run_id}")
+async def forget_folder_run(run_id: str) -> dict[str, object]:
+    """Quitar de la pantalla una carpeta concreta que ya terminó."""
+    if folders.get(run_id) is None:
+        raise HTTPException(status_code=404, detail="El proceso de carpeta no existe")
+    run = folders.forget(run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Ese proceso sigue en marcha; hay que detenerlo antes de quitarlo",
+        )
+    return {"removed": 1, "ids": [run.id]}
 
 
 # -- resolutions ----------------------------------------------------------------
@@ -636,6 +785,37 @@ async def documents(q: str | None = None, limit: int = 500, offset: int = 0) -> 
     }
 
 
+@app.get("/api/documents/{job_id}")
+async def document_detail(job_id: str) -> dict[str, object]:
+    """Un documento ya procesado, tal como lo recuerda el inventario.
+
+    La pantalla de detalle se dibujaba sólo desde el trabajo en memoria, así que
+    en cuanto el área de trabajo se limpiaba el documento quedaba en un callejón
+    sin salida: la ficha decía "archivado" y no llevaba a ninguna parte. El
+    inventario sí lo recuerda -- es lo que lo hace un inventario -- y esto es
+    esa memoria, servida para que la ficha vuelva a poder abrirse.
+
+    No devuelve lo mismo que el trabajo en memoria, y no debe fingir que sí: el
+    reparto por peldaños, la cinta de páginas y las correcciones de OCR viven en
+    el informe del proceso y no se guardan. Lo que queda es lo que se produjo,
+    que es justamente lo que un archivo tiene que poder responder meses después.
+    """
+    entrada = next(
+        (item for item in ledger.documents() if item.get("job_id") == job_id), None
+    )
+    filas = [row for row in ledger.rows() if row.get("job_id") == job_id]
+    if entrada is None and not filas:
+        raise HTTPException(status_code=404, detail="El documento no está en el inventario")
+
+    return {
+        **(entrada or {"job_id": job_id}),
+        "rows": filas,
+        # Si además sigue en pantalla, la pantalla tiene más que contar y es ella
+        # la que manda. Se dice aquí para que el cliente no tenga que adivinarlo.
+        "on_screen": registry.get(job_id) is not None,
+    }
+
+
 @app.patch("/api/documents/{job_id}")
 async def rename_document(job_id: str, payload: dict) -> dict[str, object]:
     """Rename a processed document wherever it is remembered.
@@ -672,13 +852,18 @@ async def rename_document(job_id: str, payload: dict) -> dict[str, object]:
     return {"job_id": job_id, "source_document": name, "rows": rows}
 
 
-@app.delete("/api/documents/{job_id}")
-async def delete_document(job_id: str) -> dict[str, object]:
-    """Erase a processed document: its PDFs, its inventory rows and its card.
+#: Cuántos documentos admite un borrado en lote. El tope no es una limitación
+#: de la máquina sino del gesto: quinientos son más de los que nadie marca a
+#: mano, y una petición mayor casi siempre es un error de quien la construyó.
+MAX_BULK_DELETE = 500
 
-    This is the one deletion that leaves nothing behind, which is why it is a
-    separate route from clearing the screen: clearing forgets a job and keeps
-    the work, this discards the work itself.
+
+def _erase_document(job_id: str) -> dict[str, object]:
+    """Borrar un documento entero: sus PDF, sus filas y su ficha.
+
+    Devuelve lo que se borró, y levanta ``HTTPException`` cuando no se puede.
+    El borrado de uno solo la deja pasar para responder con el código correcto;
+    el borrado en lote la captura y la convierte en el motivo de esa fila.
     """
     job = registry.get(job_id)
     directory = settings.output_dir / job_id
@@ -696,6 +881,70 @@ async def delete_document(job_id: str) -> dict[str, object]:
     rows = ledger.remove_document(job_id)
     _discard_outputs(job_id)
     return {"job_id": job_id, "rows": rows, "from_screen": job is not None}
+
+
+@app.delete("/api/documents/{job_id}")
+async def delete_document(job_id: str) -> dict[str, object]:
+    """Erase a processed document: its PDFs, its inventory rows and its card.
+
+    This is the one deletion that leaves nothing behind, which is why it is a
+    separate route from clearing the screen: clearing forgets a job and keeps
+    the work, this discards the work itself.
+    """
+    return _erase_document(job_id)
+
+
+@app.delete("/api/documents")
+async def delete_documents(payload: dict) -> dict[str, object]:
+    """Borrar varios documentos de una vez, diciendo qué pasó con cada uno.
+
+    Va uno por uno y sigue adelante cuando alguno falla. No es una transacción y
+    no debe parecerlo: borrar un documento son varias operaciones sobre disco y
+    sobre el inventario, y fingir que veinte ocurren a la vez sólo serviría para
+    que un fallo a la mitad dejara al operador sin saber qué se borró. Cada fila
+    del resultado dice lo suyo, y la pantalla las enseña.
+
+    El caso que de verdad importa es el documento que todavía se está
+    procesando: se rechaza ése y se borran los demás, en vez de negar el lote
+    entero por culpa de uno.
+    """
+    crudos = payload.get("job_ids")
+    if not isinstance(crudos, list) or not crudos:
+        raise HTTPException(
+            status_code=422, detail="Hay que indicar qué documentos borrar"
+        )
+    if len(crudos) > MAX_BULK_DELETE:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Demasiados documentos de una vez: el máximo es {MAX_BULK_DELETE}",
+        )
+
+    borrados: list[dict[str, object]] = []
+    fallidos: list[dict[str, object]] = []
+
+    # Los repetidos se descartan conservando el orden de llegada: la pantalla
+    # enseña el resultado en el mismo orden en que se marcaron las casillas.
+    vistos: set[str] = set()
+    for crudo in crudos:
+        job_id = str(crudo or "").strip()
+        if not job_id or job_id in vistos:
+            continue
+        vistos.add(job_id)
+        try:
+            borrados.append(_erase_document(job_id))
+        except HTTPException as error:
+            fallidos.append({"job_id": job_id, "reason": str(error.detail)})
+        except Exception as error:  # noqa: BLE001 - uno que falla no para el lote
+            logger.warning("no se pudo borrar el documento %s", job_id, exc_info=True)
+            fallidos.append(
+                {"job_id": job_id, "reason": f"{type(error).__name__}: {error}"}
+            )
+
+    return {
+        "deleted": borrados,
+        "failed": fallidos,
+        "rows": sum(int(item["rows"] or 0) for item in borrados),
+    }
 
 
 @app.get("/api/inventory.xlsx")
@@ -838,6 +1087,130 @@ async def job_inventory(job_id: str) -> FileResponse:
     return FileResponse(sheets[0], media_type=XLSX_MEDIA, filename=sheets[0].name)
 
 
+def _fuid_de(job_id: str) -> Path | None:
+    """La planilla FUID escrita para un documento, si la hay."""
+    directorio = (settings.output_dir / job_id).resolve()
+    if not directorio.is_dir():
+        return None
+    hojas = sorted(directorio.glob(f"*{FUID_SUFFIX}"))
+    return hojas[0] if hojas else None
+
+
+def _fuente_de(job_id: str) -> Path | None:
+    """El PDF del que salió el documento, si todavía está donde estaba.
+
+    Una subida se borra al terminar su trabajo y un original de carpeta puede
+    haberse apartado o borrado, según lo que el operador eligiera. Sin él no hay
+    nada que leer, y decirlo es mejor que dejar el botón girando.
+    """
+    job = registry.get(job_id)
+    if job is None:
+        return None
+    return job.source if job.source.is_file() else None
+
+
+async def _levantar_fuid(job_id: str) -> None:
+    """Leer el documento otra vez, sólo para su inventario.
+
+    Es exactamente lo que hace la acción «Solo inventariar» de la pantalla de
+    carga -- el mismo worker, la misma plantilla elegida por el tipo de documento
+    que se reconozca -- aplicado a un documento que ya se procesó. No crea un
+    trabajo nuevo ni toca el informe del que ya existe: deja una planilla más
+    junto a los PDF que ese documento produjo.
+    """
+    job = registry.get(job_id)
+    if job is None:
+        app.state.fuid_jobs[job_id] = "El documento ya no está en la pantalla"
+        return
+    payload = {
+        "job_id": job.id,
+        "source": str(job.source),
+        "filename": job.filename,
+        "operator": job.operator,
+        "task": str(TaskKind.INVENTORY),
+        "settings": settings.as_worker_payload(),
+        "progress_queue": app.state.progress_queue,
+    }
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(app.state.pool, process_document_job, payload)
+        app.state.fuid_jobs.pop(job_id, None)
+    except Exception as error:  # noqa: BLE001 - se le dice al operador qué pasó
+        logger.exception("no se pudo levantar el FUID de %s", job_id)
+        app.state.fuid_jobs[job_id] = f"{type(error).__name__}: {error}"
+
+
+@app.post("/api/jobs/{job_id}/fuid", status_code=202)
+async def make_job_fuid(job_id: str) -> dict[str, object]:
+    """Levantar el inventario de un documento que ya se procesó.
+
+    El botón que lo llama no elige plantilla: la elige el tipo de documento que
+    se reconoce al leerlo, igual que cuando se sube un archivo con la acción
+    «Solo inventariar». Un libro de diplomas produce el FUID de diplomas y un
+    legajo de resoluciones el genérico, sin que nadie tenga que acertar antes.
+
+    Devuelve enseguida. Leer un libro de cuatrocientos folios son minutos, y
+    dejar la petición HTTP abierta todo ese rato es cómo se pierde el resultado
+    por un tiempo de espera de un intermediario.
+    """
+    existente = _fuid_de(job_id)
+    if existente is not None:
+        # Ya estaba: lo pidió con la acción de inventariar, o alguien pulsó el
+        # botón antes. No se vuelve a leer el documento para producir lo mismo.
+        return {"ready": True, "name": existente.name, "error": None}
+
+    if job_id in app.state.fuid_jobs and app.state.fuid_jobs[job_id] is None:
+        return {"ready": False, "name": None, "error": None}
+
+    if _fuente_de(job_id) is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "El documento de origen ya no está disponible, así que no se "
+                "puede volver a leer para inventariarlo. Vuelva a cargarlo con "
+                "la acción «Solo inventariar»."
+            ),
+        )
+
+    app.state.fuid_jobs[job_id] = None
+    asyncio.create_task(_levantar_fuid(job_id))
+    return {"ready": False, "name": None, "error": None}
+
+
+@app.get("/api/jobs/{job_id}/fuid")
+async def job_fuid_status(job_id: str) -> dict[str, object]:
+    """Si el inventario de un documento ya está escrito, y si algo falló."""
+    error = app.state.fuid_jobs.get(job_id)
+    hoja = _fuid_de(job_id)
+    return {
+        "ready": hoja is not None,
+        "name": hoja.name if hoja else None,
+        "error": error,
+        "working": job_id in app.state.fuid_jobs and error is None and hoja is None,
+    }
+
+
+@app.get("/api/jobs/{job_id}/fuid.xlsx")
+async def job_fuid(job_id: str) -> FileResponse:
+    """El Formato Único de Inventario Documental de un documento inventariado.
+
+    Es la planilla oficial que el worker rellenó al procesarlo, no una armada
+    aquí: se descarga el archivo que quedó escrito, para que lo que se firma y
+    lo que está en disco no puedan discrepar.
+    """
+    directory = (settings.output_dir / job_id).resolve()
+    hojas = sorted(directory.glob(f"*{FUID_SUFFIX}")) if directory.is_dir() else []
+    if not hojas:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Ese documento no tiene un FUID. Sólo lo tienen los que se "
+                "procesaron con la acción «Solo inventariar»."
+            ),
+        )
+    return FileResponse(hojas[0], media_type=XLSX_MEDIA, filename=hojas[0].name)
+
+
 @app.get("/api/jobs/{job_id}/outputs/{name}")
 async def download(job_id: str, name: str) -> FileResponse:
     # Deliberately not gated on the job still being in the registry: the
@@ -910,11 +1283,22 @@ async def _drain_progress(app: FastAPI) -> None:
 
 
 async def _publish_progress() -> None:
-    """Push whatever changed, at a cadence a browser can actually render."""
+    """Push whatever changed, at a cadence a browser can actually render.
+
+    Y, más despacio, lo que no ha cambiado. Un trabajo dentro de una fase larga
+    no ensucia nada durante decenas de segundos, así que sin este segundo pulso
+    la pantalla se queda con la última trama que recibió: el reloj detenido y
+    ninguna forma de saber si el proceso sigue vivo.
+    """
+    desde_el_latido = 0.0
     while True:
         await asyncio.sleep(PUBLISH_INTERVAL)
         try:
             registry.flush()
+            desde_el_latido += PUBLISH_INTERVAL
+            if desde_el_latido >= HEARTBEAT_PUBLISH_SECONDS:
+                desde_el_latido = 0.0
+                registry.heartbeat()
         except Exception:  # noqa: BLE001 - never let the ticker die
             logger.debug("progress flush failed", exc_info=True)
 
@@ -942,6 +1326,14 @@ async def _stream_to_disk(file: UploadFile, destination: Path) -> int:
 
 
 async def _run(job: Job) -> None:
+    # Un trabajo cancelado mientras esperaba en la cola no llega a empezar.
+    if app.state.controls.get(job.id) == str(RunState.CANCELLED):
+        registry.mark_cancelled(job)
+        if job.owns_source:
+            job.source.unlink(missing_ok=True)
+        return
+
+    app.state.controls[job.id] = str(RunState.RUNNING)
     registry.mark_running(job)
     loop = asyncio.get_running_loop()
     payload = {
@@ -950,8 +1342,10 @@ async def _run(job: Job) -> None:
         # The name the operator gave it, not the generated one it is stored as.
         "filename": job.filename,
         "operator": job.operator,
+        "task": job.task,
         "settings": settings.as_worker_payload(),
         "progress_queue": app.state.progress_queue,
+        "controls": app.state.controls,
     }
     try:
         report = await loop.run_in_executor(app.state.pool, process_document_job, payload)
@@ -960,10 +1354,16 @@ async def _run(job: Job) -> None:
             ledger.record(job.id, report, operator=job.operator, source_bytes=job.bytes)
         except Exception:  # noqa: BLE001 - the split succeeded either way
             logger.warning("could not record %s in the inventory", job.filename, exc_info=True)
+    except Cancelled:
+        # No es un fallo: es lo que el operador pidió. Se distingue de un error
+        # porque un lote con documentos cancelados no está roto.
+        logger.info("job %s cancelled by the operator", job.id)
+        registry.mark_cancelled(job)
     except Exception as error:  # noqa: BLE001 - surfaced to the operator verbatim
         # One document failing is one document failing. The batch carries on.
         logger.exception("job %s failed", job.id)
         registry.mark_failed(job, f"{type(error).__name__}: {error}")
     finally:
+        app.state.controls.pop(job.id, None)
         if job.owns_source:
             job.source.unlink(missing_ok=True)

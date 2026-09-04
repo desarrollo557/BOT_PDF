@@ -42,12 +42,12 @@ export function fromJob(job: Job): Entry {
     jobId: job.id,
     name: job.filename,
     at: stamp(job.finished_at) || stamp(job.created_at) || Date.now(),
-    resolutions: job.report?.groups.length ?? 0,
+    resolutions: job.report?.groups?.length ?? 0,
     pages: job.report?.page_count ?? 0,
     bytes: job.bytes ?? 0,
-    review: job.report?.review_queue.length ?? 0,
+    review: job.report?.review_queue?.length ?? 0,
     operator: job.operator,
-    codes: job.report?.groups.map((group) => group.code) ?? [],
+    codes: job.report?.groups?.map((group) => group.code) ?? [],
     failed: job.state === 'failed',
     error: job.error,
     live: true
@@ -210,4 +210,77 @@ export function operators(entries: Entry[]): string[] {
   return [...new Set(entries.map((entry) => entry.operator).filter((name): name is string => !!name))].sort(
     (a, b) => a.localeCompare(b, 'es')
   );
+}
+
+
+/**
+ * La selección de la lista, como funciones puras sobre datos.
+ *
+ * Vive aquí y no en la pantalla por la misma razón que los filtros: se puede
+ * probar sin dibujar nada, y las reglas que importan -- qué pasa cuando se
+ * marca "todos" con un filtro puesto, qué queda seleccionado cuando la lista
+ * cambia debajo -- son reglas, no detalles de presentación.
+ */
+
+/**
+ * La selección, limpia de lo que ya no está en la lista.
+ *
+ * Es la regla que evita el accidente: si el operador marca veinte documentos,
+ * cambia el filtro y pulsa eliminar, sólo se borra lo que sigue viendo. Una
+ * selección que sobrevive a su propia lista es una forma de borrar a ciegas.
+ */
+export function visibleSelection(selected: Set<string>, entries: Entry[]): string[] {
+  const present = new Set(entries.map((entry) => entry.jobId));
+  const kept: string[] = [];
+  for (const entry of entries) {
+    if (selected.has(entry.jobId) && present.has(entry.jobId) && !kept.includes(entry.jobId)) {
+      kept.push(entry.jobId);
+    }
+  }
+  return kept;
+}
+
+/** Añadir o quitar uno, devolviendo una selección nueva. */
+export function toggle(selected: Set<string>, jobId: string): Set<string> {
+  const next = new Set(selected);
+  if (next.has(jobId)) next.delete(jobId);
+  else next.add(jobId);
+  return next;
+}
+
+/**
+ * Marcar o desmarcar todo lo que se está viendo.
+ *
+ * "Todo" es siempre lo visible y nunca el archivo entero: marcar por error
+ * ochocientos documentos que no caben en la pantalla es exactamente el
+ * accidente que este control no debe permitir.
+ */
+export function toggleAll(selected: Set<string>, entries: Entry[]): Set<string> {
+  const visible = entries.map((entry) => entry.jobId);
+  const todos = visible.length > 0 && visible.every((id) => selected.has(id));
+  const next = new Set(selected);
+  for (const id of visible) {
+    if (todos) next.delete(id);
+    else next.add(id);
+  }
+  return next;
+}
+
+/** Lo que se va a borrar, contado para poder decirlo antes de borrarlo. */
+export function selectionTotals(
+  selected: Set<string>,
+  entries: Entry[]
+): { documents: number; resolutions: number; pages: number } {
+  let documents = 0;
+  let resolutions = 0;
+  let pages = 0;
+  const contados = new Set<string>();
+  for (const entry of entries) {
+    if (!selected.has(entry.jobId) || contados.has(entry.jobId)) continue;
+    contados.add(entry.jobId);
+    documents += 1;
+    resolutions += entry.resolutions;
+    pages += entry.pages;
+  }
+  return { documents, resolutions, pages };
 }

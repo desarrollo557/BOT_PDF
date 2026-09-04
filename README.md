@@ -255,6 +255,19 @@ npm test                                 # 54 tests over the stores
 The dev server proxies `/api` to `http://127.0.0.1:8000`, so everything is
 same-origin and CORS never comes into it.
 
+### Desde otro equipo de la red
+
+El servidor de desarrollo escucha en todas las interfaces (`server.host` en
+`web/vite.config.ts`), así que basta con abrir `http://IP-DEL-SERVIDOR:5173`
+desde el otro puesto. Vite imprime la dirección al arrancar, bajo `Network:`.
+
+El backend **no** hace falta exponerlo: quien habla con él es el proxy del
+servidor de desarrollo, que corre en la misma máquina, y por eso puede seguir
+escuchando sólo en `127.0.0.1`. Si aun así se quisiera alcanzar la API
+directamente desde otro equipo, hay que arrancarla con
+`uvicorn resolutions.api.main:app --host 0.0.0.0 --port 8000` **y** añadir ese
+origen a la lista de CORS en `api/main.py`, que hoy sólo admite localhost.
+
 ### Configuration
 
 | Variable | Default | Purpose |

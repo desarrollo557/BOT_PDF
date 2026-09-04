@@ -25,6 +25,7 @@ from .ledger import InventoryReads
 
 logger = logging.getLogger(__name__)
 
+
 #: Cuánto se espera a la base antes de darla por caída. Corto a propósito: el
 #: servicio atiende peticiones y no puede quedarse colgado de un socket.
 CONNECT_TIMEOUT = 5

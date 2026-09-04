@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { consoleLog } from '$lib/console.svelte';
   import { formatBytes, formatDuration } from '$lib/format';
+  import { jobStore } from '$lib/jobs.svelte';
   import { reports, type Completion } from '$lib/report.svelte';
   import { RUNGS, UNREADABLE } from '$lib/rungs';
 
@@ -17,6 +19,37 @@
   };
 
   const clean = $derived(completion.failedDocuments === 0 && completion.reviewItems === 0);
+
+  /**
+   * Cerrar el informe deja la pantalla lista para el siguiente lote. Siempre.
+   *
+   * Un operador que procesa caja tras caja no quiere empezar la siguiente con
+   * las fichas de la anterior debajo: cerrar el informe es la señal de que ya
+   * miró lo que pasó. Se olvidan los trabajos terminados, que es distinto de
+   * borrarlos -- el trabajo queda en el archivo, este informe se vuelve a abrir
+   * desde ahí, y lo que quedó por revisar sigue listado en Revisión, que se
+   * guarda su propia copia justamente para que limpiar no le quite nada.
+   */
+  async function dismiss(): Promise<void> {
+    reports.close();
+    try {
+      await jobStore.clear();
+      // Y si no queda ninguna carpeta en marcha, se borran también las rutas
+      // del formulario. No hace falta recordar si se marcó "Vigilar la
+      // carpeta": una carpeta vigilada sigue viva en `activeRuns` esperando
+      // archivos nuevos, y una que terminó no. El estado lo dice mejor que la
+      // casilla, porque también acierta cuando la vigilancia se detuvo a mano.
+      if (jobStore.activeRuns.length === 0) jobStore.resetWorkspace();
+    } catch (problem) {
+      // Que no se pueda limpiar no es motivo para dejar el informe abierto: ya
+      // se cerró, y el motivo queda escrito donde se miran estas cosas.
+      consoleLog.push(
+        'WARN',
+        `no se pudo limpiar la pantalla: ${(problem as Error).message}`,
+        'warn'
+      );
+    }
+  }
   const rate = $derived(
     completion.elapsedSeconds >= 1 ? completion.pages / completion.elapsedSeconds : 0
   );
@@ -73,7 +106,7 @@
   class="scrim"
   role="presentation"
   onclick={(event) => {
-    if (event.target === event.currentTarget) reports.close();
+    if (event.target === event.currentTarget) void dismiss();
   }}
 >
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="informe-titulo">
@@ -85,7 +118,7 @@
       <div class="meta">
         {#if completion.operator}<span class="by">{completion.operator}</span>{/if}
         <time>{when(completion.finishedAt)}</time>
-        <button class="close" onclick={() => reports.close()} aria-label="Cerrar">✕</button>
+        <button class="close" onclick={() => void dismiss()} aria-label="Cerrar">✕</button>
       </div>
     </header>
 
@@ -258,13 +291,21 @@
     </div>
 
     <footer>
-      <a href="/archivo" onclick={() => reports.close()}>Ver en el archivo</a>
+      <!--
+        Se dice qué hace el botón antes de pulsarlo. Una pantalla que se vacía
+        sola al cerrar un aviso se lee como una pérdida, aunque no lo sea.
+      -->
+      <span class="note">
+        Al cerrar se limpia la pantalla. El trabajo queda en el archivo y este informe
+        se vuelve a abrir desde ahí{#if !clean}, y lo pendiente sigue en Revisión{/if}.
+      </span>
+      <a href="/archivo" onclick={() => void dismiss()}>Ver en el archivo</a>
       {#if completion.reviewItems}
-        <a class="warn" href="/revision" onclick={() => reports.close()}>
+        <a class="warn" href="/revision" onclick={() => void dismiss()}>
           Revisar {completion.reviewItems} páginas
         </a>
       {/if}
-      <button onclick={() => reports.close()}>Cerrar</button>
+      <button onclick={() => void dismiss()}>Cerrar</button>
     </footer>
   </div>
 </div>
@@ -677,6 +718,14 @@
   }
   .empty {
     color: var(--muted);
+  }
+
+  /* La explicación empuja los botones a la derecha y se lee antes que ellos. */
+  .note {
+    flex: 1;
+    color: var(--muted);
+    font-size: 0.78rem;
+    line-height: 1.35;
   }
 
   footer {

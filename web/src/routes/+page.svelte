@@ -9,6 +9,7 @@
   import { formatBytes } from '$lib/format';
   import { jobStore } from '$lib/jobs.svelte';
   import { reports, summarise } from '$lib/report.svelte';
+  import type { TaskKind } from '$lib/types';
 
   /**
    * Uploads in flight at once. Fifty parallel transfers of a few hundred
@@ -41,15 +42,67 @@
 
   const activeBatches = $derived(
     allBatches.filter(([, jobs]) =>
-      jobs.some((job) => job.state === 'queued' || job.state === 'running')
+      jobs.some(
+        (job) => job.state === 'queued' || job.state === 'running' || job.state === 'paused'
+      )
     )
   );
 
-  const looseInFlight = $derived(inFlight.filter((job) => !job.batch_id));
-  const runs = $derived(jobStore.activeRuns);
-  const busy = $derived(
-    activeBatches.length > 0 || looseInFlight.length > 0 || runs.length > 0 || uploading
+  /**
+   * Los documentos que se dibujan por su cuenta.
+   *
+   * Ni los de un lote ni los de una carpeta: los dos tienen ya quien informe por
+   * ellos. Una carpeta que además dibujara una tarjeta por cada PDF que va
+   * consumiendo enseñaría lo mismo dos veces -- una vez dentro de su árbol y
+   * otra como si fuera una carga suelta de la misma tarde.
+   */
+  const enCarpeta = $derived(new Set(jobStore.runs.flatMap((run) => run.job_ids ?? [])));
+  const looseInFlight = $derived(
+    inFlight.filter((job) => !job.batch_id && !enCarpeta.has(job.id))
   );
+
+  /**
+   * Las carpetas de esta sesión, separadas por si siguen vivas.
+   *
+   * Una corrida terminada no se va sola de la pantalla: su árbol es donde están
+   * los PDF que produjo y el botón que baja su inventario, y mandar al operador
+   * al archivo a buscar la carpeta que tiene delante es hacerle dar un rodeo.
+   *
+   * Pero tampoco puede quedarse mezclada con la que sí está trabajando. Al cabo
+   * de una mañana la pantalla enseñaba media docena de tarjetas cerradas, con
+   * sus contadores y sus colas, y encontrar la viva entre ellas costaba leerlas
+   * todas. Así que arriba va lo que corre y debajo, en su propio apartado, lo
+   * que ya cerró -- con la opción de retirarlo cuando estorbe.
+   */
+  const runs = $derived(jobStore.runs);
+  const liveRuns = $derived(jobStore.activeRuns);
+  const closedRuns = $derived(runs.filter((run) => !liveRuns.includes(run)));
+
+  let clearingRuns = $state(false);
+  let runsError = $state<string | null>(null);
+
+  async function forgetClosedRuns() {
+    clearingRuns = true;
+    runsError = null;
+    try {
+      await jobStore.forgetFinishedRuns();
+    } catch (problem) {
+      runsError = (problem as Error).message;
+    } finally {
+      clearingRuns = false;
+    }
+  }
+  const busy = $derived(
+    activeBatches.length > 0 ||
+      looseInFlight.length > 0 ||
+      jobStore.activeRuns.length > 0 ||
+      uploading
+  );
+
+  /* Hay algo que poner en la columna de la derecha. Lo terminado cuenta: si sólo
+     contara lo que corre, el árbol de la carpeta desaparecería justo cuando el
+     operador va a usarlo. */
+  const conAlgoQueVer = $derived(busy || runs.length > 0);
 
   const inFlightBytes = $derived(inFlight.reduce((sum, job) => sum + (job.bytes ?? 0), 0));
 
@@ -64,7 +117,11 @@
   $effect(() => {
     for (const [batchId, jobs] of allBatches) {
       const id = `lote:${batchId}`;
-      if (jobs.some((job) => job.state === 'queued' || job.state === 'running')) {
+      if (
+        jobs.some(
+          (job) => job.state === 'queued' || job.state === 'running' || job.state === 'paused'
+        )
+      ) {
         reports.watch(id);
         continue;
       }
@@ -81,7 +138,7 @@
     for (const job of jobStore.jobs) {
       if (job.batch_id) continue;
       const id = `doc:${job.id}`;
-      if (job.state === 'queued' || job.state === 'running') {
+      if (job.state === 'queued' || job.state === 'running' || job.state === 'paused') {
         reports.watch(id);
         continue;
       }
@@ -137,14 +194,22 @@
     return completion;
   }
 
-  async function handle(files: File[], asBatch: boolean) {
+  /** Cómo se nombra cada acción en la consola y en el título del lote. */
+  const ACCIONES: Record<TaskKind, string> = {
+    split: 'dividir',
+    inventory: 'inventariar',
+    both: 'dividir e inventariar'
+  };
+
+  async function handle(files: File[], asBatch: boolean, task: TaskKind = 'split') {
     errors = [];
     uploaded = 0;
     uploadTotal = files.length;
 
     let batchId: string | undefined;
     if (asBatch) {
-      const name = `Lote de ${files.length} documento${files.length === 1 ? '' : 's'}`;
+      const accion = ACCIONES[task];
+      const name = `Lote de ${files.length} documento${files.length === 1 ? '' : 's'} ${accion}`;
       consoleLog.push('NET', `lote de ${files.length} archivos · abriendo`, 'net');
       try {
         batchId = (await createBatch(name)).id;
@@ -156,12 +221,16 @@
         consoleLog.push('WARN', `no se pudo abrir el lote: ${(error as Error).message}`, 'warn');
       }
     } else {
-      consoleLog.push('NET', `${files.length} archivo(s) · carga individual`, 'net');
+      consoleLog.push(
+        'NET',
+        `${files.length} archivo(s) · carga individual · ${ACCIONES[task]}`,
+        'net'
+      );
     }
 
     await withConcurrency(files, UPLOAD_CONCURRENCY, async (file) => {
       try {
-        await uploadDocument(file, batchId);
+        await uploadDocument(file, batchId, task);
         consoleLog.push('UP', `${formatBytes(file.size)} subidos`, 'net', file.name);
       } catch (error) {
         errors = [...errors, `${file.name}: ${(error as Error).message}`];
@@ -177,7 +246,7 @@
 <!-- One job for this screen: take documents in, and show the work while it is
      happening. Nothing that has finished belongs here -- it is on Procesados,
      and the count on that tab is what says so. -->
-<div class="workspace" class:busy>
+<div class="workspace" class:busy={conAlgoQueVer}>
   <section class="intake">
     <div class="intake-head">
       <h2>Cargar documentos</h2>
@@ -210,9 +279,9 @@
     {/if}
   </section>
 
-  {#if busy}
+  {#if conAlgoQueVer}
     <section class="live">
-      {#each runs as run (run.id)}
+      {#each liveRuns as run (run.id)}
         <FolderRunMonitor {run} />
       {/each}
 
@@ -220,6 +289,7 @@
         <BatchMonitor
           name={jobStore.batchNames[batchId] ?? `Lote de ${batchJobs.length} documentos`}
           jobs={batchJobs}
+          {batchId}
         />
       {/each}
 
@@ -231,6 +301,23 @@
         {#each looseInFlight as job (job.id)}
           <JobCard {job} />
         {/each}
+      {/if}
+
+      {#if closedRuns.length}
+        <section class="closed">
+          <header>
+            <h3>Carpetas terminadas ({closedRuns.length})</h3>
+            <button onclick={forgetClosedRuns} disabled={clearingRuns}>
+              {clearingRuns ? 'quitando…' : 'quitar todas'}
+            </button>
+          </header>
+          {#if runsError}
+            <p class="runs-error">{runsError}</p>
+          {/if}
+          {#each closedRuns as run (run.id)}
+            <FolderRunMonitor {run} />
+          {/each}
+        </section>
       {/if}
     </section>
   {:else}
@@ -258,6 +345,53 @@
 </div>
 
 <style>
+  /* Lo que ya cerró, apartado de lo que corre. Mismo contenido, menos peso
+     visual: sigue estando entero -- su árbol, su inventario -- pero deja de
+     competir por la mirada con la carpeta que sí está trabajando. */
+  .closed {
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+    margin-top: 0.4rem;
+    border-top: 1px solid var(--rule);
+    padding-top: 0.9rem;
+  }
+  .closed header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.6rem;
+  }
+  .closed h3 {
+    margin: 0;
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--ink-2);
+  }
+  .closed header button {
+    border: 1px solid var(--hairline);
+    border-radius: 7px;
+    background: transparent;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.72rem;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .closed header button:hover:not(:disabled) {
+    border-color: var(--axis);
+    color: var(--ink);
+  }
+  .closed header button:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+  .runs-error {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--critical);
+  }
+
   /* Idle: one column, centred, nothing but the intake. Busy: the work takes the
      right-hand side and the intake stays put on the left. */
   .workspace {

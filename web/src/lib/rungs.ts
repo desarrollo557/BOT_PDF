@@ -44,11 +44,20 @@ export const RUNGS: Rung[] = [
   }
 ];
 
+/**
+ * La marca de "mírame".
+ *
+ * Se llamaba "Ilegible", y casi nunca lo es: en un libro de folios la mayoría
+ * de estas páginas se leyeron enteras y lo que falla es que el contenido no se
+ * sostiene -- el folio del encabezado contra el del pie, un nombre que el
+ * escaneo dejó con un dígito dentro. Llamarlas ilegibles mandaba a buscar un
+ * problema de imagen donde hay un problema de dato.
+ */
 export const UNREADABLE: Rung = {
   key: 'none',
   mark: 'x',
-  label: 'Ilegible',
-  hint: 'la página no pudo leerse y quedó para revisión',
+  label: 'Requiere revisión',
+  hint: 'la página quedó marcada para que alguien la mire',
   color: 'var(--critical)'
 };
 
@@ -67,15 +76,48 @@ export function colorForMark(mark: string): string {
 export const STATE_LABELS: Record<string, string> = {
   queued: 'En cola',
   running: 'Procesando',
+  paused: 'En pausa',
   done: 'Listo',
-  failed: 'Falló'
+  failed: 'Falló',
+  cancelled: 'Cancelado'
 };
 
 export const STAGE_LABELS: Record<string, string> = {
   queued: 'En cola',
+  paused: 'En pausa, esperando reanudar',
+  cancelled: 'Cancelado por el operador',
   analysing: 'Leyendo páginas',
+  identifying: 'Reconociendo el documento',
+  verifying: 'Contrastando lo leído',
   grouping: 'Agrupando por resolución',
   assembling: 'Escribiendo los PDF',
+  inventorying: 'Escribiendo el inventario',
+  delivering: 'Guardando el resultado',
   done: 'Listo',
   failed: 'Falló'
 };
+
+/**
+ * Etapas que llevan su propio contador.
+ *
+ * Todas tardan lo bastante como para que enseñar sólo su nombre parezca un
+ * cuelgue. La pantalla las trata distinto: además de la etiqueta, muestran por
+ * dónde van y cuánto llevan en ello.
+ */
+export const COUNTED_STAGES = new Set([
+  'analysing',
+  'identifying',
+  'verifying',
+  'grouping',
+  'assembling',
+  'inventorying',
+  'delivering'
+]);
+
+/**
+ * Segundos de silencio a partir de los cuales se dice desde cuándo.
+ *
+ * Por debajo de esto un hueco es el ritmo normal del trabajo y anunciarlo sería
+ * ruido. Por encima, callarse es lo que hace que la pantalla parezca colgada.
+ */
+export const SILENCE_THRESHOLD_SECONDS = 4;

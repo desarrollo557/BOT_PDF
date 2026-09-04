@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RunControls from '$lib/components/RunControls.svelte';
   import { onMount } from 'svelte';
   import PageRibbon from '$lib/components/PageRibbon.svelte';
   import ThroughputChart from '$lib/components/ThroughputChart.svelte';
@@ -46,6 +47,7 @@
     <span class="lamp" aria-hidden="true"></span>
     <h3 title={job.filename}>{job.filename}</h3>
     <span class="stage">{STAGE_LABELS[progress.stage] ?? progress.stage}</span>
+    <RunControls jobId={job.id} runState={job.state} />
   </header>
 
   <!-- A meter, not a chart: one ratio against a known total. -->

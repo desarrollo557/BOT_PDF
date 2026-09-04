@@ -1,6 +1,7 @@
 <script lang="ts">
   import { deleteDocument, renameDocument } from '$lib/api';
   import { formatBytes } from '$lib/format';
+  import { jobStore } from '$lib/jobs.svelte';
 
   /**
    * One processed document, however it is being remembered.
@@ -33,9 +34,19 @@
     entry: Entry;
     /** Called after a successful rename or delete, so the page can reload. */
     onchange?: () => void;
+    /**
+     * Si la tarjeta está marcada, cuando la lista permite marcar varias.
+     *
+     * Ausente significa que no hay selección en marcha, y entonces la casilla
+     * no se dibuja: una casilla que no sirve para nada ocupa el mismo sitio que
+     * una que sí, y en una lista de doscientas tarjetas eso se nota.
+     */
+    selected?: boolean;
+    /** Marcar o desmarcar esta tarjeta. Sin esto no hay casilla. */
+    onselect?: (jobId: string, shift: boolean) => void;
   }
 
-  let { entry, onchange }: Props = $props();
+  let { entry, onchange, selected, onselect }: Props = $props();
 
   /**
    * The card is a folder, an editor or a warning -- never two at once.
@@ -86,6 +97,9 @@
     failure = null;
     try {
       await deleteDocument(entry.jobId);
+      // Un documento borrado no puede seguir pendiente de revisión: la copia
+      // que Revisión conserva de él se suelta con el documento.
+      jobStore.forget(entry.jobId);
       mode = 'idle';
       onchange?.();
     } catch (problem) {
@@ -97,7 +111,12 @@
   }
 </script>
 
-<div class="card" class:failed={entry.failed} class:openable={entry.live && mode === 'idle'}>
+<div
+  class="card"
+  class:failed={entry.failed}
+  class:openable={entry.live && mode === 'idle'}
+  class:picking={!!onselect}
+>
   <span class="tab" aria-hidden="true"></span>
 
   {#if mode === 'renaming'}
@@ -144,11 +163,27 @@
       {#if failure}<p class="error">{failure}</p>{/if}
     </div>
   {:else}
-    <svelte:element
-      this={entry.live ? 'a' : 'div'}
-      class="body"
-      href={entry.live ? `/documento/${entry.jobId}` : undefined}
-    >
+    {#if onselect}
+      <!--
+        Fuera del enlace a propósito: dentro, marcar la casilla navegaría al
+        detalle del documento y el operador perdería la selección entera.
+      -->
+      <label class="pick" title="Seleccionar para eliminar en lote">
+        <input
+          type="checkbox"
+          checked={selected ?? false}
+          onclick={(event) => onselect(entry.jobId, event.shiftKey)}
+        />
+        <span class="sr">Seleccionar {entry.name}</span>
+      </label>
+    {/if}
+    <!--
+      Lleva al detalle esté en pantalla o archivado. Antes sólo era un enlace
+      mientras el trabajo seguía en memoria, así que en cuanto se limpiaba el
+      área de trabajo la ficha dejaba de poder abrirse: la tarjeta se veía
+      pinchable y no llevaba a ninguna parte.
+    -->
+    <a class="body" href={`/documento/${entry.jobId}`}>
       <header>
         <span class="name" title={entry.name}>{entry.name}</span>
         <time class="tabular">{clock}</time>
@@ -173,7 +208,7 @@
           </div>
         </dl>
       {/if}
-    </svelte:element>
+    </a>
 
     <footer>
       {#if entry.operator}
@@ -200,11 +235,15 @@
         >
           eliminar
         </button>
-        {#if entry.live}
-          <a class="open" href={`/documento/${entry.jobId}`}>ver detalle →</a>
-        {:else}
-          <span class="archived">archivado</span>
-        {/if}
+        <!--
+          Un solo enlace, esté el documento en pantalla o archivado: desde que
+          la ficha se dibuja también desde el inventario, los dos abren. Poner
+          además el rótulo "archivado" metía un elemento de más en un pie que no
+          reparte, y la fila se salía de la tarjeta.
+        -->
+        <a class="open" href={`/documento/${entry.jobId}`} title={entry.live ? undefined : 'Archivado: se dibuja desde el inventario'}>
+          ver detalle →
+        </a>
       </span>
     </footer>
 
@@ -213,6 +252,45 @@
 </div>
 
 <style>
+  /* La casilla se apoya sobre la esquina de la tarjeta sin empujar nada. */
+  .pick {
+    position: absolute;
+    top: 0.55rem;
+    left: 0.55rem;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    padding: 0.15rem;
+    cursor: pointer;
+  }
+
+  .pick input {
+    width: 1rem;
+    height: 1rem;
+    cursor: pointer;
+    accent-color: var(--accent);
+  }
+
+  /*
+    La casilla flota sobre la esquina, así que el nombre tiene que apartarse o
+    queda debajo. Se aparta sólo el renglón del título -- las cifras y el pie
+    siguen usando el ancho entero -- porque es la única línea que llega hasta
+    ese borde.
+  */
+  .card.picking header {
+    padding-left: 1.55rem;
+  }
+
+  /* Sólo para quien lee la pantalla en voz alta. */
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
   /* Drawn as a folder: a finished document is something you open, not a row you
      scroll past. */
   .card {
@@ -320,6 +398,9 @@
 
   footer {
     display: flex;
+    /* Que reparta antes que desbordar: la tarjeta tiene un ancho fijo en la
+       rejilla y un pie que no se rompe se sale por el borde. */
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.45rem;
     border-top: 1px solid var(--rule);
@@ -376,12 +457,6 @@
   }
 
   .open,
-  .archived {
-    flex-shrink: 0;
-    font-size: 0.7rem;
-    color: var(--muted);
-    text-decoration: none;
-  }
   .card.openable:hover .open {
     color: var(--accent);
   }

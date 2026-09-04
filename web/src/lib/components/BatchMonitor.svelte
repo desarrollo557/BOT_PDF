@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RunControls from '$lib/components/RunControls.svelte';
   import { onMount } from 'svelte';
   import PageRibbon from '$lib/components/PageRibbon.svelte';
   import ThroughputChart from '$lib/components/ThroughputChart.svelte';
@@ -9,23 +10,43 @@
   interface Props {
     name: string;
     jobs: Job[];
+    /** Para poder pausar o cancelar el lote entero de una sola orden. */
+    batchId?: string;
   }
 
-  let { name, jobs }: Props = $props();
+  let { name, jobs, batchId }: Props = $props();
 
   const running = $derived(jobs.filter((job) => job.state === 'running'));
   const queued = $derived(jobs.filter((job) => job.state === 'queued'));
+  const paused = $derived(jobs.filter((job) => job.state === 'paused'));
   const done = $derived(jobs.filter((job) => job.state === 'done'));
   const failed = $derived(jobs.filter((job) => job.state === 'failed'));
+  const cancelled = $derived(jobs.filter((job) => job.state === 'cancelled'));
+
+  /**
+   * En qué está el lote, para decidir si se ofrece pausar o reanudar.
+   *
+   * Se considera en pausa cuando ya no queda ninguno corriendo: con cincuenta
+   * documentos, la orden llega a todos pero cada uno la atiende al terminar su
+   * página, y durante esos segundos el lote está parándose, no parado.
+   */
+  const batchState = $derived.by(() => {
+    if (running.length) return 'running' as const;
+    if (paused.length) return 'paused' as const;
+    if (queued.length) return 'queued' as const;
+    return 'done' as const;
+  });
 
   const pagesTotal = $derived(jobs.reduce((sum, job) => sum + job.progress.page_count, 0));
   const pagesDone = $derived(jobs.reduce((sum, job) => sum + job.progress.pages_done, 0));
   const percent = $derived(jobs.length ? (100 * (done.length + failed.length)) / jobs.length : 0);
   const rate = $derived(running.reduce((sum, job) => sum + job.progress.pages_per_second, 0));
   const resolutions = $derived(
-    jobs.reduce((sum, job) => sum + (job.report?.groups.length ?? 0), 0)
+    jobs.reduce((sum, job) => sum + (job.report?.groups?.length ?? 0), 0)
   );
-  const settled = $derived(jobs.length > 0 && done.length + failed.length === jobs.length);
+  const settled = $derived(
+    jobs.length > 0 && done.length + failed.length + cancelled.length === jobs.length
+  );
 
   /**
    * Net weight of the batch: every source PDF added up, and how much of it has
@@ -103,6 +124,11 @@
     <span class="lamp" aria-hidden="true"></span>
     <h3>{name}</h3>
     <span class="counter tabular">{done.length + failed.length} / {jobs.length} documentos</span>
+    {#if batchId}
+      <!-- Una sola orden para el lote entero: pausar cincuenta documentos de uno
+           en uno no es una función, es un castigo. -->
+      <RunControls {batchId} runState={batchState} documents={jobs.length} />
+    {/if}
   </header>
 
   <div

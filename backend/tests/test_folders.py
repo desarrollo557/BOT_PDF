@@ -568,3 +568,168 @@ class TestFolderBrowser:
         documento = tmp_path / "a.pdf"
         documento.write_bytes(b"%PDF")
         assert client.get(f"/api/folders?path={documento}").status_code in (404, 422)
+
+
+class TestLaAccionDeLaCarpeta:
+    """Una carpeta puede pedir lo mismo que una subida.
+
+    Hasta ahora sólo sabía dividir, así que un libro de diplomas tomado de una
+    carpeta no tenía forma de dejar su inventario: había que volver a subirlo a
+    mano, uno por uno, con la acción correcta.
+    """
+
+    def test_por_omision_sigue_dividiendo(self, workspace, tmp_path):
+        registry = JobRegistry()
+        engine, _ = runner(workspace, registry)
+        put(tmp_path / "origen", "expediente.pdf")
+
+        run = drain(engine, tmp_path / "origen", tmp_path / "destino")
+
+        assert run.task == "split"
+        assert [job.task for job in registry.list()] == ["split"]
+
+    def test_cada_documento_hereda_la_accion_de_su_carpeta(self, workspace, tmp_path):
+        # Es lo que hace que el FUID exista sin que nadie tenga que pedirlo dos
+        # veces: la carpeta se pidió inventariando, y sus documentos también.
+        registry = JobRegistry()
+        engine, _ = runner(workspace, registry)
+        put(tmp_path / "origen", "libro.pdf", "otro.pdf")
+
+        run = drain(engine, tmp_path / "origen", tmp_path / "destino", task="both")
+
+        assert run.task == "both"
+        assert {job.task for job in registry.list()} == {"both"}
+
+    def test_la_accion_viaja_en_el_estado_que_ve_la_pantalla(self, workspace, tmp_path):
+        registry = JobRegistry()
+        engine, _ = runner(workspace, registry)
+        put(tmp_path / "origen", "expediente.pdf")
+
+        run = drain(engine, tmp_path / "origen", tmp_path / "destino", task="inventory")
+
+        assert run.as_dict()["task"] == "inventory"
+
+
+class TestQuitarUnaCarpetaDeLaPantalla:
+    """Una carpeta terminada tiene que poder irse de la pantalla.
+
+    Sin esto se acumulaban para siempre. Al cabo de una mañana la pantalla
+    principal enseñaba media docena de tarjetas de carpetas ya cerradas, con sus
+    contadores y sus colas, mezcladas con la que sí estaba trabajando, y no
+    había forma de distinguir de un vistazo cuál seguía viva.
+
+    Quitar no es parar. Una carpeta en marcha no se olvida por descuido: hay que
+    detenerla primero, que es una decisión distinta y del operador.
+    """
+
+    def test_a_finished_run_can_be_forgotten(self, workspace, tmp_path):
+        put(tmp_path / "origen", "a.pdf")
+        engine, _ = runner(workspace, JobRegistry())
+        run = drain(engine, tmp_path / "origen", tmp_path / "destino")
+
+        assert engine.forget(run.id) is not None
+        assert engine.get(run.id) is None
+        assert engine.list() == []
+
+    def test_a_running_one_is_never_forgotten_by_accident(self, workspace, tmp_path):
+        put(tmp_path / "origen", "a.pdf")
+        engine, _ = runner(workspace, JobRegistry())
+
+        async def go():
+            run = engine.start(str(tmp_path / "origen"), str(tmp_path / "destino"), watch=True)
+            for _ in range(400):
+                if run.state is RunState.WATCHING:
+                    break
+                await asyncio.sleep(0.01)
+            assert run.active
+            # Vigilando es estar viva: quitarla dejaría el trabajo corriendo sin
+            # nadie que informara de él.
+            assert engine.forget(run.id) is None
+            assert engine.get(run.id) is not None
+            engine.stop(run.id)
+            assert engine.forget(run.id) is not None
+
+        asyncio.run(go())
+
+    def test_forgetting_them_all_spares_the_ones_still_alive(self, workspace, tmp_path):
+        put(tmp_path / "origen", "a.pdf")
+        (tmp_path / "otra").mkdir()
+        put(tmp_path / "otra", "b.pdf")
+        engine, _ = runner(workspace, JobRegistry())
+
+        async def go():
+            terminada = engine.start(str(tmp_path / "origen"), str(tmp_path / "destino"))
+            for _ in range(400):
+                if not terminada.active:
+                    break
+                await asyncio.sleep(0.01)
+            viva = engine.start(str(tmp_path / "otra"), str(tmp_path / "destino"), watch=True)
+            for _ in range(400):
+                if viva.state is RunState.WATCHING:
+                    break
+                await asyncio.sleep(0.01)
+
+            quitadas = engine.forget_finished()
+            assert [run.id for run in quitadas] == [terminada.id]
+            assert [run.id for run in engine.list()] == [viva.id]
+            engine.stop(viva.id)
+
+        asyncio.run(go())
+
+    def test_forgetting_something_that_is_not_there_says_so(self, workspace):
+        engine, _ = runner(workspace, JobRegistry())
+        assert engine.forget("no-existe") is None
+
+
+class TestElEndpointQueVaciaLaPantalla:
+    """La misma decisión, por HTTP: quitar lo terminado sin tocar lo vivo."""
+
+    def crear(self, client, tmp_path):
+        origen = tmp_path / "origen-http"
+        destino = tmp_path / "destino-http"
+        origen.mkdir()
+        destino.mkdir()
+        respuesta = client.post(
+            "/api/folder-runs",
+            json={"source": str(origen), "destination": str(destino)},
+        )
+        assert respuesta.status_code == 201, respuesta.text
+        return respuesta.json()["id"]
+
+    def esperar_a_que_termine(self, client, run_id):
+        for _ in range(400):
+            estado = client.get(f"/api/folder-runs/{run_id}").json()
+            if estado["state"] in ("done", "stopped", "failed"):
+                return estado
+            import time
+
+            time.sleep(0.01)
+        raise AssertionError("la corrida no terminó")
+
+    def test_it_forgets_one_finished_run(self, client, tmp_path):
+        run_id = self.crear(client, tmp_path)
+        self.esperar_a_que_termine(client, run_id)
+
+        borrado = client.delete(f"/api/folder-runs/{run_id}")
+        assert borrado.status_code == 200
+        assert borrado.json() == {"removed": 1, "ids": [run_id]}
+        assert client.get(f"/api/folder-runs/{run_id}").status_code == 404
+
+    def test_forgetting_one_that_never_existed_is_a_404(self, client):
+        assert client.delete("/api/folder-runs/no-existe").status_code == 404
+
+    def test_it_clears_every_finished_run_at_once(self, client, tmp_path):
+        primero = self.crear(client, tmp_path)
+        self.esperar_a_que_termine(client, primero)
+
+        vaciado = client.delete("/api/folder-runs")
+        assert vaciado.status_code == 200
+        assert vaciado.json()["removed"] == 1
+        assert client.get("/api/folder-runs").json()["runs"] == []
+
+    def test_the_screen_announces_that_it_can_do_this(self, client):
+        # La pantalla compara sus capacidades con las del servicio para poder
+        # decir "este servicio está viejo" en vez de dar un 405 por roto.
+        salud = client.get("/api/health").json()
+        assert salud["api_revision"] >= 15
+        assert "folder-run-clear" in salud["features"]

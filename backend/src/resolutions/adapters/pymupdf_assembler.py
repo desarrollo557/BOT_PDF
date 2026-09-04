@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+import re
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pymupdf
 
+from ..application.control import NullRunControl, RunControl
 from ..application.ports import AssemblyResult
+from ..application.progress import (
+    NullProgressReporter,
+    ProgressEvent,
+    ProgressReporter,
+    Stage,
+)
 from ..domain.grouping import GroupingResult
-from ..domain.naming import output_filename
+from ..domain.naming import RESOLUTION_PREFIX, output_filename
+from .mupdf_messages import drenar, explicar
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +35,45 @@ MAX_PATH = 260
 #: Slack for the numbering a destination folder may add on collision, e.g.
 #: " (2)" in a delivery folder that already holds the same number.
 PATH_MARGIN = 10
+
+#: Una referencia indirecta tal como aparece en la fuente de un objeto PDF:
+#: ``70353 0 R``. El número que importa es el primero, el del objeto citado.
+_REFERENCIA = re.compile(r"(?<![\d.])(\d+)\s+\d+\s+R(?![A-Za-z0-9])")
+
+
+def objeto_que_no_resuelve(document: pymupdf.Document) -> int | None:
+    """El primer objeto que el PDF cita y su tabla de referencias no contiene.
+
+    Ésta es la avería que perdía resoluciones enteras y que no se ve al abrir el
+    archivo. Un escaneo puede traer una tabla que se lee sin una queja y que,
+    dentro, remite a un objeto inexistente -- en el material de la Universidad,
+    un perfil de color ICC que el escáner nunca llegó a escribir. MuPDF no marca
+    nada al abrirlo, porque hasta que alguien no pide ese objeto no hay nada que
+    falle, y el fallo llega a media escritura, cuando el documento ya se leyó,
+    se agrupó y se cuadró entero.
+
+    Buscarlo es barato porque no hay que tocar el contenido: ``xref_object``
+    devuelve el diccionario del objeto, no sus flujos, así que esto es un
+    recorrido por los metadatos. Sobre un libro de 323 páginas y 68.309 objetos
+    -- 192 MB en disco -- la pasada completa tarda menos de un segundo, frente a
+    los minutos que cuesta reescribir el archivo. Sale a cuenta pagarla siempre
+    con tal de saber, antes de escribir el primer archivo, si el origen aguanta.
+
+    Devuelve el número del objeto que no se resuelve, o ``None`` si la tabla
+    cierra.
+    """
+    total = document.xref_length()
+    for xref in range(1, total):
+        try:
+            fuente = document.xref_object(xref, compressed=True)
+        except Exception:  # noqa: BLE001 - un objeto ilegible ya es la avería
+            logger.debug("el objeto %s no se deja leer", xref, exc_info=True)
+            return xref
+        for match in _REFERENCIA.finditer(fuente):
+            citado = int(match.group(1))
+            if citado >= total:
+                return citado
+    return None
 
 
 def name_budget(destination: Path) -> int:
@@ -58,17 +106,192 @@ def _runs(page_numbers: list[int]) -> Iterator[tuple[int, int]]:
     yield start, previous
 
 
+class _Origen:
+    """El PDF de origen, con una reparación en la recámara.
+
+    Copiar páginas de un PDF a otro es injertar objetos, y para eso los números
+    que el árbol de páginas cita tienen que estar en la tabla de referencias
+    cruzadas del origen. Cuando no lo están, MuPDF aborta el injerto con
+    ``source object number out of range`` y la página se pierde.
+
+    Hay dos formas de llegar a esa situación y sólo una se ve al abrir el
+    archivo. Si MuPDF tuvo que reconstruir la tabla, lo dice (``is_repaired``) y
+    se sabe de antemano. Pero un escaneo puede traer una tabla que se lee
+    perfectamente y que, dentro, remite a objetos que no existen: MuPDF no marca
+    nada, porque hasta que alguien no pide ese objeto no hay nada que falle. El
+    daño aparece a media escritura, cuando ya se leyó, se agrupó y se cuadró el
+    documento entero.
+
+    Por eso la reparación se decide antes de escribir nada. Reescribir el origen
+    -- guardarlo con la tabla renumerada y volver a abrirlo -- deja los números
+    consistentes y el injerto vuelve a funcionar; cuesta una pasada sobre el
+    archivo y se paga una sola vez por documento, no una por resolución.
+    :meth:`preparar` mira las dos formas del daño: la que MuPDF ya marcó al
+    abrir y la que sólo se ve recorriendo la tabla. Queda además el intento
+    perezoso, por si algo se le escapa a las dos: la primera vez que una
+    escritura falle.
+    """
+
+    def __init__(self, source: Path, destination: Path, nombre: str | None = None) -> None:
+        self._source = source
+        self._destination = destination
+        #: Cómo se le nombra en los avisos. Las subidas llegan con un nombre
+        #: generado y decir "6ea93142663d.pdf viene dañado" no identifica nada.
+        self._nombre = nombre or source.name
+        self._scratch: Path | None = None
+        self._intentado = False
+        self._document = pymupdf.open(source)
+
+    @property
+    def document(self) -> pymupdf.Document:
+        return self._document
+
+    @property
+    def name(self) -> str:
+        return self._nombre
+
+    def preparar(self, avisar: Callable[[str], None] | None = None) -> None:
+        """Dejar el origen en condiciones antes de escribir la primera salida.
+
+        Repararlo aquí, y no cuando falle una escritura, es lo que evita dar por
+        buena media entrega sacada de un documento del que MuPDF no puede
+        copiarlo todo, y lo que le ahorra al operador un aviso de fallo por una
+        avería que el sistema sabe arreglar. Revisar la tabla cuesta menos de un
+        segundo incluso en un libro de 192 MB; repararla cuesta minutos, así que
+        sólo se repara cuando la revisión encuentra algo.
+        """
+        if self._document.is_repaired:
+            # MuPDF ya reconstruyó la tabla al abrirlo, así que los números que
+            # cita el árbol de páginas no son los de la tabla que hay en
+            # memoria. Aquí no hay nada más que mirar.
+            logger.info(
+                "%s trae la tabla de referencias cruzadas reconstruida por MuPDF",
+                self._nombre,
+            )
+            self.normalizar(avisar)
+            return
+
+        if avisar is not None:
+            avisar("revisando la tabla de objetos del documento")
+        colgante = objeto_que_no_resuelve(self._document)
+        if colgante is None:
+            return
+        logger.info(
+            "%s cita el objeto %s, que no figura en su tabla de referencias cruzadas",
+            self._nombre,
+            colgante,
+        )
+        self.normalizar(avisar)
+
+    def normalizar(self, avisar: Callable[[str], None] | None = None) -> bool:
+        """Reescribir el origen para que sus objetos puedan injertarse.
+
+        Devuelve si el documento cambió, que es lo que decide si vale la pena
+        reintentar. Un segundo intento no repara más que el primero, así que
+        sólo se prueba una vez por documento: insistir convertiría cada
+        resolución de un archivo irrecuperable en otra pasada completa sobre el
+        archivo.
+
+        Se guarda con ``garbage=1`` y nada más. Lo que hay que arreglar es la
+        tabla de referencias, y para eso basta con renumerar los objetos y
+        volver a escribirla. ``clean`` reanaliza todos los flujos de contenido y
+        ``deflate`` los recomprime uno a uno: en un escaneo, cuyo contenido ya
+        son imágenes comprimidas, las dos cosas recorren el archivo entero para
+        no arreglar nada.
+
+        La diferencia no es de matiz. Sobre el libro de la Universidad que
+        levantó la avería -- ``RESOLUCIONES 00960-00979.pdf``, 323 páginas y
+        192 MB -- guardar con ``garbage=4, clean=True, deflate=True`` costó
+        347,57 s y guardar con ``garbage=1`` costó 0,65 s; las dos copias
+        admiten después el injerto de las 323 páginas y pesan lo mismo. Los
+        casi seis minutos de la primera son exactamente el hueco que el
+        registro del servicio mostraba entre la última resolución escrita antes
+        de la reparación y la siguiente.
+        """
+        if self._intentado:
+            return False
+        self._intentado = True
+        # Informativo y no advertencia: esto no es un problema del trabajo, es
+        # un defecto del archivo de origen que el sistema arregla antes de
+        # escribir nada, y en menos de un segundo. Lo que merece una advertencia
+        # es lo que se pierde, y aquí no se pierde nada. Dicho a gritos, además,
+        # tapaba en la consola los avisos que sí piden algo de alguien.
+        logger.info(
+            "%s trae la tabla de objetos dañada; se reescribe una copia "
+            "normalizada antes de escribir las resoluciones",
+            self._nombre,
+        )
+        if avisar is not None:
+            # Reescribir un libro de cientos de megas tarda, y hasta ahora
+            # transcurría sin que la pantalla dijera nada: la barra se quedaba
+            # quieta y el trabajo parecía colgado.
+            avisar("reparando la tabla de objetos del documento de origen")
+        scratch = self._destination / REPAIRED_FILE
+        try:
+            self._document.save(scratch, garbage=1)
+        except Exception as error:  # noqa: BLE001 - el original todavía sirve
+            logger.warning(
+                "no se pudo normalizar %s (%s); se sigue con el original",
+                self._nombre,
+                explicar(error),
+            )
+            scratch.unlink(missing_ok=True)
+            return False
+        self._document.close()
+        self._document = pymupdf.open(scratch)
+        self._scratch = scratch
+        return True
+
+    def close(self) -> None:
+        self._document.close()
+        if self._scratch is not None:
+            # Es un archivo de trabajo, y quien abra la carpeta de salida tiene
+            # que ver resoluciones, no una copia del documento que subió.
+            self._scratch.unlink(missing_ok=True)
+
+
 class PyMuPDFAssembler:
     """Writes one PDF per resolution, plus a file holding whatever was quarantined.
 
     Damage is expected, not exceptional. Scanners, mail gateways and decades-old
     archives all produce PDFs whose object tables do not survive a strict read,
     and a document that arrives at this stage has already been read, grouped and
-    balanced -- losing it here would throw away all of that work. So the writer
-    degrades in three steps: repair the source, fall back from block copies to
-    single pages, and finally set aside the individual pages that cannot be
-    copied at all, reporting them instead of failing the document.
+    balanced -- losing it here would throw away all of that work.
+
+    Por eso lo primero es mirar el origen: si su tabla de objetos no cierra, se
+    repara antes de escribir la primera resolución, de modo que la entrega
+    entera salga de un documento consistente. A partir de ahí el escritor
+    degrada en cuatro pasos: copiar por bloques, reparar el origen y volver a
+    copiarlo por bloques -- para el daño que la revisión no vea --, reconstruir
+    el grupo página a página, y por último apartar las páginas que no se dejan
+    copiar de ninguna manera, informando de ellas en vez de dar el documento por
+    perdido.
     """
+
+    def __init__(
+        self,
+        control: RunControl | None = None,
+        progress: ProgressReporter | None = None,
+        naming_prefix: str | None = RESOLUTION_PREFIX,
+        nombre: str | None = None,
+    ) -> None:
+        #: Escribir cuatrocientos archivos tarda tanto como leerlos. Sin un punto
+        #: de parada aquí, una cancelación pedida durante la escritura se
+        #: ignoraba en silencio y el trabajo terminaba igual.
+        self._control = control or NullRunControl()
+        #: Y por la misma razón hay que contarlo. Escribir 287 archivos son
+        #: decenas de segundos en los que la barra de páginas ya está al 100 %:
+        #: sin decir por dónde va, el trabajo parece terminado y quieto.
+        self._progress = progress or NullProgressReporter()
+        #: La palabra con que empieza el nombre de cada archivo. Quien parte un
+        #: documento sabe qué son sus unidades; el escritor no, y nombrar
+        #: "RESOLUCION_728" a un folio de un libro de diplomas sería escribir en
+        #: el disco algo que no es verdad.
+        self._prefix = naming_prefix
+        #: Cómo llamó el operador al documento de origen. Las subidas se guardan
+        #: con un nombre generado, y un aviso sobre "6ea93142663d.pdf" no dice
+        #: de qué archivo se está hablando.
+        self._nombre = nombre
 
     def write(
         self,
@@ -82,14 +305,31 @@ class PyMuPDFAssembler:
         unwritable: dict[int, str] = {}
         budget = name_budget(destination)
 
-        origin, scratch = self._open_graftable(source, destination)
+        total = len(result.groups) + (1 if result.quarantine else 0)
+        self._announce(0, total, "preparando el documento de origen")
+
+        origin = _Origen(source, destination, self._nombre)
         try:
-            for group in result.groups:
-                name = output_filename(group.code, group.title, budget=budget)
+            # Antes de la primera resolución, no a mitad de la entrega. Y con la
+            # cancelación consultada delante, porque reparar un libro de
+            # cientos de megas es el tramo más largo de toda la escritura y no
+            # tiene sentido empezarlo si el operador acaba de decir que pare.
+            self._control.check()
+            origin.preparar(lambda detalle: self._announce(0, total, detalle))
+
+            for index, group in enumerate(result.groups, start=1):
+                # Entre un archivo y el siguiente: el anterior ya está cerrado y
+                # el siguiente aún no existe, así que aquí no se deja nada a
+                # medio escribir.
+                self._control.check()
+                name = output_filename(
+                    group.code, group.title, budget=budget, prefix=self._prefix
+                )
                 target = destination / name
                 if self._write_guarded(origin, group.page_numbers, target, unwritable):
                     written.append(target)
                     names[group.code.value] = name
+                self._announce(index, total, name)
 
             if result.quarantine:
                 # Never dropped, never guessed at: quarantined pages ship as their
@@ -97,42 +337,29 @@ class PyMuPDFAssembler:
                 target = destination / QUARANTINE_FILE
                 if self._write_guarded(origin, result.quarantine, target, unwritable):
                     written.append(target)
+                self._announce(total, total, QUARANTINE_FILE)
         finally:
             origin.close()
-            if scratch is not None:
-                scratch.unlink(missing_ok=True)
+            # Lo que MuPDF fue anotando mientras se copiaban las páginas, dicho
+            # en español y con el documento delante. Vaciarlo aquí es además lo
+            # que impide que su almacén global siga creciendo documento tras
+            # documento en la vida del worker.
+            drenar(origin.name)
 
         return AssemblyResult(outputs=written, unwritable_pages=unwritable, written=names)
 
-    @staticmethod
-    def _open_graftable(source: Path, destination: Path) -> tuple[pymupdf.Document, Path | None]:
-        """Open the source in a state its objects can actually be copied out of.
-
-        When MuPDF has to rebuild a broken cross-reference table it does so in
-        memory, and the object numbers the page tree cites are then not the ones
-        the rebuilt table holds. Reading such a document works; grafting pages out
-        of it is what raises "source object number out of range". Writing the
-        rebuild out and reopening it renumbers everything consistently, which
-        costs one pass over the file and only for documents that are damaged.
-        """
-        document = pymupdf.open(source)
-        if not document.is_repaired:
-            return document, None
-
-        logger.warning("%s arrived damaged; normalising before assembly", source.name)
-        scratch = destination / REPAIRED_FILE
+    def _announce(self, done: int, total: int, detail: str) -> None:
+        """Decir por dónde va. Un fallo del aviso nunca interrumpe la escritura."""
         try:
-            document.save(scratch, garbage=4, clean=True, deflate=True)
-        except Exception:  # noqa: BLE001 - the unrepaired document is still usable
-            logger.warning("could not normalise %s, assembling from the original", source.name)
-            return document, None
-
-        document.close()
-        return pymupdf.open(scratch), scratch
+            self._progress.emit(
+                ProgressEvent(stage=Stage.ASSEMBLING, done=done, total=total, detail=detail)
+            )
+        except Exception:  # noqa: BLE001 - la telemetría nunca rompe el trabajo
+            logger.debug("no se pudo anunciar el avance de la escritura", exc_info=True)
 
     def _write_guarded(
         self,
-        origin: pymupdf.Document,
+        origin: _Origen,
         page_numbers: list[int],
         target: Path,
         unwritable: dict[int, str],
@@ -146,39 +373,67 @@ class PyMuPDFAssembler:
         try:
             return self._write_pages(origin, page_numbers, target, unwritable)
         except Exception as error:  # noqa: BLE001 - contained to this file
-            logger.warning("could not write %s: %s", target.name, error)
+            motivo = explicar(error)
+            logger.warning("no se pudo escribir %s: %s", target.name, motivo)
             target.unlink(missing_ok=True)
             for page_number in page_numbers:
-                unwritable.setdefault(page_number, f"{type(error).__name__}: {error}")
+                unwritable.setdefault(page_number, motivo)
             return False
 
     def _write_pages(
         self,
-        origin: pymupdf.Document,
+        origin: _Origen,
         page_numbers: list[int],
         target: Path,
         unwritable: dict[int, str],
     ) -> bool:
         """Write one output file. Returns whether anything was actually written.
 
-        Two attempts. The fast one copies whole ranges and saves once, which is
-        what every healthy document takes. If anything in it raises -- including
-        the save, because MuPDF resolves grafted objects lazily and a damaged
-        one surfaces there rather than at the insert -- the whole group is
-        rebuilt a page at a time.
+        Tres intentos, de más barato a más caro. El rápido copia rangos enteros y
+        guarda una vez, que es lo que necesita cualquier documento sano. Si algo
+        ahí levanta -- incluido el guardado, porque MuPDF resuelve los objetos
+        injertados de forma perezosa y un objeto dañado sale por ahí y no en el
+        insert -- se repara el origen y se vuelve a probar el camino rápido. Y
+        sólo si eso tampoco basta se reconstruye el grupo página a página.
+
+        El orden importa. Ir directamente a la copia página a página, que es lo
+        que se hacía antes, no arregla nada cuando el daño está en la tabla del
+        origen: la copia de una sola página injerta desde el mismo documento roto
+        y falla exactamente igual, y la página se da por perdida sin haber
+        probado lo único que la salvaba.
+
+        Los pasos intermedios se cuentan como informativos y no como advertencia.
+        Que un camino no sirva y se pruebe el siguiente no es una pérdida: la
+        pérdida, si la hay, la avisa quien la sufre -- la página que no se deja
+        copiar o el archivo que no se llega a escribir. Mezclarlas dejaba en la
+        consola del operador la palabra "falló" junto al nombre de una
+        resolución que acabó saliendo entera.
         """
         try:
-            if self._write_in_blocks(origin, page_numbers, target):
+            if self._write_in_blocks(origin.document, page_numbers, target):
                 return True
-        except Exception as error:  # noqa: BLE001 - retried page by page
-            logger.warning(
-                "block assembly of %s failed (%s); rebuilding page by page",
+        except Exception as error:  # noqa: BLE001 - se repara y se reintenta
+            logger.info(
+                "la copia por bloques de %s no salió a la primera (%s); "
+                "se repara el origen y se reintenta",
                 target.name,
-                error,
+                explicar(error),
             )
             target.unlink(missing_ok=True)
+            if origin.normalizar():
+                try:
+                    if self._write_in_blocks(origin.document, page_numbers, target):
+                        return True
+                except Exception as segundo:  # noqa: BLE001 - queda el último camino
+                    logger.warning(
+                        "%s sigue sin poder copiarse por bloques tras normalizar "
+                        "el origen (%s); se reconstruye página a página",
+                        target.name,
+                        explicar(segundo),
+                    )
+                    target.unlink(missing_ok=True)
 
-        return self._write_page_by_page(origin, page_numbers, target, unwritable)
+        return self._write_page_by_page(origin.document, page_numbers, target, unwritable)
 
     @staticmethod
     def _write_in_blocks(
@@ -215,8 +470,9 @@ class PyMuPDFAssembler:
                 except Exception as error:  # noqa: BLE001 - reported, not swallowed
                     # The page is lost, the document is not. It goes to review
                     # named, so nobody has to diff page counts to find it.
-                    logger.warning("page %s could not be copied: %s", page_number, error)
-                    unwritable[page_number] = f"{type(error).__name__}: {error}"
+                    motivo = explicar(error)
+                    logger.warning("la página %s no pudo copiarse: %s", page_number, motivo)
+                    unwritable[page_number] = motivo
                     continue
 
                 with pymupdf.open("pdf", isolated) as clean:
@@ -241,7 +497,11 @@ class PyMuPDFAssembler:
         try:
             output.save(target, garbage=3, deflate=True)
         except Exception as error:  # noqa: BLE001 - retried without compaction
-            logger.warning("compacted save of %s failed (%s); saving plainly", target.name, error)
+            logger.warning(
+                "el guardado compactado de %s falló (%s); se guarda sin compactar",
+                target.name,
+                explicar(error),
+            )
             target.unlink(missing_ok=True)
             output.save(target)
 

@@ -74,6 +74,27 @@ class TestRecording:
         assert ledger.record("job-1", report(items=[])) == 0
         assert ledger.rows() == []
 
+    def test_a_split_diploma_without_inventory_items_is_still_recorded(self, tmp_path):
+        ledger = InventoryLedger(tmp_path / "inventory.jsonl")
+        report_payload = {
+            "document": "libro-diplomas.pdf",
+            "page_count": 2,
+            "groups": [
+                {"code": "22793650", "title": "ALIX JOSEFINA MARIN", "pages": [1], "size": 1},
+                {"code": "22793651", "title": "LUIS PEREZ", "pages": [2], "size": 1},
+            ],
+            "outputs": ["22793650__alix-josefina-marin.pdf", "22793651__luis-perez.pdf"],
+        }
+        assert ledger.record("job-diploma", report_payload) == 2
+        assert [row["source_document"] for row in ledger.rows()] == [
+            "libro-diplomas.pdf",
+            "libro-diplomas.pdf",
+        ]
+        assert [row["file_name"] for row in ledger.rows()] == [
+            "22793651__luis-perez.pdf",
+            "22793650__alix-josefina-marin.pdf",
+        ]
+
     def test_rows_come_back_newest_first(self, tmp_path):
         ledger = InventoryLedger(tmp_path / "inventory.jsonl")
         ledger.record("job-1", report(document="primero.pdf"))

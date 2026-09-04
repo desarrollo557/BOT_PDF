@@ -4,8 +4,10 @@
   import PageRibbon from '$lib/components/PageRibbon.svelte';
   import ResolutionRow from '$lib/components/ResolutionRow.svelte';
   import ProvenanceBar from '$lib/components/ProvenanceBar.svelte';
+  import RunControls from '$lib/components/RunControls.svelte';
   import StatTile from '$lib/components/StatTile.svelte';
-  import { STAGE_LABELS, STATE_LABELS } from '$lib/rungs';
+  import { unitFor } from '$lib/format';
+  import { SILENCE_THRESHOLD_SECONDS, STAGE_LABELS, STATE_LABELS } from '$lib/rungs';
   import type { Job } from '$lib/types';
 
   interface Props {
@@ -19,11 +21,72 @@
   const progress = $derived(job.progress);
   const live = $derived(job.state === 'running' && progress.page_count > 0);
 
+  /**
+   * Las listas del informe, siempre presentes aunque el informe no las traiga.
+   *
+   * No todos los documentos llenan las mismas casillas: un libro de folios no
+   * tiene cuarentena porque ninguna página hereda de otra, y un inventario no
+   * escribe salidas. Leerlas a pelo hacía que esta tarjeta reventara al
+   * terminar un libro de diplomas, y con ella la pantalla entera.
+   */
+  const groups = $derived(report?.groups ?? []);
+  const review = $derived(report?.review_queue ?? []);
+  const repairs = $derived(report?.repairs ?? []);
+  const quarantine = $derived(report?.quarantine ?? []);
+  const stats = $derived(report?.stats ?? null);
+
+  // Y se llaman por su nombre: "287 páginas → 287 resoluciones" delante de un
+  // libro de registro de diplomas es una cifra correcta mal nombrada.
+  const unit = $derived(unitFor(report, groups.length));
+  const unitTitle = $derived(unit.charAt(0).toUpperCase() + unit.slice(1));
+  const unitOne = $derived(unitFor(report, 1));
+  const unitOneTitle = $derived(unitOne.charAt(0).toUpperCase() + unitOne.slice(1));
+
+  /**
+   * Qué está haciendo, ahora mismo, en una línea.
+   *
+   * Antes esta línea contaba siempre páginas, así que en cuanto el documento
+   * terminaba de leerse se quedaba en "287 de 287 páginas" durante todo lo que
+   * viniera después -- escribir doscientos ochenta y siete PDF, guardar la
+   * planilla -- y desde fuera eso es indistinguible de un cuelgue. Ahora cada
+   * etapa cuenta lo suyo: páginas la que lee, archivos la que escribe, filas la
+   * que rellena el inventario.
+   */
+  const activity = $derived.by(() => {
+    const label = STAGE_LABELS[progress.stage] ?? progress.stage;
+    if (progress.stage === 'analysing') {
+      const rate = progress.pages_per_second
+        ? ` · ${progress.pages_per_second.toFixed(1)} p/s`
+        : '';
+      return `${label} · ${progress.pages_done} de ${progress.page_count} páginas${rate}`;
+    }
+    const done = progress.stage_done ?? 0;
+    const total = progress.stage_total ?? 0;
+    const counter = total ? ` · ${done} de ${total}` : '';
+    const detail = progress.detail ? ` · ${progress.detail}` : '';
+    return `${label}${counter}${detail}`;
+  });
+
+  /** Cuánto lleva en la etapa actual, cuando ya lleva lo bastante como para notarse. */
+  const stageElapsed = $derived(progress.stage_elapsed_seconds ?? 0);
+
+  /**
+   * Desde cuándo no llega noticia.
+   *
+   * Nunca es una alarma: es información. Un trabajo puede tardar diez segundos
+   * en un paso sin que pase nada malo, y decirlo es justamente lo que evita que
+   * parezca que se ha muerto.
+   */
+  const silence = $derived(progress.silent_seconds ?? 0);
+  const quiet = $derived(silence >= SILENCE_THRESHOLD_SECONDS);
+
   const BADGE: Record<string, string> = {
     queued: 'text-muted',
     running: 'text-accent',
+    paused: 'text-warning',
     done: 'text-good',
-    failed: 'text-critical'
+    failed: 'text-critical',
+    cancelled: 'text-muted'
   };
 
   /** Maps a group to the file the assembler actually wrote. */
@@ -55,24 +118,34 @@
       <h3 class="truncate text-base font-semibold">{job.filename}</h3>
       <p class="mt-0.5 text-sm text-muted">
         {#if report}
-          {report.page_count} páginas → {report.groups.length} resoluciones
+          {report.page_count} páginas → {groups.length} {unit}
         {:else if live}
-          {STAGE_LABELS[progress.stage] ?? progress.stage} · {progress.pages_done} de {progress.page_count}
-          páginas
-          {#if progress.pages_per_second}· {progress.pages_per_second.toFixed(1)} p/s{/if}
+          {activity}
+          {#if stageElapsed >= 2}<span class="text-muted"> · {stageElapsed.toFixed(0)} s en este paso</span>{/if}
+          {#if quiet}<span class="quiet"> · sin novedades hace {silence.toFixed(0)} s</span>{/if}
         {:else}
           {STAGE_LABELS[progress.stage] ?? 'En cola'}
         {/if}
       </p>
     </div>
-    <span
-      class="shrink-0 rounded-full border border-hairline px-2.5 py-0.5 text-[0.7rem] tracking-wide uppercase {BADGE[
-        job.state
-      ]}"
-    >
-      {STATE_LABELS[job.state] ?? job.state}
-    </span>
+    <div class="flex shrink-0 flex-col items-end gap-2">
+      <span
+        class="rounded-full border border-hairline px-2.5 py-0.5 text-[0.7rem] tracking-wide uppercase {BADGE[
+          job.state
+        ]}"
+      >
+        {STATE_LABELS[job.state] ?? job.state}
+      </span>
+      <RunControls jobId={job.id} runState={job.state} />
+    </div>
   </header>
+
+  {#if job.state === 'cancelled'}
+    <p class="mt-4 text-sm text-ink-2">
+      Cancelado por el operador tras leer {progress.pages_done} de {progress.page_count} páginas.
+      Lo que se alcanzó a escribir está entero.
+    </p>
+  {/if}
 
   {#if job.state === 'failed'}
     <p class="mt-4 font-mono text-sm text-critical">{job.error}</p>
@@ -98,18 +171,20 @@
   {#if report}
     <div class="mt-5 flex flex-wrap gap-8">
       <StatTile label="Páginas" value={report.page_count} />
-      <StatTile label="Resoluciones" value={report.groups.length} />
-      <StatTile
-        label="Enviado al modelo"
-        value={`${(report.stats.vision_page_ratio * 100).toFixed(1)}%`}
-        note={`${report.stats.escalated} páginas · ${report.stats.vision_requests} consultas`}
-        tone={report.stats.escalated > 0 ? 'warning' : 'good'}
-      />
+      <StatTile label={unitTitle} value={groups.length} />
+      {#if stats}
+        <StatTile
+          label="Enviado al modelo"
+          value={`${(stats.vision_page_ratio * 100).toFixed(1)}%`}
+          note={`${stats.escalated} páginas · ${stats.vision_requests} consultas`}
+          tone={stats.escalated > 0 ? 'warning' : 'good'}
+        />
+      {/if}
       <StatTile
         label="Requiere revisión"
-        value={report.review_queue.length}
-        note={report.review_queue.length ? 'detalle abajo' : 'sin pendientes'}
-        tone={report.review_queue.length ? 'warning' : 'good'}
+        value={review.length}
+        note={review.length ? 'detalle abajo' : 'sin pendientes'}
+        tone={review.length ? 'warning' : 'good'}
       />
       <StatTile
         label="Tiempo"
@@ -119,22 +194,24 @@
     </div>
 
     <div class="mt-6 grid gap-7 md:grid-cols-2">
-      <ProvenanceBar stats={report.stats} pageCount={report.page_count} />
-      <GroupsChart groups={report.groups} />
+      {#if stats}
+        <ProvenanceBar {stats} pageCount={report.page_count} />
+      {/if}
+      <GroupsChart {groups} />
     </div>
 
     <div class="mt-6 overflow-x-auto">
       <table class="w-full border-collapse text-sm">
         <thead>
           <tr class="text-[0.7rem] tracking-wide text-muted uppercase">
-            <th class="pb-2 text-left font-medium">Resolución</th>
+            <th class="pb-2 text-left font-medium">{unitOneTitle}</th>
             <th class="pb-2 text-left font-medium">Título</th>
             <th class="pb-2 text-left font-medium">Páginas</th>
             <th class="pb-2 text-right font-medium">Acciones</th>
           </tr>
         </thead>
         <tbody>
-          {#each report.groups as group (group.code)}
+          {#each groups as group (group.code)}
             <ResolutionRow
               jobId={job.id}
               {group}
@@ -146,13 +223,13 @@
       </table>
     </div>
 
-    {#if report.repairs.length}
+    {#if repairs.length}
       <section class="mt-5 rounded-lg bg-plane p-3 text-sm">
         <h4 class="mb-1.5 text-[0.7rem] font-medium tracking-wide text-muted uppercase">
           Correcciones de OCR aplicadas
         </h4>
         <ul class="list-disc pl-5 font-mono text-xs text-ink-2">
-          {#each report.repairs as repair}
+          {#each repairs as repair}
             <li>
               página {repair.page}: se leyó <b class="text-ink">{repair.observed}</b>, se mantuvo con
               <b class="text-ink">{repair.applied}</b>
@@ -163,17 +240,17 @@
       </section>
     {/if}
 
-    {#if report.review_queue.length}
+    {#if review.length}
       <section class="mt-4 rounded-lg border-l-[3px] border-warning bg-plane p-3 text-sm">
         <h4 class="mb-1.5 text-[0.7rem] font-medium tracking-wide text-muted uppercase">
-          Requiere revisión humana ({report.review_queue.length})
+          Requiere revisión humana ({review.length})
         </h4>
         <ul class="list-disc pl-5 text-ink-2">
-          {#each report.review_queue as item}
+          {#each review as item}
             <li>página {item.page} — {item.reason}</li>
           {/each}
         </ul>
-        {#if report.quarantine.length}
+        {#if quarantine.length}
           <a
             class="mt-2 inline-block text-accent hover:underline"
             href={downloadUrl(job.id, '_quarantine.pdf')}
@@ -211,6 +288,10 @@
 </article>
 
 <style>
+  .quiet {
+    color: var(--warning);
+  }
+
   @keyframes slide {
     from {
       transform: translateX(-100%);

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import FolderTree from '$lib/components/FolderTree.svelte';
   import PageRibbon from '$lib/components/PageRibbon.svelte';
   import { jobStore } from '$lib/jobs.svelte';
   import { STAGE_LABELS } from '$lib/rungs';
@@ -11,6 +12,7 @@
   let { run }: Props = $props();
 
   let stopping = $state(false);
+  let forgetting = $state(false);
   let error = $state<string | null>(null);
 
   const STATES: Record<string, string> = {
@@ -43,6 +45,24 @@
       stopping = false;
     }
   }
+
+  /**
+   * Quitar la tarjeta de la pantalla.
+   *
+   * No deshace nada: lo entregado sigue en la carpeta de destino y el archivo
+   * conserva sus filas. Sólo está disponible cuando la carpeta ya terminó,
+   * porque quitar una viva dejaría el trabajo corriendo sin nadie que informara.
+   */
+  async function forget() {
+    forgetting = true;
+    error = null;
+    try {
+      await jobStore.forgetRun(run.id);
+    } catch (problem) {
+      error = (problem as Error).message;
+      forgetting = false;
+    }
+  }
 </script>
 
 <section class="run" data-state={run.state}>
@@ -58,6 +78,15 @@
     </div>
     {#if active}
       <button onclick={stop} disabled={stopping}>{stopping ? 'deteniendo…' : 'detener'}</button>
+    {:else}
+      <button
+        class="quitar"
+        onclick={forget}
+        disabled={forgetting}
+        title="Quitar de la pantalla. Lo entregado se queda donde está."
+      >
+        {forgetting ? 'quitando…' : 'quitar'}
+      </button>
     {/if}
   </header>
 
@@ -79,40 +108,52 @@
     </div>
   </dl>
 
-  <!-- Which file it is on. Sequential by design, so there is exactly one. -->
-  <div class="column">
-    <span class="section-label">Consumiendo ahora</span>
-    {#if run.current}
-      <article class="current">
-        <div class="line">
-          <span class="dot" aria-hidden="true"></span>
-          <span class="file" title={run.current}>{run.current}</span>
-          {#if job}
-            <span class="stage">{STAGE_LABELS[job.progress.stage] ?? job.progress.stage}</span>
-            <span class="pages tabular">
-              {job.progress.pages_done}/{job.progress.page_count || '?'}
-            </span>
-          {/if}
-        </div>
-        {#if job?.progress.page_count}
-          <div class="bar">
-            <div class="fill" style:width={`${job.progress.percent}%`}></div>
+  <!-- Which file it is on. Sequential by design, so there is exactly one.
+       Una carpeta cerrada no está consumiendo nada, así que este bloque
+       desaparece en vez de anunciar "ningún archivo abierto" para siempre. -->
+  {#if active}
+    <div class="column">
+      <span class="section-label">Consumiendo ahora</span>
+      {#if run.current}
+        <article class="current">
+          <div class="line">
+            <span class="dot" aria-hidden="true"></span>
+            <span class="file" title={run.current}>{run.current}</span>
+            {#if job}
+              <span class="stage">{STAGE_LABELS[job.progress.stage] ?? job.progress.stage}</span>
+              <span class="pages tabular">
+                {job.progress.pages_done}/{job.progress.page_count || '?'}
+              </span>
+            {/if}
           </div>
-          <PageRibbon ribbon={job.progress.ribbon} pageCount={job.progress.page_count} />
-        {/if}
-      </article>
-    {:else}
-      <p class="idle">
-        {run.state === 'watching'
-          ? 'Ningún archivo pendiente. La carpeta queda bajo vigilancia.'
-          : 'Ningún archivo abierto.'}
-      </p>
-    {/if}
-  </div>
+          {#if job?.progress.page_count}
+            <div class="bar">
+              <div class="fill" style:width={`${job.progress.percent}%`}></div>
+            </div>
+            <PageRibbon ribbon={job.progress.ribbon} pageCount={job.progress.page_count} />
+          {/if}
+        </article>
+      {:else}
+        <p class="idle">
+          {run.state === 'watching'
+            ? 'Ningún archivo pendiente. La carpeta queda bajo vigilancia.'
+            : 'Ningún archivo abierto.'}
+        </p>
+      {/if}
+    </div>
+  {/if}
 
   {#if run.queue.length}
     <div class="column">
-      <span class="section-label">Esperando turno ({run.queue.length})</span>
+      <!-- Lo mismo dicho de dos maneras, porque no significa lo mismo. En una
+           carpeta viva la cola es lo que va a procesarse; en una detenida es lo
+           que se quedó sin procesar, y llamarlo "esperando turno" prometía un
+           turno que no iba a llegar nunca. -->
+      <span class="section-label" class:pendiente={!active}>
+        {active
+          ? `Esperando turno (${run.queue.length})`
+          : `Quedaron sin procesar (${run.queue.length})`}
+      </span>
       <ul class="queue">
         {#each run.queue.slice(0, 40) as name (name)}
           <li title={name}>{name}</li>
@@ -124,23 +165,14 @@
     </div>
   {/if}
 
-  <!-- The other half of what was asked for: seeing the files leave. -->
+  <!-- Lo que salió de la carpeta, con la forma en que está guardado: la
+       carpeta contiene PDF y cada PDF contiene las unidades en que se partió.
+       La lista plana de entregados decía qué archivos aparecieron en el
+       destino, pero no de cuál habían salido, y eso había que reconstruirlo de
+       memoria. -->
   <div class="column">
-    <span class="section-label">Entregados en el destino ({run.delivered})</span>
-    {#if run.deliveries.length}
-      <ul class="deliveries">
-        {#each run.deliveries as delivery (delivery.file_name + delivery.at)}
-          <li>
-            <span class="at tabular">{clock(delivery.at)}</span>
-            <span class="out" aria-hidden="true">↳</span>
-            <span class="delivered" title={delivery.file_name}>{delivery.file_name}</span>
-            <span class="from" title={delivery.source_document}>de {delivery.source_document}</span>
-          </li>
-        {/each}
-      </ul>
-    {:else}
-      <p class="idle">Todavía no se entregó ningún archivo.</p>
-    {/if}
+    <span class="section-label">Lo que produjo</span>
+    <FolderTree {run} />
   </div>
 </section>
 
@@ -236,6 +268,20 @@
   .head button:hover:not(:disabled) {
     border-color: var(--critical);
     color: var(--critical);
+  }
+  /* Detener interrumpe un trabajo; quitar sólo despeja la pantalla. La primera
+     se pinta como lo que es y la segunda no tiene por qué alarmar. */
+  .head button.quitar:hover:not(:disabled) {
+    border-color: var(--axis);
+    color: var(--ink);
+  }
+  .head button:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+
+  .section-label.pendiente {
+    color: var(--warning);
   }
 
   .error {
@@ -373,66 +419,4 @@
     border-style: dashed;
   }
 
-  .deliveries {
-    display: flex;
-    max-height: 15rem;
-    flex-direction: column;
-    gap: 1px;
-    margin: 0;
-    overflow-y: auto;
-    padding: 0;
-    list-style: none;
-  }
-  .deliveries li {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    border-radius: 5px;
-    padding: 0.15rem 0.35rem;
-    font-size: 0.74rem;
-  }
-  .deliveries li:nth-child(odd) {
-    background: var(--plane);
-  }
-  .at {
-    flex-shrink: 0;
-    font-family: var(--font-mono);
-    font-size: 0.68rem;
-    color: var(--axis);
-  }
-  .out {
-    flex-shrink: 0;
-    color: var(--good);
-  }
-  .delivered {
-    overflow: hidden;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--ink);
-  }
-  .from {
-    margin-left: auto;
-    flex-shrink: 0;
-    font-size: 0.68rem;
-    color: var(--muted);
-  }
-
-  @keyframes breathe {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.35;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .lamp,
-    .dot {
-      animation: none;
-    }
-  }
 </style>

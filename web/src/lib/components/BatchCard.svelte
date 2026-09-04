@@ -27,10 +27,10 @@
   );
 
   const resolutions = $derived(
-    jobs.reduce((sum, job) => sum + (job.report?.groups.length ?? 0), 0)
+    jobs.reduce((sum, job) => sum + (job.report?.groups?.length ?? 0), 0)
   );
   const review = $derived(
-    jobs.reduce((sum, job) => sum + (job.report?.review_queue.length ?? 0), 0)
+    jobs.reduce((sum, job) => sum + (job.report?.review_queue?.length ?? 0), 0)
   );
 
   /** Rough time left, from the throughput actually being achieved right now. */

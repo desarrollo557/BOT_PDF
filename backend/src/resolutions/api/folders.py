@@ -82,6 +82,11 @@ class FolderRun:
     destination: Path
     disposition: SourceDisposition = SourceDisposition.LEAVE
     watch: bool = False
+    #: Qué hacer con cada documento de la carpeta. Es la misma decisión que se
+    #: toma al subir un archivo a mano, y viaja igual: hasta ahora una carpeta
+    #: sólo sabía dividir, así que un libro de diplomas tomado de una carpeta
+    #: nunca podía dejar su inventario.
+    task: str = "split"
     #: Who started it. Attribution, never authorisation.
     operator: str | None = None
     state: RunState = RunState.SCANNING
@@ -134,6 +139,7 @@ class FolderRun:
             "destination": str(self.destination),
             "disposition": str(self.disposition),
             "watch": self.watch,
+            "task": self.task,
             "operator": self.operator,
             "state": str(self.state),
             "started_at": self.started_at,
@@ -270,6 +276,7 @@ class FolderRunner:
         disposition: SourceDisposition = SourceDisposition.LEAVE,
         watch: bool = False,
         operator: str | None = None,
+        task: str = "split",
     ) -> FolderRun:
         origin, target = validate_folders(source, destination)
 
@@ -284,6 +291,7 @@ class FolderRunner:
             disposition=disposition,
             watch=watch,
             operator=operator,
+            task=task,
         )
         self._runs[run.id] = run
         self._tasks[run.id] = asyncio.create_task(self._drain(run))
@@ -308,6 +316,31 @@ class FolderRunner:
 
     def get(self, run_id: str) -> FolderRun | None:
         return self._runs.get(run_id)
+
+    def forget(self, run_id: str) -> FolderRun | None:
+        """Quitar de la pantalla una corrida que ya terminó.
+
+        Una corrida en marcha no se olvida: pararla y quitarla son dos
+        decisiones distintas, y confundirlas dejaría un trabajo corriendo sin
+        nadie que informara de él. Devuelve ``None`` si no existe o si sigue
+        activa, y quien llama distingue los dos casos por :meth:`get`.
+
+        Esto vacía una pantalla, no deshace un trabajo: los PDF entregados
+        siguen en la carpeta de destino y el archivo conserva sus filas.
+        """
+        run = self._runs.get(run_id)
+        if run is None or run.active:
+            return None
+        self._tasks.pop(run_id, None)
+        return self._runs.pop(run_id, None)
+
+    def forget_finished(self) -> list[FolderRun]:
+        """Quitar todas las que ya terminaron, dejando las que siguen vivas."""
+        terminadas = [run for run in self._runs.values() if not run.active]
+        for run in terminadas:
+            self._tasks.pop(run.id, None)
+            del self._runs[run.id]
+        return terminadas
 
     def list(self) -> list[FolderRun]:
         return sorted(self._runs.values(), key=lambda run: run.started_at, reverse=True)
@@ -398,6 +431,7 @@ class FolderRunner:
             owns_source=False,
             size=size,
             operator=run.operator,
+            task=run.task,
         )
         run.current_job_id = job.id
         run.job_ids.append(job.id)

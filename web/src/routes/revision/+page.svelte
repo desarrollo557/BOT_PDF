@@ -1,6 +1,7 @@
 <script lang="ts">
   import { downloadUrl } from '$lib/api';
   import { jobStore } from '$lib/jobs.svelte';
+  import { whereItLanded } from '$lib/revision';
   import type { Job } from '$lib/types';
 
   /**
@@ -17,7 +18,12 @@
     page: number;
     reason: string;
     family: string;
+    /** El PDF en el que quedó archivada la página, si se llegó a escribir uno. */
+    file: string | null;
+    /** El número de la unidad documental que se llevó la página. */
+    code: string | null;
   }
+
 
   /** Reasons collapse into families, because the fix differs by family. */
   const FAMILIES: { key: string; match: RegExp; label: string; advice: string }[] = [
@@ -56,9 +62,15 @@
 
   const items = $derived.by((): Item[] => {
     const out: Item[] = [];
-    for (const job of jobStore.finished) {
+    for (const job of jobStore.reviewable) {
       for (const entry of job.report?.review_queue ?? []) {
-        out.push({ job, page: entry.page, reason: entry.reason, family: familyOf(entry.reason) });
+        out.push({
+          job,
+          page: entry.page,
+          reason: entry.reason,
+          family: familyOf(entry.reason),
+          ...whereItLanded(job, entry.page)
+        });
       }
     }
     return out;
@@ -81,28 +93,12 @@
       if (!bucket) buckets.set(item.job.id, (bucket = { job: item.job, items: [] }));
       bucket.items.push(item);
     }
+    for (const bucket of buckets.values()) bucket.items.sort((a, b) => a.page - b.page);
     return [...buckets.values()];
   });
 
-  const failedDocuments = $derived(jobStore.finished.filter((job) => job.state === 'failed'));
+  const failedDocuments = $derived(jobStore.reviewable.filter((job) => job.state === 'failed'));
 
-  function ranges(pages: number[]): string {
-    if (!pages.length) return '';
-    const sorted = [...pages].sort((a, b) => a - b);
-    const parts: string[] = [];
-    let start = sorted[0];
-    let previous = sorted[0];
-    for (const page of sorted.slice(1)) {
-      if (page === previous + 1) {
-        previous = page;
-        continue;
-      }
-      parts.push(start === previous ? `${start}` : `${start}–${previous}`);
-      start = previous = page;
-    }
-    parts.push(start === previous ? `${start}` : `${start}–${previous}`);
-    return parts.join(', ');
-  }
 </script>
 
 <header class="head">
@@ -111,7 +107,8 @@
     <p>
       Lo que el separador no quiso adivinar. Nada de esto es un error del programa: son páginas
       donde la evidencia no alcanzó, y adivinar habría metido páginas ajenas en una resolución
-      real sin que nadie se enterara.
+      real sin que nadie se enterara. Una página sin encabezado no aparece aquí: es la vuelta de
+      un folio o un anexo, y su sitio es el PDF de la resolución que venía abierta.
     </p>
   </div>
 </header>
@@ -136,7 +133,7 @@
     <div>
       <p><b>No hay nada pendiente de revisión.</b></p>
       <p class="muted">
-        {jobStore.finished.length
+        {jobStore.reviewable.length
           ? `Los ${jobStore.finished.length} documentos en pantalla se resolvieron enteros.`
           : 'Todavía no se procesó ningún documento en esta sesión.'}
       </p>
@@ -180,26 +177,34 @@
           <a class="name" href={`/documento/${bucket.job.id}`} title={bucket.job.filename}>
             {bucket.job.filename}
           </a>
-          <span class="count tabular">{bucket.items.length} páginas</span>
-          {#if bucket.job.report?.quarantine.length}
+          <!-- El total del documento, no el del filtro: es un hecho del PDF y
+               tiene que decir lo mismo se esté mirando el motivo que se esté. -->
+          <span class="count tabular">
+            {bucket.job.report?.review_queue?.length ?? bucket.items.length} de {bucket.job
+              .report?.page_count ?? '?'} páginas
+          </span>
+          {#if bucket.job.report?.quarantine?.length}
             <a class="quarantine" href={downloadUrl(bucket.job.id, '_quarantine.pdf')} download>
-              cuarentena ({bucket.job.report.quarantine.length})
+              cuarentena ({bucket.job.report.quarantine?.length})
             </a>
           {/if}
         </header>
 
         <ul class="reasons">
-          {#each FAMILIES as family (family.key)}
-            {@const pages = bucket.items
-              .filter((item) => item.family === family.key)
-              .map((item) => item.page)}
-            {#if pages.length}
-              <li>
-                <span class="label">{family.label}</span>
-                <span class="pages tabular">{ranges(pages)}</span>
-                <span class="tally tabular">{pages.length}</span>
-              </li>
-            {/if}
+          {#each bucket.items as item, index (`${item.page}-${index}`)}
+            <li>
+              <span class="page-no tabular">pág. {item.page}</span>
+              <span class="detail">
+                <span class="why">{item.reason}</span>
+                {#if item.file}
+                  <a class="landed" href={downloadUrl(item.job.id, item.file)} download>
+                    quedó en {item.file}
+                  </a>
+                {:else if item.code}
+                  <span class="landed">quedó en {item.code}</span>
+                {/if}
+              </span>
+            </li>
           {/each}
         </ul>
       </article>
@@ -405,28 +410,45 @@
     list-style: none;
   }
   .reasons li {
-    display: flex;
+    display: grid;
     align-items: baseline;
-    gap: 0.6rem;
+    gap: 0 0.6rem;
+    grid-template-columns: 4.4rem 1fr;
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid var(--rule);
     font-size: 0.8rem;
   }
-  .reasons .label {
-    flex-shrink: 0;
-    color: var(--ink-2);
+  .reasons li:last-child {
+    padding-bottom: 0;
+    border-bottom: none;
   }
-  .pages {
-    overflow: hidden;
-    flex: 1;
+  .page-no {
+    flex-shrink: 0;
     font-family: var(--font-mono);
-    font-size: 0.72rem;
-    color: var(--muted);
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: var(--warning);
+  }
+  .detail {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+  }
+  .why {
+    color: var(--ink-2);
+    line-height: 1.4;
+  }
+  .landed {
+    overflow: hidden;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--accent);
+    text-decoration: none;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .tally {
-    flex-shrink: 0;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    color: var(--ink);
+  a.landed:hover {
+    text-decoration: underline;
   }
 </style>

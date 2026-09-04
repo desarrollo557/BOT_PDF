@@ -9,6 +9,8 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.properties import PageSetupProperties
 from openpyxl.worksheet.worksheet import Worksheet
 
+from ..domain.naming import sheet_filename
+
 #: Written beside the generated PDFs, and delivered with them.
 SUFFIX = "__inventario.xlsx"
 RUN_SHEET = "_inventario_del_lote.xlsx"
@@ -276,7 +278,13 @@ class ExcelInventory:
         if repairs:
             self._correcciones(book.create_sheet("Correcciones"), documento, repairs)
 
-        target = destination / f"{Path(documento).stem}{SUFFIX}"
+        # Recortado a lo que la ruta admite. La carpeta de salida lleva un
+        # identificador de 32 caracteres, y un documento con nombre largo
+        # llevaba el guardado por encima del límite de Windows: el acta se
+        # perdía entera después de haber hecho todo el trabajo.
+        target = destination / sheet_filename(
+            documento, SUFFIX, directory_length=len(str(destination))
+        )
         book.save(target)
         return target
 

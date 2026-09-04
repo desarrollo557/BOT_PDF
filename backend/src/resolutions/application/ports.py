@@ -50,6 +50,25 @@ class Crop:
     image_png: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class LineBox:
+    """Dónde está un renglón dentro de su página, en fracciones de 0 a 1.
+
+    En fracciones y no en puntos porque un expediente mezcla tamaños de hoja: la
+    misma caja tiene que significar lo mismo en A4, en Carta y en lo que decidió
+    el escáner esa mañana.
+
+    ``center_x`` es el centro horizontal del renglón y ``top`` su borde
+    superior. Con esos dos números se distingue un encabezado -- centrado y
+    arriba -- de una frase que empieza por la palabra "Resolución" a media
+    página, que es lo que hace falta y no cabe en el texto plano.
+    """
+
+    text: str
+    center_x: float
+    top: float
+
+
 @runtime_checkable
 class PageSource(Protocol):
     """A document opened for reading, one page at a time.
@@ -62,6 +81,14 @@ class PageSource(Protocol):
     def page_count(self) -> int: ...
 
     def text_of(self, page_number: int) -> str: ...
+
+    def boxes_of(self, page_number: int) -> list[LineBox]:
+        """Los renglones de la página con su sitio, en el orden de ``text_of``.
+
+        Opcional: una fuente que no sepa dónde están sus renglones devuelve una
+        lista vacía y el sistema decide sin geometría, como hacía antes.
+        """
+        return []
 
     def render(self, page_number: int, band: Band | None = None, dpi: int = 200) -> bytes: ...
 
