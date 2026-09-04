@@ -5,7 +5,7 @@
 # Las reglas están en docs/RAMAS.md; esto sólo las escribe en GitHub.
 set -euo pipefail
 
-REPO="${1:-EduverAndres/projectrobot}"
+REPO="${1:-desarrollo557/BOT_PDF}"
 
 # Los nombres tienen que coincidir con los `name:` de los jobs en
 # .github/workflows/, que es como GitHub los reporta.

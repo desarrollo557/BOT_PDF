@@ -1,16 +1,16 @@
 # Quién revisa qué. GitHub pide automáticamente la revisión de estos dueños
 # cuando un PR toca sus archivos.
 
-*                                   @EduverAndres
+*                                   @desarrollo557
 
 # El núcleo: las reglas de negocio de las resoluciones. Un cambio acá cambia
 # cómo se parten documentos oficiales, así que nunca entra sin revisión.
-/backend/src/resolutions/domain/    @EduverAndres
-/backend/src/resolutions/application/ @EduverAndres
+/backend/src/resolutions/domain/    @desarrollo557
+/backend/src/resolutions/application/ @desarrollo557
 
 # El esquema y la carga de datos: migraciones sobre tablas de millones de filas.
-/db/                                @EduverAndres
+/db/                                @desarrollo557
 
 # La automatización que valida todo lo demás.
-/.github/                           @EduverAndres
-/scripts/                           @EduverAndres
+/.github/                           @desarrollo557
+/scripts/                           @desarrollo557
