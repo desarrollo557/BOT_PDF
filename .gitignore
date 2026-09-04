@@ -21,3 +21,7 @@ logs/
 
 # Vite escribe esto mientras corre; desaparece solo
 vite.config.ts.timestamp-*
+
+# Índices de herramientas externas de asistencia. Apuntan a rutas de la máquina
+# de quien las corrió, así que en otro puesto no significan nada.
+.atl/
