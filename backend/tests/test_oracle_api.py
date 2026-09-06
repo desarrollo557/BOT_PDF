@@ -142,3 +142,30 @@ class TestUnaCarpetaPideLoMismo:
         )
         assert respuesta.status_code == 422
         assert "MISTRAL_API_KEY" in respuesta.json()["detail"]
+
+    def test_la_eleccion_queda_en_la_corrida(self, client, monkeypatch, tmp_path):
+        """El camino de carpeta no tiene otra prueba que lo fije.
+
+        La elección pasa por cuatro manos antes de llegar al worker: el endpoint,
+        `FolderRunner.start`, el `FolderRun` y el trabajo que se crea por cada
+        archivo. Un rebase que pierda uno de esos cuatro pasos deja la corrida
+        decidiendo con el modelo de la cascada sin que nadie se entere, que es
+        exactamente lo que este feature existe para que no pase.
+        """
+        con_llaves(monkeypatch, gemini_api_key="xyz")
+        origen = tmp_path / "origen"
+        destino = tmp_path / "destino"
+        origen.mkdir()
+        destino.mkdir()
+
+        respuesta = client.post(
+            "/api/folder-runs",
+            json={
+                "source": str(origen),
+                "destination": str(destino),
+                "task": "segment",
+                "oracle": "gemini",
+            },
+        )
+        assert respuesta.status_code == 201
+        assert respuesta.json()["oracle"] == "gemini"
