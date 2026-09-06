@@ -146,3 +146,53 @@ class TestLoQueViajaAlModelo:
     def test_una_pagina_cabe_en_poco(self):
         compacta = fingerprint_page(3, PAGINA_3).compact()
         assert len(str(compacta)) < 220
+
+
+class TestElTituloNoEsLaMarcaDelPapel:
+    """Lo que la hoja dice ser, no la empresa que la imprimió.
+
+    Medido sobre el expediente de 125 páginas: el logo de Grupo EPM llegaba del
+    OCR como 'Grupo*epr9', 'GrupO\'epo)', 'Grupo^epnQ' -- distinto en cada hoja --
+    y era el título de 111 de las 125. Es el campo `t` de la huella: el único dato
+    temático que viaja al modelo. Pedirle continuidad de tema mientras recibe el
+    logo mal leído es pedirle que adivine.
+
+    El discriminador sale del dato: todos los logos observados son un solo token
+    y los nombres de documento son varias palabras.
+    """
+
+    def test_el_logo_no_le_gana_al_nombre_del_documento(self):
+        headings = [
+            Heading(text="Grupo*epr9", center_x=0.50, top=0.04),
+            Heading(text="Acta de Irregularidad", center_x=0.50, top=0.11),
+        ]
+        assert fingerprint_page(1, "texto de la pagina", headings).title == "Acta de Irregularidad"
+
+    def test_da_igual_como_el_ocr_haya_roto_el_logo(self):
+        for logo in ("Grupo-eprp", "GrupO'epo)", "Grupo^epnQ", "Grupo*epfi3"):
+            headings = [
+                Heading(text=logo, center_x=0.50, top=0.04),
+                Heading(text="Notificacion de cobro", center_x=0.50, top=0.12),
+            ]
+            titulo = fingerprint_page(1, "cuerpo", headings).title
+            assert titulo == "Notificacion de cobro", f"con el logo {logo!r} salio {titulo!r}"
+
+    def test_un_nombre_de_una_sola_palabra_se_conserva_si_es_lo_unico_que_hay(self):
+        """Hay documentos que se llaman así. No se los descarta por ser cortos."""
+        headings = [Heading(text="NOTIFICACION", center_x=0.50, top=0.05)]
+        assert fingerprint_page(1, "cuerpo", headings).title == "NOTIFICACION"
+
+    def test_sin_encabezados_utiles_habla_el_cuerpo(self):
+        assert fingerprint_page(1, "el usuario reclama el consumo", []).title.startswith("el usuario")
+
+    def test_un_encabezado_fuera_de_la_banda_no_es_el_titulo(self):
+        headings = [Heading(text="pie de pagina con aviso legal", center_x=0.50, top=0.95)]
+        assert fingerprint_page(1, "cuerpo de la hoja", headings).title.startswith("cuerpo")
+
+    def test_el_primer_nombre_de_varias_palabras_es_el_que_manda(self):
+        headings = [
+            Heading(text="Grupo*epr9", center_x=0.50, top=0.03),
+            Heading(text="Acta de Irregularidad", center_x=0.50, top=0.09),
+            Heading(text="Señor Juan Perez Gomez", center_x=0.50, top=0.15),
+        ]
+        assert fingerprint_page(1, "cuerpo", headings).title == "Acta de Irregularidad"

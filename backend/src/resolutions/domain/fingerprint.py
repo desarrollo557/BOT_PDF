@@ -32,6 +32,12 @@ LETTERHEAD_MARGIN = 0.30
 #: near the top.
 LETTERHEAD_MAX_CHARS = 90
 
+#: Cuántas palabras necesita un encabezado para leerse como el nombre de un
+#: documento y no como la marca del papel. Sale de la caja real: el logo llegó
+#: siempre como un solo token -- "Grupo*epr9", "GrupO'epo)" -- y los nombres
+#: siempre con varias palabras: "Acta de Irregularidad".
+TITLE_MIN_WORDS = 2
+
 #: Only the end of a page can close a document. "Cordialmente me dirijo a
 #: ustedes" opens a claim; the same word at the foot of the page ends a reply.
 CLOSING_TAIL_CHARS = 350
@@ -158,11 +164,28 @@ def _has_letterhead(headings: list[Heading]) -> bool:
 
 
 def _title(text: str, headings: list[Heading]) -> str:
-    """What the page calls itself: its first heading, or its first words."""
-    for heading in headings:
-        line = " ".join(heading.text.split())
-        if heading.top <= LETTERHEAD_BAND and len(line) > 8:
+    """What the page calls itself -- not the brand printed on every sheet.
+
+    On letterheaded paper the topmost line is the company logo, and a scan hands
+    it over mangled: measured on the 125-page expediente the same logo arrived as
+    'Grupo*epr9', 'Grupo-eprp', 'GrupO\'epo)', never twice the same. It was the
+    title of 111 of those 125 pages -- and `title` is the `t` of the fingerprint,
+    the only topical signal the model ever receives. Asking a model about thematic
+    continuity while feeding it a garbled logo is asking it to guess.
+
+    The discriminator comes from the data rather than from taste: every logo
+    observed is a single token and every document name is several words. So a
+    multi-word heading wins. A single-token heading is still returned when it is
+    all the page offers, because there are documents called "NOTIFICACION".
+    """
+    band = [" ".join(heading.text.split()) for heading in headings if heading.top <= LETTERHEAD_BAND]
+    usable = [line for line in band if len(line) > 8]
+
+    for line in usable:
+        if len(line.split()) >= TITLE_MIN_WORDS:
             return line[:70]
+    if usable:
+        return usable[0][:70]
     return " ".join(text.split())[:70]
 
 
