@@ -18,6 +18,7 @@ import pytest
 
 from resolutions.api.settings import Settings
 from resolutions.api.worker import _boundary_oracle, process_document_job
+from resolutions.application.oracle import OracleChoice
 from resolutions.application.task import TaskKind
 
 pytest.importorskip("httpx")
@@ -119,6 +120,56 @@ class TestElOraculo:
     def test_la_llave_de_mistral_viaja_al_worker(self):
         payload = Settings(mistral_api_key="mmm").as_worker_payload()
         assert payload["mistral_api_key"] == "mmm"
+
+
+class TestElOraculoQueSePidio:
+    """Una elección no se degrada en silencio, ni siquiera hacia arriba."""
+
+    def test_pedir_mistral_trae_mistral_aunque_este_la_llave_de_claude(self):
+        from resolutions.adapters.mistral_boundary import MistralBoundaryOracle
+
+        oraculo = _boundary_oracle(
+            {"anthropic_api_key": "abc", "mistral_api_key": "mmm"},
+            OracleChoice.MISTRAL,
+        )
+        assert isinstance(oraculo, MistralBoundaryOracle)
+
+    def test_pedir_gemini_trae_gemini_aunque_este_la_llave_de_claude(self):
+        from resolutions.adapters.gemini_boundary import GeminiBoundaryOracle
+
+        oraculo = _boundary_oracle(
+            {"anthropic_api_key": "abc", "gemini_api_key": "xyz"},
+            OracleChoice.GEMINI,
+        )
+        assert isinstance(oraculo, GeminiBoundaryOracle)
+
+    def test_pedir_uno_sin_su_llave_no_cae_en_otro(self):
+        """La API contesta 422 antes de esto; acá se fija la última defensa."""
+        from resolutions.adapters.boundary_prompt import NullBoundaryOracle
+
+        oraculo = _boundary_oracle({"gemini_api_key": "xyz"}, OracleChoice.MISTRAL)
+        assert isinstance(oraculo, NullBoundaryOracle)
+
+    def test_automatico_sigue_siendo_la_cascada(self):
+        from resolutions.adapters.claude_boundary import ClaudeBoundaryOracle
+
+        oraculo = _boundary_oracle(
+            {"anthropic_api_key": "abc", "gemini_api_key": "xyz"},
+            OracleChoice.AUTO,
+        )
+        assert isinstance(oraculo, ClaudeBoundaryOracle)
+
+    def test_sin_eleccion_se_comporta_como_antes(self):
+        """Quien ya llamaba a esto con un solo argumento no se enteró de nada."""
+        from resolutions.adapters.gemini_boundary import GeminiBoundaryOracle
+
+        assert isinstance(_boundary_oracle({"gemini_api_key": "xyz"}), GeminiBoundaryOracle)
+
+    def test_a_claude_se_le_pregunta_con_el_modelo_chico(self):
+        """Un veredicto binario sobre una huella comprimida no necesita el grande."""
+        from resolutions.adapters.claude_boundary import ClaudeBoundaryConfig
+
+        assert "haiku" in ClaudeBoundaryConfig().model
 
 
 pymupdf = pytest.importorskip("pymupdf")

@@ -478,43 +478,75 @@ def _diploma_split_job(payload: dict, task) -> dict:
     return report
 
 
-def _boundary_oracle(settings: dict):
+#: En qué orden prueba la cascada cuando el operador no eligió. Es por costo, no
+#: por calidad: Claude cachea las instrucciones, que en una caja se pagan una vez
+#: por página; la capa gratuita de Gemini aguanta una caja preguntada de una sola
+#: vez; Mistral no trae ninguna de las dos cosas, así que va último.
+_CASCADE = ("claude", "gemini", "mistral")
+
+
+def _boundary_oracle(settings: dict, choice=None):
     """Quién juzga las costuras que la estructura no pudo decidir.
 
-    El orden es por costo, no por calidad. Claude primero cuando está su llave:
-    de los tres es el único que puede cachear las instrucciones, y en una caja
-    las instrucciones se pagan una vez por página. Gemini después, porque su capa
-    gratuita aguanta una caja entera preguntada de una sola vez. Mistral al
-    final: no trae ninguna de las dos cosas, así que se usa cuando es la llave
-    que hay.
+    Con una elección explícita se respeta o no se contesta. Nunca se sustituye:
+    si alguien pidió Mistral y el sistema contestara con Gemini, el informe
+    mentiría sobre quién decidió los cortes, y un corte cuya autoría no se puede
+    rastrear no sirve para decidir si el criterio funciona. Pedir un proveedor
+    sin su llave devuelve el oráculo nulo -- la API contesta 422 antes de llegar
+    acá, así que esto es la última defensa y no el camino previsto.
+
+    Sin elección se recorre `_CASCADE`, que es el comportamiento que había antes
+    de que la elección existiera.
 
     Y sin ninguna llave se devuelve el oráculo nulo en vez de fallar: la caja se
     separa igual por todo lo que la estructura decide sola -- en un expediente
     con paginación impresa, la mayor parte -- y lo demás va a revisión.
     """
     from ..adapters.boundary_prompt import NullBoundaryOracle
+    from ..application.oracle import OracleChoice
 
-    anthropic_key = settings.get("anthropic_api_key")
-    if anthropic_key:
+    eleccion = OracleChoice.AUTO if choice is None else OracleChoice(choice)
+
+    if eleccion is not OracleChoice.AUTO:
+        if not eleccion.is_available(settings):
+            logger.warning(
+                "se pidió %s y no hay %s; las costuras dudosas van a revisión",
+                eleccion.value,
+                eleccion.env_var,
+            )
+            return NullBoundaryOracle()
+        return _oracle_named(eleccion.value, settings)
+
+    for candidate in _CASCADE:
+        if OracleChoice(candidate).is_available(settings):
+            return _oracle_named(candidate, settings)
+
+    return NullBoundaryOracle()
+
+
+def _oracle_named(name: str, settings: dict):
+    """Construye un proveedor concreto, ya sabiendo que su llave está puesta.
+
+    Los adaptadores se importan acá y no arriba porque el proceso de la API no
+    tiene por qué cargar el SDK de Anthropic para aceptar una subida.
+    """
+    if name == "claude":
         from anthropic import Anthropic
 
         from ..adapters.claude_boundary import ClaudeBoundaryOracle
 
-        return ClaudeBoundaryOracle(client=Anthropic(api_key=anthropic_key))
+        return ClaudeBoundaryOracle(
+            client=Anthropic(api_key=str(settings.get("anthropic_api_key")))
+        )
 
-    gemini_key = settings.get("gemini_api_key")
-    if gemini_key:
+    if name == "gemini":
         from ..adapters.gemini_boundary import GeminiBoundaryOracle
 
-        return GeminiBoundaryOracle(api_key=gemini_key)
+        return GeminiBoundaryOracle(api_key=str(settings.get("gemini_api_key")))
 
-    mistral_key = settings.get("mistral_api_key")
-    if mistral_key:
-        from ..adapters.mistral_boundary import MistralBoundaryOracle
+    from ..adapters.mistral_boundary import MistralBoundaryOracle
 
-        return MistralBoundaryOracle(api_key=mistral_key)
-
-    return NullBoundaryOracle()
+    return MistralBoundaryOracle(api_key=str(settings.get("mistral_api_key")))
 
 
 def _segment_job(payload: dict, task) -> dict:
@@ -546,7 +578,9 @@ def _segment_job(payload: dict, task) -> dict:
     try:
         page_count = source.page_count
         segmentacion = SegmentDocument(
-            oracle=_boundary_oracle(settings), reporter=progress, control=control
+            oracle=_boundary_oracle(settings, payload.get("oracle")),
+            reporter=progress,
+            control=control,
         ).run(source)
     finally:
         source.close()

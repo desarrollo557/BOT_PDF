@@ -24,6 +24,7 @@ from ..adapters.mysql_inventory import (
     settings_from_env,
 )
 from ..application.control import Cancelled, RunState
+from ..application.oracle import OracleChoice, available_oracles
 from ..application.task import TaskKind
 from ..domain.naming import output_filename
 from ..domain.resolution_code import ResolutionCode
@@ -57,7 +58,7 @@ PROGRESS_QUEUE_SIZE = 20_000
 #: running across an update answers 404 to every new route and 405 to every new
 #: method -- which reads as a broken request rather than as a stale service.
 #: The screen compares this against what it was built for and says so plainly.
-API_REVISION = 16
+API_REVISION = 17
 
 #: What this revision can do, so the screen can name what is missing rather than
 #: only that something is.
@@ -85,6 +86,13 @@ API_FEATURES = (
     "folder-task",
     # Quitar de la pantalla una carpeta ya terminada, o todas de una vez.
     "folder-run-clear",
+    # Separar una caja revuelta existía en la API desde antes y ninguna pantalla
+    # podía descubrirlo: la revisión subía sin decir qué traía de nuevo, que es
+    # exactamente lo que esta lista existe para evitar.
+    "segment-task",
+    # Y elegir a qué modelo se le pregunta por los bordes, en vez de heredar el
+    # que la cascada encuentre primero.
+    "oracle-choice",
 )
 
 settings = Settings.from_env()
@@ -174,6 +182,10 @@ async def health() -> dict[str, object]:
         "document_workers": settings.document_workers,
         "page_workers": settings.page_workers,
         "vision": "claude" if settings.anthropic_api_key else "disabled",
+        # De cada modelo, si hay llave para pedirlo. Con esto la pantalla
+        # deshabilita lo que no se puede pedir y dice por qué, en vez de
+        # ofrecerlo y cosechar un 422 cuando el operador ya eligió.
+        "oracles": available_oracles(settings.as_worker_payload()),
         "native_picker": native_picker.available(),
         "inventory_backend": inventory_backend,
         "queued": registry.pending,
@@ -245,6 +257,7 @@ async def enqueue(
     file: UploadFile,
     batch_id: str | None = None,
     task: str | None = None,
+    oracle: str | None = None,
     x_operator: str | None = Header(default=None),
 ) -> dict[str, object]:
     if not (file.filename or "").lower().endswith(".pdf"):
@@ -253,6 +266,10 @@ async def enqueue(
         kind = TaskKind.parse(task)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    # Antes de escribir un solo byte: el cuerpo de esta petición es el archivo, y
+    # una caja escaneada son cientos de megabytes. Una elección imposible tiene
+    # que costar un 422 y no un archivo en disco que nadie va a procesar.
+    choice = _oracle_choice(oracle)
     if batch_id and registry.get_batch(batch_id) is None:
         raise HTTPException(status_code=404, detail="El lote no existe")
     if registry.pending >= settings.queue_limit:
@@ -275,6 +292,7 @@ async def enqueue(
         size=written,
         operator=_operator(x_operator),
         task=str(kind),
+        oracle=str(choice),
     )
     registry.publish(job)
     asyncio.create_task(_run(job))
@@ -283,8 +301,37 @@ async def enqueue(
         "batch_id": job.batch_id,
         "state": str(job.state),
         "task": job.task,
+        "oracle": job.oracle,
         "bytes": written,
     }
+
+
+def _oracle_choice(value: str | None) -> OracleChoice:
+    """Qué modelo se pidió, o por qué no se puede pedir.
+
+    Un proveedor sin su llave se rechaza en vez de resolverse con otro. Si
+    alguien pide Mistral y el sistema contesta con Gemini, el informe miente
+    sobre quién decidió los cortes, y un corte cuya autoría no se puede rastrear
+    no sirve para decidir si el criterio funciona.
+
+    El mensaje nombra la variable de entorno que falta: un 422 que sólo dice "no
+    configurado" manda al operador a leer el código fuente.
+    """
+    try:
+        choice = OracleChoice.parse(value)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    if not choice.is_available(settings.as_worker_payload()):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{choice.label} no está configurado: falta {choice.env_var} en el "
+                "entorno del servicio. Elegir un modelo no sustituye por otro, así "
+                "que la caja no se procesó."
+            ),
+        )
+    return choice
 
 
 def _steer(job_id: str, state: RunState) -> Job:
@@ -452,6 +499,10 @@ async def start_folder_run(
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
+    # Se valida antes de tocar las carpetas: una elección imposible no tiene por
+    # qué esperar a que se descubra que el destino era el mismo que el origen.
+    choice = _oracle_choice(payload.get("oracle"))
+
     try:
         run = folders.start(
             str(payload.get("source") or ""),
@@ -460,6 +511,7 @@ async def start_folder_run(
             watch=bool(payload.get("watch")),
             operator=_operator(x_operator),
             task=str(kind),
+            oracle=str(choice),
         )
     except FolderError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None
@@ -1343,6 +1395,7 @@ async def _run(job: Job) -> None:
         "filename": job.filename,
         "operator": job.operator,
         "task": job.task,
+        "oracle": job.oracle,
         "settings": settings.as_worker_payload(),
         "progress_queue": app.state.progress_queue,
         "controls": app.state.controls,

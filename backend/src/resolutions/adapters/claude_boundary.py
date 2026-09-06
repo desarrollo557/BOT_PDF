@@ -24,7 +24,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class ClaudeBoundaryConfig:
-    model: str = "claude-opus-5"
+    #: El chico a propósito. Lo que se le pide es un veredicto binario sobre una
+    #: huella de página ya comprimida -- no redactar, no resumir -- y el grande
+    #: cuesta bastante más por la misma decisión. Quien quiera el grande lo pasa
+    #: por configuración; el valor por omisión responde al modelo de costo, que
+    #: es la razón de ser de toda la cascada.
+    model: str = "claude-haiku-4-5-20251001"
     max_tokens: int = 8000
 
 
