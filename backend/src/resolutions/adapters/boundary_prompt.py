@@ -58,9 +58,18 @@ def parse_answer(text: str, seams: list[tuple[int, int]]) -> dict[tuple[int, int
     except (json.JSONDecodeError, TypeError):
         return {}
 
+    # Una lista, o nada. `{"cortes": null}` es JSON válido y un modelo lo
+    # contesta; `payload.get("cortes", [])` devuelve ese null en vez del valor
+    # por omisión, y recorrerlo levanta un TypeError que nadie atrapa: `judge`
+    # llama a esto fuera de su propio `try`, así que se llevaba puesta la caja
+    # entera, incluidos los cortes que la estructura ya había resuelto gratis.
+    cortes = payload.get("cortes") if isinstance(payload, dict) else None
+    if not isinstance(cortes, list):
+        return {}
+
     asked = set(seams)
     answers: dict[tuple[int, int], bool] = {}
-    for entry in payload.get("cortes", []) if isinstance(payload, dict) else []:
+    for entry in cortes:
         if not isinstance(entry, dict):
             continue
         seam = _read_seam(entry.get("costura"))
