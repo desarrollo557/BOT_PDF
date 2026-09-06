@@ -11,6 +11,7 @@ import {
   streamEvents
 } from './api';
 import { consoleLog } from './console.svelte';
+import type { OracleChoice } from './oracles';
 import type { FolderRun, Job, SourceDisposition, TaskKind } from './types';
 
 /**
@@ -200,6 +201,8 @@ class JobStore {
     watch?: boolean;
     /** Qué hacer con cada documento: la misma decisión que en una subida. */
     task?: TaskKind;
+    /** Y a qué modelo preguntarle por los bordes dudosos. */
+    oracle?: OracleChoice;
   }): Promise<FolderRun> {
     const run = await startFolderRun(options);
     this.#upsertRun(run);
