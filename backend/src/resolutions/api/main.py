@@ -57,7 +57,7 @@ PROGRESS_QUEUE_SIZE = 20_000
 #: running across an update answers 404 to every new route and 405 to every new
 #: method -- which reads as a broken request rather than as a stale service.
 #: The screen compares this against what it was built for and says so plainly.
-API_REVISION = 15
+API_REVISION = 16
 
 #: What this revision can do, so the screen can name what is missing rather than
 #: only that something is.

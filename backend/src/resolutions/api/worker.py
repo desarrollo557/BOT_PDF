@@ -30,6 +30,14 @@ def process_document_job(payload: dict) -> dict:
     if not task.writes_documents:
         return _inventory_job(payload)
 
+    # Antes de reconocer nada: una caja revuelta no tiene un tipo que reconocer.
+    # No es un libro de folios ni un legajo de resoluciones, es un montón de
+    # papeles distintos metidos en el mismo PDF. Preguntarle a la muestra de doce
+    # páginas qué documento es cuesta doce pasadas de OCR para una respuesta que
+    # este camino no va a usar.
+    if task is TaskKind.SEGMENT:
+        return _segment_job(payload, task)
+
     # Un libro de folios no se parte por herencia sino uno a uno, así que hay
     # que saber qué documento es antes de elegir cómo partirlo. Averiguarlo
     # cuesta una muestra de doce páginas -- y en un escaneo sin capa de texto,
@@ -466,5 +474,136 @@ def _diploma_split_job(payload: dict, task) -> dict:
             control=control,
             payload=payload,
         )
+    _anunciar(payload, Stage.DONE)
+    return report
+
+
+def _boundary_oracle(settings: dict):
+    """Quién juzga las costuras que la estructura no pudo decidir.
+
+    Claude primero cuando está su llave: de los dos es el único que puede
+    cachear las instrucciones, y en una caja las instrucciones se pagan una vez
+    por página. Gemini cuando es lo único que hay. Y sin ninguna llave se
+    devuelve el oráculo nulo en vez de fallar: la caja se separa igual por todo
+    lo que la estructura decide sola -- en un expediente con paginación impresa,
+    la mayor parte -- y lo demás va a revisión.
+    """
+    from ..adapters.boundary_prompt import NullBoundaryOracle
+
+    anthropic_key = settings.get("anthropic_api_key")
+    if anthropic_key:
+        from anthropic import Anthropic
+
+        from ..adapters.claude_boundary import ClaudeBoundaryOracle
+
+        return ClaudeBoundaryOracle(client=Anthropic(api_key=anthropic_key))
+
+    gemini_key = settings.get("gemini_api_key")
+    if gemini_key:
+        from ..adapters.gemini_boundary import GeminiBoundaryOracle
+
+        return GeminiBoundaryOracle(api_key=gemini_key)
+
+    return NullBoundaryOracle()
+
+
+def _segment_job(payload: dict, task) -> dict:
+    """Separar una caja revuelta en los documentos que la forman.
+
+    Sin OCR y sin visión: se decide sobre la capa de texto y sobre dónde están
+    los renglones, que es lo que hace que una caja de cien páginas se resuelva
+    en segundos y no en minutos. Un escaneo sin capa de texto no rompe nada aquí
+    -- las huellas salen vacías, ninguna costura tiene evidencia y todas van a
+    revisión -- pero tampoco se separa solo, y eso tiene que verse en el informe
+    en vez de descubrirse abriendo los archivos.
+    """
+    from ..adapters.pymupdf_assembler import PyMuPDFAssembler
+    from ..adapters.pymupdf_source import PyMuPDFPageSource
+    from ..application.segment_document import SegmentDocument
+    from ..application.segment_split import group_by_segment
+    from ..domain.naming import DOCUMENT_PREFIX
+    from ..domain.segmentation import Verdict
+
+    settings = payload["settings"]
+    source_path = Path(payload["source"])
+    destination = Path(settings["output_dir"]) / payload["job_id"]
+    name = payload.get("filename") or source_path.name
+
+    progress = _reportero(payload)
+    control = _control(payload)
+
+    source = PyMuPDFPageSource(source_path, name)
+    try:
+        page_count = source.page_count
+        segmentacion = SegmentDocument(
+            oracle=_boundary_oracle(settings), reporter=progress, control=control
+        ).run(source)
+    finally:
+        source.close()
+
+    grupos = group_by_segment(segmentacion.segments)
+    # Antes de escribir un solo archivo. Una separación que pierde o repite una
+    # hoja se ve idéntica a una correcta mirando la carpeta de salida.
+    grupos.verify_integrity(total_pages=page_count)
+
+    _anunciar(
+        payload,
+        Stage.ASSEMBLING,
+        detail="preparando la escritura",
+        done=0,
+        total=len(grupos.groups),
+    )
+    # Con "DOCUMENTO" y no con el prefijo de resoluciones: lo que sale de aquí
+    # todavía no sabe qué es, y llamarlo "RESOLUCION_01" sería escribir en el
+    # disco algo que nadie comprobó.
+    assembly = PyMuPDFAssembler(
+        control=control, progress=progress, naming_prefix=DOCUMENT_PREFIX, nombre=name
+    ).write(source_path, grupos, destination)
+
+    dudosas = [b for b in segmentacion.boundaries if b.verdict is Verdict.UNDECIDED]
+    del_modelo = [b for b in segmentacion.boundaries if not b.deterministic]
+
+    report = {
+        "document": name,
+        "page_count": page_count,
+        "groups": [
+            {
+                "code": group.code.value,
+                "title": group.title,
+                "pages": group.page_numbers,
+                "size": group.size,
+            }
+            for group in grupos.groups
+        ],
+        # Una caja no deja páginas huérfanas: toda hoja pertenece al documento
+        # que se estuviera leyendo, aunque todavía no se sepa cuál es.
+        "quarantine": [],
+        "repairs": [],
+        # La costura que nadie pudo decidir se cortó -- cortar de más se ve y se
+        # arregla en segundos, soldar dos documentos esconde el segundo donde
+        # nadie lo busca -- pero el corte queda declarado para que alguien mire.
+        "review_queue": [
+            {
+                "page": boundary.right,
+                "reason": "no hay evidencia de si esta hoja abre un documento nuevo",
+            }
+            for boundary in dudosas
+        ],
+        "outputs": [path.name for path in assembly.outputs],
+        "unwritable_pages": {
+            str(page): error for page, error in assembly.unwritable_pages.items()
+        },
+        # Lo que hace falta para saber si la caja salió cara o barata, y por qué.
+        # Las tres últimas reparten las costuras: lo que decidió el papel, lo que
+        # decidió el modelo y lo que quedó sin decidir.
+        "stats": {
+            "documents": len(grupos.groups),
+            "seams": len(segmentacion.boundaries),
+            "settled_free": len(segmentacion.boundaries) - len(dudosas) - len(del_modelo),
+            "model_decided": len(del_modelo),
+            "undecided": len(dudosas),
+        },
+        "task": str(task),
+    }
     _anunciar(payload, Stage.DONE)
     return report
