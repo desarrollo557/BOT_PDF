@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import urllib.error
 
 import pytest
@@ -217,6 +218,43 @@ class TestLoQueNoPuedeReventarLaCaja:
     def test_cortes_en_nulo_no_revienta(self, monkeypatch, oraculo):
         monkeypatch.setattr("urllib.request.urlopen", contestando(json.dumps({"cortes": None})))
         assert oraculo.judge(HUELLAS, COSTURAS) == {}
+
+
+class TestLoQueElLogTieneQueDecir:
+    """Un aviso que no nombra la causa no sirve para arreglar nada.
+
+    Medido contra la API real: la primera petición de una cuenta nueva volvió
+    429 "Rate limit exceeded", y el log decía sólo "Mistral no respondió". Un
+    429, un 401 y un plazo vencido se leían iguales, y son tres problemas con
+    tres arreglos distintos -- esperar, cambiar la llave, subir el plazo.
+    """
+
+    def test_el_codigo_http_llega_al_aviso(self, monkeypatch, oraculo, caplog):
+        error = urllib.error.HTTPError(ENDPOINT, 429, "Too Many Requests", {}, None)
+        monkeypatch.setattr("urllib.request.urlopen", reventando(error))
+        with caplog.at_level(logging.WARNING):
+            oraculo.judge(HUELLAS, COSTURAS)
+        assert "429" in caplog.text
+
+    def test_la_razon_llega_al_aviso(self, monkeypatch, oraculo, caplog):
+        error = urllib.error.HTTPError(ENDPOINT, 401, "Unauthorized", {}, None)
+        monkeypatch.setattr("urllib.request.urlopen", reventando(error))
+        with caplog.at_level(logging.WARNING):
+            oraculo.judge(HUELLAS, COSTURAS)
+        assert "401" in caplog.text
+
+    def test_un_fallo_sin_codigo_igual_se_explica(self, monkeypatch, oraculo, caplog):
+        """Sin red no hay status, y el aviso no puede quedarse mudo."""
+        monkeypatch.setattr("urllib.request.urlopen", reventando(urllib.error.URLError("sin red")))
+        with caplog.at_level(logging.WARNING):
+            oraculo.judge(HUELLAS, COSTURAS)
+        assert "sin red" in caplog.text
+
+    def test_el_aviso_sigue_diciendo_que_las_dudas_van_a_revision(self, monkeypatch, oraculo, caplog):
+        monkeypatch.setattr("urllib.request.urlopen", reventando(TimeoutError("tardó")))
+        with caplog.at_level(logging.WARNING):
+            oraculo.judge(HUELLAS, COSTURAS)
+        assert "revisión" in caplog.text
 
 
 class TestElContrato:

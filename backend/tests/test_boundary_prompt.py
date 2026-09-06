@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import json
 
+import urllib.error
+
 from resolutions.adapters.boundary_prompt import (
     INSTRUCTIONS,
     NullBoundaryOracle,
     build_question,
+    describe_failure,
     parse_answer,
 )
 
@@ -161,3 +164,31 @@ class TestElOraculoNulo:
         from resolutions.application.ports import BoundaryOracle
 
         assert isinstance(NullBoundaryOracle(), BoundaryOracle)
+
+
+class TestLoQueSeDiceCuandoUnProveedorFalla:
+    """El aviso tiene que permitir elegir el arreglo, no sólo constatar la caída."""
+
+    def test_un_error_http_se_nombra_por_su_codigo(self):
+        error = urllib.error.HTTPError("https://x", 429, "Too Many Requests", {}, None)
+        dicho = describe_failure(error)
+        assert "429" in dicho
+        assert "Too Many Requests" in dicho
+
+    def test_una_llave_rechazada_no_se_confunde_con_un_limite(self):
+        uno = describe_failure(urllib.error.HTTPError("https://x", 401, "Unauthorized", {}, None))
+        otro = describe_failure(
+            urllib.error.HTTPError("https://x", 429, "Too Many Requests", {}, None)
+        )
+        assert uno != otro
+
+    def test_un_fallo_sin_codigo_se_nombra_por_su_tipo(self):
+        assert "TimeoutError" in describe_failure(TimeoutError("tardó demasiado"))
+
+    def test_un_fallo_de_red_conserva_lo_que_dijo(self):
+        assert "sin red" in describe_failure(urllib.error.URLError("sin red"))
+
+    def test_nunca_devuelve_algo_vacio(self):
+        """Un aviso con un paréntesis vacío es peor que no tener paréntesis."""
+        for error in (Exception(), TimeoutError(), urllib.error.URLError("")):
+            assert describe_failure(error).strip()

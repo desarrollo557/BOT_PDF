@@ -24,7 +24,12 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from .boundary_prompt import INSTRUCTIONS, build_question, parse_answer
+from .boundary_prompt import (
+    INSTRUCTIONS,
+    build_question,
+    describe_failure,
+    parse_answer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,11 +91,15 @@ class MistralBoundaryOracle:
         try:
             with urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as response:
                 payload = json.load(response)
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
             # Una caída degrada la corrida a "estas costuras las mira un humano".
             # Nunca falla la caja: todo lo que la estructura resolvió sigue
-            # siendo un corte válido.
-            logger.warning("Mistral no respondió; las costuras dudosas van a revisión")
+            # siendo un corte válido. El aviso nombra la causa porque un 429 se
+            # espera, un 401 se cambia la llave y un plazo vencido se sube.
+            logger.warning(
+                "Mistral no respondió (%s); las costuras dudosas van a revisión",
+                describe_failure(error),
+            )
             return {}
 
         return parse_answer(_text_of(payload), seams)

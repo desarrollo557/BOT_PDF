@@ -81,6 +81,26 @@ def parse_answer(text: str, seams: list[tuple[int, int]]) -> dict[tuple[int, int
     return answers
 
 
+def describe_failure(error: BaseException) -> str:
+    """Qué salió mal con un proveedor, en una línea, para que se pueda arreglar.
+
+    Los tres adaptadores degradan igual ante un fallo -- las costuras dudosas van
+    a revisión y la caja no se cae -- y eso está bien. Lo que estaba mal era el
+    aviso: decir sólo "no respondió" hace que un 429, un 401 y un plazo vencido se
+    lean idénticos, y son tres problemas con tres arreglos distintos. Esperar,
+    cambiar la llave, subir el plazo.
+
+    Medido contra la API real de Mistral: la primera petición de una cuenta nueva
+    volvió 429 "Rate limit exceeded" y el log no permitía distinguirlo de una
+    llave mal puesta.
+    """
+    status = getattr(error, "code", None)
+    if status is not None:
+        reason = getattr(error, "reason", "") or ""
+        return f"HTTP {status} {reason}".strip()
+    return f"{type(error).__name__}: {error}"
+
+
 def _strip_fence(text: str) -> str:
     """Models wrap JSON in a markdown fence often enough to handle it here."""
     clean = (text or "").strip()

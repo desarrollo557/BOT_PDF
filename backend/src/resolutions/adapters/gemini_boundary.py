@@ -18,7 +18,12 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from .boundary_prompt import INSTRUCTIONS, build_question, parse_answer
+from .boundary_prompt import (
+    INSTRUCTIONS,
+    build_question,
+    describe_failure,
+    parse_answer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +71,14 @@ class GeminiBoundaryOracle:
         try:
             with urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as response:
                 payload = json.load(response)
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
             # An outage degrades the run to "these seams need a human". It never
             # fails the box: everything structure settled is still a valid split.
-            logger.warning("Gemini no respondió; las costuras dudosas van a revisión")
+            # The warning names the cause: a 429 waits, a 401 needs another key.
+            logger.warning(
+                "Gemini no respondió (%s); las costuras dudosas van a revisión",
+                describe_failure(error),
+            )
             return {}
 
         return parse_answer(_text_of(payload), seams)

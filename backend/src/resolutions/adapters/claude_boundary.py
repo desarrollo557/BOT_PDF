@@ -17,7 +17,12 @@ from dataclasses import dataclass
 
 from anthropic import Anthropic
 
-from .boundary_prompt import INSTRUCTIONS, build_question, parse_answer
+from .boundary_prompt import (
+    INSTRUCTIONS,
+    build_question,
+    describe_failure,
+    parse_answer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +70,11 @@ class ClaudeBoundaryOracle:
                 ],
                 messages=[{"role": "user", "content": build_question(pages, seams)}],
             )
-        except Exception:  # noqa: BLE001 - an outage degrades, it does not fail the box
-            logger.warning("Claude no respondió; las costuras dudosas van a revisión")
+        except Exception as error:  # noqa: BLE001 - an outage degrades, it does not fail the box
+            logger.warning(
+                "Claude no respondió (%s); las costuras dudosas van a revisión",
+                describe_failure(error),
+            )
             return {}
 
         usage = getattr(message, "usage", None)
