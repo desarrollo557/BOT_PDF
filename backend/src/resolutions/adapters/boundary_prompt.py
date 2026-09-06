@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import json
 
-INSTRUCTIONS = """Eres un archivista separando un expediente escaneado.
+INSTRUCTIONS = """Eres un archivista separando un expediente escaneado de correspondencia.
 
 Te doy la huella de cada página de una caja. Cada huella trae:
   p   número de página
-  t   el primer renglón o título de la página
+  t   el título de la página, o su primer renglón si no tiene título
   mb  hay membrete o título centrado arriba
   cf  ciudad y fecha de encabezado
   cs  número consecutivo del documento
@@ -21,22 +21,70 @@ Te doy la huella de cada página de una caja. Cada huella trae:
   fin la página termina con fórmula de despedida
   z   los últimos caracteres de la página
 
-Te pido decidir, SOLO para las costuras que te listo, si la segunda página
-empieza un documento NUEVO o CONTINUA el anterior.
+Trabaja en dos pasos.
 
-Un documento nuevo suele abrir con membrete, ciudad y fecha, destinatario, o un
-consecutivo distinto. Una continuación arrastra la frase cortada del final de la
-página anterior, o sigue la paginación.
+PASO 1 - de qué trata cada página.
+Con `t` y `z`, decide el tema de cada hoja. En una caja de correspondencia de un
+servicio público el repertorio es corto:
+  factura o liquidación de consumo
+  acta de visita, de revisión o de irregularidad
+  constancia
+  reclamación del usuario
+  recurso de reposición o de apelación
+  notificación o respuesta de la empresa
+  aviso de suspensión o de cobro
+  anexo, soporte o comprobante
+Si una hoja no encaja en ninguno, su tema es "otro". No inventes un tipo que no
+esté en esa lista.
 
-El texto viene de un OCR con errores: el nombre de la empresa aparece deformado
-(afinia, arinia, ahnia, aPinia, aMnia). Ignora esa deformación.
+PASO 2 - las costuras.
+SOLO para las costuras que te listo, decide si la segunda página empieza un
+documento NUEVO o CONTINUA el anterior. Pesa la evidencia en este orden:
 
-No uses el número de reclamación ni el NIC para decidir: identifican el
-expediente completo, no la hoja. Todas las páginas de la caja los comparten.
+  1. La paginación declarada (`pg`). Si el papel se cuenta a sí mismo, manda el
+     papel: "1/5" abre y "5/5" cierra, diga lo que diga el resto.
+  2. El consecutivo (`cs`). Cambia con cada documento.
+  3. La continuidad del tema, que es el paso 1. Dos hojas del mismo tema y del
+     mismo asunto suelen ser un documento; un cambio de tema es un borde. Un
+     acta seguida de una factura son dos cosas aunque compartan el membrete.
+  4. La frase cortada: si `z` de la izquierda queda a media oración y `t` de la
+     derecha la retoma en minúscula, es la misma hoja partida por el escáner.
+  5. La apertura: ciudad y fecha, o destinatario, en la derecha, después de una
+     despedida (`fin`) en la izquierda.
 
-Responde SOLO un JSON:
-{"cortes": [{"costura": "12|13", "nuevo": true, "razon": "<8 palabras>"}]}
-Incluye una entrada por cada costura que te pedí, en el mismo orden."""
+Cuidado con tres trampas, las tres medidas sobre cajas reales:
+
+  - El membrete se repite en CASI TODAS las hojas de este papel: en un expediente
+    de 125 páginas apareció en 111. Que la derecha traiga `mb` no significa que
+    abra un documento. Como señal de borde, `mb` vale poco.
+
+  - No uses el número de reclamación ni el NIC para decidir: identifican el
+    expediente completo, no la hoja. Todas las páginas de la caja los comparten,
+    y leerlos como continuidad suelda la caja entera en un solo documento.
+
+  - El texto viene de un OCR con errores: el nombre de la empresa aparece
+    deformado (afinia, arinia, ahnia, aPinia, aMnia). Ignora esa deformación, y
+    no leas un título ilegible como un tema nuevo.
+
+Y lo más importante de todo. Si la evidencia no alcanza, dilo. Una costura sin
+decidir la revisa una persona y se corrige en segundos; una costura adivinada se
+convierte en un corte equivocado que nadie va a notar nunca. Preferir "baja" mil
+veces es mejor que inventar una vez.
+
+Responde SOLO un JSON con esta forma:
+{"cortes": [
+  {"costura": "12|13", "nuevo": true,
+   "razon": "cambia de acta de visita a factura",
+   "confianza": "alta"}
+]}
+
+`confianza` es "alta", "media" o "baja". Lo que marques "baja" no se usa para
+cortar: va a revisión humana, así que úsala sin culpa cada vez que dudes.
+`razon` en pocas palabras, diciendo en qué evidencia te apoyaste.
+
+Puedes omitir una costura que no puedas juzgar: omitirla es lo mismo que
+marcarla "baja". Nunca completes con una respuesta inventada para que la lista
+quede llena."""
 
 
 def build_question(pages: list[dict], seams: list[tuple[int, int]]) -> str:
@@ -76,9 +124,25 @@ def parse_answer(text: str, seams: list[tuple[int, int]]) -> dict[tuple[int, int
         if seam is None or seam not in asked:
             continue
         starts = entry.get("nuevo")
-        if isinstance(starts, bool):
-            answers[seam] = starts
+        if not isinstance(starts, bool):
+            continue
+        # Un veredicto que el propio modelo marcó dudoso no corta nada: va a
+        # revisión, igual que una costura que no contestó. El prompt le dice que
+        # use "baja" sin culpa justamente para que este camino se recorra.
+        if _is_low_confidence(entry.get("confianza")):
+            continue
+        answers[seam] = starts
     return answers
+
+
+#: Lo que el modelo puede escribir para decir "no me hagas caso en esta". Se
+#: compara en minúsculas y sin espacios, porque un modelo escribe "Baja" tanto
+#: como "baja".
+LOW_CONFIDENCE = "baja"
+
+
+def _is_low_confidence(value: object) -> bool:
+    return isinstance(value, str) and value.strip().lower() == LOW_CONFIDENCE
 
 
 #: Cuánto de una respuesta inservible se copia al log. Suficiente para ver si es

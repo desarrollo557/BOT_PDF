@@ -233,3 +233,91 @@ class TestCuandoContestaYNoSeEntiendeNada:
         dicho = describe_unusable("x" * 5000, COSTURAS, {})
         assert dicho is not None
         assert len(dicho) < 500
+
+
+class TestLaConfianzaQueElModeloDeclara:
+    """Un veredicto que el modelo marcó dudoso no corta nada.
+
+    Es la mitad que le faltaba al prompt. El esquema anterior sólo aceptaba un
+    booleano, así que el modelo no tenía forma de decir "no sé": o inventaba un
+    corte o callaba la costura entera. Ahora puede contestar y a la vez avisar
+    que no le hagan caso, y esa costura va a revisión humana.
+
+    Cuidado al leer esto: que el mecanismo funcione no dice nada sobre si el
+    modelo acierta más. Eso no está medido -- no hay verdad de referencia sobre
+    ninguna caja -- y este archivo no debería insinuar lo contrario.
+    """
+
+    def test_una_costura_con_confianza_baja_no_decide(self):
+        texto = respuesta({"costura": "12|13", "nuevo": True, "confianza": "baja"})
+        assert parse_answer(texto, COSTURAS) == {}
+
+    def test_confianza_alta_decide(self):
+        texto = respuesta({"costura": "12|13", "nuevo": True, "confianza": "alta"})
+        assert parse_answer(texto, COSTURAS) == {(12, 13): True}
+
+    def test_confianza_media_decide(self):
+        texto = respuesta({"costura": "12|13", "nuevo": False, "confianza": "media"})
+        assert parse_answer(texto, COSTURAS) == {(12, 13): False}
+
+    def test_sin_confianza_decide_como_antes(self):
+        """Compatibilidad: un modelo que no manda el campo sigue sirviendo."""
+        texto = respuesta({"costura": "12|13", "nuevo": True})
+        assert parse_answer(texto, COSTURAS) == {(12, 13): True}
+
+    def test_la_confianza_no_distingue_mayusculas_ni_espacios(self):
+        texto = respuesta({"costura": "12|13", "nuevo": True, "confianza": "  BAJA "})
+        assert parse_answer(texto, COSTURAS) == {}
+
+    def test_una_confianza_que_no_se_entiende_no_descarta_el_veredicto(self):
+        """Sólo "baja" abstiene. Cualquier otra cosa no es una abstención."""
+        texto = respuesta({"costura": "12|13", "nuevo": True, "confianza": 7})
+        assert parse_answer(texto, COSTURAS) == {(12, 13): True}
+
+    def test_la_razon_no_estorba(self):
+        texto = respuesta(
+            {"costura": "12|13", "nuevo": True, "razon": "cambia de acta a factura"}
+        )
+        assert parse_answer(texto, COSTURAS) == {(12, 13): True}
+
+    def test_una_baja_no_arrastra_a_las_demas(self):
+        texto = respuesta(
+            {"costura": "12|13", "nuevo": True, "confianza": "baja"},
+            {"costura": "13|14", "nuevo": False, "confianza": "alta"},
+        )
+        assert parse_answer(texto, COSTURAS) == {(13, 14): False}
+
+
+class TestLoQueElPromptTieneQueDecir:
+    """Las instrucciones son la pieza que decide la calidad de los cortes.
+
+    Lo que se fija acá no es prosa: es que no se caiga ninguna de las tres
+    trampas que costó medir sobre cajas reales, ni el paso de tema que hace que
+    el modelo razone sobre continuidad temática en vez de sobre tipografía.
+    """
+
+    def test_pide_el_tema_de_cada_pagina_antes_de_las_costuras(self):
+        assert "PASO 1" in INSTRUCTIONS
+        assert "tema" in INSTRUCTIONS
+
+    def test_nombra_el_repertorio_de_una_caja_de_correspondencia(self):
+        for tipo in ("factura", "acta", "constancia", "reclamación", "recurso"):
+            assert tipo in INSTRUCTIONS, tipo
+
+    def test_avisa_que_el_membrete_se_repite_en_casi_todas_las_hojas(self):
+        """Medido: 111 de 125. Sin este aviso el modelo lo lee como apertura."""
+        assert "111" in INSTRUCTIONS
+
+    def test_sigue_prohibiendo_decidir_por_el_expediente(self):
+        assert "No uses el número de reclamación" in INSTRUCTIONS
+
+    def test_ofrece_la_abstencion_explicitamente(self):
+        assert "baja" in INSTRUCTIONS
+        assert "revisión humana" in INSTRUCTIONS
+
+    def test_dice_que_omitir_es_valido(self):
+        """Un modelo que cree que debe llenar la lista, inventa."""
+        assert "omitir" in INSTRUCTIONS or "omitirla" in INSTRUCTIONS
+
+    def test_pide_la_razon_de_cada_veredicto(self):
+        assert "razon" in INSTRUCTIONS
