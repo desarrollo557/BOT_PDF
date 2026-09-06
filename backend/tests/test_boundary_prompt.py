@@ -11,7 +11,6 @@ como decisión.
 from __future__ import annotations
 
 import json
-
 import urllib.error
 
 from resolutions.adapters.boundary_prompt import (
