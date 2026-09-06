@@ -1,0 +1,107 @@
+"""The one question asked about a box, and how an answer is read back.
+
+Shared by every provider adapter so the prompt is written once. A boundary that
+Claude and Gemini answer differently should differ because the models differ, not
+because someone reworded the instructions in one of the two files.
+"""
+
+from __future__ import annotations
+
+import json
+
+INSTRUCTIONS = """Eres un archivista separando un expediente escaneado.
+
+Te doy la huella de cada página de una caja. Cada huella trae:
+  p   número de página
+  t   el primer renglón o título de la página
+  mb  hay membrete o título centrado arriba
+  cf  ciudad y fecha de encabezado
+  cs  número consecutivo del documento
+  pg  la paginación que el papel declara ("3/5")
+  fin la página termina con fórmula de despedida
+  z   los últimos caracteres de la página
+
+Te pido decidir, SOLO para las costuras que te listo, si la segunda página
+empieza un documento NUEVO o CONTINUA el anterior.
+
+Un documento nuevo suele abrir con membrete, ciudad y fecha, destinatario, o un
+consecutivo distinto. Una continuación arrastra la frase cortada del final de la
+página anterior, o sigue la paginación.
+
+El texto viene de un OCR con errores: el nombre de la empresa aparece deformado
+(afinia, arinia, ahnia, aPinia, aMnia). Ignora esa deformación.
+
+No uses el número de reclamación ni el NIC para decidir: identifican el
+expediente completo, no la hoja. Todas las páginas de la caja los comparten.
+
+Responde SOLO un JSON:
+{"cortes": [{"costura": "12|13", "nuevo": true, "razon": "<8 palabras>"}]}
+Incluye una entrada por cada costura que te pedí, en el mismo orden."""
+
+
+def build_question(pages: list[dict], seams: list[tuple[int, int]]) -> str:
+    """The user half of the request: the box, then the seams in doubt."""
+    huellas = "\n".join(json.dumps(page, ensure_ascii=False, separators=(",", ":")) for page in pages)
+    costuras = ", ".join(f"{left}|{right}" for left, right in seams)
+    return f"HUELLAS DE LA CAJA:\n{huellas}\n\nCOSTURAS A DECIDIR:\n{costuras}"
+
+
+def parse_answer(text: str, seams: list[tuple[int, int]]) -> dict[tuple[int, int], bool]:
+    """Read the verdicts back, keeping only seams that were actually asked.
+
+    Anything unparseable, unexpected or missing is simply absent from the result,
+    which leaves that seam undecided. A malformed reply must cost a review, never
+    a wrong cut.
+    """
+    try:
+        payload = json.loads(_strip_fence(text))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+    asked = set(seams)
+    answers: dict[tuple[int, int], bool] = {}
+    for entry in payload.get("cortes", []) if isinstance(payload, dict) else []:
+        if not isinstance(entry, dict):
+            continue
+        seam = _read_seam(entry.get("costura"))
+        if seam is None or seam not in asked:
+            continue
+        starts = entry.get("nuevo")
+        if isinstance(starts, bool):
+            answers[seam] = starts
+    return answers
+
+
+def _strip_fence(text: str) -> str:
+    """Models wrap JSON in a markdown fence often enough to handle it here."""
+    clean = (text or "").strip()
+    if clean.startswith("```"):
+        clean = clean.split("\n", 1)[-1]
+        clean = clean.rsplit("```", 1)[0]
+    return clean.strip()
+
+
+def _read_seam(value: object) -> tuple[int, int] | None:
+    if not isinstance(value, str) or "|" not in value:
+        return None
+    left, _, right = value.partition("|")
+    try:
+        return int(left.strip()), int(right.strip())
+    except ValueError:
+        return None
+
+
+class NullBoundaryOracle:
+    """The default when no provider is configured.
+
+    Every doubt stays a doubt and goes to a human. A system with no model still
+    splits everything structure can settle, which on a box with printed page
+    counts is most of it.
+    """
+
+    def judge(
+        self,
+        pages: list[dict[str, object]],
+        seams: list[tuple[int, int]],
+    ) -> dict[tuple[int, int], bool]:
+        return {}

@@ -1,0 +1,80 @@
+"""Claude answering the same boundary question, through the official SDK.
+
+The instructions live in `boundary_prompt`, shared with the Gemini adapter, so
+the two differ in transport and nothing else.
+
+The system half is marked cacheable because it is byte-identical on every box.
+Whether it actually caches depends on the prefix clearing the model's minimum,
+which is why `usage.cache_read_input_tokens` is logged instead of assumed -- a
+prefix below the threshold caches nothing and says nothing about it.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass
+
+from anthropic import Anthropic
+
+from .boundary_prompt import INSTRUCTIONS, build_question, parse_answer
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeBoundaryConfig:
+    model: str = "claude-opus-5"
+    max_tokens: int = 8000
+
+
+class ClaudeBoundaryOracle:
+    """Judges undecided seams with Claude. Satisfies `BoundaryOracle`."""
+
+    def __init__(
+        self,
+        client: Anthropic | None = None,
+        config: ClaudeBoundaryConfig | None = None,
+    ) -> None:
+        self._client = client or Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        self._config = config or ClaudeBoundaryConfig()
+
+    def judge(
+        self,
+        pages: list[dict[str, object]],
+        seams: list[tuple[int, int]],
+    ) -> dict[tuple[int, int], bool]:
+        if not seams:
+            return {}
+
+        try:
+            message = self._client.messages.create(
+                model=self._config.model,
+                max_tokens=self._config.max_tokens,
+                system=[
+                    {
+                        "type": "text",
+                        "text": INSTRUCTIONS,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                messages=[{"role": "user", "content": build_question(pages, seams)}],
+            )
+        except Exception:  # noqa: BLE001 - an outage degrades, it does not fail the box
+            logger.warning("Claude no respondió; las costuras dudosas van a revisión")
+            return {}
+
+        usage = getattr(message, "usage", None)
+        if usage is not None:
+            logger.info(
+                "costuras=%d entrada=%s cache=%s salida=%s",
+                len(seams),
+                getattr(usage, "input_tokens", "?"),
+                getattr(usage, "cache_read_input_tokens", "?"),
+                getattr(usage, "output_tokens", "?"),
+            )
+
+        text = "".join(
+            block.text for block in message.content if getattr(block, "type", "") == "text"
+        )
+        return parse_answer(text, seams)
