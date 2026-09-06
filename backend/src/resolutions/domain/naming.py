@@ -19,6 +19,13 @@ SEPARATOR = "__"
 PREFIX_SEPARATOR = "_"
 RESOLUTION_PREFIX = "RESOLUCION"
 
+#: Y la palabra para lo que se cortó de una caja revuelta. Un documento recién
+#: segmentado todavía no sabe qué es -- eso lo dirá la clasificación, que viene
+#: después -- así que "DOCUMENTO" es lo más que se puede afirmar sin mentir en el
+#: nombre de un archivo. Llamarlo "RESOLUCION" sería escribir en el disco algo
+#: que nadie ha comprobado.
+DOCUMENT_PREFIX = "DOCUMENTO"
+
 #: Shortest a title fragment may be squeezed to before it is dropped entirely.
 #: Below this it has stopped being a title and is just noise in the name.
 MIN_TITLE_SLUG = 12
