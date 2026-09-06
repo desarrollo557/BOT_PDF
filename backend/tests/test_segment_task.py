@@ -91,9 +91,34 @@ class TestElOraculo:
         oraculo = _boundary_oracle({"anthropic_api_key": "abc", "gemini_api_key": "xyz"})
         assert isinstance(oraculo, ClaudeBoundaryOracle)
 
+    def test_con_la_llave_de_mistral_responde_mistral(self):
+        from resolutions.adapters.mistral_boundary import MistralBoundaryOracle
+
+        oraculo = _boundary_oracle({"mistral_api_key": "mmm"})
+        assert isinstance(oraculo, MistralBoundaryOracle)
+
+    def test_gemini_manda_sobre_mistral(self):
+        """Gemini tiene capa gratuita que aguanta una caja; Mistral no."""
+        from resolutions.adapters.gemini_boundary import GeminiBoundaryOracle
+
+        oraculo = _boundary_oracle({"gemini_api_key": "xyz", "mistral_api_key": "mmm"})
+        assert isinstance(oraculo, GeminiBoundaryOracle)
+
+    def test_claude_manda_sobre_las_tres(self):
+        from resolutions.adapters.claude_boundary import ClaudeBoundaryOracle
+
+        oraculo = _boundary_oracle(
+            {"anthropic_api_key": "abc", "gemini_api_key": "xyz", "mistral_api_key": "mmm"}
+        )
+        assert isinstance(oraculo, ClaudeBoundaryOracle)
+
     def test_la_llave_de_gemini_viaja_al_worker(self):
         payload = Settings(gemini_api_key="xyz").as_worker_payload()
         assert payload["gemini_api_key"] == "xyz"
+
+    def test_la_llave_de_mistral_viaja_al_worker(self):
+        payload = Settings(mistral_api_key="mmm").as_worker_payload()
+        assert payload["mistral_api_key"] == "mmm"
 
 
 pymupdf = pytest.importorskip("pymupdf")

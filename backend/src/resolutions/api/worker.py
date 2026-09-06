@@ -481,12 +481,16 @@ def _diploma_split_job(payload: dict, task) -> dict:
 def _boundary_oracle(settings: dict):
     """Quién juzga las costuras que la estructura no pudo decidir.
 
-    Claude primero cuando está su llave: de los dos es el único que puede
-    cachear las instrucciones, y en una caja las instrucciones se pagan una vez
-    por página. Gemini cuando es lo único que hay. Y sin ninguna llave se
-    devuelve el oráculo nulo en vez de fallar: la caja se separa igual por todo
-    lo que la estructura decide sola -- en un expediente con paginación impresa,
-    la mayor parte -- y lo demás va a revisión.
+    El orden es por costo, no por calidad. Claude primero cuando está su llave:
+    de los tres es el único que puede cachear las instrucciones, y en una caja
+    las instrucciones se pagan una vez por página. Gemini después, porque su capa
+    gratuita aguanta una caja entera preguntada de una sola vez. Mistral al
+    final: no trae ninguna de las dos cosas, así que se usa cuando es la llave
+    que hay.
+
+    Y sin ninguna llave se devuelve el oráculo nulo en vez de fallar: la caja se
+    separa igual por todo lo que la estructura decide sola -- en un expediente
+    con paginación impresa, la mayor parte -- y lo demás va a revisión.
     """
     from ..adapters.boundary_prompt import NullBoundaryOracle
 
@@ -503,6 +507,12 @@ def _boundary_oracle(settings: dict):
         from ..adapters.gemini_boundary import GeminiBoundaryOracle
 
         return GeminiBoundaryOracle(api_key=gemini_key)
+
+    mistral_key = settings.get("mistral_api_key")
+    if mistral_key:
+        from ..adapters.mistral_boundary import MistralBoundaryOracle
+
+        return MistralBoundaryOracle(api_key=mistral_key)
 
     return NullBoundaryOracle()
 
