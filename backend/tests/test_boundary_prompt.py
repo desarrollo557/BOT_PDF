@@ -18,6 +18,7 @@ from resolutions.adapters.boundary_prompt import (
     NullBoundaryOracle,
     build_question,
     describe_failure,
+    describe_unusable,
     parse_answer,
 )
 
@@ -191,3 +192,44 @@ class TestLoQueSeDiceCuandoUnProveedorFalla:
         """Un aviso con un paréntesis vacío es peor que no tener paréntesis."""
         for error in (Exception(), TimeoutError(), urllib.error.URLError("")):
             assert describe_failure(error).strip()
+
+
+class TestCuandoContestaYNoSeEntiendeNada:
+    """Un 200 que no produce ni un veredicto tiene que decirlo, y con qué.
+
+    Medido contra la API real de Gemini: la llamada volvió 200, `parse_answer`
+    descartó la respuesta entera y el log no dijo nada. Desde afuera se veía
+    igual que un proveedor sin llave -- `model_decided: 0` -- y averiguar la
+    diferencia costó contar líneas de log contra cajas procesadas.
+    """
+
+    def test_ningun_veredicto_se_reporta(self):
+        dicho = describe_unusable("Claro, con gusto te ayudo.", COSTURAS, {})
+        assert dicho is not None
+        assert "0 de 2" in dicho
+
+    def test_se_incluye_un_pedazo_de_lo_que_contesto(self):
+        """Sin la respuesta delante no se puede saber si es prosa o otro formato."""
+        dicho = describe_unusable('{"boundaries": []}', COSTURAS, {})
+        assert "boundaries" in dicho
+
+    def test_una_respuesta_vacia_tambien_se_nombra(self):
+        dicho = describe_unusable("", COSTURAS, {})
+        assert dicho is not None
+        assert "vacía" in dicho or "vacia" in dicho
+
+    def test_contestar_todo_no_genera_ruido(self):
+        answers = {(12, 13): True, (13, 14): False}
+        assert describe_unusable("{}", COSTURAS, answers) is None
+
+    def test_contestar_algunas_tampoco(self):
+        """La cobertura parcial ya se ve en `model_decided`; no hace falta avisar."""
+        assert describe_unusable("{}", COSTURAS, {(12, 13): True}) is None
+
+    def test_sin_costuras_no_hay_nada_que_reportar(self):
+        assert describe_unusable("", [], {}) is None
+
+    def test_el_pedazo_no_inunda_el_log(self):
+        dicho = describe_unusable("x" * 5000, COSTURAS, {})
+        assert dicho is not None
+        assert len(dicho) < 500

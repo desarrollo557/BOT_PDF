@@ -118,10 +118,70 @@ def _decide(left: PageFingerprint, right: PageFingerprint) -> tuple[Verdict, str
             return Verdict.CONTINUES, "mismo consecutivo"
         return Verdict.STARTS, "cambia el consecutivo"
 
+    # La oración partida por el escáner. Es la evidencia más fuerte que quedaba
+    # gratis y no se usaba: `tail` y `title` ya se calculaban -- se le mandaban al
+    # modelo en la huella -- así que se pagaba una llamada por costuras que la
+    # tipografía del texto ya resolvía.
+    if _sentence_runs_on(left, right):
+        return Verdict.CONTINUES, "la oración sigue cortada en la hoja siguiente"
+
+    # Un documento que se despidió y otro que abre son dos. `closes` también se
+    # calculaba y también se ignoraba. Esta regla empuja a cortar, que es el lado
+    # seguro del error: partir un documento en dos se repara en segundos, soldar
+    # dos en uno esconde el segundo donde nadie lo va a buscar.
+    if left.closes and (right.letterhead or right.place_and_date):
+        return Verdict.STARTS, "la anterior se despide y la siguiente abre"
+
     # Deliberately no rule on `case_code`. Every page of an expediente shares it,
     # so reading it as continuity welds the whole box into one document -- an
     # error measured on a real 125-page file before this module existed.
     return Verdict.UNDECIDED, "sin evidencia estructural"
+
+
+#: Cuántas palabras necesita el final de una hoja para leerse como prosa cortada
+#: y no como un rótulo. Un anexo cuya página entera dice "anexo uno" también
+#: termina en letra, y soldarlo con "anexo dos" es el error exacto que esta cuenta
+#: evita -- lo detectó la prueba de tres anexos sueltos antes que un operador.
+RUNON_TAIL_WORDS = 5
+
+#: Y cuántas necesita el arranque de la siguiente. Una frase retomada es una
+#: frase; "anexo dos" son dos palabras y una etiqueta.
+RUNON_HEAD_WORDS = 3
+
+
+def _sentence_runs_on(left: PageFingerprint, right: PageFingerprint) -> bool:
+    """Si la oración de la izquierda sigue, sin terminar, en la derecha.
+
+    Estricta a propósito, y la asimetría del error es la razón. Un falso
+    CONTINUES suelda dos documentos y el segundo desaparece del inventario sin
+    que nadie lo note; un falso STARTS deja dos archivos que el operador junta de
+    un vistazo. De modo que cualquier señal de apertura en la hoja derecha
+    -- membrete, ciudad y fecha, un consecutivo -- calla esta regla, y ante un
+    dato ausente se abstiene en vez de suponer.
+
+    Tres condiciones, y las tres hacen falta:
+
+    * el final de la izquierda es una letra o una coma -- cualquier signo de
+      cierre significa que la frase terminó, y con ella pudo terminar el papel;
+    * ese final es prosa y no un rótulo, medido en palabras. Una hoja cuyo texto
+      completo es "anexo uno" también termina en letra;
+    * el arranque de la derecha es una frase en minúscula, no una etiqueta.
+    """
+    if right.letterhead or right.place_and_date or right.serial:
+        return False
+
+    tail = (left.tail or "").rstrip()
+    if not tail or not (tail[-1].isalpha() or tail[-1] == ","):
+        return False
+    if len(tail.split()) < RUNON_TAIL_WORDS:
+        return False
+
+    head = (right.title or "").strip()
+    if len(head.split()) < RUNON_HEAD_WORDS:
+        return False
+
+    first_letter = next((char for char in head if char.isalpha()), None)
+    return first_letter is not None and first_letter.islower()
 
 
 def decide_boundaries(fingerprints: Sequence[PageFingerprint]) -> list[Boundary]:

@@ -28,6 +28,7 @@ from .boundary_prompt import (
     INSTRUCTIONS,
     build_question,
     describe_failure,
+    describe_unusable,
     parse_answer,
 )
 
@@ -102,7 +103,12 @@ class MistralBoundaryOracle:
             )
             return {}
 
-        return parse_answer(_text_of(payload), seams)
+        texto = _text_of(payload)
+        answers = parse_answer(texto, seams)
+        unusable = describe_unusable(texto, seams, answers)
+        if unusable:
+            logger.warning("Mistral contestó y no se entendió: %s", unusable)
+        return answers
 
 
 def _text_of(payload: dict) -> str:

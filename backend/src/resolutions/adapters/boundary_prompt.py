@@ -81,6 +81,38 @@ def parse_answer(text: str, seams: list[tuple[int, int]]) -> dict[tuple[int, int
     return answers
 
 
+#: Cuánto de una respuesta inservible se copia al log. Suficiente para ver si es
+#: prosa, otro esquema de JSON o una respuesta truncada; poco para no inundar.
+UNUSABLE_SNIPPET = 220
+
+
+def describe_unusable(
+    text: str,
+    seams: list[tuple[int, int]],
+    answers: dict[tuple[int, int], bool],
+) -> str | None:
+    """Por qué una respuesta que llegó bien no produjo ningún veredicto.
+
+    Devuelve `None` cuando no hay nada que reportar: alguna costura se contestó,
+    o no se preguntó ninguna. La cobertura parcial no se avisa porque ya se ve en
+    `model_decided` del informe.
+
+    Existe porque un 200 inservible y un proveedor sin llave se veían idénticos
+    desde afuera -- los dos dejan `model_decided` en 0 -- y distinguirlos obligaba
+    a contar líneas de log contra cajas procesadas. Medido contra la API real de
+    Gemini, que contestó 200 y cuya respuesta se descartó entera sin decir nada.
+    """
+    if not seams or answers:
+        return None
+    limpio = (text or "").strip()
+    if not limpio:
+        return f"0 de {len(seams)} costuras; la respuesta llegó vacía"
+    recorte = limpio[:UNUSABLE_SNIPPET]
+    if len(limpio) > UNUSABLE_SNIPPET:
+        recorte += "..."
+    return f"0 de {len(seams)} costuras; contestó: {recorte!r}"
+
+
 def describe_failure(error: BaseException) -> str:
     """Qué salió mal con un proveedor, en una línea, para que se pueda arreglar.
 

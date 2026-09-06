@@ -21,6 +21,7 @@ from .boundary_prompt import (
     INSTRUCTIONS,
     build_question,
     describe_failure,
+    describe_unusable,
     parse_answer,
 )
 
@@ -90,4 +91,8 @@ class ClaudeBoundaryOracle:
         text = "".join(
             block.text for block in message.content if getattr(block, "type", "") == "text"
         )
-        return parse_answer(text, seams)
+        answers = parse_answer(text, seams)
+        unusable = describe_unusable(text, seams, answers)
+        if unusable:
+            logger.warning("Claude contestó y no se entendió: %s", unusable)
+        return answers

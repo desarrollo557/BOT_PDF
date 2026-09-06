@@ -257,6 +257,22 @@ class TestLoQueElLogTieneQueDecir:
         assert "revisión" in caplog.text
 
 
+    def test_una_respuesta_200_inservible_se_avisa(self, monkeypatch, oraculo, caplog):
+        """Un 200 que no produce veredictos se veía igual que no tener llave."""
+        monkeypatch.setattr("urllib.request.urlopen", contestando("Claro, con gusto."))
+        with caplog.at_level(logging.WARNING):
+            assert oraculo.judge(HUELLAS, COSTURAS) == {}
+        assert "no se entendió" in caplog.text
+        assert "Claro" in caplog.text
+
+    def test_una_respuesta_util_no_avisa_nada(self, monkeypatch, oraculo, caplog):
+        texto = veredicto({"costura": "12|13", "nuevo": True})
+        monkeypatch.setattr("urllib.request.urlopen", contestando(texto))
+        with caplog.at_level(logging.WARNING):
+            oraculo.judge(HUELLAS, COSTURAS)
+        assert "no se entendió" not in caplog.text
+
+
 class TestElContrato:
     def test_cumple_el_protocolo(self, oraculo):
         assert isinstance(oraculo, BoundaryOracle)
