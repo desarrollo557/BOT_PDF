@@ -113,6 +113,35 @@ class VisionOracle(Protocol):
 
 
 @runtime_checkable
+class BoundaryOracle(Protocol):
+    """Judges the seams that structure could not settle.
+
+    Takes the whole box at once, on purpose. Asked seam by seam, a model cannot
+    know that pages 12 to 15 are all the same acta; given every page's
+    fingerprint together it can. That it is also one round trip instead of one
+    per boundary -- 124 of them on a real expediente -- is the smaller half of
+    the argument.
+
+    Which provider answers is not this layer's business: the same protocol is
+    satisfied by Claude, by Gemini, and by the null implementation that sends
+    every doubt to a human instead.
+    """
+
+    def judge(
+        self,
+        pages: list[dict[str, object]],
+        seams: list[tuple[int, int]],
+    ) -> dict[tuple[int, int], bool]:
+        """True where the right-hand page of a seam opens a new document.
+
+        A seam left out of the answer stays undecided. Silence is a valid reply
+        -- an unanswered doubt goes to review, which is where a guess would have
+        ended up anyway, only without the pretence.
+        """
+        ...
+
+
+@runtime_checkable
 class RoiRegistry(Protocol):
     """Remembers where the number sits for each layout that has been seen.
 
