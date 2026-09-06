@@ -499,8 +499,19 @@ def _boundary_oracle(settings: dict, choice=None):
     de que la elección existiera.
 
     Y sin ninguna llave se devuelve el oráculo nulo en vez de fallar: la caja se
-    separa igual por todo lo que la estructura decide sola -- en un expediente
-    con paginación impresa, la mayor parte -- y lo demás va a revisión.
+    separa por todo lo que la estructura decide sola y lo demás va a revisión.
+
+    Eso no es un modo degradado aceptable, y conviene decirlo con el número
+    medido en vez de con una impresión. Sobre el expediente de 125 páginas contra
+    el que se construyó este camino, la estructura resolvió 32 de 124 costuras
+    -- el 25%, no "la mayor parte" -- y las 92 restantes quedaron sin decidir. Al
+    tratarse una costura dudosa como corte, la caja salió como 109 documentos, de
+    los cuales 100 son de una sola página.
+
+    Dicho de otro modo: en una caja de correspondencia sin paginación impresa el
+    modelo no es una optimización, es la pieza que hace utilizable el resultado.
+    Sin llave el operador recibe algo que tiene que rearmar a mano casi entero, y
+    la cola de revisión se lo dice honestamente, pero se lo dice 92 veces.
     """
     from ..adapters.boundary_prompt import NullBoundaryOracle
     from ..application.oracle import OracleChoice
