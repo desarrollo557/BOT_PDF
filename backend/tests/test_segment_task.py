@@ -230,7 +230,6 @@ class TestElTrabajo:
         assert informe["outputs"] == [
             "DOCUMENTO_01.pdf",
             "DOCUMENTO_02.pdf",
-            "DOCUMENTO_03.pdf",
         ]
         escritos = sorted(
             path.name for path in (tmp_path / "outputs" / "trabajo").glob("*.pdf")
@@ -247,20 +246,31 @@ class TestElTrabajo:
         assert informe["task"] == "segment"
 
     def test_los_grupos_son_los_documentos_de_la_caja(self, informe):
-        assert [grupo["pages"] for grupo in informe["groups"]] == [[1, 2], [3], [4]]
-        assert [grupo["code"] for grupo in informe["groups"]] == ["01", "02", "03"]
+        """La hoja 4 no trae nada que abra un documento, así que se queda con la 3.
+
+        Las dos primeras las une su propia paginación. La cuarta se queda donde
+        estaba porque la duda ya no corta: partir la factura en dos destruiría
+        una unidad documental sin dejar rastro, y dejarla entera deja una hoja
+        de más que la cola de revisión nombra.
+        """
+        assert [grupo["pages"] for grupo in informe["groups"]] == [[1, 2], [3, 4]]
+        assert [grupo["code"] for grupo in informe["groups"]] == ["01", "02"]
 
     def test_nada_va_a_cuarentena(self, informe):
         assert informe["quarantine"] == []
 
     def test_la_costura_sin_evidencia_va_a_la_cola_de_revision(self, informe):
-        """Sin modelo, la duda se corta y se avisa. Cortar de más se ve y se
-        arregla; soldar dos documentos esconde el segundo donde nadie lo busca."""
+        """Sin modelo, la duda une y se avisa.
+
+        Unir no es callar: la hoja queda declarada para que alguien la mire. Lo
+        que cambia respecto de cortar es cuál de los dos errores se comete
+        mientras tanto, y separar una unidad documental es el que no deja rastro.
+        """
         assert [item["page"] for item in informe["review_queue"]] == [4]
 
     def test_las_cuentas_dicen_cuanto_resolvio_la_estructura_gratis(self, informe):
         stats = informe["stats"]
-        assert stats["documents"] == 3
+        assert stats["documents"] == 2
         assert stats["seams"] == 3
         assert stats["undecided"] == 1
         assert stats["model_decided"] == 0
