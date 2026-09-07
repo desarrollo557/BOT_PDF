@@ -34,6 +34,19 @@ class TaskKind(StrEnum):
     #: los PDF y escribir el FUID son dos salidas de la misma decisión.
     BOTH = "both"
 
+    #: Separar una caja revuelta en los documentos que la forman. No es partir:
+    #: partir supone un número impreso que manda hasta que aparece otro, y una
+    #: caja de correspondencia no lo tiene. El número de reclamación que llevan
+    #: todas sus hojas identifica el expediente entero, así que aquí la decisión
+    #: es de continuidad -- si la hoja siguiente sigue a la anterior o empieza
+    #: otra cosa -- y no de identidad.
+    #:
+    #: No inventaría. El FUID pide asunto y tipo documental, y eso son preguntas
+    #: sobre un documento que ya tiene bordes; hacerlas de una caja sin cortar es
+    #: lo que hace que un clasificador conteste lo mismo para noventa páginas
+    #: distintas.
+    SEGMENT = "segment"
+
     @property
     def label(self) -> str:
         """Lo que se lee en pantalla y en el acta."""
@@ -41,7 +54,7 @@ class TaskKind(StrEnum):
 
     @property
     def writes_documents(self) -> bool:
-        return self in (TaskKind.SPLIT, TaskKind.BOTH)
+        return self in (TaskKind.SPLIT, TaskKind.BOTH, TaskKind.SEGMENT)
 
     @property
     def writes_inventory(self) -> bool:
@@ -63,4 +76,5 @@ _LABELS = {
     TaskKind.SPLIT: "Dividir en documentos",
     TaskKind.INVENTORY: "Solo inventariar",
     TaskKind.BOTH: "Dividir e inventariar",
+    TaskKind.SEGMENT: "Separar por documento",
 }

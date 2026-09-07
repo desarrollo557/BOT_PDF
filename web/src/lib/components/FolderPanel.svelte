@@ -1,6 +1,7 @@
 <script lang="ts">
   import FolderPicker from '$lib/components/FolderPicker.svelte';
   import { jobStore } from '$lib/jobs.svelte';
+  import type { OracleChoice } from '$lib/oracles';
   import type { SourceDisposition, TaskKind } from '$lib/types';
 
   interface Props {
@@ -12,9 +13,15 @@
      * diplomas sin más salida que volver a subirlo uno por uno.
      */
     task?: TaskKind;
+    /**
+     * Y a qué modelo preguntarle por los bordes dudosos. Viaja desde el
+     * mismo control que en una subida a mano: una carpeta que siempre
+     * usara el automático no serviría para comparar dos modelos.
+     */
+    oracle?: OracleChoice;
   }
 
-  let { task = 'split' }: Props = $props();
+  let { task = 'split', oracle = 'auto' }: Props = $props();
 
   /**
    * Clean a pasted path in the field itself.
@@ -99,7 +106,8 @@
         destination: cleanPath(destination),
         disposition,
         watch,
-        task
+        task,
+        oracle
       });
     } catch (problem) {
       error = (problem as Error).message;

@@ -1,11 +1,16 @@
 <script lang="ts">
+  import { fetchHealth, type Health } from '$lib/api';
   import Dropzone from '$lib/components/Dropzone.svelte';
   import FolderPanel from '$lib/components/FolderPanel.svelte';
+  import { oracleOptions, reasonFor, type OracleChoice } from '$lib/oracles';
   import type { TaskKind } from '$lib/types';
 
   interface Props {
-    /** Called with the chosen files, whether they travel as a batch, and what to do with them. */
-    onfiles: (files: File[], asBatch: boolean, task: TaskKind) => void;
+    /**
+     * Called with the chosen files, whether they travel as a batch, what to do
+     * with them, and which model judges the boundaries structure cannot settle.
+     */
+    onfiles: (files: File[], asBatch: boolean, task: TaskKind, oracle: OracleChoice) => void;
     disabled?: boolean;
   }
 
@@ -29,6 +34,28 @@
   let task = $state<TaskKind>('split');
   let notice = $state<string | null>(null);
 
+  /**
+   * A qué modelo se le pregunta por las costuras que la estructura no pudo
+   * decidir. Sólo tiene sentido al separar una caja revuelta: es la única acción
+   * que decide bordes por continuidad, y las otras tres leen un número impreso.
+   *
+   * La disponibilidad se lee una vez del servicio y no se sondea: cambia sólo
+   * cuando el servicio arranca con otras llaves. Si igual quedara vieja, el
+   * servicio contesta 422 nombrando la variable que falta, así que lo peor que
+   * puede pasar es un mensaje claro en vez de un corte decidido por otro modelo.
+   */
+  let oracle = $state<OracleChoice>('auto');
+  let health = $state<Health | null>(null);
+
+  $effect(() => {
+    void fetchHealth().then((value) => {
+      health = value;
+    });
+  });
+
+  const oracles = $derived(oracleOptions(health));
+  const blocked = $derived(reasonFor(oracle, oracles));
+
   const MODES: { id: Mode; label: string; hint: string }[] = [
     { id: 'single', label: 'Carga individual', hint: `hasta ${SINGLE_LIMIT} documentos` },
     { id: 'batch', label: 'Carga por lotes', hint: 'sin límite de cantidad' },
@@ -50,13 +77,25 @@
       id: 'both',
       label: 'Dividir e inventariar',
       hint: 'las dos cosas, sobre una sola lectura'
+    },
+    {
+      id: 'segment',
+      label: 'Separar por documento',
+      hint: 'una caja revuelta, cortada por continuidad'
     }
   ];
 
   function receive(files: File[]) {
     notice = null;
+    // Nunca se manda una elección imposible. El servicio la rechazaría igual,
+    // pero después de recibir el archivo: una caja escaneada son cientos de
+    // megabytes y el operador ya había decidido.
+    if (task === 'segment' && blocked) {
+      notice = blocked;
+      return;
+    }
     if (mode === 'batch') {
-      onfiles(files, true, task);
+      onfiles(files, true, task, oracle);
       return;
     }
     if (files.length > SINGLE_LIMIT) {
@@ -65,7 +104,7 @@
       notice = `La carga individual admite ${SINGLE_LIMIT} documentos. Cambie a carga por lotes para subir los ${files.length}.`;
       return;
     }
-    onfiles(files, false, task);
+    onfiles(files, false, task, oracle);
   }
 </script>
 
@@ -101,6 +140,39 @@
     </p>
   {/if}
 
+  {#if task === 'segment'}
+    <p class="explains">
+      Una caja de correspondencia no trae un número que mande: la factura, el reclamo que la
+      disputa y la respuesta al reclamo comparten todos los identificadores del expediente. Los
+      bordes se deciden por continuidad, y las costuras que la estructura no puede resolver sola
+      son las que se le preguntan a un modelo.
+    </p>
+
+    <div class="oracle" role="radiogroup" aria-label="Qué modelo juzga los bordes dudosos">
+      {#each oracles as option (option.id)}
+        <button
+          type="button"
+          role="radio"
+          aria-checked={oracle === option.id}
+          class:current={oracle === option.id}
+          disabled={!option.available}
+          title={option.reason ?? option.hint}
+          onclick={() => {
+            oracle = option.id;
+            notice = null;
+          }}
+        >
+          <b>{option.label}</b>
+          <small>{option.available ? option.hint : 'sin llave'}</small>
+        </button>
+      {/each}
+    </div>
+
+    {#if blocked}
+      <p class="notice">{blocked}</p>
+    {/if}
+  {/if}
+
   <div class="switch" role="tablist" aria-label="Modo de carga">
     {#each MODES as option (option.id)}
       <button
@@ -120,7 +192,7 @@
   </div>
 
   {#if mode === 'folder'}
-    <FolderPanel {task} />
+    <FolderPanel {task} {oracle} />
   {:else}
     <Dropzone onfiles={receive} {disabled} variant={mode} limit={SINGLE_LIMIT} />
   {/if}
@@ -149,7 +221,25 @@
     padding: 4px;
   }
 
+  .oracle {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    background: var(--plane);
+    padding: 4px;
+  }
+
+  /* Un modelo sin llave se ve apagado y dice por qué en el título, en vez de
+     desaparecer: que exista y no se pueda pedir es información. */
+  .oracle button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
   .task button,
+  .oracle button,
   .switch button {
     display: flex;
     flex-direction: column;
@@ -168,10 +258,12 @@
       border-color 0.16s;
   }
   .task button:hover,
+  .oracle button:not(:disabled):hover,
   .switch button:hover {
     color: var(--ink-2);
   }
   .task button.current,
+  .oracle button.current,
   .switch button.current {
     border-color: var(--hairline);
     background: var(--surface-2);
@@ -180,11 +272,13 @@
   }
 
   .task b,
+  .oracle b,
   .switch b {
     font-size: 0.8rem;
     font-weight: 600;
   }
   .task small,
+  .oracle small,
   .switch small {
     font-family: var(--font-mono);
     font-size: 0.68rem;
@@ -208,6 +302,11 @@
   }
   [data-task='both'] .task button.current {
     border-color: color-mix(in oklab, var(--s3) 45%, var(--hairline));
+  }
+  /* Separar no lee ningún número impreso: decide bordes. Su propio acento, para
+     que se vea de reojo que esta carga no se parece a las otras tres. */
+  [data-task='segment'] .task button.current {
+    border-color: color-mix(in oklab, var(--s4) 45%, var(--hairline));
   }
 
   /* Batch mode is a different job, so it gets a different accent on the rail

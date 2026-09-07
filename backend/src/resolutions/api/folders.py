@@ -87,6 +87,7 @@ class FolderRun:
     #: sólo sabía dividir, así que un libro de diplomas tomado de una carpeta
     #: nunca podía dejar su inventario.
     task: str = "split"
+    oracle: str = "auto"
     #: Who started it. Attribution, never authorisation.
     operator: str | None = None
     state: RunState = RunState.SCANNING
@@ -140,6 +141,7 @@ class FolderRun:
             "disposition": str(self.disposition),
             "watch": self.watch,
             "task": self.task,
+            "oracle": self.oracle,
             "operator": self.operator,
             "state": str(self.state),
             "started_at": self.started_at,
@@ -277,6 +279,7 @@ class FolderRunner:
         watch: bool = False,
         operator: str | None = None,
         task: str = "split",
+        oracle: str = "auto",
     ) -> FolderRun:
         origin, target = validate_folders(source, destination)
 
@@ -292,6 +295,7 @@ class FolderRunner:
             watch=watch,
             operator=operator,
             task=task,
+            oracle=oracle,
         )
         self._runs[run.id] = run
         self._tasks[run.id] = asyncio.create_task(self._drain(run))
@@ -432,6 +436,7 @@ class FolderRunner:
             size=size,
             operator=run.operator,
             task=run.task,
+            oracle=run.oracle,
         )
         run.current_job_id = job.id
         run.job_ids.append(job.id)
