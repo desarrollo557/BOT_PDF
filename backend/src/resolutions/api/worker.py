@@ -30,6 +30,14 @@ def process_document_job(payload: dict) -> dict:
     if not task.writes_documents:
         return _inventory_job(payload)
 
+    # Antes de reconocer nada: una caja revuelta no tiene un tipo que reconocer.
+    # No es un libro de folios ni un legajo de resoluciones, es un montón de
+    # papeles distintos metidos en el mismo PDF. Preguntarle a la muestra de doce
+    # páginas qué documento es cuesta doce pasadas de OCR para una respuesta que
+    # este camino no va a usar.
+    if task is TaskKind.SEGMENT:
+        return _segment_job(payload, task)
+
     # Un libro de folios no se parte por herencia sino uno a uno, así que hay
     # que saber qué documento es antes de elegir cómo partirlo. Averiguarlo
     # cuesta una muestra de doce páginas -- y en un escaneo sin capa de texto,
@@ -466,5 +474,191 @@ def _diploma_split_job(payload: dict, task) -> dict:
             control=control,
             payload=payload,
         )
+    _anunciar(payload, Stage.DONE)
+    return report
+
+
+#: En qué orden prueba la cascada cuando el operador no eligió. Es por costo, no
+#: por calidad: Claude cachea las instrucciones, que en una caja se pagan una vez
+#: por página; la capa gratuita de Gemini aguanta una caja preguntada de una sola
+#: vez; Mistral no trae ninguna de las dos cosas, así que va último.
+_CASCADE = ("claude", "gemini", "mistral")
+
+
+def _boundary_oracle(settings: dict, choice=None):
+    """Quién juzga las costuras que la estructura no pudo decidir.
+
+    Con una elección explícita se respeta o no se contesta. Nunca se sustituye:
+    si alguien pidió Mistral y el sistema contestara con Gemini, el informe
+    mentiría sobre quién decidió los cortes, y un corte cuya autoría no se puede
+    rastrear no sirve para decidir si el criterio funciona. Pedir un proveedor
+    sin su llave devuelve el oráculo nulo -- la API contesta 422 antes de llegar
+    acá, así que esto es la última defensa y no el camino previsto.
+
+    Sin elección se recorre `_CASCADE`, que es el comportamiento que había antes
+    de que la elección existiera.
+
+    Y sin ninguna llave se devuelve el oráculo nulo en vez de fallar: la caja se
+    separa por todo lo que la estructura decide sola y lo demás va a revisión.
+
+    Eso no es un modo degradado aceptable, y conviene decirlo con el número
+    medido en vez de con una impresión. Sobre el expediente de 125 páginas contra
+    el que se construyó este camino, la estructura resolvió 32 de 124 costuras
+    -- el 25%, no "la mayor parte" -- y las 92 restantes quedaron sin decidir. Al
+    tratarse una costura dudosa como corte, la caja salió como 109 documentos, de
+    los cuales 100 son de una sola página.
+
+    Dicho de otro modo: en una caja de correspondencia sin paginación impresa el
+    modelo no es una optimización, es la pieza que hace utilizable el resultado.
+    Sin llave el operador recibe algo que tiene que rearmar a mano casi entero, y
+    la cola de revisión se lo dice honestamente, pero se lo dice 92 veces.
+    """
+    from ..adapters.boundary_prompt import NullBoundaryOracle
+    from ..application.oracle import OracleChoice
+
+    eleccion = OracleChoice.AUTO if choice is None else OracleChoice(choice)
+
+    if eleccion is not OracleChoice.AUTO:
+        if not eleccion.is_available(settings):
+            logger.warning(
+                "se pidió %s y no hay %s; las costuras dudosas van a revisión",
+                eleccion.value,
+                eleccion.env_var,
+            )
+            return NullBoundaryOracle()
+        return _oracle_named(eleccion.value, settings)
+
+    for candidate in _CASCADE:
+        if OracleChoice(candidate).is_available(settings):
+            return _oracle_named(candidate, settings)
+
+    return NullBoundaryOracle()
+
+
+def _oracle_named(name: str, settings: dict):
+    """Construye un proveedor concreto, ya sabiendo que su llave está puesta.
+
+    Los adaptadores se importan acá y no arriba porque el proceso de la API no
+    tiene por qué cargar el SDK de Anthropic para aceptar una subida.
+    """
+    if name == "claude":
+        from anthropic import Anthropic
+
+        from ..adapters.claude_boundary import ClaudeBoundaryOracle
+
+        return ClaudeBoundaryOracle(
+            client=Anthropic(api_key=str(settings.get("anthropic_api_key")))
+        )
+
+    if name == "gemini":
+        from ..adapters.gemini_boundary import GeminiBoundaryOracle
+
+        return GeminiBoundaryOracle(api_key=str(settings.get("gemini_api_key")))
+
+    from ..adapters.mistral_boundary import MistralBoundaryOracle
+
+    return MistralBoundaryOracle(api_key=str(settings.get("mistral_api_key")))
+
+
+def _segment_job(payload: dict, task) -> dict:
+    """Separar una caja revuelta en los documentos que la forman.
+
+    Sin OCR y sin visión: se decide sobre la capa de texto y sobre dónde están
+    los renglones, que es lo que hace que una caja de cien páginas se resuelva
+    en segundos y no en minutos. Un escaneo sin capa de texto no rompe nada aquí
+    -- las huellas salen vacías, ninguna costura tiene evidencia y todas van a
+    revisión -- pero tampoco se separa solo, y eso tiene que verse en el informe
+    en vez de descubrirse abriendo los archivos.
+    """
+    from ..adapters.pymupdf_assembler import PyMuPDFAssembler
+    from ..adapters.pymupdf_source import PyMuPDFPageSource
+    from ..application.segment_document import SegmentDocument
+    from ..application.segment_split import group_by_segment
+    from ..domain.naming import DOCUMENT_PREFIX
+    from ..domain.segmentation import Verdict
+
+    settings = payload["settings"]
+    source_path = Path(payload["source"])
+    destination = Path(settings["output_dir"]) / payload["job_id"]
+    name = payload.get("filename") or source_path.name
+
+    progress = _reportero(payload)
+    control = _control(payload)
+
+    source = PyMuPDFPageSource(source_path, name)
+    try:
+        page_count = source.page_count
+        segmentacion = SegmentDocument(
+            oracle=_boundary_oracle(settings, payload.get("oracle")),
+            reporter=progress,
+            control=control,
+        ).run(source)
+    finally:
+        source.close()
+
+    grupos = group_by_segment(segmentacion.segments)
+    # Antes de escribir un solo archivo. Una separación que pierde o repite una
+    # hoja se ve idéntica a una correcta mirando la carpeta de salida.
+    grupos.verify_integrity(total_pages=page_count)
+
+    _anunciar(
+        payload,
+        Stage.ASSEMBLING,
+        detail="preparando la escritura",
+        done=0,
+        total=len(grupos.groups),
+    )
+    # Con "DOCUMENTO" y no con el prefijo de resoluciones: lo que sale de aquí
+    # todavía no sabe qué es, y llamarlo "RESOLUCION_01" sería escribir en el
+    # disco algo que nadie comprobó.
+    assembly = PyMuPDFAssembler(
+        control=control, progress=progress, naming_prefix=DOCUMENT_PREFIX, nombre=name
+    ).write(source_path, grupos, destination)
+
+    dudosas = [b for b in segmentacion.boundaries if b.verdict is Verdict.UNDECIDED]
+    del_modelo = [b for b in segmentacion.boundaries if not b.deterministic]
+
+    report = {
+        "document": name,
+        "page_count": page_count,
+        "groups": [
+            {
+                "code": group.code.value,
+                "title": group.title,
+                "pages": group.page_numbers,
+                "size": group.size,
+            }
+            for group in grupos.groups
+        ],
+        # Una caja no deja páginas huérfanas: toda hoja pertenece al documento
+        # que se estuviera leyendo, aunque todavía no se sepa cuál es.
+        "quarantine": [],
+        "repairs": [],
+        # La costura que nadie pudo decidir se cortó -- cortar de más se ve y se
+        # arregla en segundos, soldar dos documentos esconde el segundo donde
+        # nadie lo busca -- pero el corte queda declarado para que alguien mire.
+        "review_queue": [
+            {
+                "page": boundary.right,
+                "reason": "no hay evidencia de si esta hoja abre un documento nuevo",
+            }
+            for boundary in dudosas
+        ],
+        "outputs": [path.name for path in assembly.outputs],
+        "unwritable_pages": {
+            str(page): error for page, error in assembly.unwritable_pages.items()
+        },
+        # Lo que hace falta para saber si la caja salió cara o barata, y por qué.
+        # Las tres últimas reparten las costuras: lo que decidió el papel, lo que
+        # decidió el modelo y lo que quedó sin decidir.
+        "stats": {
+            "documents": len(grupos.groups),
+            "seams": len(segmentacion.boundaries),
+            "settled_free": len(segmentacion.boundaries) - len(dudosas) - len(del_modelo),
+            "model_decided": len(del_modelo),
+            "undecided": len(dudosas),
+        },
+        "task": str(task),
+    }
     _anunciar(payload, Stage.DONE)
     return report
