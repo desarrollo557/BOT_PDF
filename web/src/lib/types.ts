@@ -1,3 +1,5 @@
+import type { OracleChoice } from './oracles';
+
 export type JobState = 'queued' | 'running' | 'paused' | 'done' | 'failed' | 'cancelled';
 
 export interface Group {
@@ -188,7 +190,7 @@ export interface Progress {
  * entero: es la única opción para un libro empastado, que no se desencuaderna.
  * `both` hace las dos cosas sobre una sola lectura.
  */
-export type TaskKind = 'split' | 'inventory' | 'both';
+export type TaskKind = 'split' | 'inventory' | 'both' | 'segment';
 
 export interface Job {
   id: string;
@@ -202,6 +204,8 @@ export interface Job {
   operator: string | null;
   /** Qué se pidió hacer con él. Decidido al cargarlo. */
   task: TaskKind;
+  /** A qué modelo se le pidió juzgar los bordes dudosos de esta caja. */
+  oracle?: OracleChoice;
   state: JobState;
   created_at: string;
   started_at: string | null;
@@ -282,6 +286,8 @@ export interface FolderRun {
   watch: boolean;
   /** Qué se le pidió hacer a cada documento de la carpeta. */
   task?: TaskKind;
+  /** Y a qué modelo se le preguntó por los bordes dudosos. */
+  oracle?: OracleChoice;
   operator: string | null;
   state: RunState;
   started_at: string;

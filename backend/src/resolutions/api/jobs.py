@@ -279,6 +279,11 @@ class Job:
     #: Qué se le pidió hacer con el documento: partirlo o sólo inventariarlo.
     #: Se decide al cargarlo y viaja con el trabajo hasta el worker.
     task: str = "split"
+    #: A qué modelo se le pidió juzgar los bordes dudosos. "auto" es la
+    #: cascada de siempre. Se guarda en el trabajo y no sólo en los ajustes
+    #: porque dos cajas de la misma corrida pueden haberse decidido con
+    #: modelos distintos, y el informe tiene que poder decir con cuál.
+    oracle: str = "auto"
     state: JobState = JobState.QUEUED
     created_at: str = field(default_factory=_now)
     started_at: str | None = None
@@ -297,6 +302,7 @@ class Job:
             "bytes": self.bytes,
             "operator": self.operator,
             "task": self.task,
+            "oracle": self.oracle,
             "state": str(self.state),
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -397,6 +403,7 @@ class JobRegistry:
         size: int = 0,
         operator: str | None = None,
         task: str = "split",
+        oracle: str = "auto",
     ) -> Job:
         job = Job(
             id=uuid4().hex,
@@ -407,6 +414,7 @@ class JobRegistry:
             bytes=size,
             operator=operator,
             task=task,
+            oracle=oracle,
         )
         self._jobs[job.id] = job
         self._revision += 1

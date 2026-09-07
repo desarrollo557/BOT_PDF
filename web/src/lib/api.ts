@@ -1,3 +1,4 @@
+import type { OracleChoice } from './oracles';
 import type {
   Batch,
   FuidStatus,
@@ -71,7 +72,8 @@ export async function createBatch(name: string): Promise<{ id: string; name: str
 export async function uploadDocument(
   file: File,
   batchId?: string,
-  task: TaskKind = 'split'
+  task: TaskKind = 'split',
+  oracle: OracleChoice = 'auto'
 ): Promise<{ id: string }> {
   const body = new FormData();
   body.append('file', file);
@@ -79,6 +81,9 @@ export async function uploadDocument(
   const query = new URLSearchParams();
   if (batchId) query.set('batch_id', batchId);
   if (task !== 'split') query.set('task', task);
+  // El servicio rechaza con 422 un modelo sin llave, y lo hace antes de
+  // recibir el archivo. No se manda 'auto' porque es el valor por omisión.
+  if (oracle !== 'auto') query.set('oracle', oracle);
   const suffix = query.toString();
 
   const url = suffix ? `${BASE}/jobs?${suffix}` : `${BASE}/jobs`;
@@ -284,6 +289,15 @@ export interface Health {
   document_workers: number;
   page_workers: number;
   vision: 'claude' | 'disabled';
+  /**
+   * De cada modelo, si el servicio tiene llave para pedirlo.
+   *
+   * Opcional a propósito: un servicio anterior a la revisión 17 no lo
+   * declara, y ahí no se sabe qué llaves hay. No saber no es lo mismo que
+   * no haber, así que `oracles.ts` ofrece el automático y apaga el resto
+   * diciendo por qué, en vez de adivinar.
+   */
+  oracles?: Record<OracleChoice, boolean>;
   queued: number;
   queue_limit: number;
 }
@@ -406,6 +420,8 @@ export function startFolderRun(options: {
   watch?: boolean;
   /** Qué hacer con cada documento: la misma decisión que en una subida. */
   task?: TaskKind;
+  /** Y a qué modelo preguntarle por los bordes dudosos. */
+  oracle?: OracleChoice;
 }): Promise<FolderRun> {
   return send(`${BASE}/folder-runs`, 'POST', options);
 }
