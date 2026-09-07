@@ -67,23 +67,10 @@ class SegmentDocument:
                     page_number,
                     source.text_of(page_number),
                     self._headings(source, page_number),
-                    self._sheet(source, page_number),
                 )
             )
             self._report(Stage.IDENTIFYING, page_number, total, "leyendo la caja")
         return fingerprints
-
-    @staticmethod
-    def _sheet(source: PageSource, page_number: int) -> tuple[int, int] | None:
-        """El tamaño de la hoja cuando la fuente sabe decirlo, y nada cuando no.
-
-        Igual que la geometría de los renglones: una fuente que no lo provee no
-        es un error, sólo pierde una señal y las demás siguen decidiendo.
-        """
-        try:
-            return source.sheet_of(page_number)
-        except Exception:  # noqa: BLE001 - el tamaño es una señal más, no un requisito
-            return None
 
     @staticmethod
     def _headings(source: PageSource, page_number: int) -> list[Heading]:

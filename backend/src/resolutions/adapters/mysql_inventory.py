@@ -21,7 +21,6 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from ..application.inventory import rows_of
 from .ledger import InventoryReads
 
 logger = logging.getLogger(__name__)
@@ -169,7 +168,7 @@ class MySQLInventory(InventoryReads):
     ) -> int:
         """Graba un documento terminado y sus resoluciones. Devuelve cuántas."""
         inventory = report.get("inventory") or {}
-        items = rows_of(report)
+        items = inventory.get("items") or []
         if not items:
             return 0
 

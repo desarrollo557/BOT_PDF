@@ -35,15 +35,6 @@ class PyMuPDFPageSource:
     def text_of(self, page_number: int) -> str:
         return self._document[page_number - 1].get_text("text")
 
-    def sheet_of(self, page_number: int) -> tuple[int, int]:
-        """El tamaño físico de la hoja, en puntos enteros.
-
-        Redondeado porque lo que interesa es de qué lote de escaneo salió, no su
-        medida exacta: un alimentador no entrega dos veces el mismo decimal.
-        """
-        rect = self._document[page_number - 1].rect
-        return (round(rect.width), round(rect.height))
-
     def boxes_of(self, page_number: int) -> list[LineBox]:
         """Dónde está cada renglón de la página, en el orden de :meth:`text_of`.
 

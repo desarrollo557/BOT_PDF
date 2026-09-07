@@ -8,8 +8,6 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ..application.inventory import rows_of
-
 logger = logging.getLogger(__name__)
 
 LEDGER_COLUMNS = (
@@ -149,9 +147,42 @@ class InventoryLedger(InventoryReads):
     ) -> int:
         """Append one line per generated file. Returns how many were written."""
         inventory = report.get("inventory") or {}
-        items = rows_of(report)
+        items = inventory.get("items") or []
         if not items:
-            return 0
+            groups = report.get("groups") or []
+            outputs = report.get("outputs") or []
+            if not groups and not outputs:
+                return 0
+            items = []
+            for index, group in enumerate(groups):
+                pages = list(group.get("pages") or [])
+                file_name = outputs[index] if index < len(outputs) else ""
+                if not file_name:
+                    continue
+                items.append(
+                    {
+                        "code": group.get("code") or "",
+                        "title": group.get("title"),
+                        "file_name": file_name,
+                        "page_count": int(group.get("size") or len(pages) or 0),
+                        "first_page": pages[0] if pages else 0,
+                        "last_page": pages[-1] if pages else 0,
+                        "page_numbers": pages,
+                    }
+                )
+            if not items and outputs:
+                items = [
+                    {
+                        "code": "",
+                        "title": None,
+                        "file_name": file_name,
+                        "page_count": 1,
+                        "first_page": 0,
+                        "last_page": 0,
+                        "page_numbers": [],
+                    }
+                    for file_name in outputs
+                ]
 
         recorded_at = datetime.now(UTC).isoformat()
         source = inventory.get("source_document") or report.get("document") or ""
