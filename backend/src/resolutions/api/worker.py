@@ -52,17 +52,49 @@ def process_document_job(payload: dict) -> dict:
         done=0,
         total=SAMPLE_PAGES,
     )
-    if _looks_like_a_diploma_book(payload):
+    from ..domain.doctype import DocumentType
+
+    reconocido = _recognise(payload)
+    if reconocido is DocumentType.DIPLOMA:
         return _diploma_split_job(payload, task)
+
+    # Y aquí el desvío que evita el peor resultado posible de esta pantalla. Si
+    # las páginas no dicen que sean resoluciones, diplomas ni matrículas, partir
+    # por código impreso no tiene sobre qué trabajar: busca un número que manda
+    # hasta que aparece otro, no encuentra ninguno -- o encuentra uno suelto a
+    # media caja -- y entrega el expediente entero como un solo documento con el
+    # resto de las hojas en revisión. Es exactamente lo que devolvió una caja de
+    # correspondencia de 125 páginas: un documento de la 37 a la 125 y 37 hojas
+    # a revisar.
+    #
+    # Sólo desde «Dividir en documentos». «Dividir e inventariar» se queda donde
+    # está: separar por continuidad no levanta FUID -- el formulario pide asunto
+    # y tipo documental, que son preguntas sobre un documento que ya tiene
+    # bordes -- y desviarlo en silencio dejaría al operador sin el inventario que
+    # pidió, sin decírselo.
+    if reconocido is DocumentType.DESCONOCIDO and task is TaskKind.SPLIT:
+        logger.info(
+            "las páginas no reconocen ningún tipo; se separa por continuidad "
+            "en vez de agrupar por código"
+        )
+        _anunciar(
+            payload,
+            Stage.IDENTIFYING,
+            detail="sin tipo reconocible: se separa por continuidad",
+            done=SAMPLE_PAGES,
+            total=SAMPLE_PAGES,
+        )
+        return _segment_job(payload, TaskKind.SEGMENT)
+
     return _split_job(payload, task)
 
 
-def _looks_like_a_diploma_book(payload: dict) -> bool:
-    """Si el documento es un libro de registro de diplomas.
+def _recognise(payload: dict):
+    """Qué dice el papel que es este documento, o DESCONOCIDO si no lo dice.
 
     Se decide sobre una muestra y sobre lo que está impreso en las páginas,
-    nunca sobre el nombre del archivo. Un error aquí no pierde nada: cae en el
-    camino de resoluciones, que es el que el sistema hacía siempre.
+    nunca sobre el nombre del archivo. No reconocer nada es una respuesta, no un
+    fallo: es la que manda una caja revuelta al camino que sabe cortarla.
     """
     from ..adapters.pymupdf_source import PyMuPDFPageSource
     from ..adapters.tesseract_ocr import HeaderAndPageOcr
@@ -76,11 +108,13 @@ def _looks_like_a_diploma_book(payload: dict) -> bool:
             ocr=HeaderAndPageOcr(language=settings["ocr_language"])
         ).identify(source)
     except Exception:  # noqa: BLE001 - no reconocerlo no es motivo para fallar
+        # Cae en el camino de resoluciones, que es el que el sistema hacía
+        # siempre: una avería del reconocedor no debe cambiar de ruta a nadie.
         logger.warning("no se pudo reconocer el tipo de documento", exc_info=True)
-        return False
+        return DocumentType.RESOLUCION
     finally:
         source.close()
-    return verdict.document_type is DocumentType.DIPLOMA
+    return verdict.document_type
 
 
 def _split_job(payload: dict, task) -> dict:
@@ -616,6 +650,15 @@ def _segment_job(payload: dict, task) -> dict:
     ).write(source_path, grupos, destination)
 
     dudosas = [b for b in segmentacion.boundaries if b.verdict is Verdict.UNDECIDED]
+    # De qué documento es cada anexo. Se calculaba y no salía a ninguna parte,
+    # así que un acta con sus cuatro fotografías era indistinguible de un acta de
+    # cinco hojas, que es justo la relación que el veredicto ATTACHMENT existe
+    # para no perder.
+    anexos = {
+        grupo.code.value: segmento.attachment_pages
+        for grupo, segmento in zip(grupos.groups, segmentacion.segments, strict=False)
+        if segmento.attachment_pages
+    }
     del_modelo = [b for b in segmentacion.boundaries if not b.deterministic]
 
     report = {
@@ -627,6 +670,7 @@ def _segment_job(payload: dict, task) -> dict:
                 "title": group.title,
                 "pages": group.page_numbers,
                 "size": group.size,
+                "attachments": anexos.get(group.code.value, []),
             }
             for group in grupos.groups
         ],
@@ -634,9 +678,10 @@ def _segment_job(payload: dict, task) -> dict:
         # que se estuviera leyendo, aunque todavía no se sepa cuál es.
         "quarantine": [],
         "repairs": [],
-        # La costura que nadie pudo decidir se cortó -- cortar de más se ve y se
-        # arregla en segundos, soldar dos documentos esconde el segundo donde
-        # nadie lo busca -- pero el corte queda declarado para que alguien mire.
+        # La costura que nadie pudo decidir NO se cortó: la hoja se queda en el
+        # documento abierto, porque partir una unidad documental no deja rastro
+        # de que existió y unir de más deja un archivo que esta cola nombra. Va
+        # aquí, hoja por hoja, para que alguien la mire.
         "review_queue": [
             {
                 "page": boundary.right,

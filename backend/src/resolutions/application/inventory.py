@@ -102,3 +102,63 @@ def build_inventory(
         review_pages=review_pages,
         stats=stats,
     )
+
+
+def rows_of(report: dict) -> list[dict[str, object]]:
+    """Las filas que un informe terminado aporta al inventario.
+
+    Existe porque hay dos formas de terminar y los dos almacenes tienen que
+    entender las dos. La ruta de resoluciones deja un `inventory.items` ya
+    armado; la de segmentación deja `groups` y `outputs` y ningún inventario,
+    porque separar por continuidad no levanta FUID -- el formulario pide asunto
+    y tipo documental, que son preguntas sobre un documento que ya tiene bordes.
+
+    Tenerlo dos veces salió caro: el archivo JSONL sabía leer las dos formas y
+    el de MySQL sólo la primera, así que una caja separada por documento
+    escribía sus PDF y no aparecía en la pantalla de Archivo. Sin excepción, sin
+    aviso y sin nada en el registro: `record` devolvía cero y nadie mira ese
+    número.
+    """
+    inventory = report.get("inventory") or {}
+    items = list(inventory.get("items") or [])
+    if items:
+        return items
+
+    groups = report.get("groups") or []
+    outputs = report.get("outputs") or []
+    if not groups and not outputs:
+        return []
+
+    for index, group in enumerate(groups):
+        pages = list(group.get("pages") or [])
+        file_name = outputs[index] if index < len(outputs) else ""
+        if not file_name:
+            continue
+        items.append(
+            {
+                "code": group.get("code") or "",
+                "title": group.get("title"),
+                "file_name": file_name,
+                "page_count": int(group.get("size") or len(pages) or 0),
+                "first_page": pages[0] if pages else 0,
+                "last_page": pages[-1] if pages else 0,
+                "page_numbers": pages,
+            }
+        )
+
+    # Un trabajo que escribió archivos sin dejar grupos sigue siendo trabajo
+    # hecho, y el operador tiene que poder encontrarlo.
+    if not items and outputs:
+        items = [
+            {
+                "code": "",
+                "title": None,
+                "file_name": file_name,
+                "page_count": 1,
+                "first_page": 0,
+                "last_page": 0,
+                "page_numbers": [],
+            }
+            for file_name in outputs
+        ]
+    return items
