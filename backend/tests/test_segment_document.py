@@ -73,8 +73,18 @@ CON_PAGINACION = [
     "Cordialmente, YUDIS PAREDES Página 5 de 5",
 ]
 
-#: Anexos sueltos: ni membrete, ni fecha, ni paginación. Nada que decidir solo.
-SIN_MARCAS = ["anexo uno", "anexo dos", "anexo tres"]
+#: Tres hojas genuinamente ambiguas: prosa corrida, sin membrete, sin fecha, sin
+#: paginación, sin rótulo y sin anuncio de anexos. Tienen que ser largas o la
+#: regla de legibilidad las une por no haber dicho nada, que es otro caso
+#: distinto y tiene sus propias pruebas.
+SIN_MARCAS = [
+    "El usuario manifiesta que no está de acuerdo con la lectura registrada "
+    "por el operador de red durante el periodo objeto de revisión.",
+    "Sobre el particular se precisa que la empresa adelantó las verificaciones "
+    "técnicas previstas en el contrato de condiciones uniformes.",
+    "Por lo expuesto se concluye que la actuación se ajustó a lo previsto en "
+    "la normatividad vigente y al contrato suscrito con el suscriptor.",
+]
 
 
 class TestElContratoDelPuerto:
@@ -206,8 +216,14 @@ class TestSePuedeParar:
         assert control.consultas < 20, "no debería haber leído la caja entera"
 
     def test_sin_control_se_lee_la_caja_entera(self):
+        """Se cuenta por costuras y no por segmentos: cinco hojas dan cuatro.
+
+        Contar segmentos medía esto sólo mientras la duda cortaba. Ahora une, y
+        cinco hojas mudas son un documento -- que es lo correcto y no dice nada
+        sobre si se leyeron las cinco.
+        """
         resultado = SegmentDocument().run(Caja(["hoja" for _ in range(5)]))
-        assert len(resultado.segments) == 5
+        assert len(resultado.boundaries) == 4
 
     def test_una_caja_cancelada_no_se_le_pregunta_al_modelo(self):
         """Pagar una consulta por un trabajo que el operador ya abandonó."""
@@ -224,7 +240,10 @@ class TestSePuedeParar:
 
         oraculo = OraculoQueCuenta()
         with pytest.raises(Cancelled):
+            # Dos hojas genuinamente ambiguas: si no lo fueran, la estructura las
+            # resolvería, no habría nada que preguntar y la cancelación no
+            # llegaría a probar lo que esta prueba dice probar.
             SegmentDocument(oraculo, control=CancelaAlTerminarDeLeer(2)).run(
-                Caja(["una hoja", "otra hoja"])
+                Caja(SIN_MARCAS[:2])
             )
         assert oraculo.llamadas == 0
