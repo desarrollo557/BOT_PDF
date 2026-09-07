@@ -292,8 +292,8 @@ backend/
     adapters/     uno por proveedor                 (PyMuPDF, Tesseract, Claude,
                   MySQL, openpyxl, archivos)
     api/          FastAPI, pool de workers, SSE
-  tests/          777 pruebas; el dominio corre en menos de un segundo
-web/              SvelteKit 5 + Tailwind 4; 88 pruebas sobre los stores
+  tests/          1023 pruebas; el dominio corre en menos de un segundo
+web/              SvelteKit 5 + Tailwind 4; 101 pruebas sobre los stores
 db/               esquema MySQL: 7 tablas, 4 vistas, 11 claves foráneas
 docs/             arquitectura y flujo de ramas
 scripts/          verificación local y andamios de medición
@@ -313,33 +313,124 @@ dependencias apunten hacia adentro.
 
 ### Requisitos
 
-- Python 3.12+
-- Node 20+
+- **Python 3.12+**
+- **Node 20+**
 - **Tesseract OCR** con el paquete de español — el único binario externo.
   Windows: `winget install UB-Mannheim.TesseractOCR`, y que `tesseract` quede en
   el `PATH`. Sin él los PDF digitales funcionan igual; los escaneados van a
   revisión.
+- **MySQL 8+** — opcional. Sin base el servicio arranca igual y escribe el libro
+  mayor en `data/inventory.jsonl`; ver *Base de datos* más abajo.
 
-### Backend
+### Puesta en marcha desde cero
+
+```bash
+git clone https://github.com/desarrollo557/BOT_PDF.git
+cd BOT_PDF
+```
+
+**1. Backend.** El entorno virtual no es opcional. `pip install -e` instala el
+paquete en modo editable, y hacerlo contra el Python del sistema ensucia una
+instalación que no es de este proyecto.
 
 ```bash
 cd backend
+python -m venv .venv
+source .venv/bin/activate         # Linux, macOS, Git Bash
+.\.venv\Scripts\Activate.ps1      # Windows PowerShell
 pip install -e ".[dev]"
-pytest                                   # 777 pruebas
+```
+
+**2. Front.**
+
+```bash
+cd ../web
+npm install
+```
+
+**3. Levantar las dos mitades**, cada una en su terminal:
+
+```bash
+cd backend && uvicorn resolutions.api.main:app --port 8000
+```
+```bash
+cd web && npm run dev
+```
+
+**4. Abrir `http://localhost:5173`.**
+
+El servidor de desarrollo hace proxy de `/api` a `http://127.0.0.1:8000`, así que
+todo es del mismo origen y CORS nunca entra en juego. Por eso el backend no
+necesita exponerse.
+
+### Comprobar que quedó bien
+
+```bash
+cd backend && pytest              # 1023 pruebas
+cd web && npm test                # 101 pruebas sobre los stores
+```
+
+Y contra el servicio levantado, `GET http://localhost:8000/api/health` dice
+contra qué está guardando el inventario sin exponer la contraseña. Es la forma de
+saber si tomó la base o cayó al archivo JSONL.
+
+### Base de datos
+
+MySQL 8+ / InnoDB / `utf8mb4_0900_ai_ci`. Siete tablas, cuatro vistas, once
+claves foráneas. El modelo y las decisiones que lo sostienen están en
+[`db/README.md`](db/README.md).
+
+Es opcional: manda la presencia de `RESOLUTIONS_DB_PASSWORD`. Sin ella no se
+intenta conectar y el libro mayor va a `data/inventory.jsonl`.
+
+> **`db/schema.sql` empieza con `DROP DATABASE IF EXISTS robotpdf`.** Crea la base
+> desde cero y borra la que hubiera. Sobre una instalación con datos, los pierde.
+> Correrlo es un acto deliberado, nunca un paso de rutina.
+
+```bash
+mysql -u root -p < db/schema.sql
+```
+
+El servicio **no debe conectarse como `root`**. El usuario de aplicación está al
+final de `schema.sql`, comentado, con los permisos que necesita y ninguno más: no
+puede crear ni borrar tablas, así que un fallo del programa no puede perder el
+esquema.
+
+```sql
+CREATE USER IF NOT EXISTS 'robotpdf_app'@'localhost' IDENTIFIED BY '<contraseña>';
+CREATE USER IF NOT EXISTS 'robotpdf_app'@'127.0.0.1' IDENTIFIED BY '<contraseña>';
+GRANT SELECT, INSERT, UPDATE, DELETE ON robotpdf.* TO 'robotpdf_app'@'localhost';
+GRANT SELECT, INSERT, UPDATE, DELETE ON robotpdf.* TO 'robotpdf_app'@'127.0.0.1';
+FLUSH PRIVILEGES;
+```
+
+> **Las dos cuentas hacen falta.** Para MySQL, `'robotpdf_app'@'localhost'` y
+> `'robotpdf_app'@'127.0.0.1'` son **usuarios distintos**: el primero responde al
+> socket, el segundo a TCP. El valor por defecto de `RESOLUTIONS_DB_HOST` es
+> `127.0.0.1`, así que crear sólo el de `localhost` —que es lo que trae el esquema
+> comentado— da `Access denied` con la contraseña correcta. Cambiar la contraseña
+> más adelante también hay que hacerlo en las dos, o una deja de entrar.
+
+Con la base creada se le puede volcar el libro mayor que ya exista. Es
+idempotente: volver a correrlo no duplica nada.
+
+```bash
+python db/cargar_ledger.py backend/data/inventory.jsonl
+```
+
+Y para levantar el servicio contra la base:
+
+```powershell
+$env:RESOLUTIONS_DB_PASSWORD = "<la contraseña>"
+uvicorn resolutions.api.main:app --port 8000
+```
+```bash
+export RESOLUTIONS_DB_PASSWORD='<la contraseña>'
 uvicorn resolutions.api.main:app --port 8000
 ```
 
-### Front
-
-```bash
-cd web
-npm install
-npm run dev                              # http://localhost:5173
-npm test                                 # 88 pruebas sobre los stores
-```
-
-El servidor de desarrollo hace proxy de `/api` a `http://127.0.0.1:8000`, así que
-todo es del mismo origen y CORS nunca entra en juego.
+Si hay configuración pero la base no responde, el servicio **degrada al archivo y
+lo dice** en `/api/health` en vez de no arrancar.
 
 ### Antes de abrir un PR
 
@@ -350,7 +441,9 @@ todo es del mismo origen y CORS nunca entra en juego.
 ./scripts/verificar.sh      # Linux, macOS, Git Bash
 ```
 
-Corre lo mismo que corre CI: capas, lint, pruebas del backend, y front con build.
+Corre lo mismo que corre CI, en el mismo orden: capas, lint del backend, pruebas
+del backend, tipos del front, pruebas del front y build. Usa `backend/.venv` si
+existe, así que no hace falta activarlo antes.
 
 ### Desde otro equipo de la red
 
@@ -364,6 +457,13 @@ escuchando sólo en `127.0.0.1`. Si aun así se quisiera alcanzar la API
 directamente desde otro equipo, hay que arrancarla con `--host 0.0.0.0` **y**
 añadir ese origen a la lista de CORS en `api/main.py`, que hoy sólo admite
 localhost.
+
+Para el caso contrario —el front en un equipo y el backend en otro— el destino
+del proxy sale de `API_URL`, así que no hay que tocar la configuración:
+
+```bash
+API_URL=http://192.168.1.50:8000 npm run dev
+```
 
 ## Configuración
 
