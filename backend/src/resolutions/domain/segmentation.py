@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from .errors import IntegrityError
-from .fingerprint import PageFingerprint
+from .fingerprint import SHEET_TOLERANCE, PageFingerprint
 
 
 class Verdict(StrEnum):
@@ -29,6 +29,11 @@ class Verdict(StrEnum):
     STARTS = "starts"
     #: The right-hand page carries on the left-hand one.
     CONTINUES = "continues"
+    #: La hoja pertenece al documento abierto, pero como anexo y no como cuerpo.
+    #: Se agrupa igual que una continuación; lo que cambia es que la relación
+    #: queda registrada, para que el inventario pueda decir "el acta, con sus
+    #: cuatro fotografías" en vez de "cinco documentos".
+    ATTACHMENT = "attachment"
     #: Nothing on either page settles it. Escalate.
     UNDECIDED = "undecided"
 
@@ -52,6 +57,11 @@ class Segment:
 
     page_numbers: list[int]
     reason: str = ""
+    #: Las páginas de este documento que llegaron como anexo y no como cuerpo.
+    #: Van dentro de `page_numbers` -- un anexo no es un documento aparte -- y
+    #: aquí sólo se anota cuáles son, porque perder esa relación es perder la
+    #: única respuesta a "¿de qué acta son estas fotos?".
+    attachment_pages: list[int] = field(default_factory=list)
 
     @property
     def size(self) -> int:
@@ -62,6 +72,11 @@ class Segment:
 class SegmentationResult:
     segments: list[Segment] = field(default_factory=list)
     boundaries: list[Boundary] = field(default_factory=list)
+
+    @property
+    def attachments(self) -> list[Boundary]:
+        """Las costuras en que una hoja entró como anexo de la anterior."""
+        return [b for b in self.boundaries if b.verdict is Verdict.ATTACHMENT]
 
     @property
     def undecided(self) -> list[Boundary]:
@@ -95,7 +110,11 @@ class SegmentationResult:
             )
 
 
-def _decide(left: PageFingerprint, right: PageFingerprint) -> tuple[Verdict, str]:
+def _decide(
+    left: PageFingerprint,
+    right: PageFingerprint,
+    ubiquitous: frozenset[tuple[str, str]] = frozenset(),
+) -> tuple[Verdict, str]:
     left_pages, right_pages = left.pagination, right.pagination
 
     # The strongest evidence there is: the paper counting itself. A sheet that
@@ -103,13 +122,41 @@ def _decide(left: PageFingerprint, right: PageFingerprint) -> tuple[Verdict, str
     if right_pages and right_pages.is_first:
         return Verdict.STARTS, "la siguiente se declara página 1"
 
-    if left_pages and right_pages:
-        if left_pages.total == right_pages.total and right_pages.index == left_pages.index + 1:
+    if left_pages and right_pages and left_pages.total == right_pages.total:
+        if right_pages.index == left_pages.index + 1:
             return Verdict.CONTINUES, f"cadena {left_pages.index}->{right_pages.index}"
-        return Verdict.STARTS, "la cadena de paginación se rompe"
+        # Un salto hacia adelante dentro de la misma cuenta es una hoja que el
+        # OCR no supo leer, no un documento nuevo: "1 de 5, 2 de 5, 4 de 5" sigue
+        # siendo un documento de cinco hojas.
+        if right_pages.index > left_pages.index:
+            return (
+                Verdict.CONTINUES,
+                f"la cuenta salta de {left_pages.index} a {right_pages.index} de {right_pages.total}",
+            )
+
+    # El reverso de la primera regla, y hacía falta: una hoja que se declara
+    # "2 de 4" no abre nada, diga lo que diga su encabezado. Sin esto, las hojas
+    # intermedias de un acta -- que repiten el rótulo "Acta de Irregularidad" en
+    # cada página -- se leían como cuatro actas distintas.
+    #
+    # Cubre también los totales que no coinciden y las cuentas que retroceden.
+    # En la caja medida ese desacuerdo lo había puesto el escáner -- el mismo que
+    # convierte "1 de 6" en "1 de o" -- y cortar ahí era el único falso corte que
+    # quedaba contra la propia numeración del papel.
+    if right_pages:
+        return (
+            Verdict.CONTINUES,
+            f"la hoja se declara página {right_pages.index} de {right_pages.total}",
+        )
 
     # A completed count ends its document even when the next page says nothing.
-    if left_pages and left_pages.is_last:
+    # Salvo que lo que cerró anunciara sus anexos. Una cuenta interna numera el
+    # cuerpo de un documento, no lo que viene pegado detrás: un acta que dice
+    # "2 de 2" y enumera sus fotografías no ha terminado, ha dejado de tener
+    # cuerpo. Cortar ahí convierte un acta en cinco documentos, que es justo el
+    # caso que la regla de anexos existe para evitar.
+    trae_anexos = left.announces_attachments and not right.opening and not right.label
+    if left_pages and left_pages.is_last and not trae_anexos:
         return Verdict.STARTS, f"la anterior cerró en {left_pages.total} de {left_pages.total}"
 
     # The serial is per document, unlike the case code.
@@ -117,6 +164,96 @@ def _decide(left: PageFingerprint, right: PageFingerprint) -> tuple[Verdict, str
         if left.serial == right.serial:
             return Verdict.CONTINUES, "mismo consecutivo"
         return Verdict.STARTS, "cambia el consecutivo"
+
+    # Un escrito que numera sus párrafos PRIMERO, SEGUNDO, TERCERO se cuenta a sí
+    # mismo igual que una paginación, y esa cuenta sobrevive donde no hay membrete
+    # ni consecutivo: son once costuras de un expediente real que ninguna otra
+    # regla alcanzaba. Va antes que las de apertura porque una hoja de
+    # continuación puede traer, en su primera línea, algo que parece una cabecera.
+    # Donde arranca la hoja siguiente, contra donde acabó la anterior. Por
+    # posición y no por el mayor de cada una: una hoja de contrato abre en el
+    # considerando cuarto y termina nombrando la cláusula tercera, así que su
+    # máximo no dice nada y su primero lo dice todo.
+    if left.ordinals and right.ordinals and right.ordinals[0] > left.ordinals[-1]:
+        return (
+            Verdict.CONTINUES,
+            f"la numeración sigue en {right.ordinals[0]} tras el {left.ordinals[-1]}",
+        )
+
+    # Prioridad 3: los identificadores del asunto. Dos hojas que llevan la misma
+    # clase de identificador y no comparten ni uno hablan de asuntos distintos.
+    # Es la regla que separa tres facturas seguidas cuyo encabezado el escáner
+    # dejó ilegible: lo único intacto en ellas era el NIC, y era distinto en cada
+    # una. Exige que ambas hojas traigan la misma clase -- si una no la trae, su
+    # silencio no contradice nada.
+    compartidos = (left.identifiers & right.identifiers) - ubiquitous
+    if compartidos:
+        cuales = ", ".join(sorted(f"{clase} {valor}" for clase, valor in compartidos)[:2])
+        return Verdict.CONTINUES, f"las dos hojas llevan el mismo {cuales}"
+
+    clases_izq = {clase for clase, _ in left.identifiers}
+    clases_der = {clase for clase, _ in right.identifiers}
+    comunes = clases_izq & clases_der
+    if comunes and not (left.identifiers & right.identifiers):
+        return Verdict.STARTS, f"cambia el identificador ({', '.join(sorted(comunes))})"
+
+    # Prioridad 4: los anexos. Una hoja que se presenta como anexo, o que viene
+    # detrás de un documento que anunció los suyos y no trae marca de abrir nada,
+    # pertenece al documento abierto. Va antes que el cambio de tipo documental a
+    # propósito: un anexo fotográfico ES de otro tipo que el acta que lo trae, y
+    # leer ese cambio como frontera es exactamente lo que parte un acta en cinco.
+    if right.is_attachment:
+        return Verdict.ATTACHMENT, "la hoja se presenta como anexo"
+    if trae_anexos:
+        return Verdict.ATTACHMENT, "la anterior anuncia anexos y ésta no abre nada"
+
+    # El papel diciendo su propio nombre. Después de la paginación, porque la
+    # hoja 3 de un acta también lleva escrito "Acta de Irregularidad".
+    if right.label:
+        return Verdict.STARTS, f"la hoja se titula «{right.label}»"
+
+    # Lo que sólo se imprime al abrir: a quién va dirigido, bajo qué asunto, con
+    # qué consecutivo. Medido contra las hojas que declaran su propia paginación,
+    # ninguna hoja de continuación trae una de estas marcas en su cabecera.
+    if right.opening:
+        return Verdict.STARTS, f"la cabecera abre: {', '.join(right.opening)}"
+
+    # Prioridad 6: el papel mismo. Un cambio de tamaño de hoja es un cambio de
+    # lote de escaneo, y va aquí -- después de la numeración, los identificadores,
+    # los anexos y el tipo -- porque un anexo puede venir en otro papel sin dejar
+    # de pertenecer al documento que lo trae. Medido sobre la caja real: ocho
+    # cambios en 125 hojas y ninguno contradice la paginación que el papel
+    # declara. Es la única señal que sobrevive a una hoja sin texto.
+    if left.sheet and right.sheet:
+        ancho = abs(left.sheet[0] - right.sheet[0])
+        alto = abs(left.sheet[1] - right.sheet[1])
+        if ancho > SHEET_TOLERANCE or alto > SHEET_TOLERANCE:
+            return (
+                Verdict.STARTS,
+                f"cambia el tamaño de la hoja ({left.sheet[0]}x{left.sheet[1]}"
+                f" a {right.sheet[0]}x{right.sheet[1]})",
+            )
+
+    # Un impreso de cobro suelto detrás de algo que no lo era. Si comparte
+    # identificadores con la hoja anterior es su anexo; si no comparte ninguno,
+    # es otro asunto y va aparte. El código de expediente no cuenta aquí -- lo
+    # llevan las 125 páginas de la caja -- y por eso no está entre ellos.
+    if right.invoice and not left.invoice:
+        shared = right.identifiers & left.identifiers
+        if shared:
+            return Verdict.CONTINUES, "el cobro comparte identificador con la hoja anterior"
+        return Verdict.STARTS, "un cobro sin nada en común con la hoja anterior"
+
+    # El folio escrito a mano. Va aquí abajo, y no arriba con la paginación
+    # impresa, aunque las dos sean el papel contándose: la impresa es del
+    # documento y se reinicia con él, mientras que el folio lo pone quien archiva
+    # y en media Colombia numera el expediente entero de corrido. Ahí
+    # `folio + 1` es cierto también en la frontera entre dos documentos, así que
+    # por encima del consecutivo, del rótulo y de la cabecera soldaría la caja --
+    # el mismo modo de fallo por el que el código de expediente no decide nada.
+    # Debajo de todas ellas sólo habla donde nadie más tenía nada que decir.
+    if left.folio is not None and right.folio == left.folio + 1:
+        return Verdict.CONTINUES, f"el folio sigue en {right.folio} tras el {left.folio}"
 
     # La oración partida por el escáner. Es la evidencia más fuerte que quedaba
     # gratis y no se usaba: `tail` y `title` ya se calculaban -- se le mandaban al
@@ -132,11 +269,32 @@ def _decide(left: PageFingerprint, right: PageFingerprint) -> tuple[Verdict, str
     if left.closes and (right.letterhead or right.place_and_date):
         return Verdict.STARTS, "la anterior se despide y la siguiente abre"
 
+    # Y lo último antes de rendirse: si la hoja anterior abrió un documento y ésta
+    # no trae ninguna marca de abrir nada, es el cuerpo de aquélla. Va al final
+    # porque es la más débil de todas -- se apoya en la ausencia de evidencia --
+    # y sólo se la consulta cuando ninguna presencia de evidencia dijo nada.
+    if left.opening and not right.opening:
+        return Verdict.CONTINUES, "la anterior abre y ésta no abre nada"
+
     # Deliberately no rule on `case_code`. Every page of an expediente shares it,
     # so reading it as continuity welds the whole box into one document -- an
     # error measured on a real 125-page file before this module existed.
     return Verdict.UNDECIDED, "sin evidencia estructural"
 
+
+#: A partir de qué presencia un identificador deja de identificar. El NIC de un
+#: expediente de un solo cliente aparece en 35 de sus 38 hojas con identificador:
+#: leerlo como "estas dos hojas hablan de lo mismo" soldaría la caja entera, que
+#: es el mismo motivo por el que el código de expediente no decide nada. Un
+#: importe concreto, en cambio, sale en dos o tres hojas -- el recibo por delante
+#: y por detrás -- y ahí sí dice algo.
+UBIQUITOUS_SHARE = 0.5
+
+#: Y por debajo de cuántas hojas la proporción no mide nada. En una caja con dos
+#: hojas que llevan NIC, el NIC que comparten es el 100 % de su clase y aun así
+#: no hay ninguna razón para desconfiar de él: la ubicuidad es un hecho sobre
+#: muchas hojas, no sobre dos.
+UBIQUITOUS_MIN_SHEETS = 4
 
 #: Cuántas palabras necesita el final de una hoja para leerse como prosa cortada
 #: y no como un rótulo. Un anexo cuya página entera dice "anexo uno" también
@@ -155,9 +313,10 @@ def _sentence_runs_on(left: PageFingerprint, right: PageFingerprint) -> bool:
     Estricta a propósito, y la asimetría del error es la razón. Un falso
     CONTINUES suelda dos documentos y el segundo desaparece del inventario sin
     que nadie lo note; un falso STARTS deja dos archivos que el operador junta de
-    un vistazo. De modo que cualquier señal de apertura en la hoja derecha
-    -- membrete, ciudad y fecha, un consecutivo -- calla esta regla, y ante un
-    dato ausente se abstiene en vez de suponer.
+    un vistazo. De modo que una marca que sólo aparece al abrir
+    -- ciudad y fecha, un consecutivo, un rótulo -- calla esta regla, y ante un
+    dato ausente se abstiene en vez de suponer. El membrete no está entre ellas:
+    lo lleva el 89 % del papel de una caja y no distingue nada.
 
     Tres condiciones, y las tres hacen falta:
 
@@ -167,7 +326,12 @@ def _sentence_runs_on(left: PageFingerprint, right: PageFingerprint) -> bool:
       completo es "anexo uno" también termina en letra;
     * el arranque de la derecha es una frase en minúscula, no una etiqueta.
     """
-    if right.letterhead or right.place_and_date or right.serial:
+    # El membrete no calla nada por sí solo. Lo llevan 111 de las 125 hojas de la
+    # caja medida -- el logo de la empresa va impreso en todo su papel -- así que
+    # no distingue una apertura de una continuación, y usarlo aquí dejaba sin
+    # decidir prosa cortada a media frase que seguía en minúscula en la hoja de
+    # al lado. Lo que sí la calla es una marca que sólo aparece al abrir.
+    if right.place_and_date or right.serial or right.opening or right.label:
         return False
 
     tail = (left.tail or "").rstrip()
@@ -184,11 +348,38 @@ def _sentence_runs_on(left: PageFingerprint, right: PageFingerprint) -> bool:
     return first_letter is not None and first_letter.islower()
 
 
+def _ubiquitous(fingerprints: Sequence[PageFingerprint]) -> frozenset[tuple[str, str]]:
+    """Los identificadores que lleva tanta hoja que ya no identifican ninguna.
+
+    Se cuenta sobre la caja entera, y por eso vive aquí y no en `_decide`: dos
+    huellas sueltas no pueden saber si el número que comparten es del cobro del
+    que hablan o del suscriptor del que habla el expediente completo.
+    """
+    # Se cuenta dentro de la clase, no sobre la caja. Un NIC hay que compararlo
+    # con las hojas que llevan NIC: si sale en 35 de esas 38 es el del suscriptor
+    # y no distingue nada, y eso sigue siendo cierto aunque otras noventa hojas
+    # traigan importes y diluyan el total.
+    hojas_por_clase: dict[str, int] = {}
+    cuenta: dict[tuple[str, str], int] = {}
+    for huella in fingerprints:
+        for clase in {clase for clase, _ in huella.identifiers}:
+            hojas_por_clase[clase] = hojas_por_clase.get(clase, 0) + 1
+        for identificador in huella.identifiers:
+            cuenta[identificador] = cuenta.get(identificador, 0) + 1
+    return frozenset(
+        (clase, valor)
+        for (clase, valor), veces in cuenta.items()
+        if hojas_por_clase[clase] >= UBIQUITOUS_MIN_SHEETS
+        and veces > hojas_por_clase[clase] * UBIQUITOUS_SHARE
+    )
+
+
 def decide_boundaries(fingerprints: Sequence[PageFingerprint]) -> list[Boundary]:
     """Judge every seam on structure alone, free of charge."""
+    ubicuos = _ubiquitous(fingerprints)
     boundaries: list[Boundary] = []
     for left, right in zip(fingerprints, fingerprints[1:], strict=False):
-        verdict, reason = _decide(left, right)
+        verdict, reason = _decide(left, right, ubicuos)
         boundaries.append(
             Boundary(
                 left=left.page_number,
@@ -206,9 +397,20 @@ def assemble(
 ) -> SegmentationResult:
     """Fold page-by-page verdicts into whole documents.
 
-    An UNDECIDED seam is treated as a cut. Splitting one document in two is a
-    mistake an operator can see and repair in seconds; welding two into one hides
-    the second where nobody will look for it.
+    Una costura indecisa **une**, y la página queda marcada para revisión.
+
+    Es lo contrario de lo que hacía esta función, y el cambio se tomó con la
+    caja medida delante. El argumento viejo -- cortar de más se ve, soldar
+    esconde -- suponía que unir podía tragarse documentos enteros. Con las reglas
+    de estructura puestas eso deja de ser cierto: sobre un expediente real de 125
+    páginas, unir en la duda deja el documento mayor en seis páginas y baja los
+    de una sola hoja de 64 a 34. El riesgo que justificaba cortar no aparece, y
+    el sobre-corte que produce sí.
+
+    Partir un documento de cinco hojas en cinco archivos destruye la unidad
+    documental sin dejar rastro de que existió; unir dos que iban aparte deja un
+    archivo de más que la cola de revisión nombra, hoja por hoja. Se prefiere el
+    error que se puede deshacer sabiendo qué se deshace.
     """
     if not fingerprints:
         return SegmentationResult()
@@ -218,11 +420,21 @@ def assemble(
 
     for left, right in zip(fingerprints, fingerprints[1:], strict=False):
         boundary = by_seam.get((left.page_number, right.page_number))
-        continues = boundary is not None and boundary.verdict is Verdict.CONTINUES
-        if continues:
+        # Una duda declarada une; una costura que falta, no. Son cosas distintas
+        # y confundirlas sale caro: quien llame con una lista incompleta -- o con
+        # números de página que no casan con las huellas -- vería todo el PDF
+        # pegado en un documento sin una sola señal de que algo iba mal.
+        if boundary is None:
+            segments.append(
+                Segment(page_numbers=[right.page_number], reason="sin veredicto para esta costura")
+            )
+            continue
+        if boundary.verdict is not Verdict.STARTS:
             segments[-1].page_numbers.append(right.page_number)
+            if boundary is not None and boundary.verdict is Verdict.ATTACHMENT:
+                segments[-1].attachment_pages.append(right.page_number)
         else:
-            reason = boundary.reason if boundary else "sin evidencia estructural"
-            segments.append(Segment(page_numbers=[right.page_number], reason=reason))
+            segments.append(Segment(page_numbers=[right.page_number], reason=boundary.reason))
+
 
     return SegmentationResult(segments=segments, boundaries=list(boundaries))
