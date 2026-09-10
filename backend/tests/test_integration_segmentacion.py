@@ -17,7 +17,6 @@ from resolutions.adapters.pymupdf_assembler import PyMuPDFAssembler  # noqa: E40
 from resolutions.adapters.pymupdf_source import PyMuPDFDocumentStore  # noqa: E402
 from resolutions.application.segment_document import SegmentDocument  # noqa: E402
 from resolutions.application.segment_split import group_by_segment  # noqa: E402
-from resolutions.domain.naming import DOCUMENT_PREFIX  # noqa: E402
 
 CUERPO = (
     "Por medio de la presente me permito dar respuesta a la solicitud "
@@ -84,14 +83,17 @@ class TestLaCadenaCompleta:
         grupos.verify_integrity(total_pages=len(PAGINAS))
 
         destino = tmp_path / "salida"
-        entrega = PyMuPDFAssembler(naming_prefix=DOCUMENT_PREFIX).write(
+        entrega = PyMuPDFAssembler(naming_prefix=None).write(
             caja, grupos, destino
         )
 
+        # El puesto en la caja y el tipo. "DOCUMENTO" es el tipo de lo que
+        # nadie reconoció -- estas páginas de prueba no llevan rótulo -- y no
+        # una palabra antepuesta.
         assert sorted(path.name for path in entrega.outputs) == [
-            "DOCUMENTO_01.pdf",
-            "DOCUMENTO_02.pdf",
-            "DOCUMENTO_03.pdf",
+            "01_DOCUMENTO.pdf",
+            "02_DOCUMENTO.pdf",
+            "03_DOCUMENTO.pdf",
         ]
         assert entrega.unwritable_pages == {}
 
@@ -99,7 +101,7 @@ class TestLaCadenaCompleta:
         """Nada de cuadres en memoria: se abren los PDF escritos y se cuentan."""
         destino = tmp_path / "salida"
         grupos = group_by_segment(_segmentar(caja).segments)
-        PyMuPDFAssembler(naming_prefix=DOCUMENT_PREFIX).write(caja, grupos, destino)
+        PyMuPDFAssembler(naming_prefix=None).write(caja, grupos, destino)
 
         hojas = {}
         for archivo in sorted(destino.glob("*.pdf")):
@@ -107,18 +109,88 @@ class TestLaCadenaCompleta:
                 hojas[archivo.name] = escrito.page_count
 
         assert hojas == {
-            "DOCUMENTO_01.pdf": 2,
-            "DOCUMENTO_02.pdf": 3,
-            "DOCUMENTO_03.pdf": 1,
+            "01_DOCUMENTO.pdf": 2,
+            "02_DOCUMENTO.pdf": 3,
+            "03_DOCUMENTO.pdf": 1,
         }
 
     def test_ninguna_hoja_de_la_caja_se_pierde_por_el_camino(self, caja, tmp_path):
         destino = tmp_path / "salida"
         grupos = group_by_segment(_segmentar(caja).segments)
-        PyMuPDFAssembler(naming_prefix=DOCUMENT_PREFIX).write(caja, grupos, destino)
+        PyMuPDFAssembler(naming_prefix=None).write(caja, grupos, destino)
 
         escritas = 0
         for archivo in destino.glob("*.pdf"):
             with pymupdf.open(archivo) as escrito:
                 escritas += escrito.page_count
         assert escritas == len(PAGINAS)
+
+
+class TestElInventarioDeLaCaja:
+    """Del PDF de origen a las filas del libro mayor, sin saltarse nada.
+
+    Es la comprobación que ninguna prueba de unidad puede dar: que el nombre
+    escrito en el inventario es el de un archivo que existe de verdad en el
+    disco, y que las páginas que la fila dice son las que ese archivo tiene
+    dentro. Todo lo demás -- el emparejamiento, el tipo, la carpeta -- se
+    comprueba por separado; esto comprueba que las piezas encajan.
+    """
+
+    @staticmethod
+    def _entregar(caja, destino, carpeta="caja"):
+        from resolutions.application.inventory import build_inventory
+
+        segmentacion = _segmentar(caja)
+        grupos = group_by_segment(segmentacion.segments, None)
+        grupos.verify_integrity(total_pages=len(PAGINAS))
+        entrega = PyMuPDFAssembler(naming_prefix=None).write(
+            caja, grupos, destino / carpeta
+        )
+        inventario = build_inventory(
+            source_document="caja.pdf",
+            source_pages=len(PAGINAS),
+            result=grupos,
+            review_pages=[b.right for b in segmentacion.undecided],
+            stats={"documents": len(grupos.groups)},
+            file_names=entrega.written,
+            folder=carpeta,
+        )
+        return inventario, entrega
+
+    def test_hay_una_fila_por_pdf_escrito(self, caja, tmp_path):
+        inventario, entrega = self._entregar(caja, tmp_path)
+        assert len(inventario.items) == len(entrega.outputs) == 3
+
+    def test_cada_fila_nombra_un_archivo_que_existe(self, caja, tmp_path):
+        inventario, _ = self._entregar(caja, tmp_path)
+        for item in inventario.items:
+            assert (tmp_path / item.file_name).is_file(), item.file_name
+
+    def test_y_ese_archivo_tiene_las_paginas_que_la_fila_dice(self, caja, tmp_path):
+        """Se abren los PDF y se cuentan. Un inventario que no cuadra con el
+        disco es exactamente el error que no se ve mirando la carpeta."""
+        inventario, _ = self._entregar(caja, tmp_path)
+        for item in inventario.items:
+            with pymupdf.open(tmp_path / item.file_name) as escrito:
+                assert escrito.page_count == item.page_count == len(item.page_numbers)
+
+    def test_las_paginas_del_origen_estan_todas_y_una_sola_vez(self, caja, tmp_path):
+        inventario, _ = self._entregar(caja, tmp_path)
+        cubiertas = [n for item in inventario.items for n in item.page_numbers]
+        assert sorted(cubiertas) == list(range(1, len(PAGINAS) + 1))
+
+    def test_el_libro_mayor_guarda_lo_mismo_que_el_inventario(self, caja, tmp_path):
+        from resolutions.adapters.ledger import InventoryLedger
+
+        inventario, _ = self._entregar(caja, tmp_path)
+        libro = InventoryLedger(tmp_path / "inventory.jsonl")
+        escritas = libro.record(
+            "job-1",
+            {"document": "caja.pdf", "inventory": inventario.as_dict()},
+            operator="quien sea",
+        )
+
+        assert escritas == len(inventario.items)
+        registrado = {(f["code"], f["file_name"]) for f in libro.rows()}
+        esperado = {(item.code, item.file_name) for item in inventario.items}
+        assert registrado == esperado

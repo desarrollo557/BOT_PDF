@@ -3,6 +3,7 @@
   import { page } from '$app/state';
   import {
     documentFuidUrl,
+    documentInventoryUrl,
     downloadUrl,
     fetchDocument,
     renameJob,
@@ -280,25 +281,53 @@
 
   {#if archived.rows.length}
     <section class="rounded-xl border border-hairline bg-raised p-5 shadow-[var(--shadow)]">
-      <h3 class="mb-3 text-sm font-semibold">
-        Lo que produjo ({archived.rows.length})
-      </h3>
+      <!-- El listado y su descarga en la misma línea. La planilla se escribe
+           sola al terminar el documento, junto a los PDF que describe, así que
+           aquí no hay nada que generar: sólo bajarla. -->
+      <header class="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <h3 class="text-sm font-semibold">
+          Lo que produjo ({archived.rows.length})
+        </h3>
+        <a
+          class="rounded border border-accent px-3 py-1.5 font-mono text-xs text-accent transition-colors hover:bg-accent hover:text-raised"
+          href={documentInventoryUrl(archived.job_id)}
+          download
+        >
+          descargar el inventario (Excel)
+        </a>
+      </header>
       <div class="overflow-x-auto">
         <table class="w-full border-collapse text-sm">
           <thead>
             <tr class="text-[0.7rem] tracking-wide text-muted uppercase">
-              <th class="pb-2 text-left font-medium">Resolución</th>
-              <th class="pb-2 text-left font-medium">Título</th>
+              <th class="pb-2 text-left font-medium">#</th>
               <th class="pb-2 text-left font-medium">Páginas</th>
-              <th class="pb-2 text-right font-medium">Archivo</th>
+              <th class="pb-2 text-left font-medium">Tipo documental</th>
+              <th class="pb-2 text-left font-medium">Fecha</th>
+              <th class="pb-2 text-left font-medium">Archivo generado</th>
+              <th class="pb-2 text-right font-medium"></th>
             </tr>
           </thead>
           <tbody>
             {#each archived.rows as row (row.file_name)}
               <tr class="border-t border-hairline">
                 <td class="py-1.5 pr-3 font-mono">{row.code}</td>
-                <td class="py-1.5 pr-3 text-ink-2">{row.title ?? '—'}</td>
+                <!-- Las páginas delante del tipo: es el orden en que se lee
+                     esta tabla, "de la 1 a la 8, un derecho de petición", y es
+                     también el orden en que están en la caja de origen. -->
                 <td class="tabular py-1.5 pr-3 text-muted">{row.pages}</td>
+                <td class="py-1.5 pr-3 text-ink">{row.type ?? '—'}</td>
+                <!-- La fecha más reciente que lleva escrita el documento. Se
+                     lee de todas sus páginas, no sólo de la primera: un acta
+                     puede llevar la de la visita arriba y la del acuse detrás. -->
+                <td class="tabular py-1.5 pr-3 text-muted">{row.fecha ?? '—'}</td>
+                <!-- El nombre, escrito y no sólo enlazado. Esta columna llevaba
+                     únicamente el icono de descarga, así que la tabla no decía
+                     cómo se llama en el disco ninguno de los archivos que
+                     acababa de producir: para saberlo había que bajarlos. -->
+                <td class="py-1.5 pr-3 font-mono text-xs break-all text-ink-2">
+                  {row.file_name.split('/').pop()}
+                </td>
                 <td class="py-1.5 text-right">
                   <a
                     class="icon-link"

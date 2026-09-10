@@ -19,8 +19,8 @@ from resolutions.domain.doctype import DocumentType
 def rutas(monkeypatch):
     """Sustituye los tres destinos por marcadores, para ver a cuál se va."""
     visitados = []
-    for nombre in ("_split_job", "_diploma_split_job", "_segment_job"):
-        def marcar(payload, task, _n=nombre):
+    for nombre in ("_split_job", "_record_split_job", "_segment_job"):
+        def marcar(payload, task, _n=nombre, **kwargs):
             visitados.append((_n, task))
             return {"ruta": _n}
         monkeypatch.setattr(worker, nombre, marcar)
@@ -56,7 +56,26 @@ class TestLoQueElPapelDiceSerMandaSobreLaAccion:
     def test_un_libro_de_diplomas_sigue_yendo_al_suyo(self, rutas, monkeypatch):
         reconoce(monkeypatch, DocumentType.DIPLOMA)
         worker.process_document_job(payload(TaskKind.SPLIT))
-        assert rutas[0][0] == "_diploma_split_job"
+        assert rutas[0][0] == "_record_split_job"
+
+    def test_un_legajo_de_matriculas_se_parte_por_estudiante(self, rutas, monkeypatch):
+        """El desvío que faltaba.
+
+        `matricula_split.group_by_student` estaba escrito y probado, y este
+        enrutador sólo nombraba a los diplomas: un legajo de matrículas subido
+        con «dividir» se iba al agrupador por código de resolución, que busca en
+        sus páginas un número que ninguna lleva. Salía un solo documento con el
+        legajo entero, o uno por cada número suelto que el OCR creyera ver.
+        """
+        reconoce(monkeypatch, DocumentType.MATRICULA)
+        worker.process_document_job(payload(TaskKind.SPLIT))
+        assert rutas[0][0] == "_record_split_job"
+
+    def test_y_tambien_cuando_se_pidio_inventariar_a_la_vez(self, rutas, monkeypatch):
+        """Las dos salidas de una sola lectura, igual que en los diplomas."""
+        reconoce(monkeypatch, DocumentType.MATRICULA)
+        worker.process_document_job(payload(TaskKind.BOTH))
+        assert rutas[0] == ("_record_split_job", TaskKind.BOTH)
 
     def test_separar_por_documento_no_pasa_por_el_reconocedor(
         self, rutas, monkeypatch
@@ -112,3 +131,60 @@ class TestLoQueElDesvioNoSeLleva:
         datos["source"] = str(vacio)
         worker.process_document_job(datos)
         assert rutas[0][0] == "_split_job"
+
+
+class TestElAvisoDeQueLaAccionNoPega:
+    """Avisa y deja seguir. La elección de la acción es del operador.
+
+    Un legajo de resoluciones separado por continuidad devuelve el doble de
+    unidades y media caja en revisión, porque lo único que distingue una
+    resolución de la siguiente es el número impreso que esa ruta no lee. Medido
+    sobre "RESOLUCIONES 00072-00094.pdf": 29 resoluciones y cero revisiones por
+    su camino, contra 63 documentos y 112 páginas a revisar por el otro.
+    """
+
+    def test_avisa_cuando_el_papel_dice_ser_otra_cosa(self, monkeypatch):
+        monkeypatch.setattr(worker, "_recognise", lambda _p: DocumentType.RESOLUCION)
+        monkeypatch.setattr(worker, "_anunciar", lambda *a, **k: None)
+        avisos = worker._aviso_de_ruta(payload(TaskKind.SEGMENT), worker._SIN_RECONOCER)
+        assert len(avisos) == 1
+        assert "resoluciones" in avisos[0]
+        assert "Dividir en documentos" in avisos[0]
+
+    def test_no_avisa_de_una_caja_revuelta(self, monkeypatch):
+        monkeypatch.setattr(worker, "_anunciar", lambda *a, **k: None)
+        avisos = worker._aviso_de_ruta(payload(TaskKind.SEGMENT), DocumentType.DESCONOCIDO)
+        assert avisos == []
+
+    def test_una_averia_del_reconocedor_no_inventa_un_aviso(self, monkeypatch):
+        """`None` es "no pude", y de eso no se avisa a nadie."""
+        monkeypatch.setattr(worker, "_anunciar", lambda *a, **k: None)
+        assert worker._aviso_de_ruta(payload(TaskKind.SEGMENT), None) == []
+
+    def test_el_desvio_no_vuelve_a_reconocer(self, monkeypatch, rutas):
+        """Ya se preguntó una vez; doce pasadas de OCR no se pagan dos veces."""
+        llamadas = []
+        def contar(_p):
+            llamadas.append(1)
+            return DocumentType.DESCONOCIDO
+        monkeypatch.setattr(worker, "_recognise", contar)
+        worker.process_document_job(payload(TaskKind.SPLIT))
+        assert len(llamadas) == 1
+
+    def test_el_aviso_llega_al_informe_y_no_solo_al_progreso(self, monkeypatch):
+        """El progreso se ve mientras corre; el informe se lee después."""
+        import inspect
+        fuente = inspect.getsource(worker._segment_job)
+        assert '"notices": avisos' in fuente
+
+    def test_un_reconocedor_que_revienta_no_cancela_la_separacion(self, monkeypatch):
+        """El aviso es una comodidad; la separación es el trabajo.
+
+        Esta ruta no dependía del reconocedor hasta que llegó el aviso, y un PDF
+        que él no pueda abrir no puede impedir que la caja se separe.
+        """
+        def revienta(_p):
+            raise RuntimeError("no such file")
+        monkeypatch.setattr(worker, "_recognise", revienta)
+        monkeypatch.setattr(worker, "_anunciar", lambda *a, **k: None)
+        assert worker._aviso_de_ruta(payload(TaskKind.SEGMENT), worker._SIN_RECONOCER) == []

@@ -75,6 +75,22 @@ def header_row(sheet) -> int:
     raise AssertionError("la tabla no tiene cabecera")
 
 
+def col(sheet, titulo: str) -> int:
+    """El indice de una columna dentro de las filas que devuelve `body`.
+
+    Por su titulo y no por su numero, por lo mismo que `header_row` busca la
+    fila en vez de darla por fija: anadir una columna a la planilla no puede
+    obligar a renumerar a mano media docena de pruebas que no tienen nada que
+    ver con ella. Paso al entrar "Tipo documental" y por eso existe esto.
+    """
+    fila = header_row(sheet)
+    cabecera = list(sheet.iter_rows(min_row=fila, max_row=fila, values_only=True))[0]
+    for indice, valor in enumerate(cabecera):
+        if valor and str(valor).strip().upper() == titulo.upper():
+            return indice
+    raise AssertionError("la planilla no tiene una columna " + titulo)
+
+
 def body(sheet):
     """Las filas de datos, sin portada, cabecera ni totales."""
     start = header_row(sheet) + 1
@@ -156,20 +172,82 @@ class TestTheResolutionSheet:
 
     def test_pages_read_as_ranges(self, tmp_path):
         path = ExcelInventory().write(report(), tmp_path)
-        assert body(open_sheet(path, "Resoluciones"))[0][3] == "1–3"
+        sheet = open_sheet(path, "Resoluciones")
+        assert body(sheet)[0][col(sheet, "Páginas")] == "1–3"
 
     def test_each_row_carries_the_generated_file_and_the_destination(self, tmp_path):
         path = ExcelInventory().write(report(), tmp_path, delivered_to=r"C:\Destino")
-        row = body(open_sheet(path, "Resoluciones"))[0]
-        assert row[5] == "00086__acta.pdf"
-        assert row[6] == r"C:\Destino"
+        sheet = open_sheet(path, "Resoluciones")
+        row = body(sheet)[0]
+        assert row[col(sheet, "Archivo generado")] == "00086__acta.pdf"
+        assert row[col(sheet, "Carpeta de destino")] == r"C:\Destino"
 
     def test_the_total_is_a_formula_not_a_frozen_number(self, tmp_path):
         # If a resolution is withdrawn and its row deleted, the total follows.
         path = ExcelInventory().write(report(), tmp_path)
         sheet = open_sheet(path, "Resoluciones")
-        totals = [row[0] for row in sheet.iter_rows(min_col=5, max_col=5, values_only=True)]
+        cantidad = col(sheet, "Cant.") + 1
+        totals = [
+            row[0]
+            for row in sheet.iter_rows(
+                min_col=cantidad, max_col=cantidad, values_only=True
+            )
+        ]
         assert any(isinstance(value, str) and value.startswith("=SUM") for value in totals)
+
+    def test_la_suma_apunta_a_la_columna_de_cantidades(self, tmp_path):
+        """Y no a la que estaba ahi antes de anadir una columna.
+
+        La formula llevaba la letra escrita a mano. Con "Tipo documental"
+        delante, esa letra paso a senalar el nombre del archivo, y el total
+        habria sumado texto: cero, en silencio, en la planilla que se firma.
+        """
+        path = ExcelInventory().write(report(), tmp_path)
+        sheet = open_sheet(path, "Resoluciones")
+        # Por el modulo y no por un import propio: openpyxl entra aqui por
+        # `importorskip`, asi que un import al principio del archivo correria
+        # antes de saber si la libreria esta.
+        letra = openpyxl.utils.get_column_letter(col(sheet, "Cant.") + 1)
+        formulas = [
+            celda.value
+            for fila in sheet.iter_rows()
+            for celda in fila
+            if isinstance(celda.value, str) and celda.value.startswith("=SUM")
+        ]
+        assert formulas
+        assert all("=SUM(" + letra in formula for formula in formulas)
+
+    def test_cada_fila_dice_que_clase_de_papel_es(self, tmp_path):
+        """El tipo documental, que estaba en el nombre del archivo y no aqui.
+
+        La planilla viaja con los PDF: es lo que alguien mira para saber que
+        hay en la carpeta sin abrir doscientos archivos.
+        """
+        path = ExcelInventory().write(
+            report(
+                items=[
+                    {
+                        "file_name": "01_NOTIFICACION-POR-AVISO.pdf",
+                        "code": "01",
+                        "title": "paginas 1-3",
+                        "type": "NOTIFICACION POR AVISO",
+                        "page_count": 3,
+                        "first_page": 1,
+                        "last_page": 3,
+                        "page_numbers": [1, 2, 3],
+                    }
+                ]
+            ),
+            tmp_path,
+        )
+        sheet = open_sheet(path, "Resoluciones")
+        assert body(sheet)[0][col(sheet, "Tipo documental")] == "NOTIFICACION POR AVISO"
+
+    def test_lo_que_nadie_reconocio_se_dice_con_una_raya(self, tmp_path):
+        """Un tercio de una caja real no lleva rotulo legible, y eso se declara."""
+        path = ExcelInventory().write(report(), tmp_path)
+        sheet = open_sheet(path, "Resoluciones")
+        assert body(sheet)[0][col(sheet, "Tipo documental")] == "—"
 
     def test_there_is_a_column_to_sign_off_each_row(self, tmp_path):
         path = ExcelInventory().write(report(), tmp_path)
@@ -244,8 +322,10 @@ class TestTheDeliverySheet:
 
     def test_each_row_says_which_document_it_came_from(self, tmp_path):
         path = ExcelRunInventory().write(self.rows(), tmp_path)
-        rows = body(open_sheet(path, "Resoluciones"))
-        assert [row[3] for row in rows] == ["marzo.pdf", "abril.pdf"]
+        sheet = open_sheet(path, "Resoluciones")
+        rows = body(sheet)
+        origen = col(sheet, "Documento de origen")
+        assert [row[origen] for row in rows] == ["marzo.pdf", "abril.pdf"]
 
     def test_an_empty_delivery_still_writes_a_sheet(self, tmp_path):
         path = ExcelRunInventory().write([], tmp_path)
