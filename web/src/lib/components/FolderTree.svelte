@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { documentFuidStatus, documentFuidUrl, downloadUrl, makeDocumentFuid } from '$lib/api';
+  import {
+    documentFuidStatus,
+    documentFuidUrl,
+    documentInventoryUrl,
+    downloadUrl,
+    makeDocumentFuid
+  } from '$lib/api';
   import { jobStore } from '$lib/jobs.svelte';
   import type { FolderRun, Job } from '$lib/types';
 
@@ -65,14 +71,31 @@
   async function inventariar(job: Job) {
     inventarios = { ...inventarios, [job.id]: { trabajando: true, error: null } };
     try {
+      // La planilla del documento se escribe sola al procesarlo, así que lo
+      // primero es probar si ya está: bajarla es instantáneo y no vuelve a
+      // leer el PDF. Sólo si no está se levanta el FUID, que sí lo lee entero.
+      if (await bajarLaPlanilla(job)) {
+        inventarios = { ...inventarios, [job.id]: { trabajando: false, error: null } };
+        return;
+      }
+
       let estado = await makeDocumentFuid(job.id);
       // Leer un libro de cuatrocientos folios son minutos. Se pregunta cada dos
       // segundos en vez de dejar la petición abierta todo ese rato.
-      while (!estado.ready && !estado.error) {
+      //
+      // Y se para cuando el servicio deja de estar trabajando. Antes la
+      // condición era sólo "ni listo ni con error", y un documento que
+      // terminaba sin producir planilla -- un escaneo sin capa de texto -- no
+      // cumplía ninguna de las dos: el botón se quedaba diciendo "levantando…"
+      // indefinidamente y sin nada más que decir.
+      while (!estado.ready && !estado.error && estado.working !== false) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         estado = await documentFuidStatus(job.id);
       }
       if (estado.error) throw new Error(estado.error);
+      if (!estado.ready) {
+        throw new Error('El documento se leyó y no produjo inventario');
+      }
       descargar(documentFuidUrl(job.id));
       inventarios = { ...inventarios, [job.id]: { trabajando: false, error: null } };
     } catch (problema) {
@@ -80,6 +103,18 @@
         ...inventarios,
         [job.id]: { trabajando: false, error: (problema as Error).message }
       };
+    }
+  }
+
+  /** La planilla que el proceso ya dejó escrita, si está. */
+  async function bajarLaPlanilla(job: Job): Promise<boolean> {
+    try {
+      const respuesta = await fetch(documentInventoryUrl(job.id), { method: 'HEAD' });
+      if (!respuesta.ok) return false;
+      descargar(documentInventoryUrl(job.id));
+      return true;
+    } catch {
+      return false;
     }
   }
 

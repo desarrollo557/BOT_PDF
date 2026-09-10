@@ -1,7 +1,11 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+
   import FolderTree from '$lib/components/FolderTree.svelte';
   import PageRibbon from '$lib/components/PageRibbon.svelte';
+  import RunStats from '$lib/components/RunStats.svelte';
   import { jobStore } from '$lib/jobs.svelte';
+  import { unitFor } from '$lib/format';
   import { STAGE_LABELS } from '$lib/rungs';
   import type { FolderRun } from '$lib/types';
 
@@ -10,6 +14,12 @@
   }
 
   let { run }: Props = $props();
+
+  let now = $state(Date.now());
+  onMount(() => {
+    const tick = setInterval(() => (now = Date.now()), 250);
+    return () => clearInterval(tick);
+  });
 
   let stopping = $state(false);
   let forgetting = $state(false);
@@ -25,8 +35,36 @@
   };
 
   const active = $derived(['scanning', 'processing', 'watching'].includes(run.state));
+
+  /**
+   * Cuántos documentos esperan turno. Lo cuenta el servicio, porque `run.queue`
+   * sólo trae los primeros cuarenta: una carpeta de archivo real trae catorce
+   * mil PDF, y mandarlos todos en cada aviso son cuatrocientos kilobytes por
+   * documento procesado para enseñar cuarenta nombres.
+   */
+  const enCola = $derived(run.queued ?? run.queue.length);
+
+  /**
+   * El reloj de la corrida y su avance, que hasta ahora esta pantalla no daba.
+   *
+   * Una carpeta vigilada corre sola durante horas y era la única de las tres
+   * cargas que no decía ni cuánto llevaba, ni cuántas páginas, ni a qué
+   * velocidad -- justo la que más falta hace cuando nadie está delante.
+   */
+  const elapsedSeconds = $derived.by(() => {
+    const from = Date.parse(run.started_at);
+    if (Number.isNaN(from)) return 0;
+    const to = run.finished_at ? Date.parse(run.finished_at) : now;
+    return Math.max(0, ((Number.isNaN(to) ? now : to) - from) / 1000);
+  });
+
   /** The document the runner has open right now, if it is still on screen. */
   const job = $derived(run.current_job_id ? jobStore.get(run.current_job_id) : undefined);
+
+  /** Páginas del documento abierto ahora mismo, sobre el total ya contado. */
+  const pagesDone = $derived(run.pages_total + (job?.progress.pages_done ?? 0));
+  const rate = $derived(job?.progress.pages_per_second ?? 0);
+  const unitLabel = $derived(unitFor(job?.report?.stats, run.resolutions));
 
   function clock(at: string): string {
     const parsed = Date.parse(at);
@@ -97,16 +135,19 @@
     <p class="error">{error}</p>
   {/if}
 
-  <dl class="figures">
-    <div><dt>Procesados</dt><dd class="tabular">{run.processed}</dd></div>
-    <div><dt>Entregados</dt><dd class="tabular">{run.delivered}</dd></div>
-    <div><dt>Resoluciones</dt><dd class="tabular">{run.resolutions}</dd></div>
-    <div><dt>En cola</dt><dd class="tabular">{run.queue.length}</dd></div>
-    <div>
-      <dt>Con error</dt>
-      <dd class="tabular" class:bad={run.failed > 0}>{run.failed}</dd>
-    </div>
-  </dl>
+  <RunStats
+    {pagesDone}
+    pagesTotal={0}
+    units={run.resolutions}
+    {unitLabel}
+    bytesTotal={run.bytes_total}
+    bytesDone={run.bytes_total}
+    {rate}
+    {elapsedSeconds}
+    queued={enCola}
+    failed={run.failed}
+    settled={!active}
+  />
 
   <!-- Which file it is on. Sequential by design, so there is exactly one.
        Una carpeta cerrada no está consumiendo nada, así que este bloque
@@ -143,7 +184,7 @@
     </div>
   {/if}
 
-  {#if run.queue.length}
+  {#if enCola}
     <div class="column">
       <!-- Lo mismo dicho de dos maneras, porque no significa lo mismo. En una
            carpeta viva la cola es lo que va a procesarse; en una detenida es lo
@@ -151,15 +192,15 @@
            turno que no iba a llegar nunca. -->
       <span class="section-label" class:pendiente={!active}>
         {active
-          ? `Esperando turno (${run.queue.length})`
-          : `Quedaron sin procesar (${run.queue.length})`}
+          ? `Esperando turno (${enCola})`
+          : `Quedaron sin procesar (${enCola})`}
       </span>
       <ul class="queue">
         {#each run.queue.slice(0, 40) as name (name)}
           <li title={name}>{name}</li>
         {/each}
-        {#if run.queue.length > 40}
-          <li class="more">+{run.queue.length - 40}</li>
+        {#if enCola > run.queue.length}
+          <li class="more">+{enCola - run.queue.length} más</li>
         {/if}
       </ul>
     </div>
@@ -293,33 +334,6 @@
     color: var(--critical);
   }
 
-  .figures {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem 1.75rem;
-    margin: 0;
-  }
-  .figures div {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-  .figures dt {
-    font-size: 0.62rem;
-    font-weight: 600;
-    letter-spacing: 0.055em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-  .figures dd {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: 0.88rem;
-    color: var(--ink);
-  }
-  .figures dd.bad {
-    color: var(--critical);
-  }
 
   .column {
     border-top: 1px solid var(--rule);

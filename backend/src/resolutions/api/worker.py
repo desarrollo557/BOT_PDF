@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..application.progress import Stage
@@ -11,6 +12,11 @@ logger = logging.getLogger(__name__)
 #: junto al trabajo. El endpoint de descarga lo busca por este sufijo, así que
 #: los dos sitios tienen que decir lo mismo.
 FUID_SUFFIX = "__FUID.xlsx"
+
+#: Que nadie ha preguntado todavía qué documento es. Distinto de `None`, que es
+#: el reconocedor diciendo que no pudo, y de `DESCONOCIDO`, que es el papel
+#: diciendo que no es nada de lo que este sistema sabe partir.
+_SIN_RECONOCER = object()
 
 
 def process_document_job(payload: dict) -> dict:
@@ -30,19 +36,23 @@ def process_document_job(payload: dict) -> dict:
     if not task.writes_documents:
         return _inventory_job(payload)
 
-    # Antes de reconocer nada: una caja revuelta no tiene un tipo que reconocer.
-    # No es un libro de folios ni un legajo de resoluciones, es un montón de
-    # papeles distintos metidos en el mismo PDF. Preguntarle a la muestra de doce
-    # páginas qué documento es cuesta doce pasadas de OCR para una respuesta que
-    # este camino no va a usar.
+    # Separar por continuidad no necesita saber qué documento es -- corta por
+    # dónde acaba una hoja y empieza la otra, no por lo que digan -- pero el
+    # operador sí necesita saber si eligió mal. Un legajo de resoluciones
+    # separado por continuidad devuelve el doble de unidades y media caja en
+    # revisión, porque lo único que distingue una resolución de la siguiente es
+    # justo el número impreso que esta ruta no lee. Se reconoce, se avisa, y se
+    # hace lo que pidió: la elección es suya.
     if task is TaskKind.SEGMENT:
         return _segment_job(payload, task)
 
-    # Un libro de folios no se parte por herencia sino uno a uno, así que hay
-    # que saber qué documento es antes de elegir cómo partirlo. Averiguarlo
-    # cuesta una muestra de doce páginas -- y en un escaneo sin capa de texto,
-    # doce pasadas de OCR -- que hasta ahora transcurrían sin que la pantalla
-    # dijera absolutamente nada, justo al principio del trabajo.
+
+    # Un libro de folios no se parte por herencia sino uno a uno, y un legajo
+    # de matrículas se parte por persona, así que hay que saber qué documento es
+    # antes de elegir cómo partirlo. Averiguarlo cuesta una muestra de doce
+    # páginas -- y en un escaneo sin capa de texto, doce pasadas de OCR -- que
+    # hasta ahora transcurrían sin que la pantalla dijera absolutamente nada,
+    # justo al principio del trabajo.
     from ..application.inventory_document import SAMPLE_PAGES
 
     _anunciar(
@@ -55,8 +65,18 @@ def process_document_job(payload: dict) -> dict:
     from ..domain.doctype import DocumentType
 
     reconocido = _recognise(payload)
-    if reconocido is DocumentType.DIPLOMA:
-        return _diploma_split_job(payload, task)
+    # Los dos van al mismo sitio, y no por comodidad: los dos se parten por lo
+    # que dice cada hoja de sí misma -- un folio por cara en el libro de
+    # diplomas, una persona por carátula en el legajo de matrículas -- y de las
+    # dos lecturas sale ya la agrupación hecha.
+    #
+    # Las matrículas no llegaban aquí. `matricula_split.group_by_student` estaba
+    # escrito y probado, e `InventoryDocument` ya lo llamaba, pero este desvío
+    # sólo nombraba a los diplomas: un legajo de matrículas subido con «dividir»
+    # se iba al agrupador por código de resolución, que busca en sus páginas un
+    # número que no existe.
+    if reconocido in (DocumentType.DIPLOMA, DocumentType.MATRICULA):
+        return _record_split_job(payload, task)
 
     # Y aquí el desvío que evita el peor resultado posible de esta pantalla. Si
     # las páginas no dicen que sean resoluciones, diplomas ni matrículas, partir
@@ -84,13 +104,16 @@ def process_document_job(payload: dict) -> dict:
             done=SAMPLE_PAGES,
             total=SAMPLE_PAGES,
         )
-        return _segment_job(payload, TaskKind.SEGMENT)
+        return _segment_job(payload, TaskKind.SEGMENT, recognised=reconocido)
 
     return _split_job(payload, task)
 
 
 def _recognise(payload: dict):
-    """Qué dice el papel que es este documento, o DESCONOCIDO si no lo dice.
+    """Qué dice el papel que es este documento.
+
+    Devuelve el tipo, `DESCONOCIDO` si las páginas no dicen ser nada de lo que
+    el sistema sabe partir, o `None` si el reconocedor no pudo pronunciarse.
 
     Se decide sobre una muestra y sobre lo que está impreso en las páginas,
     nunca sobre el nombre del archivo. No reconocer nada es una respuesta, no un
@@ -99,7 +122,6 @@ def _recognise(payload: dict):
     from ..adapters.pymupdf_source import PyMuPDFPageSource
     from ..adapters.tesseract_ocr import HeaderAndPageOcr
     from ..application.inventory_document import InventoryDocument
-    from ..domain.doctype import DocumentType
 
     settings = payload["settings"]
     source = PyMuPDFPageSource(Path(payload["source"]), payload.get("filename"))
@@ -108,10 +130,11 @@ def _recognise(payload: dict):
             ocr=HeaderAndPageOcr(language=settings["ocr_language"])
         ).identify(source)
     except Exception:  # noqa: BLE001 - no reconocerlo no es motivo para fallar
-        # Cae en el camino de resoluciones, que es el que el sistema hacía
-        # siempre: una avería del reconocedor no debe cambiar de ruta a nadie.
+        # `None` y no un tipo: una avería no es un veredicto. Quien enruta la
+        # trata como el camino de siempre y quien avisa se calla, que es lo que
+        # cada uno debe hacer sin que el otro tenga que adivinarlo.
         logger.warning("no se pudo reconocer el tipo de documento", exc_info=True)
-        return DocumentType.RESOLUCION
+        return None
     finally:
         source.close()
     return verdict.document_type
@@ -189,6 +212,7 @@ def _split_job(payload: dict, task) -> dict:
         destination,
         source_name=payload.get("filename"),
         operator=payload.get("operator"),
+        delivered_to=payload.get("destination"),
     )
     report = resultado.as_dict()
     report["task"] = str(task)
@@ -434,17 +458,23 @@ def _escribir_fuid(
         report["fuid_error"] = f"{type(error).__name__}: {error}"
 
 
-def _diploma_split_job(payload: dict, task) -> dict:
-    """Partir un libro de folios uno a uno, y su FUID si se pidió.
+def _record_split_job(payload: dict, task) -> dict:
+    """Partir por registro leído: un folio de diplomas, un expediente de matrícula.
 
     Una sola lectura para las dos salidas. Los registros que salen de leer el
-    libro son a la vez las filas del inventario y los grupos de una página que
+    documento son a la vez las filas del inventario y los grupos de páginas que
     el escritor convierte en archivos.
+
+    Sirve a los dos tipos porque `InventoryDocument` ya devuelve la agrupación
+    hecha para ambos, y lo que queda por hacer -- escribir un PDF por grupo y,
+    si se pidió, el FUID -- no depende de cuál de los dos sea. Se llamaba
+    `_diploma_split_job` cuando sólo los diplomas llegaban hasta aquí.
     """
     from ..adapters.pymupdf_assembler import PyMuPDFAssembler
     from ..adapters.pymupdf_source import PyMuPDFPageSource
     from ..adapters.queue_progress import QueueProgressReporter
     from ..adapters.tesseract_ocr import HeaderAndPageOcr
+    from ..application.entrega import Destino, entregar
     from ..application.inventory_document import InventoryDocument
     from ..application.progress import NullProgressReporter
 
@@ -470,32 +500,66 @@ def _diploma_split_job(payload: dict, task) -> dict:
         outcome = use_case.execute(
             source, document_name=name, ubicacion=_ubicacion(settings)
         )
+        # Qué clase de papel es cada folio o expediente, con la fuente todavía
+        # abierta. Lo hace `entregar` más abajo, pero necesita el texto y la
+        # fuente se cierra aquí, así que se le guarda el lector.
+        #
+        # Sin heredar del vecino: en un legajo homogéneo -- un libro de folios
+        # es cien veces el mismo papel -- el contexto no aporta nada que no se
+        # supiera ya, y heredar sólo taparía los folios que no se dejaron leer.
+        agrupacion = outcome.grouping
+        textos = (
+            {p: source.text_of(p) for grupo in agrupacion.groups for p in grupo.page_numbers}
+            if agrupacion is not None
+            else {}
+        )
     finally:
         source.close()
 
     report = outcome.as_dict()
     report["task"] = str(task)
 
-    if task.writes_documents and outcome.grouping is not None:
+    if task.writes_documents and agrupacion is not None:
         _anunciar(
             payload,
             Stage.ASSEMBLING,
             detail="preparando la escritura",
             done=0,
-            total=len(outcome.grouping.groups),
+            total=len(agrupacion.groups),
         )
-        # Sin prefijo: la unidad de un libro de folios es un folio, no una
-        # resolución, y llamar "RESOLUCION_728" a un registro de diploma sería
-        # escribir en el disco algo que no es verdad.
-        assembly = PyMuPDFAssembler(
-            control=control, progress=progress, naming_prefix=None, nombre=name
-        ).write(
-            source_path, outcome.grouping, destination
+        # El mismo tramo que las otras rutas: describir, comprobar, escribir e
+        # inventariar. Lo que aquí cambia es cómo se llaman los archivos.
+        #
+        # Sin prefijo y con el título dentro: la unidad de un libro de folios es
+        # un folio y la de un legajo de matrículas un expediente -- ninguna es
+        # una resolución -- y el título dice de quién es, que es lo que alguien
+        # va a buscar. "1128047041_juan-perez_DOCUMENTO-DE-IDENTIDAD.pdf" se
+        # lee sin abrirlo.
+        entregado = entregar(
+            agrupacion,
+            origen=source_path,
+            nombre=name,
+            paginas=outcome.page_count,
+            destino=Destino(
+                directorio=destination, entregado_en=payload.get("destination")
+            ),
+            assembler=PyMuPDFAssembler(
+                control=control,
+                progress=progress,
+                naming_prefix=None,
+                con_titulo=True,
+                nombre=name,
+            ),
+            en_revision=[
+                int(item["page"]) for item in outcome.review_queue if item.get("page")
+            ],
+            estadisticas=report.get("stats") or {},
+            texto_de=textos.get,
+            heredar_tipo=False,
         )
-        report["outputs"] = [path.name for path in assembly.outputs]
-        report["unwritable_pages"] = {
-            str(page): error for page, error in assembly.unwritable_pages.items()
-        }
+        report["inventory"] = entregado.inventario.as_dict()
+        report["outputs"] = entregado.salidas
+        report["unwritable_pages"] = entregado.ilegibles
 
     if task.writes_inventory:
         _escribir_fuid(
@@ -508,6 +572,11 @@ def _diploma_split_job(payload: dict, task) -> dict:
             control=control,
             payload=payload,
         )
+    # La misma planilla para un libro de folios o un legajo de matrículas:
+    # quien recibe la carpeta necesita el listado, se haya cortado como se
+    # haya cortado.
+    _escribir_planilla(report, destination, payload)
+
     _anunciar(payload, Stage.DONE)
     return report
 
@@ -594,7 +663,77 @@ def _oracle_named(name: str, settings: dict):
     return MistralBoundaryOracle(api_key=str(settings.get("mistral_api_key")))
 
 
-def _segment_job(payload: dict, task) -> dict:
+def _escribir_planilla(report: dict, destination: Path, payload: dict) -> None:
+    """Deja la planilla del inventario junto a los PDF que describe.
+
+    Se escribe sola, al terminar, sin que nadie la pida. Es lo que el operador
+    necesita para entregar la caja: un listado de qué salió, de qué páginas
+    salió cada cosa y qué tipo documental resultó ser, en un archivo que se
+    abre en Excel. Hasta ahora sólo la escribía la ruta de resoluciones, así
+    que quien separaba una caja revuelta o partía un libro de folios se
+    quedaba con los PDF y sin el papel que dice qué son.
+
+    Que falle no invalida nada: los PDF ya están escritos y el informe también.
+    Se anota y se sigue, igual que con el FUID.
+    """
+    try:
+        from ..adapters.excel_inventory import ExcelInventory
+    except ImportError:
+        # openpyxl no está instalado: el documento se parte igual, sólo que
+        # sin su planilla.
+        return
+    _anunciar(payload, Stage.INVENTORYING, detail="escribiendo la planilla")
+    try:
+        ExcelInventory().write(
+            report,
+            destination,
+            # A dónde va la entrega, cuando va a alguna parte. En una subida
+            # suelta no hay carpeta de destino que declarar y la columna se
+            # queda con su raya; en una corrida sobre carpeta local sí la hay,
+            # y es justo el caso en que el operador necesita leerla.
+            delivered_to=payload.get("destination"),
+            operator=payload.get("operator"),
+            processed_at=datetime.now(UTC).isoformat(),
+        )
+    except Exception:  # noqa: BLE001 - la entrega ya está en el disco
+        logger.warning("no se pudo escribir la planilla del inventario", exc_info=True)
+
+
+def _aviso_de_ruta(payload: dict, recognised: object) -> list[str]:
+    """Si el papel dice ser otra cosa de la que el operador pidió separar.
+
+    Avisa y no impide nada. Elegir la acción es del operador y hay motivos para
+    separar por continuidad un legajo que se reconoce -- un lote mal armado, una
+    tanda de pruebas -- pero no hay ninguno para enterarse veinte minutos después
+    y por el resultado.
+    """
+    from ..application.inventory_document import SAMPLE_PAGES
+    from ..domain.doctype import DocumentType
+
+    if recognised is _SIN_RECONOCER:
+        try:
+            recognised = _recognise(payload)
+        except Exception:  # noqa: BLE001 - un aviso que se cae no cancela el trabajo
+            # `_recognise` protege la lectura pero no la apertura del archivo, y
+            # esta ruta no dependía del reconocedor hasta que este aviso llegó.
+            # Que un PDF ilegible por él impidiera separar la caja sería cambiar
+            # una comodidad por una avería.
+            logger.warning("no se pudo avisar de la ruta elegida", exc_info=True)
+            return []
+    if recognised is None or recognised is DocumentType.DESCONOCIDO:
+        return []
+
+    aviso = (
+        f"las páginas dicen ser {recognised.label.lower()}; separar por "
+        "continuidad no lee el número impreso que las distingue, y "
+        "«Dividir en documentos» agruparía por él"
+    )
+    logger.info("%s: %s", payload.get("filename"), aviso)
+    _anunciar(payload, Stage.IDENTIFYING, detail=aviso, done=SAMPLE_PAGES, total=SAMPLE_PAGES)
+    return [aviso]
+
+
+def _segment_job(payload: dict, task, *, recognised: object = _SIN_RECONOCER) -> dict:
     """Separar una caja revuelta en los documentos que la forman.
 
     Sin OCR y sin visión: se decide sobre la capa de texto y sobre dónde están
@@ -606,15 +745,24 @@ def _segment_job(payload: dict, task) -> dict:
     """
     from ..adapters.pymupdf_assembler import PyMuPDFAssembler
     from ..adapters.pymupdf_source import PyMuPDFPageSource
+    from ..application.entrega import Destino, entregar
     from ..application.segment_document import SegmentDocument
     from ..application.segment_split import group_by_segment
-    from ..domain.naming import DOCUMENT_PREFIX
+    from ..domain.fingerprint import nic_de_la_caja
+    from ..domain.naming import document_folder
     from ..domain.segmentation import Verdict
+
+    avisos = _aviso_de_ruta(payload, recognised)
 
     settings = payload["settings"]
     source_path = Path(payload["source"])
-    destination = Path(settings["output_dir"]) / payload["job_id"]
     name = payload.get("filename") or source_path.name
+    # Los PDF de una caja van juntos y bajo el nombre de la caja. La carpeta del
+    # trabajo sigue siendo la de arriba -- es la que la pantalla y la descarga
+    # saben encontrar -- pero quien abra el disco ve "UPD2366126" y no un
+    # identificador de treinta y dos letras que no le dice de qué documento es.
+    carpeta = document_folder(name)
+    destination = Path(settings["output_dir"]) / payload["job_id"] / carpeta
 
     progress = _reportero(payload)
     control = _control(payload)
@@ -627,14 +775,17 @@ def _segment_job(payload: dict, task) -> dict:
             reporter=progress,
             control=control,
         ).run(source)
+        # Con la fuente todavía abierta, y después del corte y no antes: ahora
+        # cada documento tiene bordes, así que preguntarle qué es tiene una sola
+        # respuesta posible en vez de una para noventa páginas distintas.
+        grupos = group_by_segment(segmentacion.segments, source.text_of)
+        # El NIC del suscriptor, que es de la caja entera y no de ninguno de
+        # sus documentos. No decide ningún corte -- lo llevan todas las hojas
+        # -- pero es con lo que el archivo identifica el expediente, y la
+        # entrega en carpeta lo usa para nombrar la carpeta de destino.
+        nic = nic_de_la_caja(segmentacion.fingerprints)
     finally:
         source.close()
-
-    grupos = group_by_segment(segmentacion.segments)
-    # Antes de escribir un solo archivo. Una separación que pierde o repite una
-    # hoja se ve idéntica a una correcta mirando la carpeta de salida.
-    grupos.verify_integrity(total_pages=page_count)
-
     _anunciar(
         payload,
         Stage.ASSEMBLING,
@@ -642,13 +793,6 @@ def _segment_job(payload: dict, task) -> dict:
         done=0,
         total=len(grupos.groups),
     )
-    # Con "DOCUMENTO" y no con el prefijo de resoluciones: lo que sale de aquí
-    # todavía no sabe qué es, y llamarlo "RESOLUCION_01" sería escribir en el
-    # disco algo que nadie comprobó.
-    assembly = PyMuPDFAssembler(
-        control=control, progress=progress, naming_prefix=DOCUMENT_PREFIX, nombre=name
-    ).write(source_path, grupos, destination)
-
     dudosas = [b for b in segmentacion.boundaries if b.verdict is Verdict.UNDECIDED]
     # De qué documento es cada anexo. Se calculaba y no salía a ninguna parte,
     # así que un acta con sus cuatro fotografías era indistinguible de un acta de
@@ -661,6 +805,48 @@ def _segment_job(payload: dict, task) -> dict:
     }
     del_modelo = [b for b in segmentacion.boundaries if not b.deterministic]
 
+    # Lo que hace falta para saber si la caja salió cara o barata, y por qué.
+    # Las tres últimas reparten las costuras: lo que decidió el papel, lo que
+    # decidió el modelo y lo que quedó sin decidir. Se calculan aquí, y no
+    # dentro del informe, porque el inventario del documento las lleva también:
+    # una planilla que no dice cómo se decidió el corte no se puede auditar.
+    estadisticas = {
+        "documents": len(grupos.groups),
+        "seams": len(segmentacion.boundaries),
+        "settled_free": len(segmentacion.boundaries) - len(dudosas) - len(del_modelo),
+        "model_decided": len(del_modelo),
+        "undecided": len(dudosas),
+    }
+
+    # Y de aquí en adelante, el tramo que es igual para las cuatro rutas:
+    # describir cada unidad, comprobar que no falta ni sobra una hoja, escribir
+    # los PDF e inventariar lo que quedó en el disco. Lo hace un solo sitio a
+    # propósito -- tenerlo repetido cuatro veces es lo que hacía que un arreglo
+    # entrara por una ruta y no por las otras tres.
+    #
+    # Sin prefijo en el nombre: lo forman el puesto en la caja y el tipo, y
+    # "DOCUMENTO" es el tipo de lo que nadie reconoció, no una palabra que se
+    # anteponga. Llamar "RESOLUCION_01" a lo que sale de aquí sería escribir en
+    # el disco algo que nadie comprobó.
+    entregado = entregar(
+        grupos,
+        origen=source_path,
+        nombre=name,
+        paginas=page_count,
+        destino=Destino(
+            directorio=destination, carpeta=carpeta,
+            entregado_en=payload.get("destination"),
+        ),
+        assembler=PyMuPDFAssembler(
+            control=control, progress=progress, naming_prefix=None, nombre=name
+        ),
+        en_revision=[boundary.right for boundary in dudosas],
+        estadisticas=estadisticas,
+        anexos=anexos,
+    )
+    inventario = entregado.inventario
+    assembly = entregado.assembly
+
     report = {
         "document": name,
         "page_count": page_count,
@@ -668,6 +854,11 @@ def _segment_job(payload: dict, task) -> dict:
             {
                 "code": group.code.value,
                 "title": group.title,
+                # Qué clase de papel resultó ser, con el nombre del catálogo del
+                # archivo. Va al informe además de al nombre del archivo porque
+                # es lo que alimenta el inventario, y porque un tipo discutible
+                # se corrige en la pantalla sin volver a leer la caja.
+                "type": group.kind,
                 "pages": group.page_numbers,
                 "size": group.size,
                 "attachments": anexos.get(group.code.value, []),
@@ -689,21 +880,34 @@ def _segment_job(payload: dict, task) -> dict:
             }
             for boundary in dudosas
         ],
-        "outputs": [path.name for path in assembly.outputs],
+        # Del inventario y no de `assembly.outputs`, aunque salgan de lo mismo:
+        # dos listas construidas por caminos distintos acaban discrepando, y la
+        # que manda es la que dice qué archivo tiene qué páginas. Llevan la
+        # carpeta delante porque lo que la descarga recibe es la ruta dentro del
+        # trabajo, no sólo el nombre del archivo.
+        "outputs": [item.file_name for item in inventario.items],
         "unwritable_pages": {
             str(page): error for page, error in assembly.unwritable_pages.items()
         },
-        # Lo que hace falta para saber si la caja salió cara o barata, y por qué.
-        # Las tres últimas reparten las costuras: lo que decidió el papel, lo que
-        # decidió el modelo y lo que quedó sin decidir.
-        "stats": {
-            "documents": len(grupos.groups),
-            "seams": len(segmentacion.boundaries),
-            "settled_free": len(segmentacion.boundaries) - len(dudosas) - len(del_modelo),
-            "model_decided": len(del_modelo),
-            "undecided": len(dudosas),
-        },
+        # Qué salió de esta caja y de qué páginas salió cada cosa. Esta ruta no
+        # levanta FUID -- el formulario pide datos que sólo se saben documento a
+        # documento -- pero el inventario no es el FUID: es el rastro que
+        # permite ir de un archivo a sus páginas de origen y al revés, y la
+        # separación por continuidad lo necesita más que ninguna otra ruta,
+        # porque sus nombres son un número de orden y no dicen nada por sí solos.
+        "inventory": inventario.as_dict(),
+        # De qué suscriptor es esta caja. Va al informe para que la entrega en
+        # carpeta pueda agrupar por él sin volver a abrir el PDF.
+        "nic": nic,
+        "stats": estadisticas,
         "task": str(task),
+        # Los avisos viven en el informe y no sólo en el progreso: el progreso
+        # se ve mientras corre y el informe se lee después, que es cuando el
+        # operador se pregunta por qué salieron ochenta documentos.
+        "notices": avisos,
     }
+    # La planilla, junto a los PDF de la caja y sin que nadie la pida.
+    _escribir_planilla(report, destination, payload)
+
     _anunciar(payload, Stage.DONE)
     return report

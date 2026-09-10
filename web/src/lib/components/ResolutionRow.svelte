@@ -14,6 +14,14 @@
 
   let { jobId, group, fileName, pageRange, onchange }: Props = $props();
 
+  // Qué clase de papel es, cuando alguien lo reconoció. "DOCUMENTO" es lo que
+  // se escribe cuando nadie lo reconoció, y eso no es un tipo que enseñar: la
+  // fila muestra entonces la procedencia, como hacía antes de que existieran
+  // los tipos.
+  const kind = $derived(
+    group.type && group.type !== 'DOCUMENTO' ? group.type : null
+  );
+
   type Mode = 'idle' | 'editing' | 'confirming';
   let mode = $state<Mode>('idle');
   let busy = $state(false);
@@ -67,7 +75,7 @@
 
 <tr class="row">
   {#if mode === 'editing'}
-    <td colspan="4" class="editor">
+    <td colspan="6" class="editor">
       <div class="fields">
         <label>
           <span>Número</span>
@@ -87,7 +95,7 @@
       {#if error}<p class="error">{error}</p>{/if}
     </td>
   {:else if mode === 'confirming'}
-    <td colspan="4" class="editor">
+    <td colspan="6" class="editor">
       <p class="warn">
         Se eliminará <b>{fileName}</b> y su registro en el inventario. No se puede deshacer.
       </p>
@@ -100,11 +108,26 @@
     </td>
   {:else}
     <td class="code-cell">{group.code}</td>
-    <td class="title-cell">{group.title ?? '—'}</td>
+    <td class="title-cell">
+      <!-- El tipo delante y la procedencia debajo: lo primero que se busca en
+           esta tabla es qué es cada documento, y de dónde salió es lo que se
+           mira después, cuando hay que volver al PDF a comprobar un corte. -->
+      {#if kind}
+        <span class="kind">{kind}</span>
+        <span class="origin">{group.title ?? ''}</span>
+      {:else}
+        {group.title ?? '—'}
+      {/if}
+    </td>
     <td class="pages-cell">
       {pageRange}
       <span class="muted">({group.size})</span>
     </td>
+    <td class="date-cell">{group.fecha ?? '—'}</td>
+    <!-- Cómo se llama en el disco. La tabla enseñaba el número, el asunto y
+         las páginas de cada unidad, y no su nombre de archivo: para saber cuál
+         de los treinta PDF de la carpeta era cuál había que abrirlos. -->
+    <td class="file-cell">{fileName ? fileName.split('/').pop() : '—'}</td>
     <td class="tools">
       {#if fileName}
         <a
@@ -173,6 +196,27 @@
   }
   .title-cell {
     color: var(--ink-2);
+  }
+  .kind {
+    display: block;
+    color: var(--ink);
+  }
+  .origin {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+  .date-cell {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .file-cell {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--ink-2);
+    word-break: break-all;
   }
   .pages-cell {
     font-family: var(--font-mono);

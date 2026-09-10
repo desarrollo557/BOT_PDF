@@ -8,6 +8,7 @@ from pathlib import Path
 from ..domain.grouping import GroupingEngine, GroupingResult
 from ..domain.page import PageClassification
 from ..domain.validation import summarise, validate_resolutions
+from .clasificacion import describir
 from .control import NullRunControl, RunControl
 from .diagnostico import explicar
 from .inventory import Inventory, build_inventory
@@ -129,6 +130,7 @@ class ProcessDocument:
         destination: Path,
         source_name: str | None = None,
         operator: str | None = None,
+        delivered_to: str | None = None,
     ) -> ProcessingReport:
         """Split ``document`` into ``destination``.
 
@@ -160,6 +162,25 @@ class ProcessDocument:
             review_queue = self._build_review_queue(
                 classifications, result, stats, assembly.unwritable_pages
             )
+
+            # Dejar el resultado donde tiene que quedar: el inventario del
+            # documento y su planilla. Corre después de que la barra de páginas
+            # llegó al 100 % y tarda lo suyo -- openpyxl abre la plantilla,
+            # rellena una fila por unidad y la guarda -- así que sin anunciarlo
+            # el trabajo parece terminado y quieto. La etapa existía, el front
+            # ya la sabía dibujar («Guardando el resultado») y nadie la emitía
+            # nunca; éste es el tramo que describe.
+            self._report(
+                ProgressEvent(stage=Stage.DELIVERING, page_count=len(result.groups))
+            )
+
+            # Qué clase de papel es cada unidad y de cuándo es.
+            # No cambia cómo se llama el archivo -- una resolución se nombra por
+            # su número, que es con lo que se la busca -- pero sí lo que sabe el
+            # inventario de ella. Antes esta columna sólo la llenaba la ruta de
+            # cajas revueltas, y la pregunta "qué papel es esto" no depende de
+            # cómo se haya cortado.
+            result = describir(result, source.text_of)
 
             inventory = build_inventory(
                 source_document=name,
@@ -194,6 +215,13 @@ class ProcessDocument:
                     self._sheets.write(
                         report.as_dict(),
                         destination,
+                        # A dónde va la entrega, cuando va a alguna parte. Esta
+                        # ruta escribe su planilla por aquí y no por donde las
+                        # otras tres, así que el destino no le llegaba: en una
+                        # corrida sobre carpeta local, la columna "Carpeta de
+                        # destino" de un legajo de resoluciones salía vacía
+                        # mientras las demás rutas ya la traían.
+                        delivered_to=delivered_to,
                         operator=operator,
                         processed_at=datetime.now(UTC).isoformat(),
                     )

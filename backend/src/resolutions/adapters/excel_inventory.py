@@ -229,6 +229,81 @@ def _rangos(item: dict) -> str:
 # -----------------------------------------------------------------------------
 
 
+def _tabla(
+    sheet,
+    columnas: list[tuple[str, int]],
+    filas: list[list],
+    *,
+    titulo: str,
+    subtitulo: str,
+    centradas: tuple[str, ...],
+    arriba: tuple[str, ...],
+    columna_total: str = "Cant.",
+) -> None:
+    """Dibuja una tabla de entrega: portada, cabecera, filas, totales y filtro.
+
+    Las dos actas de este módulo -- la de un documento y la de una entrega
+    completa -- son la misma tabla con columnas distintas, y lo eran ya cuando
+    tenían el código repetido: mismas alineaciones, misma cebra, misma fila de
+    totales, mismo autofiltro. Se vio el precio al añadir la columna "Fecha",
+    que obligó a tocar las dos, y otra vez en la fórmula del total, que llevaba
+    la letra de columna escrita a mano en ambas y sumaba la columna equivocada
+    en cuanto se añadía una a su izquierda.
+
+    Lo que cada acta conserva es lo suyo: qué columnas tiene y de dónde saca los
+    valores de cada fila. El dibujo es de aquí.
+    """
+    _ancho(sheet, [ancho for _, ancho in columnas])
+    span = len(columnas)
+    nombres = [nombre for nombre, _ in columnas]
+
+    fila = _portada(sheet, span, titulo, subtitulo)
+    cabecera = fila
+    fila = _cabecera_tabla(sheet, fila, columnas)
+    primera = fila
+
+    al_centro = {nombres.index(n) + 1 for n in centradas if n in nombres}
+    al_alto = {nombres.index(n) + 1 for n in arriba if n in nombres}
+
+    for indice, valores in enumerate(filas, start=1):
+        for columna, valor in enumerate(valores, start=1):
+            celda = sheet.cell(row=fila, column=columna, value=valor)
+            celda.font = _CELDA
+            celda.border = _CAJA
+            celda.alignment = (
+                _CENTRO if columna in al_centro
+                else _IZQ_ARRIBA if columna in al_alto
+                else _IZQ
+            )
+            if indice % 2 == 0:
+                celda.fill = _CEBRA
+        sheet.row_dimensions[fila].height = 28
+        fila += 1
+
+    if filas:
+        for columna in range(1, span + 1):
+            sheet.cell(row=fila, column=columna).border = Border(
+                top=_MEDIO, left=_FINO, right=_FINO, bottom=_FINO
+            )
+        # La columna se busca por su nombre y la letra se calcula: escrita a
+        # mano, la fórmula suma la columna equivocada en cuanto se añade una a
+        # su izquierda, y lo hace en silencio.
+        cantidad = nombres.index(columna_total) + 1
+        etiqueta = sheet.cell(row=fila, column=cantidad - 1, value="TOTAL")
+        etiqueta.font = _TOTAL
+        etiqueta.alignment = _DER
+        letra = get_column_letter(cantidad)
+        total = sheet.cell(
+            row=fila, column=cantidad, value=f"=SUM({letra}{primera}:{letra}{fila - 1})"
+        )
+        total.font = _TOTAL
+        total.alignment = _CENTRO
+        sheet.auto_filter.ref = f"A{cabecera}:{get_column_letter(span)}{fila - 1}"
+
+    sheet.freeze_panes = sheet.cell(row=primera, column=1)
+    _imprimible(sheet, span, repetir=f"{cabecera}:{cabecera}")
+
+
 class ExcelInventory:
     """El acta de entrega de un documento procesado.
 
@@ -238,16 +313,35 @@ class ExcelInventory:
     arriba, resaltado, porque es lo que alguien mira antes de firmar.
     """
 
+    #: Las columnas de la planilla, y su ancho. El orden es el de la lectura:
+    #: qué número tiene, qué es, de qué trata, de dónde salió y dónde quedó.
+    #:
+    #: "Tipo documental" entró con el catálogo del archivo. Estaba en el nombre
+    #: del archivo y en la pantalla, y no en la planilla que se entrega con los
+    #: PDF -- que es justamente el papel que alguien mira para saber qué hay en
+    #: la carpeta sin abrir doscientos archivos.
     COLUMNAS = [
         ("#", 5),
-        ("Número de resolución", 20),
-        ("Título", 54),
+        ("Número", 20),
+        ("Tipo documental", 34),
+        #: La fecha que el documento lleva escrita, la más reciente de sus
+        #: páginas. Es lo que el FUID llama fecha extrema final, y sin ella una
+        #: caja no se puede ordenar en el tiempo sin abrirla.
+        ("Fecha", 12),
+        ("Título", 46),
         ("Páginas", 14),
         ("Cant.", 7),
         ("Archivo generado", 46),
         ("Carpeta de destino", 34),
         ("Verificado", 11),
     ]
+
+    #: Qué columnas van centradas y cuáles arriba a la izquierda, por posición.
+    #: Escrito una vez y por nombre, porque la vez anterior estaban repartidas
+    #: en dos tuplas de números dentro del bucle y añadir una columna obligaba
+    #: a renumerarlas todas a mano.
+    CENTRADAS = ("#", "Cant.", "Páginas", "Fecha", "Verificado")
+    ARRIBA = ("Título", "Tipo documental", "Archivo generado", "Carpeta de destino")
 
     def write(
         self,
@@ -354,57 +448,41 @@ class ExcelInventory:
     # -- hoja 2 ---------------------------------------------------------------
 
     def _resoluciones(self, sheet, documento, items, delivered_to) -> None:
+        """Una fila por unidad documental producida.
+
+        La hoja se sigue llamando "Resoluciones" por compatibilidad: es el
+        nombre que buscan el endpoint de descarga y las pruebas, y renombrarla
+        rompería a quien ya tenga un libro abierto. Lo que contiene, en cambio,
+        es lo que produjo el documento sea lo que sea: una resolución, un folio
+        de diplomas o un documento de una caja revuelta.
+        """
         sheet.title = "Resoluciones"
-        _ancho(sheet, [width for _, width in self.COLUMNAS])
-        span = len(self.COLUMNAS)
-
-        row = _portada(sheet, span, "RESOLUCIONES GENERADAS", documento)
-        cabecera = row
-        row = _cabecera_tabla(sheet, row, self.COLUMNAS)
-        primera = row
-
-        for indice, item in enumerate(items, start=1):
-            valores = [
-                indice,
-                item.get("code") or "",
-                item.get("title") or "—",
-                _rangos(item),
-                int(item.get("page_count") or 0),
-                item.get("file_name") or "",
-                delivered_to or "—",
-                "",
-            ]
-            cebra = indice % 2 == 0
-            for columna, valor in enumerate(valores, start=1):
-                cell = sheet.cell(row=row, column=columna, value=valor)
-                cell.font = _CELDA
-                cell.border = _CAJA
-                cell.alignment = (
-                    _CENTRO if columna in (1, 4, 5, 8)
-                    else _IZQ_ARRIBA if columna in (3, 6, 7)
-                    else _IZQ
-                )
-                if cebra:
-                    cell.fill = _CEBRA
-            sheet.row_dimensions[row].height = 28
-            row += 1
-
-        if items:
-            for columna in range(1, span + 1):
-                cell = sheet.cell(row=row, column=columna)
-                cell.border = Border(top=_MEDIO, left=_FINO, right=_FINO, bottom=_FINO)
-            etiqueta = sheet.cell(row=row, column=4, value="TOTAL")
-            etiqueta.font = _TOTAL
-            etiqueta.alignment = _DER
-            # Fórmula viva, no un número congelado: si se retira una resolución
-            # y se borra su fila, el total la sigue.
-            total = sheet.cell(row=row, column=5, value=f"=SUM(E{primera}:E{row - 1})")
-            total.font = _TOTAL
-            total.alignment = _CENTRO
-            sheet.auto_filter.ref = f"A{cabecera}:{get_column_letter(span)}{row - 1}"
-
-        sheet.freeze_panes = sheet.cell(row=primera, column=1)
-        _imprimible(sheet, span, repetir=f"{cabecera}:{cabecera}")
+        _tabla(
+            sheet,
+            self.COLUMNAS,
+            [
+                [
+                    indice,
+                    item.get("code") or "",
+                    # Una raya y no un hueco: dice que nadie lo reconoció, que
+                    # es lo que pasa en un tercio de una caja real y es una
+                    # respuesta.
+                    item.get("type") or "—",
+                    item.get("fecha") or "—",
+                    item.get("title") or "—",
+                    _rangos(item),
+                    int(item.get("page_count") or 0),
+                    item.get("file_name") or "",
+                    delivered_to or "—",
+                    "",
+                ]
+                for indice, item in enumerate(items, start=1)
+            ],
+            titulo="RESOLUCIONES GENERADAS",
+            subtitulo=documento,
+            centradas=self.CENTRADAS,
+            arriba=self.ARRIBA,
+        )
 
     # -- hojas opcionales -----------------------------------------------------
 
@@ -456,16 +534,25 @@ class ExcelRunInventory:
     documento; ésta lo contesta para la entrega.
     """
 
+    #: Las mismas que la planilla por documento, más el origen: aquí llegan
+    #: archivos de cincuenta cajas distintas y sin esa columna no se sabe de
+    #: cuál salió cada uno. "Tipo documental" entró con el catálogo del
+    #: archivo, y es lo primero que mira quien recibe seiscientos PDF.
     COLUMNAS = [
         ("#", 5),
-        ("Número de resolución", 20),
-        ("Título", 50),
+        ("Número", 20),
+        ("Tipo documental", 32),
+        ("Fecha", 12),
+        ("Título", 44),
         ("Documento de origen", 36),
         ("Páginas", 14),
         ("Cant.", 7),
         ("Archivo entregado", 46),
         ("Verificado", 11),
     ]
+
+    CENTRADAS = ("#", "Cant.", "Páginas", "Fecha", "Verificado")
+    ARRIBA = ("Título", "Tipo documental", "Documento de origen", "Archivo entregado")
 
     def write(
         self,
@@ -512,54 +599,29 @@ class ExcelRunInventory:
         _imprimible(sheet, span)
 
         detalle = book.create_sheet("Resoluciones")
-        _ancho(detalle, [width for _, width in self.COLUMNAS])
-        ancho = len(self.COLUMNAS)
-
-        fila = _portada(detalle, ancho, "RESOLUCIONES ENTREGADAS", delivered_to or str(destination))
-        cabecera = fila
-        fila = _cabecera_tabla(detalle, fila, self.COLUMNAS)
-        primera = fila
-
-        for indice, item in enumerate(rows, start=1):
-            valores = [
-                indice,
-                item.get("code") or "",
-                item.get("title") or "—",
-                item.get("source_document") or "",
-                item.get("pages") or _rangos(item),
-                int(item.get("page_count") or 0),
-                item.get("file_name") or "",
-                "",
-            ]
-            for columna, valor in enumerate(valores, start=1):
-                cell = detalle.cell(row=fila, column=columna, value=valor)
-                cell.font = _CELDA
-                cell.border = _CAJA
-                cell.alignment = (
-                    _CENTRO if columna in (1, 5, 6, 8)
-                    else _IZQ_ARRIBA if columna in (3, 4, 7)
-                    else _IZQ
-                )
-                if indice % 2 == 0:
-                    cell.fill = _CEBRA
-            detalle.row_dimensions[fila].height = 28
-            fila += 1
-
-        if rows:
-            for columna in range(1, ancho + 1):
-                detalle.cell(row=fila, column=columna).border = Border(
-                    top=_MEDIO, left=_FINO, right=_FINO, bottom=_FINO
-                )
-            etiqueta = detalle.cell(row=fila, column=5, value="TOTAL")
-            etiqueta.font = _TOTAL
-            etiqueta.alignment = _DER
-            total = detalle.cell(row=fila, column=6, value=f"=SUM(F{primera}:F{fila - 1})")
-            total.font = _TOTAL
-            total.alignment = _CENTRO
-            detalle.auto_filter.ref = f"A{cabecera}:{get_column_letter(ancho)}{fila - 1}"
-
-        detalle.freeze_panes = detalle.cell(row=primera, column=1)
-        _imprimible(detalle, ancho, repetir=f"{cabecera}:{cabecera}")
+        _tabla(
+            detalle,
+            self.COLUMNAS,
+            [
+                [
+                    indice,
+                    item.get("code") or "",
+                    item.get("type") or "—",
+                    item.get("fecha") or "—",
+                    item.get("title") or "—",
+                    item.get("source_document") or "",
+                    item.get("pages") or _rangos(item),
+                    int(item.get("page_count") or 0),
+                    item.get("file_name") or "",
+                    "",
+                ]
+                for indice, item in enumerate(rows, start=1)
+            ],
+            titulo="RESOLUCIONES ENTREGADAS",
+            subtitulo=delivered_to or str(destination),
+            centradas=self.CENTRADAS,
+            arriba=self.ARRIBA,
+        )
 
         target = destination / RUN_SHEET
         book.save(target)

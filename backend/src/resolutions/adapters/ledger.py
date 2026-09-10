@@ -17,11 +17,26 @@ LEDGER_COLUMNS = (
     "source_document",
     "code",
     "title",
+    # Qué clase de papel es, con el nombre del catálogo del archivo. Detrás del
+    # asunto porque se lee en ese orden -- qué es, y luego de qué trata -- y
+    # antes del archivo porque el nombre del archivo ya lo lleva dentro.
+    "type",
+    #: El NIC del expediente del que salió. Es de la caja y no del documento,
+    #: pero se repite en cada fila a propósito: es con lo que el archivo
+    #: identifica al suscriptor y por lo que alguien busca dentro de tres años.
+    "nic",
+    #: La fecha del documento, leída de sus páginas. Es lo que permite ordenar
+    #: una caja en el tiempo sin abrirla, y lo que el FUID llama fecha extrema
+    #: final.
+    "fecha",
     "file_name",
     "page_count",
     "first_page",
     "last_page",
     "pages",
+    # Cuáles de esas páginas entraron como anexo. En rangos, igual que las
+    # otras: "4-7" y no cuatro enteros.
+    "attachments",
     "job_id",
     "operator",
     "source_pages",
@@ -160,6 +175,7 @@ class InventoryLedger(InventoryReads):
         # size and the review count should be.
         source_pages = int(inventory.get("source_pages") or report.get("page_count") or 0)
         review = len(report.get("review_queue") or [])
+        nic = report.get("nic") or None
         lines = [
             json.dumps(
                 {
@@ -167,11 +183,21 @@ class InventoryLedger(InventoryReads):
                     "source_document": source,
                     "code": item["code"],
                     "title": item.get("title"),
+                    # Los dos datos que la clasificación y la segmentación
+                    # producen y que antes se quedaban en el informe del
+                    # trabajo: el tipo documental y qué páginas de la unidad
+                    # son anexos. El informe se borra al limpiar la pantalla y
+                    # el libro mayor no, así que lo que no llegue aquí no
+                    # existe pasado mañana.
+                    "type": item.get("type"),
+                    "nic": nic,
+                    "fecha": item.get("fecha"),
                     "file_name": item["file_name"],
                     "page_count": item["page_count"],
                     "first_page": item["first_page"],
                     "last_page": item["last_page"],
                     "pages": _compact(item.get("page_numbers") or []),
+                    "attachments": _compact(item.get("attachments") or []),
                     "job_id": job_id,
                     "operator": operator,
                     "source_pages": source_pages,

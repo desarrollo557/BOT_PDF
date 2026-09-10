@@ -205,8 +205,10 @@
         <thead>
           <tr class="text-[0.7rem] tracking-wide text-muted uppercase">
             <th class="pb-2 text-left font-medium">{unitOneTitle}</th>
-            <th class="pb-2 text-left font-medium">Título</th>
+            <th class="pb-2 text-left font-medium">Tipo y procedencia</th>
             <th class="pb-2 text-left font-medium">Páginas</th>
+            <th class="pb-2 text-left font-medium">Fecha</th>
+            <th class="pb-2 text-left font-medium">Archivo</th>
             <th class="pb-2 text-right font-medium">Acciones</th>
           </tr>
         </thead>
