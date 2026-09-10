@@ -227,14 +227,29 @@ def informe(caja, tmp_path):
 
 class TestElTrabajo:
     def test_la_caja_sale_como_un_pdf_por_documento(self, informe, tmp_path):
+        """Bajo una carpeta con el nombre de la caja, y nombrados por lo que son.
+
+        Los dos documentos de esta caja de prueba salen distintos a propósito:
+        el segundo dice "FACTURA" y se llama así, el primero no dice qué es y se
+        queda con el nombre genérico. Esa diferencia es lo que hace que en una
+        carpeta de doscientos archivos se vea de un vistazo cuáles quedaron sin
+        tipificar.
+        """
         assert informe["outputs"] == [
-            "DOCUMENTO_01.pdf",
-            "DOCUMENTO_02.pdf",
+            "caja de correspondencia/01_DOCUMENTO.pdf",
+            "caja de correspondencia/02_FACTURA.pdf",
         ]
-        escritos = sorted(
-            path.name for path in (tmp_path / "outputs" / "trabajo").glob("*.pdf")
-        )
-        assert escritos == informe["outputs"]
+        carpeta = tmp_path / "outputs" / "trabajo" / "caja de correspondencia"
+        escritos = sorted(path.name for path in carpeta.glob("*.pdf"))
+        assert escritos == ["01_DOCUMENTO.pdf", "02_FACTURA.pdf"]
+
+    def test_el_informe_dice_de_que_tipo_es_cada_documento(self, informe):
+        """El tipo viaja en el informe, no sólo en el nombre del archivo.
+
+        Es lo que alimenta el inventario y lo que permite corregir un tipo
+        discutible en la pantalla sin volver a leer la caja entera.
+        """
+        assert [grupo["type"] for grupo in informe["groups"]] == ["DOCUMENTO", "FACTURA"]
 
     def test_el_informe_trae_las_claves_que_la_pantalla_lee(self, informe):
         faltan = [clave for clave in CLAVES_DE_LA_PANTALLA if clave not in informe]
@@ -259,23 +274,31 @@ class TestElTrabajo:
     def test_nada_va_a_cuarentena(self, informe):
         assert informe["quarantine"] == []
 
-    def test_la_costura_sin_evidencia_va_a_la_cola_de_revision(self, informe):
-        """Sin modelo, la duda une y se avisa.
+    def test_la_cuarta_hoja_ya_no_necesita_que_nadie_la_mire(self, informe):
+        """Y antes sí, con esta misma caja.
 
-        Unir no es callar: la hoja queda declarada para que alguien la mire. Lo
-        que cambia respecto de cortar es cuál de los dos errores se comete
-        mientras tanto, y separar una unidad documental es el que no deja rastro.
+        La tercera hoja se titula "FACTURA DE VENTA" y la cuarta no dice nada,
+        así que la cuarta es su cuerpo: la regla de "la anterior abre y ésta no
+        abre nada" lo resuelve gratis. No lo resolvía porque el rótulo no se
+        reconocía -- la lista de rótulos que decidía cortes era una lista corta
+        escrita a mano, aparte del catálogo del archivo, y "FACTURA DE VENTA"
+        estaba en el catálogo y no en ella.
+
+        Unificadas las dos, la costura pasa de "sin evidencia estructural" a
+        decidida. El reparto de páginas es el mismo -- la duda también unía --
+        y lo que cambia es que deja de ocupar sitio en la cola de revisión, que
+        es donde el operador mira lo que de verdad le necesita.
         """
-        assert [item["page"] for item in informe["review_queue"]] == [4]
+        assert informe["review_queue"] == []
 
     def test_las_cuentas_dicen_cuanto_resolvio_la_estructura_gratis(self, informe):
         stats = informe["stats"]
         assert stats["documents"] == 2
         assert stats["seams"] == 3
-        assert stats["undecided"] == 1
+        assert stats["undecided"] == 0
         assert stats["model_decided"] == 0
         # Las tres reparten las costuras sin que sobre ni falte ninguna.
-        assert stats["settled_free"] == 2
+        assert stats["settled_free"] == 3
         assert stats["settled_free"] + stats["model_decided"] + stats["undecided"] == 3
 
 

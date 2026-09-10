@@ -284,6 +284,12 @@ class Job:
     #: porque dos cajas de la misma corrida pueden haberse decidido con
     #: modelos distintos, y el informe tiene que poder decir con cuál.
     oracle: str = "auto"
+    #: La carpeta a la que se entregará lo que produzca, cuando el trabajo
+    #: viene de una corrida sobre carpeta local. Se guarda al crearlo porque la
+    #: planilla del inventario se escribe dentro del worker, que no conoce la
+    #: corrida: sin esto, su columna "Carpeta de destino" salía vacía justo en
+    #: el único caso en que hay un destino que declarar.
+    destination: str | None = None
     state: JobState = JobState.QUEUED
     created_at: str = field(default_factory=_now)
     started_at: str | None = None
@@ -404,6 +410,7 @@ class JobRegistry:
         operator: str | None = None,
         task: str = "split",
         oracle: str = "auto",
+        destination: str | None = None,
     ) -> Job:
         job = Job(
             id=uuid4().hex,
@@ -415,6 +422,7 @@ class JobRegistry:
             operator=operator,
             task=task,
             oracle=oracle,
+            destination=destination,
         )
         self._jobs[job.id] = job
         self._revision += 1

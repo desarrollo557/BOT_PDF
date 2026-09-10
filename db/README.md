@@ -12,6 +12,14 @@ operador ──< corrida ──< documento ──< resolucion ──< entrega
 Siete tablas, cuatro vistas, once claves foráneas. `db/schema.sql` lo crea todo
 desde cero; `db/cargar_ledger.py` vuelca el registro JSONL existente.
 
+Sobre una base que **ya existe** el esquema no se vuelve a aplicar —borraría lo
+que hay—, así que los cambios posteriores viven en `db/migraciones/`, uno por
+archivo y numerados. Se aplican en orden:
+
+```bash
+mysql -u root -p robotpdf < db/migraciones/001-tipo-documental.sql
+```
+
 ## La escala manda
 
 400.000 páginas al día. Con ~20 páginas por documento y ~1 resolución cada 4
