@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from ..domain.diploma import TextLine
 from ..domain.grouping import GroupingResult
 from .inventory import Inventory
 
@@ -89,6 +90,32 @@ class PageSource(Protocol):
         lista vacía y el sistema decide sin geometría, como hacía antes.
         """
         return []
+
+    def lines_of(self, page_number: int) -> list[TextLine]:
+        """Los renglones ordenados por su posición en la hoja, de arriba abajo.
+
+        No es lo mismo que ``boxes_of``, y por eso son dos: aquélla da la
+        posición en fracciones de la página para decidir qué es un encabezado,
+        y ésta da coordenadas crudas ya ordenadas, que es lo que necesita quien
+        lee un formulario renglón por renglón.
+
+        La declara el protocolo porque ``read_diploma_book`` y
+        ``read_student_records`` la llaman, y estuvo sin declarar: una fuente de
+        páginas que cumpliera este protocolo al pie de la letra reventaba con
+        ``AttributeError`` en cuanto entraba por la ruta de diplomas. El valor
+        por defecto es la lista vacía, como en ``boxes_of``, de modo que una
+        fuente sin geometría lee cero registros en vez de tumbar el trabajo.
+        """
+        return []
+
+    def sheet_of(self, page_number: int) -> tuple[int, int] | None:
+        """El tamaño físico de la hoja en puntos, cuando la fuente lo sabe.
+
+        Opcional por el mismo motivo que las otras dos, y ``None`` es una
+        respuesta legítima: el segmentador la trata como una señal que no está,
+        no como un fallo.
+        """
+        return None
 
     def render(self, page_number: int, band: Band | None = None, dpi: int = 200) -> bytes: ...
 

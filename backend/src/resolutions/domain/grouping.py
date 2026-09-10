@@ -19,6 +19,16 @@ class PageGroup:
     #: Read from the first page that declared this code, so a resolution split
     #: across a document is named once and consistently.
     title: str | None = None
+    #: Qué clase de papel es, con el nombre que le da el catálogo del archivo.
+    #: Lo pone la clasificación, que corre después del corte; vacío mientras
+    #: nadie lo haya reconocido, y entonces el archivo sale con nombre genérico
+    #: en vez de con el tipo más parecido.
+    kind: str | None = None
+    #: La fecha más reciente escrita en el documento, en ISO. Es la fecha
+    #: extrema final del FUID: la que fecha la unidad. Se lee del texto porque
+    #: estos papeles son escaneos y no traen metadatos, y vacía cuando el
+    #: documento no lleva ninguna fecha legible.
+    fecha: str | None = None
 
     @property
     def size(self) -> int:

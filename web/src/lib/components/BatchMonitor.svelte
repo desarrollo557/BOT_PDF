@@ -2,8 +2,9 @@
   import RunControls from '$lib/components/RunControls.svelte';
   import { onMount } from 'svelte';
   import PageRibbon from '$lib/components/PageRibbon.svelte';
+  import RunStats from '$lib/components/RunStats.svelte';
   import ThroughputChart from '$lib/components/ThroughputChart.svelte';
-  import { formatBytes, formatDuration } from '$lib/format';
+  import { formatBytes, formatDuration, unitFor } from '$lib/format';
   import { STAGE_LABELS } from '$lib/rungs';
   import type { Job } from '$lib/types';
 
@@ -112,11 +113,22 @@
   });
 
   /** Time left from the throughput actually being achieved, not from an average. */
-  const eta = $derived.by(() => {
+  const remainingSeconds = $derived.by(() => {
     if (!rate || pagesDone >= pagesTotal) return null;
-    const seconds = Math.round((pagesTotal - pagesDone) / rate);
-    return formatDuration(seconds);
+    return (pagesTotal - pagesDone) / rate;
   });
+
+  /**
+   * La velocidad viva mientras hay documentos abiertos, la media del lote una
+   * vez cerrados todos. Una velocidad que pone "—" justo al terminar tira la
+   * única medición para la que se hizo la corrida.
+   */
+  const rateShown = $derived(
+    rate || (elapsedSeconds >= 1 && pagesDone ? pagesDone / elapsedSeconds : 0)
+  );
+
+  /** Lo que salió del lote, llamado por su nombre. */
+  const unitLabel = $derived(unitFor(done[0]?.report?.stats, resolutions));
 </script>
 
 <section class="monitor" class:settled>
@@ -141,31 +153,20 @@
     <div class="fill" style:width={`${percent}%`}></div>
   </div>
 
-  <dl class="figures">
-    <div><dt>Páginas</dt><dd class="tabular">{pagesDone} / {pagesTotal || '—'}</dd></div>
-    <div><dt>Resoluciones</dt><dd class="tabular">{resolutions}</dd></div>
-    <div>
-      <dt>{settled ? 'Velocidad media' : 'Velocidad'}</dt>
-      <dd class="tabular">{speed}</dd>
-    </div>
-    <div>
-      <dt>Peso neto</dt>
-      <dd class="tabular">{formatBytes(bytesTotal)}</dd>
-    </div>
-    <div>
-      <dt>Leído</dt>
-      <dd class="tabular">
-        {formatBytes(bytesDone)}{#if byteRate}<span class="eta"> · {formatBytes(byteRate)}/s</span>{/if}
-      </dd>
-    </div>
-    <div><dt>En cola</dt><dd class="tabular">{queued.length}</dd></div>
-    <div>
-      <dt>{settled ? 'Tardó' : 'Transcurrido'}</dt>
-      <dd class="tabular">
-        {elapsed}{#if eta && !settled}<span class="eta"> · faltan ~{eta}</span>{/if}
-      </dd>
-    </div>
-  </dl>
+  <RunStats
+    {pagesDone}
+    {pagesTotal}
+    units={resolutions}
+    {unitLabel}
+    {bytesTotal}
+    {bytesDone}
+    rate={rateShown}
+    {elapsedSeconds}
+    {remainingSeconds}
+    queued={queued.length}
+    failed={failed.length}
+    {settled}
+  />
 
   <div class="now">
     <ThroughputChart rate={rate} live={!settled} color="var(--s3)" />
@@ -290,34 +291,6 @@
     transition: width 0.3s ease-out;
   }
 
-  .figures {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem 1.75rem;
-    margin: 0;
-  }
-  .figures div {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-  .figures dt {
-    font-size: 0.62rem;
-    font-weight: 600;
-    letter-spacing: 0.055em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-  .figures .eta {
-    font-size: 0.76rem;
-    color: var(--muted);
-  }
-  .figures dd {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: 0.88rem;
-    color: var(--ink);
-  }
 
   .footnote {
     margin: 0.5rem 0 0;

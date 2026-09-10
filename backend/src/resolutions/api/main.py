@@ -26,6 +26,7 @@ from ..adapters.mysql_inventory import (
 from ..application.control import Cancelled, RunState
 from ..application.oracle import OracleChoice, available_oracles
 from ..application.task import TaskKind
+from ..domain.anchor import strip_accents
 from ..domain.naming import output_filename
 from ..domain.resolution_code import ResolutionCode
 from . import native_picker
@@ -571,7 +572,7 @@ async def forget_folder_run(run_id: str) -> dict[str, object]:
 # -- resolutions ----------------------------------------------------------------
 
 
-@app.patch("/api/jobs/{job_id}/outputs/{name}")
+@app.patch("/api/jobs/{job_id}/outputs/{name:path}")
 async def rename_output(job_id: str, name: str, payload: dict) -> dict[str, object]:
     """Correct a resolution: its number, its title, or both.
 
@@ -606,20 +607,32 @@ async def rename_output(job_id: str, name: str, payload: dict) -> dict[str, obje
 
     new_name = output_filename(parsed, title)
     target = current
-    if new_name != name:
-        target = (settings.output_dir / job_id / new_name).resolve()
+    if new_name != current.name:
+        # En la carpeta donde ya está, que desde que los documentos de una caja
+        # se entregan bajo el nombre de su origen no tiene por qué ser la raíz
+        # del trabajo. Renombrar no es mover.
+        target = (current.parent / new_name).resolve()
         if target.exists():
             raise HTTPException(
                 status_code=409, detail=f"Ya existe un archivo llamado {new_name}"
             )
         current.rename(target)
 
-    ledger.update(job_id, name, {"code": parsed.value, "title": title, "file_name": target.name})
-    _amend_report(job_id, name, code=parsed.value, title=title, file_name=target.name)
-    return {"file_name": target.name, "code": parsed.value, "title": title}
+    # La ruta dentro del trabajo, no sólo el nombre del archivo.
+    #
+    # Desde que los documentos de una caja se entregan en una carpeta con el
+    # nombre de su origen, `name` llega como "UPD2366126/01_FACTURA.pdf" y el
+    # inventario lo guarda así, que es lo que la descarga necesita. Guardar
+    # aquí `target.name` le quitaba la carpeta a la fila: el enlace pasaba a
+    # contestar 404 y un segundo renombrado ya no encontraba la fila que había
+    # que corregir, porque la busca justamente por este nombre.
+    relativo = _relative_output(job_id, target)
+    ledger.update(job_id, name, {"code": parsed.value, "title": title, "file_name": relativo})
+    _amend_report(job_id, name, code=parsed.value, title=title, file_name=relativo)
+    return {"file_name": relativo, "code": parsed.value, "title": title}
 
 
-@app.delete("/api/jobs/{job_id}/outputs/{name}")
+@app.delete("/api/jobs/{job_id}/outputs/{name:path}")
 async def delete_output(job_id: str, name: str) -> dict[str, object]:
     """Delete one generated resolution: the file and its inventory row."""
     target = _output_path(job_id, name)
@@ -627,6 +640,20 @@ async def delete_output(job_id: str, name: str) -> dict[str, object]:
     removed = ledger.remove(job_id, name)
     _amend_report(job_id, name, drop=True)
     return {"deleted": name, "was_recorded": removed is not None}
+
+
+def _relative_output(job_id: str, target: Path) -> str:
+    """Cómo se llama un archivo generado visto desde la carpeta de su trabajo.
+
+    Con barras normales siempre: es la forma en que viaja por la URL de
+    descarga y la que el inventario guarda, y en Windows `Path` daría barras
+    invertidas que no valen para ninguna de las dos cosas.
+    """
+    directory = (settings.output_dir / job_id).resolve()
+    try:
+        return target.relative_to(directory).as_posix()
+    except ValueError:
+        return target.name
 
 
 def _output_path(job_id: str, name: str) -> Path:
@@ -1076,11 +1103,44 @@ def _operator(raw: str | None) -> str | None:
     return name.strip()[:MAX_OPERATOR] or None
 
 
+#: Los campos por los que se busca una unidad en el archivo. Todos los que
+#: describen el papel o de dónde salió, y ninguno de los internos: el id de un
+#: trabajo es un hexadecimal de 32 letras que nadie teclea y que hace que
+#: cualquier búsqueda de tres cifras devuelva media base.
+CAMPOS_BUSCABLES = (
+    "code",
+    "title",
+    "type",
+    "fecha",
+    "nic",
+    "pages",
+    "source_document",
+    "file_name",
+    "operator",
+    "recorded_at",
+)
+
+
 def _matches(row: dict, needle: str) -> bool:
-    return any(
-        needle in str(row.get(field) or "").lower()
-        for field in ("code", "title", "source_document", "file_name", "operator")
-    )
+    """Si una fila del inventario responde a lo que se escribió en el buscador.
+
+    Por cualquier dato que la describa -- su número, su tipo documental, su
+    fecha, el NIC del expediente, el PDF del que salió, quién lo procesó -- y
+    no sólo por su nombre de archivo. Es lo que pidió el operador: "buscar
+    documento por cualquier parámetro relacionado".
+
+    Varias palabras se exigen **todas**, y en cualquier campo: "factura 2022"
+    encuentra las facturas del año pasado sin que ninguno de los dos términos
+    tenga que estar en el mismo dato. Es como se busca en cualquier sitio, y
+    con una sola caja de texto es lo que permite acotar de verdad.
+
+    Sin tildes a los dos lados, porque el OCR las pone y las quita a su antojo
+    y quien busca no va a escribirlas dos veces.
+    """
+    heno = strip_accents(
+        " ".join(str(row.get(campo) or "") for campo in CAMPOS_BUSCABLES)
+    ).lower()
+    return all(termino in heno for termino in strip_accents(needle).lower().split())
 
 
 # -- housekeeping --------------------------------------------------------------
@@ -1130,7 +1190,12 @@ async def job_inventory(job_id: str) -> FileResponse:
     carpeta de destino, así que nadie tiene que preguntarse cuál de los dos vale.
     """
     directory = (settings.output_dir / job_id).resolve()
-    sheets = sorted(directory.glob(f"*{SHEET_SUFFIX}")) if directory.is_dir() else []
+    # Recursivo: la planilla viaja junto a los PDF que describe, y los de una
+    # caja se entregan en una carpeta con el nombre de su origen. Buscándola
+    # sólo en la raíz del trabajo, la descarga contestaba 404 justo en la ruta
+    # que más la necesita, porque sus archivos se llaman por un número de orden
+    # y sin el listado no dicen nada.
+    sheets = sorted(directory.rglob(f"*{SHEET_SUFFIX}")) if directory.is_dir() else []
     if not sheets:
         raise HTTPException(
             status_code=404,
@@ -1186,10 +1251,25 @@ async def _levantar_fuid(job_id: str) -> None:
     loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(app.state.pool, process_document_job, payload)
-        app.state.fuid_jobs.pop(job_id, None)
     except Exception as error:  # noqa: BLE001 - se le dice al operador qué pasó
         logger.exception("no se pudo levantar el FUID de %s", job_id)
         app.state.fuid_jobs[job_id] = f"{type(error).__name__}: {error}"
+        return
+
+    # Terminar sin excepción no es lo mismo que haber escrito la planilla. Un
+    # documento del que no se pudo leer ni una fila -- un escaneo sin capa de
+    # texto y sin Tesseract, un libro que no se reconoce -- deja el trabajo
+    # hecho y el FUID sin escribir, y antes eso se contaba como si todo hubiera
+    # ido bien: el estado quedaba en "ni listo ni con error", y la pantalla se
+    # quedaba diciendo "levantando…" para siempre, sin nada más que decir.
+    if _fuid_de(job_id) is None:
+        app.state.fuid_jobs[job_id] = (
+            "El documento se leyó pero no se pudo sacar ni una fila de "
+            "inventario. Suele ser un escaneo sin capa de texto: hace falta "
+            "Tesseract instalado para leerlo."
+        )
+        return
+    app.state.fuid_jobs.pop(job_id, None)
 
 
 @app.post("/api/jobs/{job_id}/fuid", status_code=202)
@@ -1263,7 +1343,7 @@ async def job_fuid(job_id: str) -> FileResponse:
     return FileResponse(hojas[0], media_type=XLSX_MEDIA, filename=hojas[0].name)
 
 
-@app.get("/api/jobs/{job_id}/outputs/{name}")
+@app.get("/api/jobs/{job_id}/outputs/{name:path}")
 async def download(job_id: str, name: str) -> FileResponse:
     # Deliberately not gated on the job still being in the registry: the
     # inventory outlives the screen, and its rows link straight at these files.
@@ -1396,6 +1476,9 @@ async def _run(job: Job) -> None:
         "operator": job.operator,
         "task": job.task,
         "oracle": job.oracle,
+        # Dónde quedará la entrega, cuando el trabajo viene de una carpeta. La
+        # planilla lo escribe en su columna de destino.
+        "destination": job.destination,
         "settings": settings.as_worker_payload(),
         "progress_queue": app.state.progress_queue,
         "controls": app.state.controls,

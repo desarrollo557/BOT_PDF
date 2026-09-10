@@ -56,18 +56,35 @@ class SegmentDocument:
 
     def _read(self, source: PageSource) -> list[PageFingerprint]:
         total = source.page_count
+        # La cinta de páginas de la pantalla se dibuja con esto: `opened` crea
+        # las casillas y cada `page` pinta la suya. Sin los dos eventos no hay
+        # cinta que rellenar, y una caja separada por continuidad pasaba por la
+        # vista sin enseñar nada -- no por rápida, sino por muda.
+        self._emit(ProgressEvent(stage=Stage.OPENED, page_count=total))
         fingerprints: list[PageFingerprint] = []
         for page_number in range(1, total + 1):
             # Entre una hoja y la siguiente: aquí no hay nada a medio leer, así
             # que es el único sitio donde parar deja la caja en un estado que se
             # puede contar.
             self._control.check()
-            fingerprints.append(
-                fingerprint_page(
-                    page_number,
-                    source.text_of(page_number),
-                    self._headings(source, page_number),
-                    self._sheet(source, page_number),
+            huella = fingerprint_page(
+                page_number,
+                source.text_of(page_number),
+                self._headings(source, page_number),
+                self._sheet(source, page_number),
+            )
+            fingerprints.append(huella)
+            # Qué se pudo leer de la hoja, en el mismo vocabulario que usa la
+            # otra ruta: la capa de texto cuando la hay, nada cuando la hoja no
+            # dejó nada legible. Esta ruta no tiene más peldaños, así que la
+            # cinta sale de dos colores y eso es exactamente lo que informa --
+            # dónde el escaneo dejó páginas mudas.
+            self._emit(
+                ProgressEvent(
+                    stage=Stage.PAGE,
+                    page_number=page_number,
+                    page_count=total,
+                    provenance="text_layer" if huella.legible else "none",
                 )
             )
             self._report(Stage.IDENTIFYING, page_number, total, "leyendo la caja")
@@ -142,6 +159,9 @@ class SegmentDocument:
         return resolved
 
     def _report(self, stage: Stage, done: int, total: int, detail: str) -> None:
+        self._emit(ProgressEvent(stage=stage, done=done, total=total, detail=detail))
+
+    def _emit(self, event: ProgressEvent) -> None:
         if self._reporter is None:
             return
-        self._reporter.emit(ProgressEvent(stage=stage, done=done, total=total, detail=detail))
+        self._reporter.emit(event)

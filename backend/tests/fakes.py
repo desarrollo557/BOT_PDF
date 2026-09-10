@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from resolutions.application.inventory import Inventory
-from resolutions.application.ports import AssemblyResult, Band, Crop, OcrResult
+from resolutions.application.ports import AssemblyResult, Band, Crop, LineBox, OcrResult
+from resolutions.domain.diploma import TextLine
 from resolutions.domain.grouping import GroupingResult
 from resolutions.domain.naming import output_filename
 
@@ -36,6 +37,21 @@ class FakePageSource:
 
     def text_of(self, page_number: int) -> str:
         return self.pages[page_number - 1].text
+
+    def boxes_of(self, page_number: int) -> list[LineBox]:
+        return []
+
+    def lines_of(self, page_number: int) -> list[TextLine]:
+        """Sin geometría, como una fuente que sólo sabe dar texto plano.
+
+        Está aquí -- devolviendo vacío -- porque el protocolo lo declara, y un
+        doble que no implemente todo el contrato deja de servir para comprobar
+        que quien lo consume se apaña con el contrato y nada más.
+        """
+        return []
+
+    def sheet_of(self, page_number: int) -> tuple[int, int] | None:
+        return None
 
     def render(self, page_number: int, band: Band | None = None, dpi: int = 200) -> bytes:
         self.renders.append((page_number, band))
@@ -94,9 +110,15 @@ class FakeAssembler:
 
     def write(self, source: Path, result: GroupingResult, destination: Path) -> AssemblyResult:
         self.written = [(g.code.value, g.page_numbers) for g in result.groups]
+        # `written` del resultado, y no sólo `outputs`: es el mapa de código a
+        # nombre real en disco, y es lo que el inventario usa para no tener que
+        # adivinar qué archivo corresponde a qué unidad. El doble no lo
+        # devolvía, así que ninguna prueba veía lo que pasa cuando falta.
+        nombres = {g.code.value: output_filename(g.code, g.title) for g in result.groups}
         return AssemblyResult(
-            outputs=[destination / output_filename(g.code, g.title) for g in result.groups],
+            outputs=[destination / nombre for nombre in nombres.values()],
             unwritable_pages=dict(self.unwritable),
+            written=nombres,
         )
 
 

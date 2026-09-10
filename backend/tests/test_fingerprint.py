@@ -363,3 +363,36 @@ class TestElFolioEscritoAMano:
 
     def test_sin_geometria_no_hay_folio(self):
         assert fingerprint_page(42, "4 el cuerpo de la hoja", []).folio is None
+
+
+class TestLaCiudadYLaFechaPidenSuComa:
+    """Sin coma, el patrón llamaba "ciudad y fecha" a media hoja.
+
+    Medido sobre dos expedientes: de cada tres detecciones, dos eran cosas como
+    "DEL 10/12/2021", "CARRERA 17 12-96" o "Transformador 26/08/2021". Cada una
+    convertía una hoja de cuerpo en una que parecía abrir un documento.
+    """
+
+    def test_la_de_verdad_se_sigue_leyendo(self):
+        huella = fingerprint_page(2, "arinia Grupo-eprp Cartagena, 21-07-2021 Señor(a)")
+        assert huella.place_and_date is not None
+        assert "21-07-2021" in huella.place_and_date
+
+    def test_en_mayusculas_tambien(self):
+        huella = fingerprint_page(3, "aFinia AGUSTIN CODAZZI, 08/07/2021 Señora:")
+        assert huella.place_and_date is not None
+
+    def test_una_preposicion_con_una_fecha_detras_no_lo_es(self):
+        assert fingerprint_page(75, "REVISION No 29683385 DEL 24/11/2022. Ya, que no").place_and_date is None
+
+    def test_una_direccion_tampoco(self):
+        assert fingerprint_page(29, "CARRERA 17 12-96 ENTRADA 1 PISO 1").place_and_date is None
+
+    def test_ni_una_pieza_de_la_red_con_su_fecha(self):
+        assert fingerprint_page(38, "Transformador 26/08/2021 Sector Cesar").place_and_date is None
+
+
+class TestElRotuloDeLaLiquidacion:
+    def test_se_reconoce(self):
+        texto = "armia Liquidación del Consumo No registrado Pendiente Por Facturar: C.N.R.P.F"
+        assert fingerprint_page(33, texto).label == "liquidacion del consumo"

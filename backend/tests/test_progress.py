@@ -110,8 +110,25 @@ class TestPageTelemetry:
             "verifying",
             "grouping",
             "assembling",
+            # Escribir el inventario y la planilla del documento. Estuvo mucho
+            # tiempo en silencio -- la etapa existía en el enum y en la
+            # pantalla, y nadie la emitía -- así que el trabajo parecía
+            # terminado y quieto mientras openpyxl guardaba el libro.
+            "delivering",
             "done",
         ]
+
+    def test_la_entrega_se_anuncia_antes_de_escribir_la_planilla(self):
+        """Que el aviso llegue antes del trabajo que describe, no después.
+
+        Una etapa anunciada al terminar no informa de nada: el tramo que tenía
+        que explicar ya pasó. Se comprueba por la posición del aviso respecto
+        del final, que es lo único que la pantalla puede aprovechar.
+        """
+        recorder = RecordingProgressReporter()
+        run([digital("RESOLUCION N° 0412/2024")], progress=recorder)
+        etapas = recorder.stages()
+        assert etapas.index("delivering") < etapas.index("done")
 
     def test_a_broken_reporter_never_breaks_the_document(self):
         class Hostile:

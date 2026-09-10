@@ -186,12 +186,26 @@ CREATE TABLE resolucion (
   codigo_crudo   VARCHAR(64) CHARACTER SET ascii COLLATE ascii_general_ci NULL,
   titulo         VARCHAR(400) NULL,
 
+  -- Qué clase de papel es, con el nombre del catálogo de tipos documentales
+  -- del archivo. Lo pone la clasificación, que corre DESPUÉS del corte: antes
+  -- de tener bordes, un documento no tiene tipo que valga.
+  --
+  -- Nulo cuando nadie lo reconoció, y nulo a propósito: un tercio de una caja
+  -- real no lleva rótulo legible, y escribir ahí el tipo más parecido es como
+  -- un expediente acaba con cuatro "facturas" que nadie facturó. Se filtra por
+  -- ella, así que va indexada.
+  tipo           VARCHAR(80) NULL,
+
   archivo        VARCHAR(255) NOT NULL,
   paginas        SMALLINT UNSIGNED NOT NULL DEFAULT 0,
   pagina_desde   SMALLINT UNSIGNED NOT NULL DEFAULT 0,
   pagina_hasta   SMALLINT UNSIGNED NOT NULL DEFAULT 0,
   -- Rangos, no la lista: "12-51" en vez de cuarenta enteros.
   rango_paginas  VARCHAR(255) NULL,
+  -- Cuáles de esas páginas entraron como anexo y no como cuerpo. También en
+  -- rangos. Sin esto, un acta con sus cuatro fotografías es indistinguible de
+  -- un acta de cinco hojas, y esa relación no se puede reconstruir después.
+  rango_anexos   VARCHAR(255) NULL,
 
   -- Cómo se decidió el número, para poder medir el coste después.
   origen_lectura ENUM('capa_texto','ocr_banda','ocr_total','vision','contexto','manual')
@@ -207,6 +221,7 @@ CREATE TABLE resolucion (
   -- lo que lo impide de verdad, no una comprobación en la aplicación.
   UNIQUE KEY uq_resolucion_archivo (documento_id, archivo),
   KEY ix_resolucion_codigo (codigo, creada_en DESC),
+  KEY ix_resolucion_tipo (tipo),
   KEY ix_resolucion_documento (documento_id),
   KEY ix_resolucion_fecha (fecha DESC),
   KEY ix_resolucion_origen (origen_lectura),
@@ -332,9 +347,11 @@ CREATE OR REPLACE VIEW v_inventario AS
 SELECT
   r.codigo,
   r.titulo,
+  r.tipo,
   r.archivo,
   r.paginas,
   r.rango_paginas,
+  r.rango_anexos,
   r.origen_lectura,
   r.creada_en,
   r.fecha,

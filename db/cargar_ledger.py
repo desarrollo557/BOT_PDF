@@ -161,19 +161,26 @@ def load(path: Path) -> None:
                     cursor.execute(
                         """
                         INSERT IGNORE INTO resolucion
-                          (documento_id, codigo, titulo, archivo, paginas,
-                           pagina_desde, pagina_hasta, rango_paginas, creada_en)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                          (documento_id, codigo, titulo, tipo, archivo, paginas,
+                           pagina_desde, pagina_hasta, rango_paginas,
+                           rango_anexos, creada_en)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         (
                             documento_id,
                             (item.get("code") or "")[:32],
                             (item.get("title") or None),
+                            # Las filas anteriores al catálogo de tipos no lo
+                            # traen, y entonces se queda en nulo: es la verdad
+                            # de lo que se registró, y rellenarlo ahora sería
+                            # inventar un dato que nadie leyó del papel.
+                            (item.get("type") or None) and str(item["type"])[:80],
                             (item.get("file_name") or "")[:255],
                             int(item.get("page_count") or 0),
                             int(item.get("first_page") or 0),
                             int(item.get("last_page") or 0),
                             (item.get("pages") or None),
+                            (item.get("attachments") or None),
                             when(item.get("recorded_at")) or momento,
                         ),
                     )

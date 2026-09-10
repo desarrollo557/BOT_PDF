@@ -18,10 +18,11 @@ stay comprehensible in microseconds because a box is hundreds of pages.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .legibility import is_garbled
-from .text_distance import within
+from .tipo_documental import identificar_rotulo
 
 #: How far down the page a line may sit and still be a letterhead. Measured in
 #: fractions so one rule survives A4, Letter and whatever the scanner produced.
@@ -56,8 +57,14 @@ _PAGINATION = re.compile(
 #: publicaciones de un expediente real: sus siete costuras quedaban sin decidir
 #: por falta de un dato que estaba impreso en la hoja.
 _SERIAL = re.compile(r"consecutivo\s*N[o0°]?\.?\s*:?\s*([A-Z]{0,3}\s?\d{8,})", re.IGNORECASE)
+#: La coma es obligatoria. Sin ella el patrón reconocía como "ciudad y fecha"
+#: cualquier palabra en mayúscula seguida de números: "DEL 10/12/2021",
+#: "CARRERA 17 12-96", "Transformador 26/08/2021". Medido sobre dos
+#: expedientes, dos de cada tres detecciones eran eso, y cada una convertía
+#: una hoja de cuerpo en una que parecía abrir algo. Las de verdad la llevan
+#: siempre: "Cartagena, 21-07-2021", "AGUSTIN CODAZZI, 08/07/2021".
 _PLACE_AND_DATE = re.compile(
-    r"([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ .]{3,28}),?\s*(\d{1,2}[-/ ]\d{1,2}[-/ ]\d{2,4})"
+    r"([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ .]{3,28}),\s*(\d{1,2}[-/ ]\d{1,2}[-/ ]\d{2,4})"
 )
 _CASE_CODE = re.compile(r"\b(RE\d{10,})", re.IGNORECASE)
 _CLOSING = re.compile(
@@ -79,6 +86,20 @@ SHEET_TOLERANCE = 8
 #: 37 caracteres y la cabecera de apertura más escueta, 168.
 LEGIBLE_MIN_CHARS = 120
 
+#: Y por encima de esto la hoja está llena de prosa. Una página así que no trae
+#: ninguna marca de abrir un documento es el medio de un escrito largo: en la
+#: caja medida, las hojas de continuación de un oficio van de 1.672 a 3.639
+#: caracteres y la mediana de la caja entera es 3.075. Una hoja de cuatro líneas
+#: sin marcas, en cambio, puede ser cualquier cosa, y por eso no basta con que
+#: se haya podido leer.
+DENSE_MIN_CHARS = 1200
+
+#: Cuántos renglones de arriba son "la cabecera" cuando se buscan en ella las
+#: marcas de apertura. El equivalente en renglones de HEAD_CHARS, y por el
+#: mismo motivo: más abajo empieza el cuerpo, y lo que se encuentra ahí son
+#: menciones y no encabezados.
+CABECERA_RENGLONES = 12
+
 #: Hasta dónde llega "la cabecera" cuando se la mide en texto y no en geometría.
 #: Es el equivalente en caracteres de LETTERHEAD_BAND, y existe porque una fuente
 #: sin coordenadas -- OCR crudo, texto pegado -- se queda sin la banda geométrica
@@ -97,29 +118,11 @@ _OPENING_SIGNALS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("radicado", re.compile(r"\bradicaci[oó]n\s*[#N:]|\bradicado\s*(?:n[uú]mero|no\.?|:)", re.IGNORECASE)),
 )
 
-#: Los nombres que un papel se da a sí mismo. No es una taxonomía del archivo:
-#: es la lista de rótulos que, impresos arriba, significan "aquí empieza otra
-#: cosa". Se comparan con tolerancia porque el escáner los devuelve rotos --
-#: "Ac^ de Irregularídad", "REFUBWCA DE COLOMSIá".
-DOCUMENT_LABELS: tuple[str, ...] = (
-    "acta de irregularidad",
-    "autorizacion de tratamiento",
-    "cedula de ciudadania",
-    "certificado de tradicion",
-    "carta de instrucciones",
-    "constancia de visita",
-    "estado de cuenta",
-    "identificacion personal",
-    "notificacion por aviso",
-    "pagare no",
-    "publicacion del aviso",
-    "republica de colombia",
-)
-
-#: Cuántas erratas se le perdonan a un rótulo por cada diez caracteres. Sale de
-#: la caja medida: "REFUBWCA DE COLOMSIá" contra "republica de colombia" son tres
-#: ediciones sobre veintiún caracteres.
-LABEL_EDITS_PER_TEN = 2
+#: Los nombres que un papel se da a sí mismo viven en `tipo_documental`, que
+#: es el catálogo del archivo del cliente. Aquí hubo una segunda lista de
+#: trece escrita a mano, y se retiró: dos listas para la misma pregunta
+#: divergen siempre, y la que se quedaba corta era justamente la que decidía
+#: dónde se corta el papel.
 
 #: Lo que un documento dice cuando anuncia que trae cosas pegadas detrás. No es
 #: el nombre de un anexo: es la promesa de que vienen. Se busca en la cola de la
@@ -168,14 +171,73 @@ _INVOICE_HEAD = re.compile(
 #: El importe entra porque es el que de verdad distingue. El NIC identifica al
 #: suscriptor, y en un expediente de un solo cliente lo llevan casi todas las
 #: hojas; una cantidad de dinero, en cambio, es de un cobro. Dos hojas que
-#: comparten "1.766.840" son el mismo recibo por delante y por detrás, y eso es
-#: lo que hace falta saber para no partirlo. Se le pide separador de miles y no
-#: empezar por cero: sin eso la basura del escáner produce coincidencias.
+#: comparten "$1.766.840" son el mismo recibo por delante y por detrás, y eso
+#: es lo que hace falta saber para no partirlo.
+#:
+#: Y se le exige que venga anunciado como dinero: un signo de pesos delante, o
+#: una de las palabras con que se presenta una cantidad. Pedirle sólo el
+#: separador de miles reconocía como importe cualquier número que lo llevara,
+#: y medido sobre un expediente real de 97 páginas eso era más de un tercio de
+#: las detecciones: "la ley 142,143", "la ley 142 de 1,994", las cifras
+#: sueltas de una factura escaneada y -- lo caro -- el número de cédula.
+#:
+#: La cédula es lo que obligó a arreglarlo. La de la persona del expediente
+#: sale en la firma de su escrito, en el acta que la notifica y en la copia de
+#: su documento, así que leída como "el mismo importe" soldaba tres documentos
+#: distintos en uno. Es el mismo modo de fallo que el código de expediente:
+#: identifica al sujeto y no al papel, y por eso no puede decidir nada.
+
+#: Cómo se anuncia una cantidad de dinero en este papel.
+_MARCA_DE_DINERO = r"(?:\$|\bvalor(?:es)?\b|\bsuma\b|\btotal\b|\bcuant[ií]a\b|\bpesos\b)"
+#: Y cuánto puede mediar entre el anuncio y la cifra: "valor de $526.980" son
+#: nueve caracteres, y más allá de veinte ya no se están nombrando.
+SEPARACION_DE_LA_CIFRA = 20
 _IDENTIFIERS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("nic", re.compile(r"\bNIC\s*[:.]?\s*(\d{5,})", re.IGNORECASE)),
     ("factura", re.compile(r"\bfactura\s*(?:no\.?|n[uú]mero|#)\s*[:.]?\s*(\d{6,})", re.IGNORECASE)),
-    ("importe", re.compile(r"\b([1-9]\d{0,2}(?:[.,]\d{3})+)(?:[.,]\d{2})?(?![\d])")),
+    (
+        "importe",
+        re.compile(
+            _MARCA_DE_DINERO
+            + r"[^\d]{0,"
+            + str(SEPARACION_DE_LA_CIFRA)
+            + r"}([1-9]\d{0,2}(?:[.,]\d{3})+)(?:[.,]\d{2})?(?![\d])",
+            re.IGNORECASE,
+        ),
+    ),
 )
+
+#: El número de documento de una persona, con o sin puntos de millar. Se
+#: reconoce por lo que lo anuncia -- "C.C.", "cédula", "NUMERO" en la carátula
+#: de la propia cédula -- y no por su forma, porque su forma es la de
+#: cualquier número de ocho cifras.
+#:
+#: No entra en `identifiers` y no decide continuidad por sí solo: es de la
+#: persona del expediente y sale en casi todas sus hojas, igual que el código
+#: de caso. Sirve para otra cosa -- comprobar que la cédula suelta que viene
+#: detrás de un escrito es la de quien lo firmó -- y para eso hace falta
+#: leerla, no compararla con todo.
+_CEDULA = re.compile(
+    r"(?:\bc\.?c\.?|\bc[eé]dula|\bn[uú]mero)"
+    r"[^0-9]{0,12}(\d{1,3}(?:[.,]\d{3}){1,3}|\d{6,11})",
+    re.IGNORECASE,
+)
+
+#: Cuánto de la hoja se mira buscando esa cédula. La carátula de una cédula la
+#: lleva arriba; un escrito la lleva en la firma, al final. Así que se mira
+#: entera: es un dato que se lee, no una marca de posición.
+
+#: Los nombres propios que la hoja imprime en mayúscula. Es el respaldo de la
+#: comprobación anterior para cuando el escáner se comió el número: la cédula
+#: de "INIRIDA BEATRIZ ZARATE GARIZABAL" llega rota de mil maneras, pero rara
+#: vez se rompen los cuatro apellidos a la vez.
+_NOMBRE_EN_MAYUSCULAS = re.compile(r"\b([A-ZÁÉÍÓÚÑ]{4,})\b")
+
+#: Cuántas de esas palabras tienen que coincidir para creer que las dos hojas
+#: hablan de la misma persona. Dos, porque una sola -- un apellido corriente,
+#: o "CESAR", que aquí es un departamento -- la comparten hojas de asuntos
+#: distintos del mismo municipio.
+NOMBRES_QUE_DEBEN_COINCIDIR = 2
 
 #: El folio: un número corto y solo, escrito arriba del papel. No es la
 #: paginación impresa -- ésa dice "3 de 5" y se basta sola -- sino la que pone a
@@ -312,6 +374,17 @@ class PageFingerprint:
     announces_attachments: bool = False
     #: Si la hoja se presenta a sí misma como un anexo.
     is_attachment: bool = False
+    #: Si la hoja va llena de prosa. No es lo mismo que `legible`: aquélla dice
+    #: que se pudo leer, ésta que hay bastante que leer.
+    dense: bool = False
+    #: El documento de identidad que la hoja nombra, sin puntos. No decide
+    #: continuidad -- es de la persona del expediente y sale en casi todas sus
+    #: hojas -- pero permite comprobar que la cédula suelta que viene detrás de
+    #: un escrito es la de quien lo firmó, en vez de suponerlo.
+    cedula: str | None = None
+    #: Los nombres propios en mayúscula, para la misma comprobación cuando el
+    #: escáner se comió el número.
+    nombres: frozenset[str] = frozenset()
     #: Si la hoja dejó texto suficiente y sano como para que se le crea algo.
     #: Falso en una fotografía, en un sello suelto y en una capa de texto mal
     #: decodificada. Por defecto verdadero: una huella construida a mano en una
@@ -343,6 +416,35 @@ class PageFingerprint:
         if self.tail:
             compact["z"] = self.tail
         return compact
+
+
+#: Cuántas hojas tienen que coincidir para que un NIC sea el de la caja. Dos,
+#: porque el ruido del escáner produce números sueltos -- en un expediente real
+#: el NIC bueno salía en 27 hojas y la basura en una -- y con una sola aparición
+#: no hay forma de distinguir uno del otro.
+NIC_MIN_HOJAS = 2
+
+
+def nic_de_la_caja(fingerprints: Sequence[PageFingerprint]) -> str | None:
+    """El número de cuenta que identifica al suscriptor de un expediente entero.
+
+    Es de la caja y no de ningún documento suyo, que es justamente lo que lo
+    hace inútil para decidir dónde se corta y útil para nombrar la carpeta en
+    que se entrega: todas las hojas hablan del mismo cliente.
+
+    Gana el que más hojas comparten. Medido sobre dos expedientes reales: el
+    bueno aparecía en 27 y 35 hojas, y el ruido del OCR -- un dígito de más,
+    una lectura rota -- en una sola cada vez.
+    """
+    cuenta: dict[str, int] = {}
+    for huella in fingerprints:
+        for clase, valor in huella.identifiers:
+            if clase == "nic":
+                cuenta[valor] = cuenta.get(valor, 0) + 1
+    if not cuenta:
+        return None
+    valor, hojas = max(cuenta.items(), key=lambda par: (par[1], par[0]))
+    return valor if hojas >= NIC_MIN_HOJAS else None
 
 
 def read_pagination(text: str) -> Pagination | None:
@@ -404,35 +506,72 @@ def _strip_accents(text: str) -> str:
     return text
 
 
-def _opening_signals(head: str) -> tuple[str, ...]:
-    """Las marcas de apertura impresas en la cabecera, si las hay."""
-    return tuple(name for name, pattern in _OPENING_SIGNALS if pattern.search(head))
+def _opening_signals(head: str, lineas: list[str] | None = None) -> tuple[str, ...]:
+    """Las marcas de apertura impresas en la cabecera, si las hay.
 
+    Al principio de un renglón, no en cualquier sitio. Una cabecera se imprime
+    en su propia línea -- "Señor(a) INIRIDA...", "ASUNTO: Reclamación No...",
+    "Consecutivo No.202270030080" -- y buscarla en el texto corrido reconoce
+    también la fórmula de cortesía que abre un párrafo a media página.
 
-def _document_label(head: str) -> str | None:
-    """El rótulo que la hoja se da a sí misma, tolerando las erratas del escáner.
+    Costó un falso corte medido: la sexta hoja de un derecho de petición de
+    ocho empieza diciendo "Respetados señores: Representante Legal o quien haga
+    sus veces de la empresa...", y esas dos palabras partían el escrito por la
+    mitad. La cabecera de verdad, en la primera hoja del mismo documento, dice
+    "Señores:" y nada más en su renglón.
 
-    Se compara por ventanas del mismo largo que el rótulo, y no por `in`, porque
-    ninguno de estos nombres llega intacto: la caja medida devolvió
-    "Ac^ de Irregularídad" y "REFUBWCA DE COLOMSIá".
+    Una fuente sin saltos de línea -- OCR crudo, texto pegado -- se queda sin
+    esa distinción y se le busca en el texto plano, como antes: perder la señal
+    entera sería peor que aceptarla de más.
     """
-    plain = _strip_accents(head.lower())
-    # Sólo desde el principio de una palabra. Un rótulo impreso empieza donde
-    # empieza una palabra, así que probar los otros trescientos desplazamientos
-    # es trabajo tirado: la versión que los probaba todos costaba 74 ms por hoja
-    # -- el 96 % de lo que tardaba la huella entera -- y una caja de mil hojas se
-    # iba a setenta y cinco segundos sólo aquí.
-    inicios = [0] + [i + 1 for i, char in enumerate(plain) if char == " "]
-    for label in DOCUMENT_LABELS:
-        budget = max(1, len(label) * LABEL_EDITS_PER_TEN // 10)
-        span = len(label)
-        for start in inicios:
-            ventana = plain[start : start + span]
-            if len(ventana) < span - budget:
-                break
-            if within(ventana, label, budget):
-                return label
-    return None
+    renglones = [renglon.strip() for renglon in (lineas or []) if renglon.strip()]
+    if not renglones:
+        return tuple(name for name, pattern in _OPENING_SIGNALS if pattern.search(head))
+    return tuple(
+        name
+        for name, pattern in _OPENING_SIGNALS
+        if any(pattern.match(renglon) for renglon in renglones)
+    )
+
+
+def _document_label(lineas: list[str]) -> str | None:
+    """El rótulo que la hoja se da a sí misma, si se reconoce alguno.
+
+    Se pregunta al catálogo de tipos documentales del archivo, que es el mismo
+    que nombra los archivos de salida. Antes había aquí una segunda lista de
+    trece rótulos escrita a mano, y esa duplicación era un error de diseño con
+    consecuencias medibles: el catálogo conoce "NOTIFICACION PERSONAL" y esta
+    lista no, así que en un expediente real la hoja que la anuncia -- con ese
+    título impreso arriba y nada más -- no abría documento, y el acta de
+    notificación quedaba pegada al derecho de petición de las ocho hojas
+    anteriores.
+
+    Dos listas de nombres para la misma pregunta divergen siempre, y la que se
+    queda corta es la que decide dónde se corta el papel. Ahora hay una.
+
+    Se le pasan los renglones y no el texto corrido, y se le exige a la frase
+    que ocupe uno para ella sola. Un título se imprime así; una mención, no. La
+    resolución que en su cuarto punto dice "4. Constancia de Visita asociada al
+    Acta de Revisión con Orden de Servicio..." nombra un tipo del catálogo en
+    mitad de una línea de noventa y cinco caracteres, y sin esa exigencia se
+    partía en dos por una frase de su propio cuerpo.
+    """
+    hallazgo = identificar_rotulo(lineas)
+    return hallazgo.nombre.lower() if hallazgo is not None else None
+
+
+def _cedula(flat: str) -> str | None:
+    """El número de documento que la hoja nombra, sin puntos ni comas.
+
+    Sin ellos porque el mismo número se imprime de las dos formas y hay que
+    poder compararlos: la carátula de la cédula dice "42.491.816" y el acta que
+    la persona firmó dice "CC: 42.491.816", pero otra hoja del mismo expediente
+    escribe "42491816" y son el mismo documento.
+    """
+    hallazgo = _CEDULA.search(flat)
+    if hallazgo is None:
+        return None
+    return hallazgo.group(1).replace(".", "").replace(",", "")
 
 
 def _ordinals(text: str) -> tuple[int, ...]:
@@ -530,6 +669,7 @@ def fingerprint_page(
     """Reduce one page to the facts that decide its boundaries."""
     headings = headings or []
     flat = " ".join(text.split())
+    lineas = text.splitlines()
 
     place_and_date = None
     match = _PLACE_AND_DATE.search(flat[:_PLACE_AND_DATE_HEAD_CHARS])
@@ -547,8 +687,8 @@ def fingerprint_page(
         serial=_clean_serial(serial_match.group(1)) if serial_match else None,
         pagination=read_pagination(flat),
         case_code=case_match.group(1).upper() if case_match else None,
-        opening=_opening_signals(flat[:HEAD_CHARS]),
-        label=_document_label(flat[:HEAD_CHARS]),
+        opening=_opening_signals(flat[:HEAD_CHARS], lineas[:CABECERA_RENGLONES]),
+        label=_document_label(lineas),
         ordinals=_ordinals(flat),
         invoice=bool(_INVOICE_HEAD.search(flat[:HEAD_CHARS])),
         identifiers=_identifiers(flat, headings),
@@ -556,6 +696,9 @@ def fingerprint_page(
         sheet=sheet,
         announces_attachments=bool(_ANNOUNCES_ATTACHMENTS.search(flat[-ATTACHMENT_TAIL_CHARS:])),
         is_attachment=bool(_IS_ATTACHMENT.match(flat[:HEAD_CHARS].lstrip())),
+        cedula=_cedula(flat),
+        nombres=frozenset(_NOMBRE_EN_MAYUSCULAS.findall(flat)),
+        dense=len(flat) >= DENSE_MIN_CHARS and not is_garbled(flat),
         legible=len(flat) >= LEGIBLE_MIN_CHARS and not is_garbled(flat),
         closes=bool(_CLOSING.search(flat[-CLOSING_TAIL_CHARS:])),
         tail=flat[-45:],

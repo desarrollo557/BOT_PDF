@@ -142,6 +142,71 @@ class TestLaFormaDeLasFilas:
         assert tienda.documents()[0]["source_document"] == "RESOLUCIONES 00072-00094.pdf"
 
 
+class TestLaProcedenciaLlegaALaBase:
+    """Las cuatro columnas que cuentan cómo se leyó cada página.
+
+    Estuvieron siempre en cero con MySQL detrás, y en silencio: este adaptador
+    buscaba "ocr_band", "ocr_full" y "vision" en un diccionario que el dominio
+    llena con "ocr_region", "ocr_full_page" y "vision_model". `dict.get` no
+    falla cuando la clave no existe -- devuelve el valor por omisión -- así que
+    el error no se veía en ninguna parte salvo en un informe de producción que
+    afirmaba que ninguna página había pasado por OCR.
+
+    Se comprueba sobre los nombres que emite el dominio, no sobre una copia
+    escrita a mano aquí: una prueba que repita los literales del adaptador
+    aprueba también la versión rota.
+    """
+
+    @staticmethod
+    def _insert_de_documento(conector):
+        for sql, params in conector.conexion._cursor.ejecutado:
+            if "INSERT INTO documento" in sql:
+                return params
+        raise AssertionError("no se insertó ningún documento")
+
+    def _grabado(self, cuentas):
+        tienda, conector = almacen(FILAS)
+        tienda.record(
+            "job-1",
+            {
+                "document": "caja.pdf",
+                "page_count": 6,
+                "inventory": {
+                    "source_document": "caja.pdf",
+                    "source_pages": 6,
+                    "items": [
+                        {
+                            "code": "00072",
+                            "title": "t",
+                            "file_name": "RESOLUCION_00072.pdf",
+                            "page_numbers": [1, 2],
+                        }
+                    ],
+                },
+                "stats": {"by_provenance": cuentas},
+            },
+        )
+        # Las cuatro últimas del INSERT son capa de texto, banda, página
+        # completa y visión, en ese orden.
+        return self._insert_de_documento(conector)[-4:]
+
+    def test_las_cuentas_del_dominio_llegan_a_sus_columnas(self):
+        from resolutions.domain.page import Provenance
+
+        cuentas = {
+            str(Provenance.TEXT_LAYER): 3,
+            str(Provenance.OCR_REGION): 5,
+            str(Provenance.OCR_FULL_PAGE): 7,
+            str(Provenance.VISION_MODEL): 11,
+        }
+        assert self._grabado(cuentas) == (3, 5, 7, 11)
+
+    def test_una_procedencia_que_no_ocurrio_es_cero_y_no_un_hueco(self):
+        from resolutions.domain.page import Provenance
+
+        assert self._grabado({str(Provenance.TEXT_LAYER): 4}) == (4, 0, 0, 0)
+
+
 class TestLasCorrecciones:
     def test_corregir_deja_marcada_la_resolucion(self):
         """Una corrección tiene que poder distinguirse de una lectura.
