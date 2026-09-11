@@ -137,11 +137,16 @@ def entregar(
 
     assembly = assembler.write(origen, descrita, destino.directorio)
 
+    # Una página que no se pudo copiar es lo único que el operador no puede
+    # inferir mirando la salida: el archivo existe y simplemente tiene menos
+    # adentro. Va a revisión venga de la ruta que venga.
+    revision = sorted(set(en_revision or []) | set(assembly.unwritable_pages))
+
     inventario = build_inventory(
         source_document=nombre,
         source_pages=paginas,
         result=descrita,
-        review_pages=list(en_revision or []),
+        review_pages=revision,
         stats=estadisticas or {},
         file_names=assembly.written,
         folder=destino.carpeta,

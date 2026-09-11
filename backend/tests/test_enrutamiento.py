@@ -171,11 +171,33 @@ class TestElAvisoDeQueLaAccionNoPega:
         worker.process_document_job(payload(TaskKind.SPLIT))
         assert len(llamadas) == 1
 
-    def test_el_aviso_llega_al_informe_y_no_solo_al_progreso(self, monkeypatch):
-        """El progreso se ve mientras corre; el informe se lee después."""
-        import inspect
-        fuente = inspect.getsource(worker._segment_job)
-        assert '"notices": avisos' in fuente
+    def test_el_aviso_llega_al_informe_y_no_solo_al_progreso(self, tmp_path):
+        """El progreso se ve mientras corre; el informe se lee después.
+
+        Se corre la ruta de verdad sobre una caja de una hoja: lo que el
+        despachador reunió como aviso tiene que salir en el informe tal cual.
+        """
+        pymupdf = pytest.importorskip("pymupdf")
+        from resolutions.api.settings import Settings
+
+        documento = pymupdf.open()
+        documento.new_page().insert_text((72, 72), "NOTIFICACION POR AVISO")
+        caja = tmp_path / "caja.pdf"
+        documento.save(caja)
+        documento.close()
+
+        informe = worker._segment_job(
+            {
+                "job_id": "t",
+                "source": str(caja),
+                "filename": "caja.pdf",
+                "task": str(TaskKind.SEGMENT),
+                "settings": Settings(output_dir=tmp_path / "salida").as_worker_payload(),
+            },
+            TaskKind.SEGMENT,
+            avisos=["las páginas dicen ser un legajo de resoluciones"],
+        )
+        assert informe["notices"] == ["las páginas dicen ser un legajo de resoluciones"]
 
     def test_un_reconocedor_que_revienta_no_cancela_la_separacion(self, monkeypatch):
         """El aviso es una comodidad; la separación es el trabajo.
