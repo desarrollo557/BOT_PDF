@@ -44,17 +44,26 @@ def damerau_levenshtein(a: str, b: str, *, ceiling: int | None = None) -> int:
         current = [fuera] * (ancho + 1)
         current[0] = i if i <= ceiling else fuera
         mejor = current[0]
+        izquierda = current[desde - 1]
         for j in range(desde, hasta + 1):
             char_b = b[j - 1]
             cost = 0 if char_a == char_b else 1
-            valor = min(
-                current[j - 1] + 1,  # insertion
-                previous[j] + 1,  # deletion
-                previous[j - 1] + cost,  # substitution
-            )
+            # Sin `min`: ésta es la celda más caliente del proyecto -- ocho
+            # millones de veces por legajo -- y tres comparaciones cuestan la
+            # mitad que una llamada a un builtin con tres argumentos.
+            valor = izquierda + 1  # inserción
+            arriba = previous[j] + 1  # borrado
+            if arriba < valor:
+                valor = arriba
+            diagonal = previous[j - 1] + cost  # sustitución
+            if diagonal < valor:
+                valor = diagonal
             if i > 1 and j > 1 and char_a == b[j - 2] and a[i - 2] == char_b:
-                valor = min(valor, previous_previous[j - 2] + cost)
+                cruzada = previous_previous[j - 2] + cost  # transposición
+                if cruzada < valor:
+                    valor = cruzada
             current[j] = valor
+            izquierda = valor
             if valor < mejor:
                 mejor = valor
 
