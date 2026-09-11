@@ -539,6 +539,12 @@ class ClassificationPipeline:
                 )
             )
 
+        # Cuáles hay que contrastar, decidido antes de leer ninguna: cada
+        # lectura es independiente de las demás y se reparte entre hilos, igual
+        # que el análisis. Iban una detrás de otra en el hilo principal, y en
+        # un legajo de 222 páginas eran 28 lecturas de OCR en fila: 17 de los
+        # 40 segundos que costaba el documento entero.
+        a_contrastar: list[tuple[int, PageClassification]] = []
         for index, page in enumerate(verificadas):
             declara = page.code is not None and page.code != previous
             if page.code is not None:
@@ -549,23 +555,37 @@ class ClassificationPipeline:
                 # Ya se leyó con OCR o con el modelo; comprobarlo consigo mismo
                 # no añadiría nada y costaría un render por resolución.
                 continue
+            a_contrastar.append((index, page))
 
-            stats.verified += 1
-            self._report(
-                ProgressEvent(
-                    stage=Stage.VERIFYING,
-                    done=stats.verified,
-                    total=por_verificar,
-                    detail=f"página {page.page_number}",
-                )
-            )
-            second = self._read_header(source, page.page_number)
-            if second is None or second == page.code:
-                continue
+        def contrastar(page: PageClassification) -> ResolutionCode | None:
+            # La orden de pausar o cancelar se atiende entre una lectura y la
+            # siguiente, como en el análisis: es donde no hay nada a medias.
+            self._control.check()
+            return self._read_header(source, page.page_number)
 
-            stats.disagreements[page.page_number] = f"{page.code.value} / {second.value}"
-            verificadas[index] = replace(page, ambiguous=True)
-            pendientes.add(page.page_number)
+        if a_contrastar:
+            workers = max(1, min(self._config.max_workers, len(a_contrastar)))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                segundas = pool.map(contrastar, [page for _, page in a_contrastar])
+                # `map` entrega en el orden en que se pidió, así que el contador
+                # y las discrepancias salen iguales corran en el orden que corran.
+                for (index, page), second in zip(a_contrastar, segundas, strict=True):
+                    stats.verified += 1
+                    self._report(
+                        ProgressEvent(
+                            stage=Stage.VERIFYING,
+                            done=stats.verified,
+                            total=por_verificar,
+                            detail=f"página {page.page_number}",
+                        )
+                    )
+                    if second is None or second == page.code:
+                        continue
+                    stats.disagreements[page.page_number] = (
+                        f"{page.code.value} / {second.value}"
+                    )
+                    verificadas[index] = replace(page, ambiguous=True)
+                    pendientes.add(page.page_number)
 
         stats.escalated = len(pendientes)
         return verificadas, sorted(pendientes)
