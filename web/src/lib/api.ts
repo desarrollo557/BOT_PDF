@@ -35,21 +35,53 @@ function attribution(): Record<string, string> {
 }
 
 async function detailOf(response: Response): Promise<string> {
-  const payload = await response.json().catch(() => null);
-  if (payload?.detail) return payload.detail;
+  return mensajeDe(response.status, await response.json().catch(() => null));
+}
+
+/** Un error de validación tal como lo describe pydantic, por si el servicio no lo tradujo. */
+interface ErrorDeCampo {
+  loc?: (string | number)[];
+  msg?: string;
+}
+
+/** De dónde viene el parámetro; útil para el programa, ruido para quien lee. */
+const ORIGENES = ['query', 'body', 'path', 'header', 'cookie'];
+
+/**
+ * Lo que se le enseña al operador cuando el servicio contesta que no.
+ *
+ * `detail` suele ser una frase, y ésa se usa tal cual. Cuando es una lista
+ * -- es como FastAPI describe un parámetro mal escrito si nadie lo tradujo --
+ * se arma una frase con el nombre del campo y el motivo, porque una lista
+ * metida en un `Error` sale en pantalla como «[object Object]», que es lo que
+ * se veía por escribir una letra donde iba un número.
+ */
+export function mensajeDe(status: number, payload: unknown): string {
+  const detail = (payload as { detail?: unknown } | null)?.detail;
+  if (typeof detail === 'string' && detail) return detail;
+  if (Array.isArray(detail) && detail.length) {
+    const frases = (detail as ErrorDeCampo[]).map((error) => {
+      const campo = (error.loc ?? [])
+        .filter((parte) => !ORIGENES.includes(String(parte)))
+        .join('.');
+      const motivo = error.msg || 'no es válido';
+      return campo ? `El parámetro «${campo}»: ${motivo}` : motivo;
+    });
+    return `${frases.join('. ')}.`;
+  }
 
   // A 404 or 405 on an endpoint this build knows about means the service
   // answering is older than the screen asking. That is a restart, not a bad
   // request, and saying so is the difference between a one-line fix and an
   // afternoon spent doubting the input.
-  if (response.status === 404 || response.status === 405) {
+  if (status === 404 || status === 405) {
     return (
-      `El servicio no reconoce esta operación (${response.status}). ` +
+      `El servicio no reconoce esta operación (${status}). ` +
       'Probablemente esté corriendo una versión anterior: reinicie el backend ' +
       '(uvicorn resolutions.api.main:app --port 8000) y vuelva a intentar.'
     );
   }
-  return `Error ${response.status}`;
+  return `Error ${status}`;
 }
 
 export async function createBatch(name: string): Promise<{ id: string; name: string }> {

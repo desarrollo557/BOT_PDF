@@ -13,9 +13,10 @@ from pathlib import Path
 from urllib.parse import unquote
 from uuid import uuid4
 
-from fastapi import FastAPI, Header, HTTPException, UploadFile
+from fastapi import FastAPI, Header, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from ..adapters.ledger import InventoryLedger
 from ..adapters.mysql_inventory import (
@@ -30,6 +31,7 @@ from ..domain.anchor import strip_accents
 from ..domain.naming import output_filename
 from ..domain.resolution_code import ResolutionCode
 from . import native_picker
+from .errores import explicar_validacion
 from .folders import FolderError, FolderRunner, SourceDisposition, clean_path
 from .janitor import IdleJanitor
 from .jobs import IN_FLIGHT, Job, JobRegistry, JobState
@@ -52,6 +54,13 @@ PUBLISH_INTERVAL = 0.25
 #: documentos a la vez no supongan tráfico apreciable.
 HEARTBEAT_PUBLISH_SECONDS = 2.0
 PROGRESS_QUEUE_SIZE = 20_000
+
+#: Cuánto puede medir lo que se escribe en el buscador del archivo y cuántas
+#: filas admite una página. Son topes del gesto, no de la máquina: nadie
+#: teclea doscientas letras en un buscador ni lee cinco mil filas de una vez,
+#: y una petición que los pase casi siempre es un error de quien la construyó.
+MAX_BUSQUEDA = 200
+MAX_LIMITE = 5_000
 
 #: Bumped whenever this file gains an endpoint the front end depends on.
 #:
@@ -172,6 +181,42 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def _entrada_invalida(request: Request, error: RequestValidationError) -> JSONResponse:
+    """Un parámetro mal escrito se contesta con una frase, no con una lista.
+
+    FastAPI responde por defecto con la lista de errores de pydantic -- `loc`,
+    `msg`, `type`, en inglés y anidados -- y la pantalla enseña `detail` tal
+    cual, así que el operador veía «[object Object]» por escribir una letra
+    donde iba un número. Aquí se convierte en una oración en español que dice
+    qué parámetro, qué se esperaba y qué llegó.
+    """
+    return JSONResponse(
+        status_code=422, content={"detail": explicar_validacion(error.errors())}
+    )
+
+
+@app.exception_handler(Exception)
+async def _fallo_interno(request: Request, error: Exception) -> JSONResponse:
+    """Lo que nadie previó se registra entero y se cuenta a medias.
+
+    Entero en el registro del servicio, con la ruta y el traceback, que es
+    donde alguien lo va a buscar. A medias en la respuesta: el texto de una
+    excepción lleva rutas del disco y nombres internos que no le sirven a quien
+    está delante de la pantalla y sí a quien no debería verlos.
+    """
+    logger.exception("fallo sin atender en %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": (
+                f"El servicio falló al atender {request.url.path}. "
+                "Revise el registro del backend."
+            )
+        },
+    )
 
 
 @app.get("/api/health")
@@ -806,18 +851,21 @@ def _drives() -> list[dict[str, str]]:
 
 
 @app.get("/api/inventory")
-async def inventory(q: str | None = None, limit: int = 500, offset: int = 0) -> dict[str, object]:
+async def inventory(
+    q: str | None = Query(None, max_length=MAX_BUSQUEDA),
+    limit: int = Query(500, ge=1, le=MAX_LIMITE),
+    offset: int = Query(0, ge=0),
+) -> dict[str, object]:
     """Every resolution PDF ever produced, newest first.
 
     The ledger outlives the job registry, so this still answers "which document
     did 00086 come from" long after the screen was cleared.
-    """
-    rows = ledger.rows()
-    if q:
-        needle = q.strip().lower()
-        rows = [row for row in rows if _matches(row, needle)]
 
-    limit = max(1, min(limit, 5_000))
+    Los topes van en la firma y no en el cuerpo: un `offset` negativo recortaba
+    la lista por el final sin decir nada, y un `limit` fuera de rango se
+    corregía en silencio. Ahora los dos contestan 422 con el motivo.
+    """
+    rows = _filtrar(ledger.rows(), q)
     window = rows[offset : offset + limit]
     return {
         "rows": window,
@@ -829,7 +877,11 @@ async def inventory(q: str | None = None, limit: int = 500, offset: int = 0) -> 
 
 
 @app.get("/api/documents")
-async def documents(q: str | None = None, limit: int = 500, offset: int = 0) -> dict[str, object]:
+async def documents(
+    q: str | None = Query(None, max_length=MAX_BUSQUEDA),
+    limit: int = Query(500, ge=1, le=MAX_LIMITE),
+    offset: int = Query(0, ge=0),
+) -> dict[str, object]:
     """Every source document ever processed, newest first.
 
     Read from the ledger rather than from the registry, so the history survives
@@ -837,25 +889,15 @@ async def documents(q: str | None = None, limit: int = 500, offset: int = 0) -> 
     of a record.
     """
     rows = ledger.documents()
-    if q:
-        needle = q.strip().lower()
-        # A document carries only a handful of codes as a sample, so a search
-        # for a number must go to the rows themselves. Matching the sample only
-        # would answer "no" for a resolution that is demonstrably in there.
-        matched_jobs = {
-            row.get("job_id")
-            for row in ledger.rows()
-            if needle in str(row.get("code") or "").lower()
-            or needle in str(row.get("title") or "").lower()
-        }
-        rows = [
-            row
-            for row in rows
-            if needle in str(row.get("source_document") or "").lower()
-            or row.get("job_id") in matched_jobs
-        ]
+    if q and q.strip():
+        # Un documento lleva sólo una muestra de sus códigos, así que se busca
+        # en sus filas -- todas, con todo lo que las describe -- y se conservan
+        # los documentos que tengan alguna que responda. Es el mismo filtro que
+        # aplica la pestaña de resoluciones; eran dos distintos, y en ésta no
+        # se encontraba ni por tipo documental ni por NIC ni sin tildes.
+        encontrados = {row.get("job_id") for row in _filtrar(ledger.rows(), q)}
+        rows = [row for row in rows if row.get("job_id") in encontrados]
 
-    limit = max(1, min(limit, 5_000))
     return {
         "documents": rows[offset : offset + limit],
         "total": len(rows),
@@ -1013,10 +1055,16 @@ async def delete_documents(payload: dict) -> dict[str, object]:
             borrados.append(_erase_document(job_id))
         except HTTPException as error:
             fallidos.append({"job_id": job_id, "reason": str(error.detail)})
-        except Exception as error:  # noqa: BLE001 - uno que falla no para el lote
+        except Exception:  # noqa: BLE001 - uno que falla no para el lote
+            # El motivo completo va al registro; a la pantalla, sólo que falló.
+            # El texto de una excepción lleva rutas del disco y nombres internos
+            # que no le sirven al operador y que no tienen por qué salir de aquí.
             logger.warning("no se pudo borrar el documento %s", job_id, exc_info=True)
             fallidos.append(
-                {"job_id": job_id, "reason": f"{type(error).__name__}: {error}"}
+                {
+                    "job_id": job_id,
+                    "reason": "El servicio falló al borrarlo; revise el registro del backend",
+                }
             )
 
     return {
@@ -1027,7 +1075,7 @@ async def delete_documents(payload: dict) -> dict[str, object]:
 
 
 @app.get("/api/inventory.xlsx")
-async def inventory_xlsx(q: str | None = None) -> Response:
+async def inventory_xlsx(q: str | None = Query(None, max_length=MAX_BUSQUEDA)) -> Response:
     """Todo el inventario en un libro con formato, no en un CSV pelado.
 
     Un CSV se abre en Excel como texto crudo: sin anchos, sin bordes, sin
@@ -1035,10 +1083,7 @@ async def inventory_xlsx(q: str | None = None) -> Response:
     como 00072 se vuelve 72 y deja de servir. El libro llega ya formateado y
     listo para imprimir.
     """
-    rows = ledger.rows()
-    if q:
-        needle = q.strip().lower()
-        rows = [row for row in rows if _matches(row, needle)]
+    rows = _filtrar(ledger.rows(), q)
 
     try:
         from ..adapters.excel_inventory import ExcelRunInventory
@@ -1066,11 +1111,8 @@ async def inventory_xlsx(q: str | None = None) -> Response:
 
 
 @app.get("/api/inventory.csv")
-async def inventory_csv(q: str | None = None) -> Response:
-    rows = ledger.rows()
-    if q:
-        needle = q.strip().lower()
-        rows = [row for row in rows if _matches(row, needle)]
+async def inventory_csv(q: str | None = Query(None, max_length=MAX_BUSQUEDA)) -> Response:
+    rows = _filtrar(ledger.rows(), q)
     return Response(
         # The BOM is what makes Excel open a UTF-8 CSV without mangling accents,
         # and a spreadsheet is where this file is actually read.
@@ -1141,6 +1183,20 @@ def _matches(row: dict, needle: str) -> bool:
         " ".join(str(row.get(campo) or "") for campo in CAMPOS_BUSCABLES)
     ).lower()
     return all(termino in heno for termino in strip_accents(needle).lower().split())
+
+
+def _filtrar(rows: list[dict], q: str | None) -> list[dict]:
+    """Las filas que responden al buscador, o todas si no se escribió nada.
+
+    Es el único filtro del archivo y lo usan las cuatro salidas que lo tienen
+    -- la lista de resoluciones, la de documentos, el Excel y el CSV -- para
+    que lo que se ve en pantalla sea exactamente lo que se descarga. Eran
+    cuatro copias del mismo bucle, y una de ellas era distinta.
+    """
+    needle = (q or "").strip()
+    if not needle:
+        return rows
+    return [row for row in rows if _matches(row, needle)]
 
 
 # -- housekeeping --------------------------------------------------------------

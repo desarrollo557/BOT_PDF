@@ -55,29 +55,49 @@
   });
 
   let history = $state<ProcessedDocument[]>([]);
+  /** Cuántos documentos responden en el archivo, aunque no quepan todos en la página. */
+  let historyTotal = $state(0);
   let resolutions = $state<InventoryPage | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
 
-  $effect(() => {
-    void load(applied, grain);
-  });
-  // Reload when the live side finishes something, so it lands here by itself.
+  // Un solo efecto para las tres cosas que piden recargar -- lo que se busca,
+  // la pestaña y lo que termina en la otra pantalla -- porque dos efectos
+  // separados disparaban dos peticiones por cada cambio.
   $effect(() => {
     jobStore.finished.length;
     void load(applied, grain);
   });
 
+  /**
+   * Número de la última petición lanzada. Escribir «fac» y luego «factura»
+   * son dos peticiones en vuelo, y la primera puede llegar después: sin esto
+   * la pantalla se quedaba con el resultado de lo que ya no se buscaba.
+   */
+  let turno = 0;
+
   async function load(needle: string, which: Grain) {
+    const mio = ++turno;
     loading = true;
-    error = null;
     try {
-      if (which === 'documentos') history = (await fetchProcessedDocuments(needle)).documents;
-      else resolutions = await fetchInventory(needle, 400);
+      if (which === 'documentos') {
+        const page = await fetchProcessedDocuments(needle);
+        if (mio !== turno) return;
+        history = page.documents;
+        historyTotal = page.total;
+      } else {
+        const page = await fetchInventory(needle, 400);
+        if (mio !== turno) return;
+        resolutions = page;
+      }
+      // Se borra al primer resultado bueno y no al empezar a cargar: borrarlo
+      // antes hacía parpadear el aviso en cada tecla mientras el fallo seguía.
+      error = null;
     } catch (problem) {
+      if (mio !== turno) return;
       error = (problem as Error).message;
     } finally {
-      loading = false;
+      if (mio === turno) loading = false;
     }
   }
 
@@ -491,6 +511,13 @@
       </div>
     </section>
   {/each}
+
+  {#if historyTotal > history.length}
+    <p class="muted small">
+      Mostrando {history.length} de {historyTotal} documentos del archivo. Refine la búsqueda
+      para ver el resto.
+    </p>
+  {/if}
 {:else}
   {#if summary}
     <section class="summary">
