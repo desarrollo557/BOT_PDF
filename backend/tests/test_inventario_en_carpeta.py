@@ -24,7 +24,7 @@ def una_caja_separada(carpeta: str = "UPD2366126", code: str = "01"):
     from resolutions.api import main
 
     nombre = f"{carpeta}.pdf"
-    job = main.registry.create(nombre, Path(nombre))
+    job = main.contexto.registry.create(nombre, Path(nombre))
     ruta = f"{carpeta}/{code}_FACTURA.pdf"
     report = {
         "document": nombre,
@@ -58,10 +58,10 @@ def una_caja_separada(carpeta: str = "UPD2366126", code: str = "01"):
             ],
         },
     }
-    main.registry.mark_done(job, report)
-    main.ledger.record(job.id, report)
+    main.contexto.registry.mark_done(job, report)
+    main.contexto.ledger.record(job.id, report)
 
-    directorio = main.settings.output_dir / job.id / carpeta
+    directorio = main.contexto.settings.output_dir / job.id / carpeta
     directorio.mkdir(parents=True, exist_ok=True)
     (directorio / f"{code}_FACTURA.pdf").write_bytes(b"%PDF-1.4 out")
     return job, ruta
@@ -131,9 +131,9 @@ class TestCorregirNoDesarmaLaRuta:
 
         job, ruta = una_caja_separada()
         client.patch(f"/api/jobs/{job.id}/outputs/{ruta}", json={"code": "00086"})
-        carpeta = main.settings.output_dir / job.id / "UPD2366126"
+        carpeta = main.contexto.settings.output_dir / job.id / "UPD2366126"
         assert (carpeta / "RESOLUCION_00086.pdf").is_file()
-        assert not (main.settings.output_dir / job.id / "RESOLUCION_00086.pdf").exists()
+        assert not (main.contexto.settings.output_dir / job.id / "RESOLUCION_00086.pdf").exists()
 
 
 class TestBorrarTambienEntiendeLaRuta:

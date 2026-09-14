@@ -69,9 +69,13 @@ class TestApi:
         )
         assert response.json()["task"] == "split"
 
-    def test_un_documento_partido_no_tiene_fuid(self, client):
-        """Y el 404 dice por qué, en vez de dejar al operador adivinando."""
-        response = client.get("/api/jobs/no-existe/fuid.xlsx")
+    def test_un_documento_partido_no_tiene_fuid(self, client, administrador):
+        """Y el 404 dice por qué, en vez de dejar al operador adivinando.
+
+        Se pide como administrador porque la descarga exige un perfil que la
+        permita, y un 401 taparía el 404 que esta prueba mira.
+        """
+        response = client.get("/api/jobs/no-existe/fuid.xlsx", headers=administrador)
         assert response.status_code == 404
         assert "Solo inventariar" in response.json()["detail"]
 

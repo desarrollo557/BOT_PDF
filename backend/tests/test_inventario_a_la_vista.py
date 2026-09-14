@@ -39,20 +39,22 @@ class TestElInventarioQueNoSePudoLevantar:
         # definido dentro de una prueba no se puede enviar a otro proceso.
         from concurrent.futures import ThreadPoolExecutor
 
+        from resolutions.api.routers import fuid
+
         with ThreadPoolExecutor(1) as pool:
-            monkeypatch.setattr(main.app.state, "pool", pool)
-            await main._levantar_fuid(job_id)
-        return await main.job_fuid_status(job_id)
+            monkeypatch.setattr(main.contexto, "pool", pool)
+            await fuid._levantar_fuid(main.contexto, job_id)
+        return await fuid.job_fuid_status(main.contexto, job_id)
 
     @pytest.mark.asyncio
     async def test_si_no_quedo_planilla_el_estado_lo_dice(self, client, monkeypatch):
         from resolutions.api import main
 
-        job = main.registry.create("libro.pdf", Path("libro.pdf"))
-        main.registry.mark_done(job, {"document": "libro.pdf"})
+        job = main.contexto.registry.create("libro.pdf", Path("libro.pdf"))
+        main.contexto.registry.mark_done(job, {"document": "libro.pdf"})
         # El worker termina bien y no escribe FUID: es lo que le pasa a un
         # libro del que no se pudo leer ni una fila.
-        monkeypatch.setattr(main, "process_document_job", lambda payload: {})
+        monkeypatch.setattr(main.contexto, "procesar",lambda payload: {})
 
         estado = await self._levantar(main, job.id, monkeypatch)
         assert estado["ready"] is False
@@ -64,9 +66,9 @@ class TestElInventarioQueNoSePudoLevantar:
         """Es lo que la pantalla mira para dejar de esperar."""
         from resolutions.api import main
 
-        job = main.registry.create("libro.pdf", Path("libro.pdf"))
-        main.registry.mark_done(job, {"document": "libro.pdf"})
-        monkeypatch.setattr(main, "process_document_job", lambda payload: {})
+        job = main.contexto.registry.create("libro.pdf", Path("libro.pdf"))
+        main.contexto.registry.mark_done(job, {"document": "libro.pdf"})
+        monkeypatch.setattr(main.contexto, "procesar",lambda payload: {})
 
         estado = await self._levantar(main, job.id, monkeypatch)
         assert estado["working"] is False
@@ -76,16 +78,16 @@ class TestElInventarioQueNoSePudoLevantar:
         from resolutions.api import main
         from resolutions.api.worker import FUID_SUFFIX
 
-        job = main.registry.create("libro.pdf", Path("libro.pdf"))
-        main.registry.mark_done(job, {"document": "libro.pdf"})
+        job = main.contexto.registry.create("libro.pdf", Path("libro.pdf"))
+        main.contexto.registry.mark_done(job, {"document": "libro.pdf"})
 
         def escribe(payload):
-            carpeta = main.settings.output_dir / payload["job_id"]
+            carpeta = main.contexto.settings.output_dir / payload["job_id"]
             carpeta.mkdir(parents=True, exist_ok=True)
             (carpeta / f"libro{FUID_SUFFIX}").write_bytes(b"PK")
             return {}
 
-        monkeypatch.setattr(main, "process_document_job", escribe)
+        monkeypatch.setattr(main.contexto, "procesar",escribe)
 
         estado = await self._levantar(main, job.id, monkeypatch)
         assert estado["ready"] is True

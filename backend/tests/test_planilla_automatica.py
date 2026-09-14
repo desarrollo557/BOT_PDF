@@ -146,7 +146,7 @@ class TestSeBajaDeUnClic:
         from resolutions.adapters.excel_inventory import SUFFIX as sufijo
         from resolutions.api import main
 
-        carpeta = main.settings.output_dir / "trabajo" / "UPD2365925"
+        carpeta = main.contexto.settings.output_dir / "trabajo" / "UPD2365925"
         carpeta.mkdir(parents=True, exist_ok=True)
         (carpeta / f"UPD2365925{sufijo}").write_bytes(b"PK\x03\x04 planilla")
 

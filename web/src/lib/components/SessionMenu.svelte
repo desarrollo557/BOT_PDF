@@ -64,8 +64,8 @@
         <span class="avatar big">{initials}</span>
         <div>
           <b>{session.name}</b>
-          {#if session.operator?.station}
-            <small>{session.operator.station}</small>
+          {#if session.operator}
+            <small>{session.operator.perfilLabel}</small>
           {/if}
         </div>
       </header>
@@ -74,6 +74,14 @@
         <div>
           <dt>En sesión</dt>
           <dd class="tabular">{formatDuration(session.elapsedSeconds)}</dd>
+        </div>
+        <div>
+          <dt>Perfil</dt>
+          <dd>{session.operator?.perfilLabel ?? '—'}</dd>
+        </div>
+        <div>
+          <dt>Cédula</dt>
+          <dd class="tabular">{session.cedula ?? '—'}</dd>
         </div>
         <div>
           <dt>Desde</dt>
@@ -89,8 +97,9 @@
       </dl>
 
       <p class="note">
-        El nombre viaja con cada documento que procese y queda en el archivo. No restringe
-        nada: no hay contraseña detrás.
+        Su nombre viaja con cada documento que procese y queda en el archivo. El perfil decide
+        qué se le deja hacer, y lo asigna el administrador. No hay contraseña detrás: esto
+        identifica, no protege.
       </p>
 
       {#if confirming}

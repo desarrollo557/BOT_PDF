@@ -30,7 +30,7 @@ def con_llaves(monkeypatch, **llaves):
     """Pone llaves sobre los ajustes que ya montó la fixture `client`."""
     from resolutions.api import main
 
-    monkeypatch.setattr(main, "settings", replace(main.settings, **llaves))
+    monkeypatch.setattr(main.contexto, "settings", replace(main.contexto.settings, **llaves))
 
 
 class TestLoQueLaPantallaPuedeOfrecer:
@@ -116,7 +116,7 @@ class TestLoQueSeRechazaTemprano:
 
         con_llaves(monkeypatch, mistral_api_key=None)
         client.post("/api/jobs?oracle=mistral", files=CAJA)
-        subidas = list(main.settings.upload_dir.glob("*.pdf"))
+        subidas = list(main.contexto.settings.upload_dir.glob("*.pdf"))
         assert subidas == []
 
     def test_una_eleccion_imposible_no_encola_nada(self, client, monkeypatch):

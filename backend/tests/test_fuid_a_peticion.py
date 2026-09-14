@@ -69,7 +69,7 @@ class TestLevantarElFuidDespues:
         # minutos de OCR por nada.
         from resolutions.api import main
 
-        carpeta = main.settings.output_dir / "job1"
+        carpeta = main.contexto.settings.output_dir / "job1"
         carpeta.mkdir(parents=True)
         (carpeta / f"libro{FUID_SUFFIX}").write_bytes(b"planilla")
 
@@ -82,7 +82,7 @@ class TestLevantarElFuidDespues:
     def test_el_estado_lo_confirma(self, client):
         from resolutions.api import main
 
-        carpeta = main.settings.output_dir / "job1"
+        carpeta = main.contexto.settings.output_dir / "job1"
         carpeta.mkdir(parents=True)
         (carpeta / f"libro{FUID_SUFFIX}").write_bytes(b"planilla")
 
@@ -101,16 +101,16 @@ class TestLevantarElFuidDespues:
         assert respuesta.status_code == 409
         assert "ya no está disponible" in respuesta.json()["detail"]
 
-    def test_el_documento_se_descarga_por_donde_siempre(self, client):
+    def test_el_documento_se_descarga_por_donde_siempre(self, client, administrador):
         # El botón nuevo no inventa un sitio de descarga: usa el endpoint que ya
         # servía el FUID de un documento inventariado.
         from resolutions.api import main
 
-        carpeta = main.settings.output_dir / "job1"
+        carpeta = main.contexto.settings.output_dir / "job1"
         carpeta.mkdir(parents=True)
         (carpeta / f"libro{FUID_SUFFIX}").write_bytes(b"planilla")
 
-        respuesta = client.get("/api/jobs/job1/fuid.xlsx")
+        respuesta = client.get("/api/jobs/job1/fuid.xlsx", headers=administrador)
 
         assert respuesta.status_code == 200
         assert respuesta.content == b"planilla"

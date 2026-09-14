@@ -1,25 +1,41 @@
+"""OCR local con Tesseract, hablándole al binario directamente.
+
+Se hacía a través de pytesseract, que guarda la imagen en un archivo temporal,
+la lee desde ahí y al terminar busca ese archivo con un ``glob`` en la carpeta
+temporal del sistema. En la máquina del operador esa carpeta tiene trece mil
+archivos, así que cada llamada de OCR pasaba más tiempo listándola que leyendo:
+sesenta y seis lecturas eran trece segundos de recorrer la carpeta temporal.
+
+Tesseract acepta la imagen por ``stdin`` y devuelve el TSV por ``stdout`` desde
+la versión 3.03, y con eso no hay archivo que escribir, leer ni buscar.
+"""
+
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from io import BytesIO
 
-import pytesseract
 from PIL import Image, ImageOps
 
 from ..application.ports import OcrResult
 
-# Tesseract's Windows installer does not put itself on PATH, and a worker process
-# that inherits a stale environment is a confusing way to find that out. This
-# override makes the binary's location explicit and configurable.
-_TESSERACT_CMD = os.environ.get("RESOLUTIONS_TESSERACT_CMD")
-if _TESSERACT_CMD:
-    pytesseract.pytesseract.tesseract_cmd = _TESSERACT_CMD
+#: El binario. El instalador de Windows no lo pone en el PATH, y descubrirlo en
+#: un proceso worker que heredó un entorno viejo es una forma confusa de
+#: enterarse; por eso la ubicación es explícita y configurable.
+TESSERACT_CMD = os.environ.get("RESOLUTIONS_TESSERACT_CMD") or "tesseract"
 
 #: Page segmentation modes. A header crop is a single uniform block; a full page
 #: needs the layout analyser. Using the right one is free accuracy.
 PSM_UNIFORM_BLOCK = 6
 PSM_AUTO = 3
+
+#: Cómo viaja la imagen al binario. PNG y no PGM crudo, medido sobre la banda
+#: de un encabezado real: pesa doce veces menos y Tesseract la lee un 20 % más
+#: rápido, y los 9 ms de codificarla no se notan.
+_FORMATO = "PNG"
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,20 +48,49 @@ class TesseractConfig:
     autocontrast: bool = True
 
 
+class TesseractError(RuntimeError):
+    """El binario terminó con error, y esto es lo que dijo por stderr."""
+
+
+def en_columnas(tsv: str) -> dict[str, list]:
+    """El TSV de Tesseract como columnas, con el nombre de cada una.
+
+    Es la misma forma que entregaba ``pytesseract.Output.DICT``: ``text`` se
+    queda como texto, ``conf`` es decimal y todo lo demás entero. Una fila sin
+    la última celda -- pasa con los renglones de estructura, que no tienen
+    palabra -- se rellena con vacío en vez de descuadrar las columnas.
+    """
+    lineas = [linea for linea in tsv.splitlines() if linea]
+    if not lineas:
+        return {"text": [], "conf": []}
+    cabecera = lineas[0].split("\t")
+    columnas: dict[str, list] = {nombre: [] for nombre in cabecera}
+    for linea in lineas[1:]:
+        celdas = linea.split("\t")
+        if len(celdas) < len(cabecera):
+            celdas += [""] * (len(cabecera) - len(celdas))
+        for nombre, celda in zip(cabecera, celdas, strict=False):
+            if nombre == "text":
+                columnas[nombre].append(celda)
+            elif nombre == "conf":
+                columnas[nombre].append(float(celda))
+            else:
+                columnas[nombre].append(int(celda))
+    return columnas
+
+
 class TesseractOcr:
     """Local OCR. Free, CPU-bound, and released from the GIL while it runs."""
 
-    def __init__(self, config: TesseractConfig | None = None) -> None:
+    def __init__(
+        self, config: TesseractConfig | None = None, *, command: str | None = None
+    ) -> None:
         self._config = config or TesseractConfig()
+        self._command = command or TESSERACT_CMD
 
     def read(self, image_png: bytes) -> OcrResult:
         image = self._prepare(image_png)
-        data = pytesseract.image_to_data(
-            image,
-            lang=self._config.language,
-            config=f"--psm {self._config.psm}",
-            output_type=pytesseract.Output.DICT,
-        )
+        data = en_columnas(self._run(_codificar(image)))
 
         words: list[str] = []
         confidences: list[float] = []
@@ -68,6 +113,29 @@ class TesseractOcr:
 
         return OcrResult(text=self._reflow(data, words), mean_confidence=mean / 100.0)
 
+    def _run(self, image: bytes) -> str:
+        """Una llamada al binario: la imagen entra por stdin, el TSV sale por stdout."""
+        args = [
+            self._command,
+            "stdin",
+            "stdout",
+            "-l",
+            self._config.language,
+            "--psm",
+            str(self._config.psm),
+            "tsv",
+        ]
+        extra: dict[str, object] = {}
+        if sys.platform == "win32":
+            # Sin esto, un servicio sin consola abre y cierra una ventana negra
+            # por cada página que lee.
+            extra["creationflags"] = subprocess.CREATE_NO_WINDOW
+        completed = subprocess.run(args, input=image, capture_output=True, check=False, **extra)
+        if completed.returncode != 0:
+            motivo = completed.stderr.decode("utf-8", "replace").strip()
+            raise TesseractError(motivo or f"tesseract terminó con código {completed.returncode}")
+        return completed.stdout.decode("utf-8", "replace")
+
     def _prepare(self, image_png: bytes) -> Image.Image:
         image = Image.open(BytesIO(image_png)).convert("L")
         return ImageOps.autocontrast(image) if self._config.autocontrast else image
@@ -85,6 +153,12 @@ class TesseractOcr:
         if not lines:
             return " ".join(words)
         return "\n".join(" ".join(tokens) for _, tokens in sorted(lines.items()))
+
+
+def _codificar(image: Image.Image) -> bytes:
+    buffer = BytesIO()
+    image.save(buffer, format=_FORMATO)
+    return buffer.getvalue()
 
 
 class HeaderAndPageOcr:

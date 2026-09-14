@@ -79,7 +79,7 @@ class TestRecordingTheOperator:
         assert client.get(f"/api/jobs/{response.json()['id']}").json()["operator"] is None
 
     def test_an_absurd_name_is_bounded_rather_than_refused(self, client):
-        from resolutions.api.main import MAX_OPERATOR
+        from resolutions.api.routers.trabajos import MAX_OPERATOR
 
         response = client.post(
             "/api/jobs",
@@ -104,24 +104,24 @@ class TestTheArchiveRemembers:
     def test_the_ledger_row_carries_the_operator(self, client):
         from resolutions.api import main
 
-        job = main.registry.create("expediente.pdf", Path("expediente.pdf"), operator="Ana")
-        main.registry.mark_done(job, report())
-        main.ledger.record(job.id, report(), operator=job.operator)
+        job = main.contexto.registry.create("expediente.pdf", Path("expediente.pdf"), operator="Ana")
+        main.contexto.registry.mark_done(job, report())
+        main.contexto.ledger.record(job.id, report(), operator=job.operator)
 
         assert client.get("/api/inventory").json()["rows"][0]["operator"] == "Ana"
 
     def test_the_document_history_carries_it(self, client):
         from resolutions.api import main
 
-        main.ledger.record("job-1", report(), operator="Ana")
+        main.contexto.ledger.record("job-1", report(), operator="Ana")
         assert client.get("/api/documents").json()["documents"][0]["operator"] == "Ana"
 
     def test_it_survives_clearing_the_screen(self, client):
         from resolutions.api import main
 
-        job = main.registry.create("expediente.pdf", Path("expediente.pdf"), operator="Ana")
-        main.registry.mark_done(job, report())
-        main.ledger.record(job.id, report(), operator=job.operator)
+        job = main.contexto.registry.create("expediente.pdf", Path("expediente.pdf"), operator="Ana")
+        main.contexto.registry.mark_done(job, report())
+        main.contexto.ledger.record(job.id, report(), operator=job.operator)
 
         client.request("DELETE", "/api/jobs")
         assert client.get("/api/documents").json()["documents"][0]["operator"] == "Ana"
@@ -129,14 +129,14 @@ class TestTheArchiveRemembers:
     def test_the_archive_can_be_searched_by_operator(self, client):
         from resolutions.api import main
 
-        main.ledger.record("job-1", report(document="marzo.pdf"), operator="Ana")
-        main.ledger.record("job-2", report(document="abril.pdf"), operator="Beto")
+        main.contexto.ledger.record("job-1", report(document="marzo.pdf"), operator="Ana")
+        main.contexto.ledger.record("job-2", report(document="abril.pdf"), operator="Beto")
         assert client.get("/api/inventory?q=ana").json()["total"] == 1
 
     def test_work_done_without_a_name_is_still_recorded(self, client):
         from resolutions.api import main
 
-        main.ledger.record("job-1", report())
+        main.contexto.ledger.record("job-1", report())
         rows = client.get("/api/inventory").json()["rows"]
         assert len(rows) == 1
         assert rows[0]["operator"] is None

@@ -278,27 +278,53 @@ def identificar(texto: str, pagina: int = 1) -> Coincidencia | None:
     )
     indice = _inicios_de_palabra(plano)
 
+    # Primero lo que se lee tal cual. Una coincidencia exacta le gana a
+    # cualquier difusa -- `_mejor_que` pone «sin erratas» por encima del largo
+    # -- así que si alguna frase aparece entera no hace falta calcular ni una
+    # distancia. Sobre una capa de texto sana es el caso corriente, y antes
+    # eran 169.000 distancias en un legajo de 222 páginas para llegar a la
+    # misma respuesta: las frases van de larga a corta y se probaban difusas
+    # todas las largas antes de llegar a la corta que estaba escrita entera.
     mejor: Coincidencia | None = None
+    difusas: list[tuple[str, TipoDocumental]] = []
     for frase, tipo in FRASES:
-        if mejor is not None and mejor.distancia == 0 and len(frase) < len(mejor.frase):
-            # Las frases vienen ordenadas de larga a corta y ya hay una que se
-            # leyó tal cual: ninguna más corta puede mejorarla. Mientras la
-            # mejor sea difusa hay que seguir mirando, porque una frase más
-            # corta que aparezca sin una errata le gana.
-            break
         if len(frase) >= ROTULO_MINIMO:
-            hallazgo = _busca_en_texto(frase, plano, indice)
+            posicion = plano.find(frase)
+            if posicion < 0:
+                difusas.append((frase, tipo))
+                continue
+            hallazgo: tuple[int, int] | None = (posicion, 0)
         else:
             hallazgo = _busca_como_rotulo(frase, renglones)
-        if hallazgo is None:
-            continue
-        posicion, distancia = hallazgo
-        candidata = Coincidencia(
-            tipo=tipo, frase=frase, posicion=posicion, distancia=distancia, pagina=pagina
-        )
-        if mejor is None or _mejor_que(candidata, mejor):
-            mejor = candidata
+        mejor = _la_mejor(mejor, frase, tipo, hallazgo, pagina)
+
+    if mejor is not None and mejor.distancia == 0:
+        return mejor
+
+    # Nada se leyó entero: ahora sí, la ventana difusa sobre lo que quedó, en
+    # el mismo orden de siempre para que un empate se resuelva igual.
+    for frase, tipo in difusas:
+        mejor = _la_mejor(mejor, frase, tipo, _busca_en_texto(frase, plano, indice), pagina)
     return mejor
+
+
+def _la_mejor(
+    actual: Coincidencia | None,
+    frase: str,
+    tipo: TipoDocumental,
+    hallazgo: tuple[int, int] | None,
+    pagina: int,
+) -> Coincidencia | None:
+    """La coincidencia que se queda entre la que había y la que acaba de salir."""
+    if hallazgo is None:
+        return actual
+    posicion, distancia = hallazgo
+    candidata = Coincidencia(
+        tipo=tipo, frase=frase, posicion=posicion, distancia=distancia, pagina=pagina
+    )
+    if actual is None or _mejor_que(candidata, actual):
+        return candidata
+    return actual
 
 
 def _mejor_que(candidata: Coincidencia, actual: Coincidencia) -> bool:

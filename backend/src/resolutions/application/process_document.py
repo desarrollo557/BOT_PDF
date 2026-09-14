@@ -1,22 +1,18 @@
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 
 from ..domain.grouping import GroupingEngine, GroupingResult
 from ..domain.page import PageClassification
 from ..domain.validation import summarise, validate_resolutions
-from .clasificacion import describir
 from .control import NullRunControl, RunControl
 from .diagnostico import explicar
-from .inventory import Inventory, build_inventory
+from .entrega import Destino, entregar
+from .inventory import Inventory
 from .pipeline import ClassificationPipeline, PipelineStats
 from .ports import DocumentAssembler, DocumentStore, InventoryStore
 from .progress import NullProgressReporter, ProgressEvent, ProgressReporter, Stage
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +106,6 @@ class ProcessDocument:
         grouping: GroupingEngine | None = None,
         inventory: InventoryStore | None = None,
         progress: ProgressReporter | None = None,
-        sheets: object | None = None,
         control: RunControl | None = None,
     ) -> None:
         self._store = store
@@ -120,17 +115,12 @@ class ProcessDocument:
         self._inventory = inventory
         self._progress = progress or NullProgressReporter()
         self._control = control or NullRunControl()
-        #: Writes the per-document delivery note. Optional: a missing spreadsheet
-        #: library must not stop a document from being split.
-        self._sheets = sheets
 
     def execute(
         self,
         document: Path,
         destination: Path,
         source_name: str | None = None,
-        operator: str | None = None,
-        delivered_to: str | None = None,
     ) -> ProcessingReport:
         """Split ``document`` into ``destination``.
 
@@ -138,6 +128,11 @@ class ProcessDocument:
         disk under a generated name, and an inventory that records that name
         instead of theirs cannot answer the only question it exists for: which
         document did this resolution come from.
+
+        La planilla del documento no se escribe aquí: es un Excel, y la deja el
+        worker junto a los PDF, por el mismo camino que las otras tres rutas.
+        Por eso tampoco se anuncia «done»: lo dice el worker cuando de verdad
+        no queda nada por escribir.
         """
         name = source_name or document.name
         source = self._store.open(document)
@@ -147,89 +142,66 @@ class ProcessDocument:
             self._report(ProgressEvent(stage=Stage.GROUPING, page_count=source.page_count))
             result = self._grouping.group(classifications)
 
-            # Nothing is written until the page accounting balances. A partial
-            # split is the one failure mode nobody would catch by eye.
-            result.verify_integrity(total_pages=source.page_count)
-
             # Última oportunidad de parar antes de escribir: a partir de aquí
             # empiezan a aparecer archivos en la carpeta de destino.
             self._control.check()
             self._report(
                 ProgressEvent(stage=Stage.ASSEMBLING, page_count=len(result.groups))
             )
-            assembly = self._assembler.write(document, result, destination)
-            outputs = list(assembly.outputs)
+
+            # El tramo que es igual para las cuatro rutas: describir cada
+            # unidad, comprobar que ninguna página se pierde ni se repite,
+            # escribir un PDF por unidad e inventariar lo que quedó en el disco.
+            # Vivía aquí repetido, escrito de otra forma, y era la cuarta copia:
+            # la que se quedaba fuera cada vez que un arreglo entraba por las
+            # otras tres.
+            #
+            # Nada se escribe hasta que la cuenta de páginas cuadra -- lo
+            # comprueba `entregar` antes de tocar el disco -- y el tipo de cada
+            # unidad no cambia cómo se llama el archivo: una resolución se
+            # nombra por su número, que es con lo que se la busca.
+            en_revision = self._build_review_queue(classifications, result, stats)
+            entregado = entregar(
+                result,
+                origen=document,
+                nombre=name,
+                paginas=source.page_count,
+                destino=Destino(directorio=destination),
+                assembler=self._assembler,
+                texto_de=source.text_of,
+                en_revision=[item.page_number for item in en_revision],
+                estadisticas=self._describe(stats),
+            )
+            assembly = entregado.assembly
             review_queue = self._build_review_queue(
                 classifications, result, stats, assembly.unwritable_pages
             )
 
-            # Dejar el resultado donde tiene que quedar: el inventario del
-            # documento y su planilla. Corre después de que la barra de páginas
-            # llegó al 100 % y tarda lo suyo -- openpyxl abre la plantilla,
-            # rellena una fila por unidad y la guarda -- así que sin anunciarlo
-            # el trabajo parece terminado y quieto. La etapa existía, el front
-            # ya la sabía dibujar («Guardando el resultado») y nadie la emitía
-            # nunca; éste es el tramo que describe.
+            # Dejar el resultado donde tiene que quedar. Corre después de que la
+            # barra de páginas llegó al 100 % y tarda lo suyo, así que sin
+            # anunciarlo el trabajo parece terminado y quieto. La etapa existía,
+            # el front ya la sabía dibujar («Guardando el resultado») y nadie la
+            # emitía nunca; éste es el tramo que describe.
             self._report(
                 ProgressEvent(stage=Stage.DELIVERING, page_count=len(result.groups))
             )
-
-            # Qué clase de papel es cada unidad y de cuándo es.
-            # No cambia cómo se llama el archivo -- una resolución se nombra por
-            # su número, que es con lo que se la busca -- pero sí lo que sabe el
-            # inventario de ella. Antes esta columna sólo la llenaba la ruta de
-            # cajas revueltas, y la pregunta "qué papel es esto" no depende de
-            # cómo se haya cortado.
-            result = describir(result, source.text_of)
-
-            inventory = build_inventory(
-                source_document=name,
-                source_pages=source.page_count,
-                result=result,
-                review_pages=[item.page_number for item in review_queue],
-                stats=self._describe(stats),
-                file_names=assembly.written,
-            )
+            inventory = entregado.inventario
             inventory_path = (
                 self._inventory.write(inventory, destination) if self._inventory else None
             )
 
-            report = ProcessingReport(
+            return ProcessingReport(
                 document=document,
                 document_name=name,
                 page_count=source.page_count,
-                grouping=result,
+                grouping=entregado.agrupacion,
                 classifications=classifications,
-                outputs=outputs,
+                outputs=list(assembly.outputs),
                 review_queue=review_queue,
                 stats=self._describe(stats),
                 inventory=inventory,
                 inventory_path=inventory_path,
             )
-            # The delivery note, written beside the PDFs it describes. It needs
-            # the finished report -- the page reconciliation, the review queue,
-            # the cascade histogram -- so it is written here and not by the
-            # inventory store, which only sees the item list.
-            if self._sheets is not None:
-                try:
-                    self._sheets.write(
-                        report.as_dict(),
-                        destination,
-                        # A dónde va la entrega, cuando va a alguna parte. Esta
-                        # ruta escribe su planilla por aquí y no por donde las
-                        # otras tres, así que el destino no le llegaba: en una
-                        # corrida sobre carpeta local, la columna "Carpeta de
-                        # destino" de un legajo de resoluciones salía vacía
-                        # mientras las demás rutas ya la traían.
-                        delivered_to=delivered_to,
-                        operator=operator,
-                        processed_at=datetime.now(UTC).isoformat(),
-                    )
-                except Exception:  # noqa: BLE001 - the split succeeded either way
-                    logger.warning("could not write the inventory sheet", exc_info=True)
-
-            self._report(ProgressEvent(stage=Stage.DONE, page_count=source.page_count))
-            return report
         except Exception as error:  # noqa: BLE001 - re-raised after reporting
             self._report(
                 ProgressEvent(

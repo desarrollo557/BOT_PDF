@@ -65,24 +65,57 @@ def texto_de(hoja: Path) -> str:
     )
 
 
+CUERPO = (
+    "Por medio de la presente resolucion se resuelve la solicitud radicada en "
+    "el asunto de la referencia, en los terminos que se exponen a continuacion "
+    "y con base en la normatividad vigente. RESUELVE: ARTICULO PRIMERO."
+)
+
+
 class TestLaRutaDeResolucionesTambienDeclaraElDestino:
-    """Escribe su planilla por otra vía, y por eso se quedó fuera del arreglo."""
+    """Escribía su planilla desde el caso de uso, y por eso se quedó fuera del
+    arreglo. Ahora la escribe el worker, como las otras tres rutas, con el
+    destino que viene en el trabajo."""
 
-    def test_process_document_acepta_el_destino(self):
-        import inspect
+    @pytest.fixture
+    def legajo(self, tmp_path):
+        pymupdf = pytest.importorskip("pymupdf")
+        documento = pymupdf.open()
+        for encabezado in ("RESOLUCION No. 00412", ""):
+            page = documento.new_page()
+            if encabezado:
+                page.insert_textbox(
+                    pymupdf.Rect(56, 64, 540, 96),
+                    encabezado,
+                    fontsize=12,
+                    align=pymupdf.TEXT_ALIGN_CENTER,
+                )
+            page.insert_textbox(pymupdf.Rect(56, 110, 540, 700), CUERPO, fontsize=11)
+        ruta = tmp_path / "legajo.pdf"
+        documento.save(ruta)
+        documento.close()
+        return ruta
 
-        from resolutions.application.process_document import ProcessDocument
+    def test_la_planilla_lleva_la_carpeta_de_destino(self, legajo, tmp_path):
+        from resolutions.api.settings import Settings
+        from resolutions.api.worker import _split_job
+        from resolutions.application.task import TaskKind
 
-        firma = inspect.signature(ProcessDocument.execute)
-        assert "delivered_to" in firma.parameters
+        destino = str(tmp_path / "destino" / "108C000094")
+        _split_job(
+            {
+                "job_id": "trabajo",
+                "source": str(legajo),
+                "filename": "RESOLUCIONES 00412.pdf",
+                "task": str(TaskKind.SPLIT),
+                "destination": destino,
+                "settings": Settings(output_dir=tmp_path / "outputs").as_worker_payload(),
+            },
+            TaskKind.SPLIT,
+        )
 
-    def test_y_lo_pasa_a_la_planilla(self):
-        import inspect
-
-        from resolutions.application import process_document
-
-        fuente = inspect.getsource(process_document)
-        assert "delivered_to=delivered_to" in fuente
+        hoja = next(iter((tmp_path / "outputs" / "trabajo").rglob(f"*{SUFFIX}")))
+        assert destino in texto_de(hoja)
 
 
 class TestLaPlanillaDelTrabajoSeCorrigeAlEntregar:
