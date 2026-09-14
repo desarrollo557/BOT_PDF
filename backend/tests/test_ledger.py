@@ -187,9 +187,9 @@ class TestInventoryEndpoint:
 
         from resolutions.api import main
 
-        job = main.registry.create("expediente.pdf", Path("expediente.pdf"))
-        main.registry.mark_done(job, report())
-        main.ledger.record(job.id, report())
+        job = main.contexto.registry.create("expediente.pdf", Path("expediente.pdf"))
+        main.contexto.registry.mark_done(job, report())
+        main.contexto.ledger.record(job.id, report())
 
         client.request("DELETE", "/api/jobs")
         assert client.get("/api/jobs").json() == {"jobs": []}
@@ -201,14 +201,14 @@ class TestInventoryEndpoint:
     def test_the_inventory_can_be_searched(self, client):
         from resolutions.api import main
 
-        main.ledger.record("job-1", report(document="marzo.pdf"))
+        main.contexto.ledger.record("job-1", report(document="marzo.pdf"))
         assert client.get("/api/inventory?q=00086").json()["total"] == 1
         assert client.get("/api/inventory?q=nada").json()["total"] == 0
 
     def test_the_inventory_exports_as_csv_excel_can_open(self, client):
         from resolutions.api import main
 
-        main.ledger.record("job-1", report())
+        main.contexto.ledger.record("job-1", report())
         response = client.get("/api/inventory.csv")
         assert response.status_code == 200
         assert "attachment" in response.headers["content-disposition"]
@@ -334,9 +334,9 @@ class TestDocumentsEndpoint:
 
         from resolutions.api import main
 
-        job = main.registry.create("expediente.pdf", Path("expediente.pdf"))
-        main.registry.mark_done(job, report())
-        main.ledger.record(job.id, report())
+        job = main.contexto.registry.create("expediente.pdf", Path("expediente.pdf"))
+        main.contexto.registry.mark_done(job, report())
+        main.contexto.ledger.record(job.id, report())
 
         client.request("DELETE", "/api/jobs")
 
@@ -347,7 +347,7 @@ class TestDocumentsEndpoint:
     def test_it_can_be_searched_by_document_or_by_code(self, client):
         from resolutions.api import main
 
-        main.ledger.record("job-1", report(document="marzo.pdf"))
+        main.contexto.ledger.record("job-1", report(document="marzo.pdf"))
         assert client.get("/api/documents?q=marzo").json()["total"] == 1
         assert client.get("/api/documents?q=00086").json()["total"] == 1
         assert client.get("/api/documents?q=nada").json()["total"] == 0
@@ -375,7 +375,7 @@ class TestDocumentSearch:
             }
             for code in codes
         ]
-        main.ledger.record("job-1", report(document="expediente.pdf", items=items))
+        main.contexto.ledger.record("job-1", report(document="expediente.pdf", items=items))
 
     def test_a_code_past_the_sample_is_still_found(self, client):
         # The document carries eight codes for recognition; the twentieth is

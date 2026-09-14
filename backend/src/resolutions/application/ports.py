@@ -4,7 +4,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from ..domain.diploma import TextLine
 from ..domain.grouping import GroupingResult
+from ..domain.usuario import Usuario
 from .inventory import Inventory
 
 
@@ -89,6 +91,32 @@ class PageSource(Protocol):
         lista vacía y el sistema decide sin geometría, como hacía antes.
         """
         return []
+
+    def lines_of(self, page_number: int) -> list[TextLine]:
+        """Los renglones ordenados por su posición en la hoja, de arriba abajo.
+
+        No es lo mismo que ``boxes_of``, y por eso son dos: aquélla da la
+        posición en fracciones de la página para decidir qué es un encabezado,
+        y ésta da coordenadas crudas ya ordenadas, que es lo que necesita quien
+        lee un formulario renglón por renglón.
+
+        La declara el protocolo porque ``read_diploma_book`` y
+        ``read_student_records`` la llaman, y estuvo sin declarar: una fuente de
+        páginas que cumpliera este protocolo al pie de la letra reventaba con
+        ``AttributeError`` en cuanto entraba por la ruta de diplomas. El valor
+        por defecto es la lista vacía, como en ``boxes_of``, de modo que una
+        fuente sin geometría lee cero registros en vez de tumbar el trabajo.
+        """
+        return []
+
+    def sheet_of(self, page_number: int) -> tuple[int, int] | None:
+        """El tamaño físico de la hoja en puntos, cuando la fuente lo sabe.
+
+        Opcional por el mismo motivo que las otras dos, y ``None`` es una
+        respuesta legítima: el segmentador la trata como una señal que no está,
+        no como un fallo.
+        """
+        return None
 
     def render(self, page_number: int, band: Band | None = None, dpi: int = 200) -> bytes: ...
 
@@ -186,3 +214,28 @@ class InventoryStore(Protocol):
     """Persists the record of what a source document produced."""
 
     def write(self, inventory: Inventory, destination: Path) -> Path: ...
+
+
+@runtime_checkable
+class UserStore(Protocol):
+    """Dónde viven las personas dadas de alta y con qué perfil.
+
+    Diminuto a propósito, igual que el resto de los puertos: leer todo, guardar
+    uno, borrar uno. Un almacén de usuarios crece hacia consultas -- por
+    perfil, por dominio de correo, por fecha de alta -- y ninguna de ellas hace
+    falta sobre una lista que en este edificio cabe en una pantalla, mientras
+    que cada una obligaría a implementarla también en la base de datos el día
+    que el archivo JSONL deje de bastar.
+    """
+
+    def all(self) -> list[Usuario]:
+        """Todas las altas, en el orden en que se dieron."""
+        ...
+
+    def save(self, usuario: Usuario) -> None:
+        """Da de alta o sustituye por cédula. Guardar dos veces no duplica."""
+        ...
+
+    def delete(self, cedula: str) -> bool:
+        """Da de baja. Contesta si había algo que dar de baja."""
+        ...

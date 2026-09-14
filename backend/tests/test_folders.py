@@ -15,7 +15,11 @@ import pytest
 
 from resolutions.api.folders import (
     CONSUMED_DIR,
+    DELIVERY_WINDOW,
+    QUEUE_PREVIEW,
+    Delivery,
     FolderError,
+    FolderRun,
     FolderRunner,
     RunState,
     SourceDisposition,
@@ -172,8 +176,11 @@ class TestDelivering:
 
         run = drain(engine, tmp_path / "origen", tmp_path / "destino")
 
-        delivered = sorted(path.name for path in (tmp_path / "destino").glob("*.pdf"))
+        # Bajo la carpeta del documento del que salieron: en una caja de archivo
+        # hay doscientos PDF y todos producen los mismos nombres de salida.
+        delivered = sorted(path.name for path in (tmp_path / "destino").rglob("*.pdf"))
         assert delivered == ["00072__otra.pdf", "00086__acta.pdf"]
+        assert (tmp_path / "destino" / "a" / "00086__acta.pdf").is_file()
         assert run.delivered == 2
 
     def test_each_delivery_is_reported_with_the_document_it_came_from(
@@ -192,13 +199,15 @@ class TestDelivering:
     ):
         # The same resolution number can legitimately come out of two documents,
         # and losing one to the other is losing a file nobody asked to lose.
+        # Ahora ni siquiera hace falta renombrar: cada documento tiene su carpeta.
         put(tmp_path / "origen", "a.pdf", "b.pdf")
         engine, _ = runner(workspace, JobRegistry())
 
         drain(engine, tmp_path / "origen", tmp_path / "destino")
 
-        delivered = sorted(path.name for path in (tmp_path / "destino").glob("*.pdf"))
-        assert delivered == ["00086__acta (2).pdf", "00086__acta.pdf"]
+        assert (tmp_path / "destino" / "a" / "00086__acta.pdf").is_file()
+        assert (tmp_path / "destino" / "b" / "00086__acta.pdf").is_file()
+        assert not list((tmp_path / "destino").rglob("*(2)*"))
 
     def test_quarantine_travels_under_the_name_of_its_document(self, workspace, tmp_path):
         put(tmp_path / "origen", "expediente.pdf")
@@ -206,7 +215,7 @@ class TestDelivering:
 
         drain(engine, tmp_path / "origen", tmp_path / "destino")
 
-        assert (tmp_path / "destino" / "expediente_quarantine.pdf").is_file()
+        assert (tmp_path / "destino" / "expediente" / "expediente_quarantine.pdf").is_file()
 
     def test_a_failed_document_delivers_nothing(self, workspace, tmp_path):
         put(tmp_path / "origen", "roto.pdf")
@@ -733,3 +742,154 @@ class TestElEndpointQueVaciaLaPantalla:
         salud = client.get("/api/health").json()
         assert salud["api_revision"] >= 15
         assert "folder-run-clear" in salud["features"]
+
+
+def put_deep(root: Path, *relatives: str) -> None:
+    """PDFs de mentira en las rutas dadas, creando las carpetas que hagan falta."""
+    for relative in relatives:
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"%PDF-1.4 fake")
+
+
+class TestElArbolEntero:
+    """El archivo se entrega en cajas: una carpeta por expediente, cien en la ruta.
+
+    Pedirle al operador que apunte cien veces, una por carpeta, es pedirle que
+    haga a mano lo que la máquina sabe hacer.
+    """
+
+    def test_entra_en_las_subcarpetas(self, workspace, tmp_path):
+        origen, destino = tmp_path / "origen", tmp_path / "destino"
+        put_deep(
+            origen,
+            "EXPEDIENTE_045/documento.pdf",
+            "EXPEDIENTE_046/documento.pdf",
+            "EXPEDIENTE_047/anexos/documento.pdf",
+            "suelto.pdf",
+        )
+        registry = JobRegistry()
+        engine, processed = runner(workspace, registry)
+        drain(engine, origen, destino)
+        assert len(processed) == 4
+
+    def test_cada_documento_se_nombra_por_su_ruta(self, workspace, tmp_path):
+        """Con cien carpetas hay cien "documento.pdf": el nombre solo no distingue."""
+        origen, destino = tmp_path / "origen", tmp_path / "destino"
+        put_deep(origen, "EXPEDIENTE_045/documento.pdf", "EXPEDIENTE_046/documento.pdf")
+        registry = JobRegistry()
+        engine, processed = runner(workspace, registry)
+        drain(engine, origen, destino)
+        assert sorted(processed) == [
+            str(Path("EXPEDIENTE_045/documento.pdf")),
+            str(Path("EXPEDIENTE_046/documento.pdf")),
+        ]
+
+    def test_lo_ya_procesado_no_se_vuelve_a_tomar(self, workspace, tmp_path):
+        """`_procesados` a cualquier profundidad: bajo MOVE los originales van ahí."""
+        origen, destino = tmp_path / "origen", tmp_path / "destino"
+        put_deep(
+            origen,
+            "EXPEDIENTE_045/documento.pdf",
+            f"EXPEDIENTE_045/{CONSUMED_DIR}/viejo.pdf",
+            f"{CONSUMED_DIR}/otro.pdf",
+        )
+        registry = JobRegistry()
+        engine, processed = runner(workspace, registry)
+        drain(engine, origen, destino)
+        assert processed == [str(Path("EXPEDIENTE_045/documento.pdf"))]
+
+
+class TestElDestinoRefleja:
+    """Cien expedientes que producen el mismo nombre de archivo caben sin chocar.
+
+    Aplanados serían noventa y nueve "(2)", "(3)", "(4)" y ni una pista de cuál
+    vino de dónde: los archivos estarían y el trabajo no serviría.
+    """
+
+    def test_cada_carpeta_de_origen_tiene_la_suya_en_el_destino(self, workspace, tmp_path):
+        origen, destino = tmp_path / "origen", tmp_path / "destino"
+        put_deep(origen, "EXPEDIENTE_045/documento.pdf", "EXPEDIENTE_046/documento.pdf")
+        registry = JobRegistry()
+        engine, _ = runner(workspace, registry)
+        drain(engine, origen, destino)
+        assert (destino / "EXPEDIENTE_045" / "documento" / "00086__acta.pdf").exists()
+        assert (destino / "EXPEDIENTE_046" / "documento" / "00086__acta.pdf").exists()
+
+    def test_y_ninguno_se_renombra_con_un_numero(self, workspace, tmp_path):
+        """Que es lo que pasaba aplanando: el mismo nombre cien veces."""
+        origen, destino = tmp_path / "origen", tmp_path / "destino"
+        put_deep(origen, "A/documento.pdf", "B/documento.pdf", "C/documento.pdf")
+        registry = JobRegistry()
+        engine, _ = runner(workspace, registry)
+        drain(engine, origen, destino)
+        assert sorted(p.name for p in destino.rglob("*.pdf")) == ["00086__acta.pdf"] * 3
+
+    def test_un_pdf_de_la_raiz_sigue_cayendo_en_la_raiz(self, workspace, tmp_path):
+        origen, destino = tmp_path / "origen", tmp_path / "destino"
+        put_deep(origen, "suelto.pdf")
+        registry = JobRegistry()
+        engine, _ = runner(workspace, registry)
+        drain(engine, origen, destino)
+        assert (destino / "suelto" / "00086__acta.pdf").exists()
+
+
+class TestLosOriginalesApartadosConservanSuSitio:
+    def test_se_mueven_bajo_procesados_con_su_estructura(self, workspace, tmp_path):
+        """Aplanarlo mezclaría cien expedientes y haría irreversible el traslado."""
+        origen, destino = tmp_path / "origen", tmp_path / "destino"
+        put_deep(origen, "EXPEDIENTE_045/documento.pdf", "EXPEDIENTE_046/documento.pdf")
+        registry = JobRegistry()
+        engine, _ = runner(workspace, registry)
+        drain(engine, origen, destino, disposition=SourceDisposition.MOVE)
+        assert (origen / CONSUMED_DIR / "EXPEDIENTE_045" / "documento.pdf").exists()
+        assert (origen / CONSUMED_DIR / "EXPEDIENTE_046" / "documento.pdf").exists()
+        assert not (origen / "EXPEDIENTE_045" / "documento.pdf").exists()
+
+
+class TestLoQueViajaALaPantalla:
+    """Una carpeta de archivo real trae catorce mil PDF y setenta y ocho gigas.
+
+    Mandar la cola entera en cada aviso son 423 KB por documento consumido -- casi
+    seis gigas de tráfico en la corrida -- para que la vista enseñe cuarenta
+    nombres y tire el resto.
+    """
+
+    @staticmethod
+    def corrida(tmp_path) -> FolderRun:
+        return FolderRun(id="r1", source=tmp_path / "origen", destination=tmp_path / "destino")
+
+    def test_la_cola_viaja_acotada(self, tmp_path):
+        run = self.corrida(tmp_path)
+        run.queue = [f"CAJA_{i:05d}/documento.pdf" for i in range(QUEUE_PREVIEW + 25)]
+        assert len(run.as_dict()["queue"]) == QUEUE_PREVIEW
+
+    def test_pero_el_total_viaja_entero(self, tmp_path):
+        """Es lo único que la vista necesita de los que no enseña."""
+        run = self.corrida(tmp_path)
+        run.queue = ["x.pdf"] * (QUEUE_PREVIEW + 25)
+        assert run.as_dict()["queued"] == QUEUE_PREVIEW + 25
+
+    def test_una_cola_corta_viaja_entera(self, tmp_path):
+        run = self.corrida(tmp_path)
+        run.queue = ["a.pdf", "b.pdf"]
+        publicado = run.as_dict()
+        assert publicado["queue"] == ["a.pdf", "b.pdf"]
+        assert publicado["queued"] == 2
+
+    def test_las_entregas_ya_estaban_acotadas(self, tmp_path):
+        """`record` recorta su propia ventana y `delivered` lleva el total.
+
+        Se comprueba aquí para que nadie vuelva a añadir un tope encima del que
+        ya hay -- fue lo primero que se intentó, y sobraba.
+        """
+        run = self.corrida(tmp_path)
+        for index in range(DELIVERY_WINDOW + 40):
+            run.record(
+                Delivery(file_name=f"{index}.pdf", source_document="x.pdf", destination="d")
+            )
+        publicado = run.as_dict()
+        assert len(publicado["deliveries"]) == DELIVERY_WINDOW
+        assert publicado["delivered"] == DELIVERY_WINDOW + 40
+        # La vista lee de arriba abajo: lo último entregado es lo que interesa.
+        assert publicado["deliveries"][0]["file_name"] == f"{DELIVERY_WINDOW + 39}.pdf"

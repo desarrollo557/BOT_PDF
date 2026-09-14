@@ -27,13 +27,34 @@ class PyMuPDFPageSource:
         #: sirve a nadie para saber qué documento venía defectuoso.
         self._nombre = nombre or path.name
         self._document = pymupdf.open(path)
+        #: La capa de texto ya extraída, por número de página.
+        self._textos: dict[int, str] = {}
 
     @property
     def page_count(self) -> int:
         return self._document.page_count
 
     def text_of(self, page_number: int) -> str:
-        return self._document[page_number - 1].get_text("text")
+        """La capa de texto de una página, extraída una sola vez.
+
+        Se guarda lo extraído porque el mismo texto se pide tres veces por
+        página en el recorrido normal: al calcular la huella que decide los
+        cortes, al preguntarle al catálogo qué clase de papel es cada unidad, y
+        al buscarle la fecha. Medido sobre un expediente de 97 páginas eran 249
+        extracciones para 97 hojas, y MuPDF vuelve a recorrer la página entera
+        cada vez.
+
+        La memoria es acotada y muere con la fuente: el texto plano de ese
+        expediente son unos 300 KB, y un `PyMuPDFPageSource` vive lo que dura
+        un documento. Guardarlo aquí y no en la aplicación es deliberado --
+        el coste es de esta implementación, no del caso de uso, y así ninguna
+        firma de `application/` cambia para resolverlo.
+        """
+        guardado = self._textos.get(page_number)
+        if guardado is None:
+            guardado = self._document[page_number - 1].get_text("text")
+            self._textos[page_number] = guardado
+        return guardado
 
     def sheet_of(self, page_number: int) -> tuple[int, int]:
         """El tamaño físico de la hoja, en puntos enteros.
@@ -125,6 +146,10 @@ class PyMuPDFPageSource:
 
     def close(self) -> None:
         self._document.close()
+        # Y con él, el texto que se guardó de sus páginas: la fuente se cierra
+        # cuando el documento está entregado, y a partir de ahí nadie va a
+        # volver a pedirlo.
+        self._textos.clear()
         # Lo que MuPDF fue anotando mientras se leía el documento -- un perfil
         # de color roto, un objeto que no está donde dice -- traducido y con el
         # nombre del archivo delante. Aquí y no en cada página: las páginas se

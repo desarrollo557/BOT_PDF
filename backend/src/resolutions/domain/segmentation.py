@@ -19,7 +19,11 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from .errors import IntegrityError
-from .fingerprint import SHEET_TOLERANCE, PageFingerprint
+from .fingerprint import (
+    NOMBRES_QUE_DEBEN_COINCIDIR,
+    SHEET_TOLERANCE,
+    PageFingerprint,
+)
 
 
 class Verdict(StrEnum):
@@ -72,6 +76,11 @@ class Segment:
 class SegmentationResult:
     segments: list[Segment] = field(default_factory=list)
     boundaries: list[Boundary] = field(default_factory=list)
+    #: Las huellas de las que salió este reparto. Se conservan porque hay
+    #: preguntas que son de la caja entera y no de ninguno de sus documentos
+    #: -- de qué suscriptor es -- y volver a leer el PDF para contestarlas
+    #: sería leerlo dos veces.
+    fingerprints: list[PageFingerprint] = field(default_factory=list)
 
     @property
     def attachments(self) -> list[Boundary]:
@@ -207,9 +216,34 @@ def _decide(
     if trae_anexos:
         return Verdict.ATTACHMENT, "la anterior anuncia anexos y ésta no abre nada"
 
+    # La copia de un documento de identidad es siempre el soporte de otra cosa.
+    # Nadie archiva la cédula de alguien por sí misma: va detrás del escrito que
+    # esa persona firmó, del acta en que compareció o de la solicitud que
+    # presentó. Medido en un expediente real: la cédula de la peticionaria iba
+    # pegada al acta de notificación personal que acababa de firmar, y leerla
+    # como documento aparte dejaba en la entrega un PDF de una hoja con la
+    # fotocopia de un documento de identidad y sin nada que dijera de quién era.
+    #
+    # Va aquí y no entre los anexos de arriba porque aquélla es una regla sobre
+    # lo que la hoja dice de sí misma -- "ANEXOS", "evidencia fotográfica" -- y
+    # ésta es sobre lo que la hoja **es**.
+    if right.label in HOJAS_DE_SOPORTE and left.label not in HOJAS_DE_SOPORTE:
+        return _soporte_de_quien(left, right)
+
     # El papel diciendo su propio nombre. Después de la paginación, porque la
     # hoja 3 de un acta también lleva escrito "Acta de Irregularidad".
-    if right.label:
+    #
+    # Y sólo cuando ese nombre CAMBIA. Dos hojas seguidas que se titulan igual
+    # son casi siempre el mismo documento: un acta de cuatro hojas repite su
+    # rótulo en las cuatro, y cortando por él salían cuatro actas de una hoja.
+    # Dos documentos distintos del mismo tipo -- que los hay, dos avisos de
+    # publicación seguidos -- se separan por lo que de verdad los distingue, que
+    # es el consecutivo, y esa regla ya se aplicó mucho más arriba.
+    #
+    # Es también lo que evita la entrega que nadie quiere ver: dos archivos
+    # contiguos con el mismo tipo documental en el nombre, que es como se ve un
+    # documento partido por la mitad cuando se mira la carpeta.
+    if right.label and right.label != left.label:
         return Verdict.STARTS, f"la hoja se titula «{right.label}»"
 
     # Lo que sólo se imprime al abrir: a quién va dirigido, bajo qué asunto, con
@@ -273,8 +307,25 @@ def _decide(
     # no trae ninguna marca de abrir nada, es el cuerpo de aquélla. Va al final
     # porque es la más débil de todas -- se apoya en la ausencia de evidencia --
     # y sólo se la consulta cuando ninguna presencia de evidencia dijo nada.
-    if left.opening and not right.opening:
+    # Abrir es traer marcas de apertura o titularse. Las dos cosas dicen "aquí
+    # empieza algo", y lo que va detrás sin ninguna de ellas es su cuerpo: una
+    # liquidación titulada en su primera hoja sigue en la segunda con "Adjunto
+    # encontrará el Formato de Liquidación…" y ni una marca más.
+    if (left.opening or left.label) and not (right.opening or right.label):
         return Verdict.CONTINUES, "la anterior abre y ésta no abre nada"
+
+    # Y su hermana, para el medio de un escrito largo: dos hojas llenas de prosa
+    # y ninguna de las dos abre nada. En un expediente donde las aperturas van
+    # marcadas -- con consecutivo, con destinatario, con asunto, con un rótulo --
+    # dos páginas seguidas de prosa densa sin una sola de esas marcas son el
+    # cuerpo de lo mismo.
+    #
+    # Es la evidencia más débil que se admite, porque se apoya en ausencias, y de
+    # ahí las tres exigencias: prosa densa en las dos -- una hoja de cuatro líneas
+    # sin marcas puede ser cualquier cosa, y la ausencia sólo dice algo cuando hay
+    # bastante donde no encontrar nada --, y que la anterior no se haya despedido.
+    if _es_cuerpo(left) and _es_cuerpo(right) and not left.closes:
+        return Verdict.CONTINUES, "dos hojas llenas de prosa y ninguna abre nada"
 
     # Deliberately no rule on `case_code`. Every page of an expediente shares it,
     # so reading it as continuity welds the whole box into one document -- an
@@ -305,6 +356,61 @@ RUNON_TAIL_WORDS = 5
 #: Y cuántas necesita el arranque de la siguiente. Una frase retomada es una
 #: frase; "anexo dos" son dos palabras y una etiqueta.
 RUNON_HEAD_WORDS = 3
+
+
+#: Los tipos que nunca son un documento por sí solos: son el soporte de otro.
+#: Se nombran con el nombre del catálogo, en minúscula, que es como los devuelve
+#: la huella. La lista es corta a propósito -- sólo lo que no puede archivarse
+#: suelto -- porque cada entrada aquí es una hoja que deja de poder abrir nada.
+HOJAS_DE_SOPORTE = frozenset({"documento de identidad"})
+
+
+def _soporte_de_quien(left: PageFingerprint, right: PageFingerprint) -> tuple[Verdict, str]:
+    """A qué documento pertenece la copia de un documento de identidad.
+
+    No se supone: se comprueba contra la hoja anterior, que es lo que pidió el
+    operador y además lo correcto. Una cédula suelta detrás de un escrito es su
+    soporte cuando es la cédula de quien lo firmó; si es la de otra persona,
+    pertenece a otra cosa y unirla escondería un documento dentro de otro.
+
+    Se mira primero el número, que es el dato que no se presta a
+    interpretación. Cuando el escáner se lo comió -- pasa, y estas carátulas
+    llegan muy rotas -- se cae a los nombres propios en mayúscula, y se piden
+    dos coincidencias: un apellido corriente lo comparten hojas de asuntos
+    distintos del mismo municipio, y "CESAR" aquí es un departamento.
+
+    Y si no se puede comprobar de ninguna de las dos formas, se une igual. Es
+    la política de la casa aplicada a un caso concreto: la copia de una cédula
+    no es una unidad documental que nadie vaya a buscar por sí misma, así que
+    el error de unirla deja un anexo donde debía, y el de separarla deja en la
+    entrega un PDF de una hoja con la fotocopia de un documento de identidad y
+    sin nada que diga de quién es.
+    """
+    if right.cedula and left.cedula:
+        if right.cedula == left.cedula:
+            return Verdict.ATTACHMENT, f"la cédula {right.cedula} es la de la hoja anterior"
+        return (
+            Verdict.STARTS,
+            f"la cédula {right.cedula} no es la de la hoja anterior ({left.cedula})",
+        )
+
+    comunes = right.nombres & left.nombres
+    if len(comunes) >= NOMBRES_QUE_DEBEN_COINCIDIR:
+        cuales = ", ".join(sorted(comunes)[:2])
+        return Verdict.ATTACHMENT, f"la cédula es de {cuales}, como la hoja anterior"
+
+    return Verdict.ATTACHMENT, f"la hoja es un soporte y no un documento: {right.label}"
+
+
+def _es_cuerpo(page: PageFingerprint) -> bool:
+    """Si la hoja es prosa densa y no trae ninguna marca de abrir un documento."""
+    # `serial` queda fuera y `opening` lo cubre: el consecutivo cuenta como marca
+    # de apertura cuando está en la cabecera, y ahí es donde `opening` lo busca.
+    # Un escrito que cita en su cuerpo el consecutivo del oficio al que responde
+    # no es por eso una primera hoja.
+    return page.dense and not (
+        page.opening or page.label or page.place_and_date or page.pagination
+    )
 
 
 def _sentence_runs_on(left: PageFingerprint, right: PageFingerprint) -> bool:
@@ -437,4 +543,8 @@ def assemble(
             segments.append(Segment(page_numbers=[right.page_number], reason=boundary.reason))
 
 
-    return SegmentationResult(segments=segments, boundaries=list(boundaries))
+    return SegmentationResult(
+        segments=segments,
+        boundaries=list(boundaries),
+        fingerprints=list(fingerprints),
+    )

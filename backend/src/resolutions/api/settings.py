@@ -71,6 +71,11 @@ class Settings:
     #: job registry, so clearing the screen never erases the history of the work.
     ledger_path: Path = DEFAULT_ROOT / "inventory.jsonl"
 
+    #: Quién está dado de alta y con qué perfil. Junto al libro mayor y por el
+    #: mismo motivo: es el otro dato que tiene que sobrevivir a limpiar la
+    #: pantalla, a reiniciar el servicio y a borrar las salidas.
+    users_path: Path = DEFAULT_ROOT / "usuarios.jsonl"
+
     #: La plantilla oficial del FUID. Vacío significa la que viaja con el
     #: programa; se pone una ruta cuando la Universidad publique otra versión
     #: del formato y no se quiera esperar a un despliegue.
@@ -105,6 +110,9 @@ class Settings:
             ledger_path=Path(
                 os.environ.get("RESOLUTIONS_LEDGER", DEFAULT_ROOT / "inventory.jsonl")
             ),
+            users_path=Path(
+                os.environ.get("RESOLUTIONS_USERS", DEFAULT_ROOT / "usuarios.jsonl")
+            ),
             sweep_seconds=_float("RESOLUTIONS_SWEEP_SECONDS", 30.0),
             fuid_template=os.environ.get("RESOLUTIONS_FUID_TEMPLATE") or None,
             fuid_caja=os.environ.get("RESOLUTIONS_FUID_CAJA", "3269"),
@@ -117,6 +125,7 @@ class Settings:
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        self.users_path.parent.mkdir(parents=True, exist_ok=True)
 
     def as_worker_payload(self) -> dict[str, object]:
         """Only what a worker process needs, and nothing that cannot be pickled."""

@@ -66,6 +66,39 @@ describe('filtros', () => {
     expect(found[0].key).toBe('k');
   });
 
+  it('busca también por operador', () => {
+    // "Cualquier parámetro relacionado", que es como lo pidió el operador: el
+    // nombre del PDF, los números que produjo y quién lo procesó.
+    const entries = [
+      entry({ operator: 'Eduver Andrés' }),
+      entry({ key: 'b', operator: 'Ana', codes: [] })
+    ];
+    const found = apply(entries, { ...EMPTY_FILTERS, text: 'eduver' });
+    expect(found).toHaveLength(1);
+    expect(found[0].key).toBe('k');
+  });
+
+  it('varias palabras se exigen todas, en cualquier dato', () => {
+    // Es lo que permite acotar con una sola caja de texto: "eduver 00086"
+    // encuentra lo que procesó esa persona con ese número, sin que los dos
+    // términos tengan que estar en el mismo campo.
+    const entries = [
+      entry({ name: 'caja 12.pdf', operator: 'Eduver', codes: ['00086'] }),
+      entry({ key: 'b', name: 'caja 12.pdf', operator: 'Ana', codes: ['00086'] })
+    ];
+    const found = apply(entries, { ...EMPTY_FILTERS, text: 'eduver 00086' });
+    expect(found).toHaveLength(1);
+    expect(found[0].key).toBe('k');
+  });
+
+  it('las tildes no hacen falta para encontrar algo', () => {
+    // El OCR las pone y las quita a su antojo, y quien busca no va a
+    // escribirlas dos veces.
+    const acentuado = entry({ name: 'NOTIFICACIÓN.pdf', codes: [] });
+    expect(apply([acentuado], { ...EMPTY_FILTERS, text: 'notificacion' })).toHaveLength(1);
+    expect(apply([acentuado], { ...EMPTY_FILTERS, text: 'NOTIFICACIÓN' })).toHaveLength(1);
+  });
+
   it('lo archivado no se vuelve a filtrar por texto', () => {
     // The service already searched the whole ledger for it -- every code and
     // title, not the few a card carries. Filtering again here would drop rows

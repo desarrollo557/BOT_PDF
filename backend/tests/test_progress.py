@@ -110,8 +110,26 @@ class TestPageTelemetry:
             "verifying",
             "grouping",
             "assembling",
-            "done",
+            # Escribir el inventario del documento. Estuvo mucho tiempo en
+            # silencio -- la etapa existía en el enum y en la pantalla, y nadie
+            # la emitía -- así que el trabajo parecía terminado y quieto.
+            # «done» no lo dice el caso de uso sino el worker, después de la
+            # planilla y el FUID, como en las otras tres rutas.
+            "delivering",
         ]
+
+    def test_la_entrega_se_anuncia_antes_de_escribir_el_inventario(self):
+        """Que el aviso llegue antes del trabajo que describe, no después.
+
+        Una etapa anunciada al terminar no informa de nada: el tramo que tenía
+        que explicar ya pasó. Es lo último que dice el caso de uso: lo que
+        sigue -- la planilla, el FUID y el «done» -- lo anuncia el worker.
+        """
+        recorder = RecordingProgressReporter()
+        run([digital("RESOLUCION N° 0412/2024")], progress=recorder)
+        etapas = recorder.stages()
+        assert etapas[-1] == "delivering"
+        assert etapas.index("assembling") < etapas.index("delivering")
 
     def test_a_broken_reporter_never_breaks_the_document(self):
         class Hostile:

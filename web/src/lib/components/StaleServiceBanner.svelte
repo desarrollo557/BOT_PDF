@@ -29,7 +29,10 @@
       ['output-edit', 'editar y eliminar resoluciones'],
       ['browse', 'el selector de carpetas'],
       ['inventory-task', 'inventariar sin dividir'],
-      ['job-fuid', 'descargar el FUID de un documento']
+      ['job-fuid', 'descargar el FUID de un documento'],
+      ['perfiles', 'entrar con cédula y correo'],
+      ['usuarios', 'administrar quién entra'],
+      ['fuid-tabla', 'ver el FUID en pantalla']
     ].filter(([key]) => !has.has(key));
   });
 

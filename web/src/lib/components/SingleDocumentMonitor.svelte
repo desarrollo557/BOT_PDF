@@ -2,9 +2,10 @@
   import RunControls from '$lib/components/RunControls.svelte';
   import { onMount } from 'svelte';
   import PageRibbon from '$lib/components/PageRibbon.svelte';
+  import RunStats from '$lib/components/RunStats.svelte';
   import ThroughputChart from '$lib/components/ThroughputChart.svelte';
   import { STAGE_LABELS } from '$lib/rungs';
-  import { formatBytes, formatDuration } from '$lib/format';
+  import { unitFor } from '$lib/format';
   import type { Job } from '$lib/types';
 
   interface Props {
@@ -35,11 +36,15 @@
   /** Bytes of the source read so far, apportioned by pages. */
   const bytesDone = $derived(job.bytes ? Math.round((job.bytes * percent) / 100) : 0);
 
-  const eta = $derived.by(() => {
+  const remainingSeconds = $derived.by(() => {
     const rate = progress.pages_per_second;
     if (!rate || !progress.page_count || progress.pages_done >= progress.page_count) return null;
-    return formatDuration((progress.page_count - progress.pages_done) / rate);
+    return (progress.page_count - progress.pages_done) / rate;
   });
+
+  /** Lo que ya salió de este documento, llamado por su nombre. */
+  const units = $derived(job.report?.groups?.length ?? null);
+  const unitLabel = $derived(unitFor(job.report?.stats, units ?? 0));
 </script>
 
 <section class="monitor" class:running>
@@ -62,35 +67,18 @@
     <div class="fill" style:width={`${percent}%`}></div>
   </div>
 
-  <!-- Single current values: stat tiles, never a one-bar chart. -->
-  <dl class="tiles">
-    <div>
-      <dt>Tiempo</dt>
-      <dd class="hero tabular">{formatDuration(elapsedSeconds)}</dd>
-      <dd class="note">{eta ? `faltan ~${eta}` : running ? 'calculando…' : 'total'}</dd>
-    </div>
-    <div>
-      <dt>Almacenamiento</dt>
-      <dd class="hero tabular">{formatBytes(job.bytes)}</dd>
-      <dd class="note">
-        {job.bytes ? `${formatBytes(bytesDone)} leídos` : 'tamaño no registrado'}
-      </dd>
-    </div>
-    <div>
-      <dt>Páginas</dt>
-      <dd class="hero tabular">{progress.pages_done}<span>/{progress.page_count || '?'}</span></dd>
-      <dd class="note">{percent.toFixed(0)} % del documento</dd>
-    </div>
-    <div>
-      <dt>Velocidad</dt>
-      <dd class="hero tabular">{progress.pages_per_second.toFixed(1)}<span> p/s</span></dd>
-      <dd class="note">
-        {elapsedSeconds > 0 && job.bytes
-          ? `${formatBytes(job.bytes / elapsedSeconds)}/s`
-          : 'páginas por segundo'}
-      </dd>
-    </div>
-  </dl>
+  <RunStats
+    pagesDone={progress.pages_done}
+    pagesTotal={progress.page_count}
+    {units}
+    {unitLabel}
+    bytesTotal={job.bytes}
+    bytesDone={bytesDone}
+    rate={progress.pages_per_second}
+    {elapsedSeconds}
+    {remainingSeconds}
+    settled={!running}
+  />
 
   <ThroughputChart rate={progress.pages_per_second} live={running} />
 
@@ -160,45 +148,6 @@
     border-radius: 0 4px 4px 0;
     background: var(--s1);
     transition: width 0.3s ease-out;
-  }
-
-  .tiles {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
-    gap: 0.9rem 1.5rem;
-    margin: 0;
-  }
-  .tiles div {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    border-left: 2px solid var(--rule);
-    padding-left: 0.7rem;
-  }
-  .tiles dt {
-    font-size: 0.62rem;
-    font-weight: 600;
-    letter-spacing: 0.055em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-  .tiles dd {
-    margin: 0;
-  }
-  .hero {
-    font-size: 1.35rem;
-    font-weight: 550;
-    line-height: 1.2;
-    letter-spacing: -0.02em;
-  }
-  .hero span {
-    font-size: 0.8rem;
-    font-weight: 400;
-    color: var(--muted);
-  }
-  .note {
-    font-size: 0.72rem;
-    color: var(--ink-2);
   }
 
   @keyframes breathe {

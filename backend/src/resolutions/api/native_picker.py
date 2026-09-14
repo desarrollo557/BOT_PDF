@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
+import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -117,13 +118,79 @@ exit 0
 """
 
 
+#: Qué se le pregunta a una estación de ventanas, y la bandera que dice si
+#: puede enseñar algo. ``UOI_FLAGS`` es 1 y ``WSF_VISIBLE`` es 1 en el SDK de
+#: Windows; se escriben aquí para no arrastrar una dependencia por dos enteros.
+_UOI_FLAGS = 1
+_WSF_VISIBLE = 0x0001
+
+
+class _UserObjectFlags(ctypes.Structure):
+    """Lo que ``GetUserObjectInformationW`` devuelve para ``UOI_FLAGS``."""
+
+    _fields_ = (
+        ("fInherit", ctypes.c_int),
+        ("fReserved", ctypes.c_int),
+        ("dwFlags", ctypes.c_ulong),
+    )
+
+
+def _estacion_visible() -> bool | None:
+    """Si la estación de ventanas de este proceso puede mostrar algo en pantalla.
+
+    Devuelve ``None`` cuando no se pudo averiguar, que no es lo mismo que "no":
+    quien decide trata la duda como la máquina del operador, que es el caso
+    normal y el único en que esta función ha corrido nunca.
+
+    Un servicio de Windows no tiene escritorio. Corre en la estación
+    ``Service-0x0-3e7$``, que existe, acepta que le abran un diálogo y no la ve
+    nadie: la ventana queda esperando a una persona que no puede llegar, y la
+    petición HTTP se cuelga hasta el temporizador de cinco minutos. Es
+    exactamente la pregunta que hay que hacer, y no si hay una consola conectada.
+    """
+    try:
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        estacion = user32.GetProcessWindowStation()
+        if not estacion:
+            return None
+        flags = _UserObjectFlags()
+        devueltos = ctypes.c_ulong()
+        conseguido = user32.GetUserObjectInformationW(
+            estacion,
+            _UOI_FLAGS,
+            ctypes.byref(flags),
+            ctypes.sizeof(flags),
+            ctypes.byref(devueltos),
+        )
+        if not conseguido:
+            return None
+        return bool(flags.dwFlags & _WSF_VISIBLE)
+    except Exception:  # noqa: BLE001 - no poder preguntar no es una respuesta
+        logger.debug("no se pudo consultar la estación de ventanas", exc_info=True)
+        return None
+
+
 def available() -> bool:
-    """Si esta máquina puede mostrar una ventana."""
+    """Si esta máquina puede mostrar una ventana.
+
+    Tres cosas hacen falta, y antes se comprobaba sólo la primera: que sea
+    Windows, que haya un PowerShell que abra el diálogo -- es quien lo abre, y
+    sin él ``ask_directory`` sólo sabe fallar -- y que la estación de ventanas
+    del proceso sea visible.
+
+    La versión anterior terminaba en ``sys.stdout is not None or True``, que es
+    verdadero siempre. Ofrecía el explorador nativo en cualquier Windows, y
+    donde no había escritorio la pantalla llamaba a un diálogo que nadie iba a
+    poder contestar.
+    """
     if os.name != "nt":
         return False
-    # Un servicio sin escritorio no puede abrir nada; mejor decirlo que colgar
-    # una petición durante cinco minutos.
-    return sys.stdout is not None or True
+    # `ask_directory` arranca "powershell.exe" por nombre, así que se busca por
+    # nombre: preguntar por otra cosa sería comprobar algo distinto de lo que
+    # luego se ejecuta.
+    if shutil.which("powershell.exe") is None:
+        return False
+    return _estacion_visible() is not False
 
 
 def ask_directory(title: str, initial: str | None = None) -> str | None:

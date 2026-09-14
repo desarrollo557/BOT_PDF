@@ -273,6 +273,11 @@ class PyMuPDFAssembler:
         control: RunControl | None = None,
         progress: ProgressReporter | None = None,
         naming_prefix: str | None = RESOLUTION_PREFIX,
+        # Si el título de la unidad va dentro del nombre del archivo. En un
+        # libro de folios el título es de quién es el registro y hace falta;
+        # en una caja revuelta es de qué páginas salió, que ya está en el
+        # inventario y en el nombre sólo estorba.
+        con_titulo: bool = False,
         nombre: str | None = None,
     ) -> None:
         #: Escribir cuatrocientos archivos tarda tanto como leerlos. Sin un punto
@@ -288,6 +293,7 @@ class PyMuPDFAssembler:
         #: "RESOLUCION_728" a un folio de un libro de diplomas sería escribir en
         #: el disco algo que no es verdad.
         self._prefix = naming_prefix
+        self._con_titulo = con_titulo
         #: Cómo llamó el operador al documento de origen. Las subidas se guardan
         #: con un nombre generado, y un aviso sobre "6ea93142663d.pdf" no dice
         #: de qué archivo se está hablando.
@@ -323,7 +329,12 @@ class PyMuPDFAssembler:
                 # medio escribir.
                 self._control.check()
                 name = output_filename(
-                    group.code, group.title, budget=budget, prefix=self._prefix
+                    group.code,
+                    group.title,
+                    budget=budget,
+                    prefix=self._prefix,
+                    con_titulo=self._con_titulo,
+                    kind=group.kind,
                 )
                 target = destination / name
                 if self._write_guarded(origin, group.page_numbers, target, unwritable):

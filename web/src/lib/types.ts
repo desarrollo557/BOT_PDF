@@ -7,6 +7,18 @@ export interface Group {
   title: string | null;
   pages: number[];
   size: number;
+  /**
+   * Qué clase de papel resultó ser, con el nombre del catálogo del archivo.
+   * Sólo lo traen los documentos cortados de una caja, y vale "DOCUMENTO"
+   * cuando el papel no dijo qué era: sin tipo es mejor que con el de al lado.
+   */
+  type?: string | null;
+  /**
+   * La fecha más reciente escrita en el documento, en ISO. Es la que lo fecha
+   * -- la fecha extrema final del FUID -- y se lee de sus páginas, porque
+   * estos papeles son escaneos y no traen metadatos.
+   */
+  fecha?: string | null;
 }
 
 export interface Repair {
@@ -241,11 +253,21 @@ export interface InventoryRow {
   source_document: string;
   code: string;
   title: string | null;
+  /**
+   * Qué clase de papel es, con el nombre del catálogo del archivo. Lo pone la
+   * clasificación, que corre después del corte; nulo cuando nadie lo
+   * reconoció, y nulo a propósito -- sin tipo es mejor que con el de al lado.
+   */
+  type?: string | null;
+  /** La fecha del documento, leída de sus páginas. */
+  fecha?: string | null;
   file_name: string;
   page_count: number;
   first_page: number;
   last_page: number;
   pages: string;
+  /** Cuáles de esas páginas entraron como anexo, en rangos: "4-7". */
+  attachments?: string;
   job_id: string;
   operator: string | null;
 }
@@ -293,7 +315,10 @@ export interface FolderRun {
   started_at: string;
   finished_at: string | null;
   error: string | null;
+  /** Los primeros de la cola, no todos: una carpeta real trae catorce mil. */
   queue: string[];
+  /** Cuántos esperan de verdad, contados en el servicio. */
+  queued?: number;
   current: string | null;
   current_job_id: string | null;
   /** Every document the run created, in the order it took them. */
@@ -343,4 +368,36 @@ export interface FuidStatus {
   name: string | null;
   error: string | null;
   working: boolean;
+}
+
+/** Una persona dada de alta, tal como la describe el servicio. */
+export interface UsuarioApi {
+  cedula: string;
+  correo: string;
+  nombre: string;
+  perfil: 'administrador' | 'tecnico' | 'calidad';
+  perfil_label: string;
+  /** Sólo en la respuesta de entrar, y sólo la primera vez del archivo. */
+  primer_administrador?: boolean;
+}
+
+/**
+ * El FUID de un documento leído del disco, para enseñarlo en pantalla.
+ *
+ * `descargable` lo contesta el servicio y no lo deduce la pantalla: la decisión
+ * de qué perfil se lleva la planilla vive en un solo sitio, y aquí se obedece.
+ */
+export interface FuidTabla {
+  archivo: string;
+  oficina_productora: string;
+  objeto: string;
+  /** Un nombre por columna, con los dos niveles ya juntos. */
+  columnas: string[];
+  /** El nivel de arriba del formato, con cuántas columnas abarca cada uno. */
+  grupos: { titulo: string; ancho: number }[];
+  /** El nivel de abajo, vacío donde la columna no tiene dos niveles. */
+  subcolumnas: string[];
+  filas: string[][];
+  total: number;
+  descargable: boolean;
 }

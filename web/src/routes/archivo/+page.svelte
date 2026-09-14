@@ -55,29 +55,49 @@
   });
 
   let history = $state<ProcessedDocument[]>([]);
+  /** Cuántos documentos responden en el archivo, aunque no quepan todos en la página. */
+  let historyTotal = $state(0);
   let resolutions = $state<InventoryPage | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
 
-  $effect(() => {
-    void load(applied, grain);
-  });
-  // Reload when the live side finishes something, so it lands here by itself.
+  // Un solo efecto para las tres cosas que piden recargar -- lo que se busca,
+  // la pestaña y lo que termina en la otra pantalla -- porque dos efectos
+  // separados disparaban dos peticiones por cada cambio.
   $effect(() => {
     jobStore.finished.length;
     void load(applied, grain);
   });
 
+  /**
+   * Número de la última petición lanzada. Escribir «fac» y luego «factura»
+   * son dos peticiones en vuelo, y la primera puede llegar después: sin esto
+   * la pantalla se quedaba con el resultado de lo que ya no se buscaba.
+   */
+  let turno = 0;
+
   async function load(needle: string, which: Grain) {
+    const mio = ++turno;
     loading = true;
-    error = null;
     try {
-      if (which === 'documentos') history = (await fetchProcessedDocuments(needle)).documents;
-      else resolutions = await fetchInventory(needle, 400);
+      if (which === 'documentos') {
+        const page = await fetchProcessedDocuments(needle);
+        if (mio !== turno) return;
+        history = page.documents;
+        historyTotal = page.total;
+      } else {
+        const page = await fetchInventory(needle, 400);
+        if (mio !== turno) return;
+        resolutions = page;
+      }
+      // Se borra al primer resultado bueno y no al empezar a cargar: borrarlo
+      // antes hacía parpadear el aviso en cada tecla mientras el fallo seguía.
+      error = null;
     } catch (problem) {
+      if (mio !== turno) return;
       error = (problem as Error).message;
     } finally {
-      loading = false;
+      if (mio === turno) loading = false;
     }
   }
 
@@ -223,13 +243,29 @@
     rowError = null;
   }
 
+  /**
+   * Qué le falta a la corrección: los dos campos, siempre y para todos.
+   *
+   * Una corrección se manda entera o no se manda. Un título en blanco no es una
+   * decisión, es un campo que se quedó sin llenar, y se queda así para siempre
+   * porque nadie vuelve sobre una fila del inventario que ya pasó. Es la misma
+   * regla del resto de los formularios del programa.
+   */
+  const faltaElCodigo = $derived(!draftCode.trim());
+  const faltaElTitulo = $derived(!draftTitle.trim());
+  const puedeGuardarLaFila = $derived(!rowBusy && !faltaElCodigo && !faltaElTitulo);
+
   async function saveRow(row: { job_id: string; file_name: string }) {
+    // La misma guarda que apaga el botón, otra vez aquí: se puede pulsar con el
+    // teclado antes de que la pantalla repinte, y la regla tiene que estar
+    // donde se ejecuta la acción y no sólo donde se dibuja.
+    if (!puedeGuardarLaFila) return;
     rowBusy = true;
     rowError = null;
     try {
       await renameOutput(row.job_id, row.file_name, {
         code: draftCode.trim(),
-        title: draftTitle.trim() || null
+        title: draftTitle.trim()
       });
       editing = null;
       await load(applied, grain);
@@ -315,7 +351,7 @@
     <input
       class="search"
       type="search"
-      placeholder="Buscar por nombre de archivo…"
+      placeholder="Buscar por documento, operador o número…"
       bind:value={filters.text}
     />
 
@@ -491,6 +527,13 @@
       </div>
     </section>
   {/each}
+
+  {#if historyTotal > history.length}
+    <p class="muted small">
+      Mostrando {history.length} de {historyTotal} documentos del archivo. Refine la búsqueda
+      para ver el resto.
+    </p>
+  {/if}
 {:else}
   {#if summary}
     <section class="summary">
@@ -505,7 +548,7 @@
     <input
       class="search"
       type="search"
-      placeholder="Buscar por número, título, documento u operador…"
+      placeholder="Buscar por número, tipo, fecha, NIC, documento u operador…"
       bind:value={filters.text}
     />
     <a class="ghost" href={inventoryUrl(applied)} download>exportar a Excel</a>
@@ -529,6 +572,7 @@
         <thead>
           <tr>
             <th>Resolución</th>
+            <th>Tipo</th>
             <th>Título</th>
             <th>Documento de origen</th>
             <th>Operador</th>
@@ -540,20 +584,29 @@
           {#each rows as row (keyOf(row))}
             <tr>
               {#if editing === keyOf(row)}
-                <td colspan="6" class="editor">
+                <td colspan="7" class="editor">
                   <div class="fields">
                     <label>
                       <span>Número</span>
-                      <input class="code-input" bind:value={draftCode} spellcheck="false" />
+                      <input
+                        class="code-input"
+                        bind:value={draftCode}
+                        spellcheck="false"
+                        aria-invalid={faltaElCodigo}
+                      />
                     </label>
                     <label class="grow">
                       <span>Título</span>
-                      <input bind:value={draftTitle} placeholder="sin título" />
+                      <input
+                        bind:value={draftTitle}
+                        placeholder="obligatorio"
+                        aria-invalid={faltaElTitulo}
+                      />
                     </label>
                     <button
                       class="primary"
                       onclick={() => saveRow(row)}
-                      disabled={rowBusy || !draftCode.trim()}
+                      disabled={!puedeGuardarLaFila}
                     >
                       {rowBusy ? 'guardando…' : 'guardar'}
                     </button>
@@ -564,14 +617,35 @@
                       cancelar
                     </button>
                   </div>
+                  {#if faltaElCodigo || faltaElTitulo}
+                    <p class="falta inline">
+                      Falta {faltaElCodigo && faltaElTitulo
+                        ? 'el número y el título'
+                        : faltaElCodigo
+                          ? 'el número'
+                          : 'el título'}. Una corrección se manda entera.
+                    </p>
+                  {/if}
                   {#if rowError}<p class="error inline">{rowError}</p>{/if}
                 </td>
               {:else}
                 <td class="mono">{row.code}</td>
+                <!-- El tipo documental. Vacío es una respuesta: un tercio de una
+                     caja real no lleva rótulo legible, y la raya dice que nadie
+                     lo reconoció en vez de fingir que sí. -->
+                <td class="dim">{row.type ?? '—'}</td>
                 <td class="dim">{row.title ?? '—'}</td>
                 <td class="dim">{row.source_document}</td>
                 <td class="dim">{row.operator ?? '—'}</td>
-                <td class="mono">{row.pages} <span class="muted">({row.page_count})</span></td>
+                <td class="mono">
+                  {row.pages} <span class="muted">({row.page_count})</span>
+                  <!-- Qué páginas de esta unidad son anexos. Sin esto, un acta
+                       con sus cuatro fotografías se lee como un acta de cinco
+                       hojas. -->
+                  {#if row.attachments}
+                    <span class="muted">· anexos {row.attachments}</span>
+                  {/if}
+                </td>
                 <td class="tools">
                   <a href={downloadUrl(row.job_id, row.file_name)} download>PDF</a>
                   <button onclick={() => edit(row)}>editar</button>
@@ -643,6 +717,17 @@
     color: var(--critical);
   }
   .error.inline {
+    margin: 0.5rem 0 0;
+  }
+
+  /* Lo que falta no es un error: nadie se ha equivocado todavía. Va en el tono
+     apagado del resto de las indicaciones, no en el del fallo. */
+  .falta {
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+  .falta.inline {
     margin: 0.5rem 0 0;
   }
 

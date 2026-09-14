@@ -95,13 +95,30 @@ function since(period: Period): number {
  * Name or resolution number, because "00086" is at least as likely a search as
  * a file name -- it is the number printed on the document itself.
  */
+/** Sin tildes: el OCR las pone y las quita, y quien busca no las escribe dos veces. */
+function plano(texto: string): string {
+  return texto.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+/**
+ * Si una tarjeta responde a lo que se escribió en el buscador.
+ *
+ * Por cualquier dato que la describa -- el PDF del que salió, los números que
+ * produjo, quién lo procesó -- y exigiendo todas las palabras escritas, en
+ * cualquiera de ellos. Es la misma regla que aplica el servicio sobre el libro
+ * mayor, y tienen que ser la misma: si aquí se filtrara más estrecho, la
+ * pantalla escondería filas que la búsqueda encontró.
+ */
 function matches(entry: Entry, needle: string): boolean {
-  if (entry.name.toLowerCase().includes(needle)) return true;
-  return entry.codes.some((code) => code.toLowerCase().includes(needle));
+  const heno = plano([entry.name, entry.operator ?? '', ...entry.codes].join(' '));
+  return plano(needle)
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((termino) => heno.includes(termino));
 }
 
 export function apply(entries: Entry[], filters: Filters): Entry[] {
-  const needle = filters.text.trim().toLowerCase();
+  const needle = filters.text.trim();
   const from = since(filters.period);
 
   return entries.filter((entry) => {

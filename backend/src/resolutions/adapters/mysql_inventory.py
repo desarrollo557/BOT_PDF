@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Any
 
 from ..application.inventory import rows_of
+from ..domain.page import Provenance
 from .ledger import InventoryReads
 
 logger = logging.getLogger(__name__)
@@ -92,11 +93,13 @@ SELECT
     d.nombre                             AS source_document,
     r.codigo                             AS code,
     r.titulo                             AS title,
+    r.tipo                               AS type,
     r.archivo                            AS file_name,
     r.paginas                            AS page_count,
     r.pagina_desde                       AS first_page,
     r.pagina_hasta                       AS last_page,
     COALESCE(r.rango_paginas, '')        AS pages,
+    COALESCE(r.rango_anexos, '')         AS attachments,
     d.uuid                               AS job_id,
     o.nombre                             AS operator,
     d.paginas                            AS source_pages,
@@ -207,19 +210,22 @@ class MySQLInventory(InventoryReads):
                         cursor.execute(
                             """
                             INSERT IGNORE INTO resolucion
-                              (documento_id, codigo, titulo, archivo, paginas,
-                               pagina_desde, pagina_hasta, rango_paginas, creada_en)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                              (documento_id, codigo, titulo, tipo, archivo, paginas,
+                               pagina_desde, pagina_hasta, rango_paginas,
+                               rango_anexos, creada_en)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 documento_id,
                                 (item.get("code") or "")[:32],
                                 item.get("title") or None,
+                                (item.get("type") or None) and str(item["type"])[:80],
                                 (item.get("file_name") or "")[:255],
                                 int(item.get("page_count") or 0),
                                 int(item.get("first_page") or 0),
                                 int(item.get("last_page") or 0),
                                 _compact(item.get("page_numbers") or []) or None,
+                                _compact(item.get("attachments") or []) or None,
                                 moment,
                             ),
                         )
@@ -290,10 +296,16 @@ class MySQLInventory(InventoryReads):
                 review,
                 len(report.get("quarantine") or []),
                 len(report.get("repairs") or []),
-                int(provenance.get("text_layer") or 0),
-                int(provenance.get("ocr_band") or 0),
-                int(provenance.get("ocr_full") or 0),
-                int(provenance.get("vision") or 0),
+                # Con el enum del dominio y no con literales. Estas cuatro
+                # columnas estuvieron siempre en cero porque aquí se escribió
+                # "ocr_band", "ocr_full" y "vision" mientras el dominio contaba
+                # "ocr_region", "ocr_full_page" y "vision_model": dos listas de
+                # nombres que nadie obligaba a coincidir, y un `dict.get`
+                # que ante una clave ausente devuelve cero en vez de quejarse.
+                int(provenance.get(Provenance.TEXT_LAYER) or 0),
+                int(provenance.get(Provenance.OCR_REGION) or 0),
+                int(provenance.get(Provenance.OCR_FULL_PAGE) or 0),
+                int(provenance.get(Provenance.VISION_MODEL) or 0),
             ),
         )
         if cursor.lastrowid:

@@ -35,6 +35,7 @@ def huella(
     invoice: bool = False,
     identifiers: frozenset[tuple[str, str]] = frozenset(),
     legible: bool = True,
+    dense: bool = False,
     folio: int | None = None,
     sheet: tuple[int, int] | None = None,
     announces_attachments: bool = False,
@@ -56,6 +57,7 @@ def huella(
         invoice=invoice,
         identifiers=identifiers,
         legible=legible,
+        dense=dense,
         folio=folio,
         sheet=sheet,
         announces_attachments=announces_attachments,
@@ -904,3 +906,47 @@ class TestLaNumeracionSeLeePorPosicion:
 
         texto = "4. Que el CLIENTE reconoce. PRIMERO: el objeto. SEGUNDO: el plazo."
         assert fingerprint_page(54, texto).ordinals == (4, 1, 2)
+
+
+class TestTitularseTambienEsAbrir:
+    """Una liquidación titulada en su primera hoja sigue en la segunda.
+
+    La página 33 de "UPD2365925.pdf" se titula "Liquidación del Consumo No
+    registrado Pendiente Por Facturar", y la 34 arranca con "Adjunto encontrará
+    el Formato de Liquidación…" y ni una marca más. Son la misma pieza.
+    """
+
+    def test_el_cuerpo_sigue_a_la_hoja_que_se_titula(self):
+        izquierda = huella(33, label="liquidacion del consumo")
+        derecha = huella(34)
+        assert veredicto_entre(izquierda, derecha) is Verdict.CONTINUES
+
+    def test_pero_no_si_la_siguiente_tambien_se_titula(self):
+        izquierda = huella(33, label="liquidacion del consumo")
+        derecha = huella(34, label="constancia de visita")
+        assert veredicto_entre(izquierda, derecha) is Verdict.STARTS
+
+    def test_ni_si_la_siguiente_trae_marcas_de_apertura(self):
+        izquierda = huella(33, label="liquidacion del consumo")
+        derecha = huella(34, opening=("consecutivo",))
+        assert veredicto_entre(izquierda, derecha) is Verdict.STARTS
+
+
+class TestUnConsecutivoCitadoNoEsUnaCabecera:
+    """El escrito que responde a un oficio cita su consecutivo en el cuerpo.
+
+    La página 58 lleva "202270030080" a mitad de párrafo y arranca con "e) Y
+    cualquier otra que resulte pertinente…". Es la continuación de un alegato,
+    no la primera hoja de nada, y tratarla como cabecera la dejaba sin decidir.
+    """
+
+    def test_el_consecutivo_del_cuerpo_no_impide_que_la_hoja_sea_cuerpo(self):
+        izquierda = huella(57, dense=True)
+        derecha = huella(58, dense=True, serial="202270030080")
+        assert veredicto_entre(izquierda, derecha) is Verdict.CONTINUES
+
+    def test_pero_en_la_cabecera_si_abre(self):
+        """Ahí lo recoge `opening`, que sólo mira los primeros 300 caracteres."""
+        izquierda = huella(57, dense=True)
+        derecha = huella(58, dense=True, opening=("consecutivo",))
+        assert veredicto_entre(izquierda, derecha) is Verdict.STARTS

@@ -73,10 +73,11 @@ CON_PAGINACION = [
     "Cordialmente, YUDIS PAREDES Página 5 de 5",
 ]
 
-#: Tres hojas genuinamente ambiguas: prosa corrida, sin membrete, sin fecha, sin
-#: paginación, sin rótulo y sin anuncio de anexos. Tienen que ser largas o la
-#: regla de legibilidad las une por no haber dicho nada, que es otro caso
-#: distinto y tiene sus propias pruebas.
+#: Tres hojas genuinamente ambiguas: prosa sin membrete, sin fecha, sin
+#: paginación y sin rótulo. Cortas a propósito -- unos ciento cincuenta
+#: caracteres -- porque una hoja llena de prosa que no abre nada es el medio de
+#: un escrito y la cascada la une; con cuatro líneas no hay bastante donde no
+#: encontrar nada, y la duda sigue siendo una duda.
 SIN_MARCAS = [
     "El usuario manifiesta que no está de acuerdo con la lectura registrada "
     "por el operador de red durante el periodo objeto de revisión.",
@@ -247,3 +248,57 @@ class TestSePuedeParar:
                 Caja(SIN_MARCAS[:2])
             )
         assert oraculo.llamadas == 0
+
+
+class Espia:
+    """Un informador que sólo se queda con lo que le mandan."""
+
+    def __init__(self) -> None:
+        self.eventos: list = []
+
+    def emit(self, event) -> None:
+        self.eventos.append(event)
+
+
+class TestLaCintaDePaginas:
+    """La pantalla dibuja una casilla por hoja, y necesita dos eventos para eso.
+
+    `opened` crea las casillas y cada `page` pinta la suya. Esta ruta no emitía
+    ninguno de los dos, así que una caja separada por continuidad pasaba por la
+    vista sin enseñar nada. No era que fuese rápida: era muda.
+    """
+
+    def test_se_anuncia_la_apertura_con_el_total_de_hojas(self):
+        espia = Espia()
+        SegmentDocument(reporter=espia).run(Caja(CON_PAGINACION))
+        aperturas = [e for e in espia.eventos if str(e.stage) == "opened"]
+        assert len(aperturas) == 1
+        assert aperturas[0].page_count == 5
+
+    def test_hay_un_evento_por_hoja_y_en_orden(self):
+        espia = Espia()
+        SegmentDocument(reporter=espia).run(Caja(CON_PAGINACION))
+        paginas = [e for e in espia.eventos if str(e.stage) == "page"]
+        assert [e.page_number for e in paginas] == [1, 2, 3, 4, 5]
+
+    def test_una_hoja_con_texto_dice_que_se_leyo_de_la_capa(self):
+        espia = Espia()
+        SegmentDocument(reporter=espia).run(Caja(SIN_MARCAS[:1] * 2))
+        paginas = [e for e in espia.eventos if str(e.stage) == "page"]
+        assert all(e.provenance == "text_layer" for e in paginas)
+
+    def test_una_hoja_sin_texto_se_marca_como_tal(self):
+        """La cinta sirve para ver dónde el escaneo dejó páginas mudas.
+
+        Las dos marcas son las mismas que usa la otra ruta, así que la pantalla
+        no tiene que aprender un vocabulario por habilidad.
+        """
+        espia = Espia()
+        SegmentDocument(reporter=espia).run(Caja(["", SIN_MARCAS[0]]))
+        paginas = [e for e in espia.eventos if str(e.stage) == "page"]
+        assert paginas[0].provenance == "none"
+        assert paginas[1].provenance == "text_layer"
+
+    def test_sin_informador_no_se_emite_nada_ni_se_rompe(self):
+        resultado = SegmentDocument().run(Caja(CON_PAGINACION))
+        assert [s.page_numbers for s in resultado.segments] == [[1, 2, 3, 4, 5]]

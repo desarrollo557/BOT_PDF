@@ -42,6 +42,13 @@ class SourceDisposition(StrEnum):
     DELETE = "delete"
 
 
+#: Cuánta cola viaja a la pantalla en cada aviso. La pantalla enseña cuarenta
+#: nombres y un "y N más", así que mandar los catorce mil de una carpeta real es
+#: pagar 423 KB por aviso -- y hay un aviso por documento consumido -- para que
+#: el navegador tire 14.263 de ellos. El total va aparte, en `queued`, que es lo
+#: único que la vista necesita de los que no enseña.
+QUEUE_PREVIEW = 40
+
 #: Where originals go under ``MOVE``. Inside the source folder, so the operator
 #: finds them exactly where they left them.
 CONSUMED_DIR = "_procesados"
@@ -147,7 +154,9 @@ class FolderRun:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "error": self.error,
-            "queue": list(self.queue),
+            "queue": list(self.queue[:QUEUE_PREVIEW]),
+            # Cuántos esperan de verdad, que es lo que la pantalla cuenta.
+            "queued": len(self.queue),
             "current": self.current,
             "current_job_id": self.current_job_id,
             "job_ids": list(self.job_ids),
@@ -361,7 +370,7 @@ class FolderRunner:
                 pending = self._discover(run)
                 if pending:
                     run.state = RunState.PROCESSING
-                    run.queue = [path.name for path in pending]
+                    run.queue = [str(self._relative(run, path)) for path in pending]
                     self._publish(run)
                     for path in pending:
                         await self._consume(run, path)
@@ -399,17 +408,31 @@ class FolderRunner:
             self._publish(run)
 
     def _discover(self, run: FolderRun) -> list[Path]:
-        """PDFs in the source folder that have not been taken yet, in name order."""
+        """Los PDF del árbol de origen que nadie ha tomado todavía.
+
+        Por todo el árbol y no sólo por la carpeta que se indicó: el archivo se
+        entrega en cajas -- una carpeta por expediente, y cien expedientes en la
+        ruta que el operador señala -- y pedirle que apunte cien veces, una por
+        carpeta, es pedirle que haga a mano lo que la máquina sabe hacer.
+
+        En orden de ruta, no de nombre, que es lo que mantiene juntos los
+        documentos de una misma carpeta mientras se procesan.
+        """
         try:
-            entries = sorted(run.source.iterdir(), key=lambda path: path.name.lower())
+            entries = sorted(
+                run.source.rglob("*.[pP][dD][fF]"),
+                key=lambda path: str(path).lower(),
+            )
         except OSError as error:
             raise FolderError(f"No se pudo leer la carpeta de origen: {error}") from None
 
         pending: list[Path] = []
         for path in entries:
-            if path.name == CONSUMED_DIR or not path.is_file():
+            # `_procesados` a cualquier profundidad: bajo MOVE los originales se
+            # apartan ahí, y volver a tomarlos sería procesar dos veces lo mismo.
+            if CONSUMED_DIR in path.parts:
                 continue
-            if path.suffix.lower() != ".pdf":
+            if not path.is_file():
                 continue
             key = str(path)
             if key in run.seen:
@@ -419,10 +442,24 @@ class FolderRunner:
         run.discovered += len(pending)
         return pending
 
+    @staticmethod
+    def _relative(run: FolderRun, path: Path) -> Path:
+        """La ruta del PDF vista desde la carpeta de origen.
+
+        Es lo que se enseña y lo que se replica en el destino: con cien carpetas
+        hay cien archivos que se llaman igual, y "documento.pdf" a secas no dice
+        de cuál de ellas salió.
+        """
+        try:
+            return path.relative_to(run.source)
+        except ValueError:
+            return Path(path.name)
+
     async def _consume(self, run: FolderRun, path: Path) -> None:
         run.seen.add(str(path))
-        run.current = path.name
-        run.queue = [name for name in run.queue if name != path.name]
+        relativa = str(self._relative(run, path))
+        run.current = relativa
+        run.queue = [name for name in run.queue if name != relativa]
         self._publish(run)
 
         try:
@@ -430,13 +467,18 @@ class FolderRunner:
         except OSError:
             size = 0
         job = self._registry.create(
-            filename=path.name,
+            filename=relativa,
             source=path,
             owns_source=False,
             size=size,
             operator=run.operator,
             task=run.task,
             oracle=run.oracle,
+            # Adónde irá lo que produzca. Se calcula antes de procesarlo, con
+            # el nombre del origen, y la entrega lo recalcula después con el
+            # NIC si el expediente lo trae: lo que va en la planilla es dónde
+            # quedará, que es lo que el operador necesita saber.
+            destination=str(self._output_dir(run, path)),
         )
         run.current_job_id = job.id
         run.job_ids.append(job.id)
@@ -459,6 +501,35 @@ class FolderRunner:
         run.current_job_id = None
         self._publish(run)
 
+    @staticmethod
+    def _output_dir(run: FolderRun, origin: Path, job: Job | None = None) -> Path:
+        """Dónde caen los PDF que salen de un documento de origen.
+
+        Una carpeta por documento, dentro de la carpeta de la que salió:
+
+            DESTINO / 108C000094 / 5825181 / 01_DERECHO-DE-PETICION.pdf
+
+        Los dos niveles hacen falta y por motivos distintos. El de la carpeta,
+        porque el archivo se entrega en cajas y cincuenta cajas no caben en un
+        montón. El del documento, porque dentro de una caja hay doscientos PDF y
+        **todos** producen un "01_...": aplanarlos serían ciento noventa y
+        nueve "(2)", "(3)", "(4)" hasta el tope de mil, y a partir de ahí
+        archivos que se pierden sin decirlo.
+
+        El segundo nivel se llama con el **NIC** cuando el expediente lo trae,
+        y así lo pidió el operador. Es el número con que el archivo identifica
+        al suscriptor, lo llevan todas las hojas de la caja y es lo que alguien
+        va a teclear para buscarla dentro de tres años; el nombre del PDF de
+        origen es el que le puso el escáner. Sin NIC legible se cae al nombre
+        del origen, que es lo que había antes y siempre existe.
+        """
+        relativa = FolderRunner._relative(run, origin)
+        nic = str((job.report or {}).get("nic") or "").strip() if job else ""
+        # Sólo dígitos: es lo que un NIC es, y así ningún resto de OCR acaba
+        # convertido en un nombre de carpeta imposible.
+        carpeta = nic if nic.isdigit() else relativa.stem
+        return run.destination / relativa.parent / carpeta
+
     def _deliver(self, run: FolderRun, job: Job, origin: Path) -> None:
         """Copy this document's resolutions into the destination folder.
 
@@ -469,12 +540,25 @@ class FolderRunner:
         """
         produced = self._settings.output_dir / job.id
         try:
-            files = sorted(produced.glob("*.pdf"))
+            # Recursivo: los documentos de una caja se escriben en una carpeta
+            # con el nombre de la caja, y con `glob` la entrega salía vacía sin
+            # decir por qué -- ni un archivo copiado, ni un error que mirar.
+            files = sorted(produced.rglob("*.pdf"))
         except OSError:
             files = []
 
+        carpeta = self._output_dir(run, origin, job)
+        try:
+            carpeta.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            logger.warning("no se pudo crear %s: %s", carpeta, error)
+            carpeta = run.destination
+
         self._record(run, job, origin)
-        self._write_sheet(run, job)
+        self._write_sheet(run, job, carpeta)
+        # Y la que quedó junto al trabajo, ahora que se sabe dónde acabaron
+        # los PDF: es la que baja el botón de la pantalla.
+        self._corregir_planilla_del_trabajo(run, job, carpeta)
 
         for source_file in files:
             name = source_file.name
@@ -483,7 +567,7 @@ class FolderRunner:
                 # source in the folder would deliver a file called the same.
                 name = f"{origin.stem}{name}"
             try:
-                target = unique_path(run.destination, name)
+                target = unique_path(carpeta, name)
                 shutil.copy2(source_file, target)
             except OSError as error:
                 logger.warning("could not deliver %s: %s", source_file.name, error)
@@ -491,19 +575,33 @@ class FolderRunner:
             run.record(
                 Delivery(
                     file_name=target.name,
-                    source_document=origin.name,
-                    destination=str(run.destination),
+                    source_document=str(self._relative(run, origin)),
+                    destination=str(carpeta),
                 )
             )
             self._publish(run)
 
-    def _write_sheet(self, run: FolderRun, job: Job) -> None:
-        """Write this document's delivery note into the destination folder.
+    def _write_sheet(
+        self,
+        run: FolderRun,
+        job: Job,
+        carpeta: Path | None = None,
+        *,
+        en: Path | None = None,
+    ) -> None:
+        """Write this document's delivery note, saying where it was delivered.
 
         Written here rather than copied from the output directory, because the
         copy made at processing time cannot know where the PDFs were going -- it
         would arrive in the destination saying the document was never delivered
         to a folder, next to the folder it was delivered to.
+
+        ``en`` separa dónde se escribe de qué destino se declara, y hace falta
+        por el mismo motivo: la carpeta definitiva lleva el NIC del expediente,
+        que no se conoce hasta haber leído el documento. Así la planilla que
+        queda junto al trabajo -- la que baja el botón de la pantalla -- se
+        puede reescribir después con la carpeta en la que los PDF acabaron de
+        verdad, en vez de con la que se supuso antes de empezar.
         """
         if not job.report:
             return
@@ -512,15 +610,39 @@ class FolderRunner:
         except ImportError:
             return
         try:
+            destino = carpeta or run.destination
             ExcelInventory().write(
                 job.report,
-                run.destination,
-                delivered_to=str(run.destination),
+                en or destino,
+                delivered_to=str(destino),
                 operator=run.operator,
                 processed_at=job.finished_at,
             )
         except Exception:  # noqa: BLE001 - the PDFs are already delivered
             logger.warning("could not write the sheet for %s", job.filename, exc_info=True)
+
+    def _corregir_planilla_del_trabajo(self, run: FolderRun, job: Job, carpeta: Path) -> None:
+        """Reescribe la planilla que quedó junto al trabajo, con el destino real.
+
+        El worker la escribió al terminar, y en ese momento el destino que
+        conocía era el que se calculó al crear el trabajo: con el nombre del PDF
+        de origen, porque el NIC del expediente todavía no se había leído. La
+        entrega sí lo sabe, y es la que puede dejarla diciendo la verdad.
+
+        Se sobrescribe la que hay, en su sitio, para que no queden dos planillas
+        del mismo documento discrepando sobre dónde está.
+        """
+        try:
+            from ..adapters.excel_inventory import SUFFIX
+        except ImportError:
+            return
+        produced = self._settings.output_dir / job.id
+        try:
+            hojas = sorted(produced.rglob(f"*{SUFFIX}"))
+        except OSError:
+            return
+        if hojas:
+            self._write_sheet(run, job, carpeta, en=hojas[0].parent)
 
     @staticmethod
     def _record(run: FolderRun, job: Job, origin: Path) -> None:
@@ -562,8 +684,12 @@ class FolderRunner:
             if run.disposition is SourceDisposition.DELETE:
                 path.unlink(missing_ok=True)
                 return
-            consumed = run.source / CONSUMED_DIR
-            consumed.mkdir(exist_ok=True)
+            # Bajo `_procesados`, con la misma estructura que tenían. Aplanarlo
+            # mezclaría cien expedientes en una carpeta y haría irreversible lo
+            # que hasta ahora sólo era moverlos de sitio.
+            relativa = self._relative(run, path)
+            consumed = run.source / CONSUMED_DIR / relativa.parent
+            consumed.mkdir(parents=True, exist_ok=True)
             shutil.move(str(path), str(unique_path(consumed, path.name)))
         except OSError as error:
             # Failing to tidy up is never a reason to lose the split that

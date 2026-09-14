@@ -18,11 +18,14 @@ llega después, sobre documentos que ya tienen bordes.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import replace
 
 from ..domain.grouping import GroupingResult, PageGroup
+from ..domain.naming import DOCUMENT_PREFIX
 from ..domain.resolution_code import ResolutionCode
 from ..domain.segmentation import Segment
+from .clasificacion import describir
 
 #: Lo menos que puede ocupar el número de un documento. Una caja de seis piezas
 #: sale igual de ordenada con un solo dígito, pero "01" se lee como un puesto en
@@ -55,7 +58,10 @@ def _subject(segment: Segment) -> str:
     return f"páginas {first}-{last}"
 
 
-def group_by_segment(segments: Sequence[Segment]) -> GroupingResult:
+def group_by_segment(
+    segments: Sequence[Segment],
+    texto_de: Callable[[int], str] | None = None,
+) -> GroupingResult:
     """Un grupo por documento, en el orden en que venían en la caja.
 
     Nada va a cuarentena: la segmentación ya cubrió la caja entera -- su propio
@@ -68,7 +74,7 @@ def group_by_segment(segments: Sequence[Segment]) -> GroupingResult:
     poblados = [segment for segment in segments if segment.page_numbers]
     width = max(MIN_ORDINAL_WIDTH, len(str(len(poblados))))
 
-    return GroupingResult(
+    crudos = GroupingResult(
         groups=[
             PageGroup(
                 code=_identity(position, width),
@@ -76,5 +82,19 @@ def group_by_segment(segments: Sequence[Segment]) -> GroupingResult:
                 title=_subject(segment),
             )
             for position, segment in enumerate(poblados, start=1)
+        ]
+    )
+    # El tipo lo pone el clasificador, que es el mismo para todas las rutas: la
+    # pregunta "qué papel es esto" no depende de cómo se haya cortado.
+    tipificados = describir(crudos, texto_de)
+
+    # Y siempre hay algo que escribir en el nombre. "DOCUMENTO" cuando ni el
+    # papel ni el contexto dijeron nada: dejarlo vacío sacaría el archivo
+    # llamado sólo por su número, y entonces la carpeta no distingue lo que
+    # nadie reconoció de lo que nadie miró.
+    return GroupingResult(
+        groups=[
+            group if group.kind else replace(group, kind=DOCUMENT_PREFIX)
+            for group in tipificados.groups
         ]
     )
