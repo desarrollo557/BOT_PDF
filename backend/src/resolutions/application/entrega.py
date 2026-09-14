@@ -24,7 +24,7 @@ Cada arreglo había que acordarse de hacerlo cuatro veces.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..domain.grouping import GroupingResult
@@ -43,6 +43,12 @@ class Entregado:
     assembly: AssemblyResult
     #: Una fila por archivo que existe de verdad.
     inventario: Inventory
+    #: Qué páginas de cada unidad llegaron como anexo y no como cuerpo, por
+    #: código de unidad. Se guarda tal como llegó y no se recalcula: quien sabe
+    #: que una hoja es un anexo es la ruta que decidió el corte, y esa relación
+    #: no sobrevive a la agrupación -- un grupo es una lista de páginas y no
+    #: distingue el acta de sus fotografías.
+    anexos: dict[str, list[int]] = field(default_factory=dict)
 
     @property
     def salidas(self) -> list[str]:
@@ -62,11 +68,6 @@ class Entregado:
     @property
     def grupos_para_el_informe(self) -> list[dict[str, object]]:
         """Las unidades como las lee la pantalla."""
-        anexos = {
-            grupo.code.value: list(grupo.attachment_pages)
-            for grupo in self.agrupacion.groups
-            if getattr(grupo, "attachment_pages", None)
-        }
         return [
             {
                 "code": grupo.code.value,
@@ -79,7 +80,7 @@ class Entregado:
                 "fecha": grupo.fecha,
                 "pages": list(grupo.page_numbers),
                 "size": grupo.size,
-                "attachments": anexos.get(grupo.code.value, []),
+                "attachments": list(self.anexos.get(grupo.code.value, [])),
             }
             for grupo in self.agrupacion.groups
         ]
@@ -152,4 +153,9 @@ def entregar(
         folder=destino.carpeta,
         attachments=anexos,
     )
-    return Entregado(agrupacion=descrita, assembly=assembly, inventario=inventario)
+    return Entregado(
+        agrupacion=descrita,
+        assembly=assembly,
+        inventario=inventario,
+        anexos={code: list(pages) for code, pages in (anexos or {}).items()},
+    )

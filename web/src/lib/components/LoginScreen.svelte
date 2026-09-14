@@ -2,24 +2,32 @@
   import { session } from '$lib/session.svelte';
 
   /**
-   * Entry, not authentication.
+   * Entrada, no autenticación.
    *
-   * The screen says so out loud rather than implying a security it does not
-   * have. Anyone at this machine can type any name; what the name buys is that
-   * every document carries who ran it, and that a shift has a boundary.
+   * Dos datos y ninguno más, que fue lo que pidió el archivo: la cédula y el
+   * correo, que son los dos que ya tiene de cada empleado y que nadie tiene que
+   * recordar aparte. Sin contraseña, y la pantalla lo dice en vez de insinuar
+   * una seguridad que no hay.
+   *
+   * El perfil no se elige aquí. Lo contesta el servicio a partir del alta que
+   * hizo el administrador, y por eso este formulario no tiene dónde escogerlo:
+   * un selector de perfil en la pantalla de entrada sería pedirle a cada uno
+   * que declare qué se le permite.
    */
-  let name = $state('');
-  let station = $state('');
+  let cedula = $state('');
+  let correo = $state('');
   let attempted = $state(false);
 
-  const valid = $derived(name.trim().length >= 2);
+  const cedulaValida = $derived(cedula.replace(/\D/g, '').length >= 5);
+  const correoValido = $derived(/^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/.test(correo.trim()));
+  const valid = $derived(cedulaValida && correoValido);
   const resuming = $derived(session.state === 'idle');
 
-  function submit(event: Event) {
+  async function submit(event: Event) {
     event.preventDefault();
     attempted = true;
-    if (!valid) return;
-    session.open(name, station || null);
+    if (!valid || session.entrando) return;
+    await session.open(cedula, correo);
   }
 </script>
 
@@ -49,49 +57,67 @@
     {#if resuming && session.operator}
       <div class="resume">
         <p class="lead">
-          La sesión de <b>{session.operator.name}</b> quedó inactiva.
+          La sesión de <b>{session.name}</b> quedó inactiva.
         </p>
         <p class="muted">
           Nadie la bloqueó: sólo pasó una hora sin actividad y el sistema dejó de atribuirle
-          trabajo. Continúe, o entre con otro nombre.
+          trabajo. Continúe, o entre con otra cédula.
         </p>
         <div class="actions">
           <button class="primary" onclick={() => session.resume()}>
-            Continuar como {session.operator.name}
+            Continuar como {session.name}
           </button>
-          <button class="ghost" onclick={() => session.close()}>Entrar con otro nombre</button>
+          <button class="ghost" onclick={() => session.close()}>Entrar con otra cédula</button>
         </div>
       </div>
     {:else}
       <form onsubmit={submit}>
         <label>
-          <span>Su nombre</span>
+          <span>Cédula</span>
           <input
-            bind:value={name}
-            placeholder="Ana Martínez"
-            autocomplete="name"
+            bind:value={cedula}
+            placeholder="1 047 382 991"
+            inputmode="numeric"
+            autocomplete="username"
             spellcheck="false"
-            aria-invalid={attempted && !valid}
+            aria-invalid={attempted && !cedulaValida}
           />
-          {#if attempted && !valid}
-            <small class="bad">Escriba al menos dos caracteres.</small>
+          {#if attempted && !cedulaValida}
+            <small class="bad">Escriba su número de cédula.</small>
           {/if}
         </label>
 
         <label>
-          <span>Puesto <i>(opcional)</i></span>
-          <input bind:value={station} placeholder="Archivo central" spellcheck="false" />
+          <span>Correo</span>
+          <input
+            bind:value={correo}
+            placeholder="nombre@unicartagena.edu.co"
+            type="email"
+            autocomplete="email"
+            spellcheck="false"
+            aria-invalid={attempted && !correoValido}
+          />
+          {#if attempted && !correoValido}
+            <small class="bad">Escriba su correo electrónico.</small>
+          {/if}
         </label>
 
-        <button class="primary wide" type="submit" disabled={!valid}>Entrar</button>
+        {#if session.error}
+          <p class="bad rejected">{session.error}</p>
+        {/if}
+
+        <button class="primary wide" type="submit" disabled={!valid || session.entrando}>
+          {session.entrando ? 'Entrando…' : 'Entrar'}
+        </button>
       </form>
 
-      <!-- Said plainly, on the screen, so nobody builds a habit on a promise
-           the software is not making. -->
+      <!-- Dicho en la pantalla, para que nadie construya una costumbre sobre
+           una promesa que el programa no está haciendo. -->
       <p class="disclaimer">
-        <b>Sin contraseña.</b> Esto no restringe el acceso ni protege nada: identifica quién está
-        operando, para que cada documento procesado quede con su nombre y los turnos se puedan
-        separar. Cualquiera en este equipo puede entrar con cualquier nombre.
+        <b>Sin contraseña.</b> Esto no restringe el acceso ni protege nada frente a quien quiera
+        saltárselo: identifica quién está operando, para que cada documento procesado quede con
+        su nombre, y aplica el perfil que le asignó el administrador. Quien conozca la cédula y el
+        correo de un compañero puede entrar como él.
       </p>
     {/if}
 
@@ -223,6 +249,14 @@
   .bad {
     font-size: 0.74rem;
     color: var(--critical);
+  }
+  .rejected {
+    margin: 0;
+    border: 1px solid var(--critical);
+    border-radius: 9px;
+    padding: 0.55rem 0.75rem;
+    line-height: 1.5;
+    background: color-mix(in oklab, var(--critical) 10%, transparent);
   }
 
   .primary {

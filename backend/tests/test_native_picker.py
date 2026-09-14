@@ -59,10 +59,10 @@ class TestDisponibilidad:
 
 class TestElEndpoint:
     def test_devuelve_la_ruta_elegida(self, client, monkeypatch, tmp_path):
-        from resolutions.api import main
+        from resolutions.api import native_picker
 
         monkeypatch.setattr(
-            main.native_picker, "ask_directory", lambda title, initial: str(tmp_path)
+            native_picker, "ask_directory", lambda title, initial: str(tmp_path)
         )
         payload = client.post("/api/folders/pick", json={"title": "Origen"}).json()
         assert payload["path"] == str(tmp_path)
@@ -70,9 +70,9 @@ class TestElEndpoint:
 
     def test_cancelar_no_es_un_error(self, client, monkeypatch):
         # Cerrar el diálogo sin elegir es una respuesta legítima, no un fallo.
-        from resolutions.api import main
+        from resolutions.api import native_picker
 
-        monkeypatch.setattr(main.native_picker, "ask_directory", lambda title, initial: None)
+        monkeypatch.setattr(native_picker, "ask_directory", lambda title, initial: None)
         payload = client.post("/api/folders/pick", json={}).json()
         assert payload["path"] is None
         assert payload["cancelled"] is True
@@ -80,12 +80,12 @@ class TestElEndpoint:
     def test_sin_escritorio_responde_501_y_no_500(self, client, monkeypatch):
         # 501 es lo que la pantalla mira para caer en su propio explorador. Un
         # 500 la dejaría mostrando un error en vez de la alternativa.
-        from resolutions.api import main
+        from resolutions.api import native_picker
 
         def sin_ventana(title, initial):
             raise native_picker.PickerUnavailable("No hay escritorio")
 
-        monkeypatch.setattr(main.native_picker, "ask_directory", sin_ventana)
+        monkeypatch.setattr(native_picker, "ask_directory", sin_ventana)
         response = client.post("/api/folders/pick", json={})
         assert response.status_code == 501
         assert "escritorio" in response.json()["detail"]
@@ -93,7 +93,7 @@ class TestElEndpoint:
     def test_la_carpeta_inicial_llega_limpia(self, client, monkeypatch, tmp_path):
         # La misma tolerancia que el resto: si viene entrecomillada, se limpia
         # antes de que el diálogo intente abrirla.
-        from resolutions.api import main
+        from resolutions.api import native_picker
 
         visto = {}
 
@@ -101,12 +101,12 @@ class TestElEndpoint:
             visto["initial"] = initial
             return None
 
-        monkeypatch.setattr(main.native_picker, "ask_directory", recordar)
+        monkeypatch.setattr(native_picker, "ask_directory", recordar)
         client.post("/api/folders/pick", json={"initial": f'"{tmp_path}"'})
         assert visto["initial"] == str(tmp_path)
 
     def test_un_titulo_absurdo_se_recorta(self, client, monkeypatch):
-        from resolutions.api import main
+        from resolutions.api import native_picker
 
         visto = {}
 
@@ -114,7 +114,7 @@ class TestElEndpoint:
             visto["title"] = title
             return None
 
-        monkeypatch.setattr(main.native_picker, "ask_directory", recordar)
+        monkeypatch.setattr(native_picker, "ask_directory", recordar)
         client.post("/api/folders/pick", json={"title": "x" * 500})
         assert len(visto["title"]) == 120
 

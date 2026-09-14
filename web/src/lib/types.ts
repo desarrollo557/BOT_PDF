@@ -369,3 +369,35 @@ export interface FuidStatus {
   error: string | null;
   working: boolean;
 }
+
+/** Una persona dada de alta, tal como la describe el servicio. */
+export interface UsuarioApi {
+  cedula: string;
+  correo: string;
+  nombre: string;
+  perfil: 'administrador' | 'tecnico' | 'calidad';
+  perfil_label: string;
+  /** Sólo en la respuesta de entrar, y sólo la primera vez del archivo. */
+  primer_administrador?: boolean;
+}
+
+/**
+ * El FUID de un documento leído del disco, para enseñarlo en pantalla.
+ *
+ * `descargable` lo contesta el servicio y no lo deduce la pantalla: la decisión
+ * de qué perfil se lleva la planilla vive en un solo sitio, y aquí se obedece.
+ */
+export interface FuidTabla {
+  archivo: string;
+  oficina_productora: string;
+  objeto: string;
+  /** Un nombre por columna, con los dos niveles ya juntos. */
+  columnas: string[];
+  /** El nivel de arriba del formato, con cuántas columnas abarca cada uno. */
+  grupos: { titulo: string; ancho: number }[];
+  /** El nivel de abajo, vacío donde la columna no tiene dos niveles. */
+  subcolumnas: string[];
+  filas: string[][];
+  total: number;
+  descargable: boolean;
+}

@@ -2,7 +2,7 @@
   import '../app.css';
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { setOperator } from '$lib/api';
+  import { setIdentidad, setOperator } from '$lib/api';
   import CompletionReport from '$lib/components/CompletionReport.svelte';
   import ConsoleDrawer from '$lib/components/ConsoleDrawer.svelte';
   import StaleServiceBanner from '$lib/components/StaleServiceBanner.svelte';
@@ -28,9 +28,14 @@
     };
   });
 
-  // One writer for attribution: the session decides, the client sends.
+  // One writer for attribution: the session decides, the client sends. Van los
+  // dos juntos porque contestan preguntas distintas de la misma persona: el
+  // nombre es la etiqueta que llega al libro mayor y la cédula es con lo que el
+  // servicio averigua qué perfil tiene.
   $effect(() => {
-    setOperator(session.state === 'active' ? session.name : null);
+    const dentro = session.state === 'active';
+    setOperator(dentro ? session.name : null);
+    setIdentidad(dentro ? session.cedula : null);
   });
 
   const inside = $derived(session.state === 'active');
@@ -71,7 +76,21 @@
       match: (path: string) => path.startsWith('/revision'),
       badge: pending || null,
       tone: 'warn'
-    }
+    },
+    // La cuarta sólo existe para quien puede usarla. Una pestaña que lleva a un
+    // 403 no informa de nada: enseña una puerta que no abre y deja al operador
+    // preguntándose qué hizo mal.
+    ...(session.esAdministrador
+      ? [
+          {
+            href: '/usuarios',
+            label: 'Usuarios',
+            match: (path: string) => path.startsWith('/usuarios'),
+            badge: null,
+            tone: 'quiet'
+          }
+        ]
+      : [])
   ]);
 </script>
 

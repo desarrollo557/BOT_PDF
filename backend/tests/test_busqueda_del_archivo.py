@@ -13,7 +13,7 @@ import pytest
 
 pytest.importorskip("httpx")
 
-from resolutions.api.main import CAMPOS_BUSCABLES, _matches  # noqa: E402
+from resolutions.api.routers.archivo import CAMPOS_BUSCABLES, _matches  # noqa: E402
 
 FILA = {
     "recorded_at": "2026-09-10T12:00:00",
@@ -87,8 +87,8 @@ class TestLaBusquedaAtraviesaElEndpoint:
     def test_se_encuentra_por_tipo_documental(self, client):
         from resolutions.api import main
 
-        job = main.registry.create("UPD2365925.pdf", __import__("pathlib").Path("x.pdf"))
-        main.ledger.record(
+        job = main.contexto.registry.create("UPD2365925.pdf", __import__("pathlib").Path("x.pdf"))
+        main.contexto.ledger.record(
             job.id,
             {
                 "document": "UPD2365925.pdf",

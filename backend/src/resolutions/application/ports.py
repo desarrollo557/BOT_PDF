@@ -6,6 +6,7 @@ from typing import Protocol, runtime_checkable
 
 from ..domain.diploma import TextLine
 from ..domain.grouping import GroupingResult
+from ..domain.usuario import Usuario
 from .inventory import Inventory
 
 
@@ -213,3 +214,28 @@ class InventoryStore(Protocol):
     """Persists the record of what a source document produced."""
 
     def write(self, inventory: Inventory, destination: Path) -> Path: ...
+
+
+@runtime_checkable
+class UserStore(Protocol):
+    """Dónde viven las personas dadas de alta y con qué perfil.
+
+    Diminuto a propósito, igual que el resto de los puertos: leer todo, guardar
+    uno, borrar uno. Un almacén de usuarios crece hacia consultas -- por
+    perfil, por dominio de correo, por fecha de alta -- y ninguna de ellas hace
+    falta sobre una lista que en este edificio cabe en una pantalla, mientras
+    que cada una obligaría a implementarla también en la base de datos el día
+    que el archivo JSONL deje de bastar.
+    """
+
+    def all(self) -> list[Usuario]:
+        """Todas las altas, en el orden en que se dieron."""
+        ...
+
+    def save(self, usuario: Usuario) -> None:
+        """Da de alta o sustituye por cédula. Guardar dos veces no duplica."""
+        ...
+
+    def delete(self, cedula: str) -> bool:
+        """Da de baja. Contesta si había algo que dar de baja."""
+        ...

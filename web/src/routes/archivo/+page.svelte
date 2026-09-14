@@ -243,13 +243,29 @@
     rowError = null;
   }
 
+  /**
+   * Qué le falta a la corrección: los dos campos, siempre y para todos.
+   *
+   * Una corrección se manda entera o no se manda. Un título en blanco no es una
+   * decisión, es un campo que se quedó sin llenar, y se queda así para siempre
+   * porque nadie vuelve sobre una fila del inventario que ya pasó. Es la misma
+   * regla del resto de los formularios del programa.
+   */
+  const faltaElCodigo = $derived(!draftCode.trim());
+  const faltaElTitulo = $derived(!draftTitle.trim());
+  const puedeGuardarLaFila = $derived(!rowBusy && !faltaElCodigo && !faltaElTitulo);
+
   async function saveRow(row: { job_id: string; file_name: string }) {
+    // La misma guarda que apaga el botón, otra vez aquí: se puede pulsar con el
+    // teclado antes de que la pantalla repinte, y la regla tiene que estar
+    // donde se ejecuta la acción y no sólo donde se dibuja.
+    if (!puedeGuardarLaFila) return;
     rowBusy = true;
     rowError = null;
     try {
       await renameOutput(row.job_id, row.file_name, {
         code: draftCode.trim(),
-        title: draftTitle.trim() || null
+        title: draftTitle.trim()
       });
       editing = null;
       await load(applied, grain);
@@ -572,16 +588,25 @@
                   <div class="fields">
                     <label>
                       <span>Número</span>
-                      <input class="code-input" bind:value={draftCode} spellcheck="false" />
+                      <input
+                        class="code-input"
+                        bind:value={draftCode}
+                        spellcheck="false"
+                        aria-invalid={faltaElCodigo}
+                      />
                     </label>
                     <label class="grow">
                       <span>Título</span>
-                      <input bind:value={draftTitle} placeholder="sin título" />
+                      <input
+                        bind:value={draftTitle}
+                        placeholder="obligatorio"
+                        aria-invalid={faltaElTitulo}
+                      />
                     </label>
                     <button
                       class="primary"
                       onclick={() => saveRow(row)}
-                      disabled={rowBusy || !draftCode.trim()}
+                      disabled={!puedeGuardarLaFila}
                     >
                       {rowBusy ? 'guardando…' : 'guardar'}
                     </button>
@@ -592,6 +617,15 @@
                       cancelar
                     </button>
                   </div>
+                  {#if faltaElCodigo || faltaElTitulo}
+                    <p class="falta inline">
+                      Falta {faltaElCodigo && faltaElTitulo
+                        ? 'el número y el título'
+                        : faltaElCodigo
+                          ? 'el número'
+                          : 'el título'}. Una corrección se manda entera.
+                    </p>
+                  {/if}
                   {#if rowError}<p class="error inline">{rowError}</p>{/if}
                 </td>
               {:else}
@@ -683,6 +717,17 @@
     color: var(--critical);
   }
   .error.inline {
+    margin: 0.5rem 0 0;
+  }
+
+  /* Lo que falta no es un error: nadie se ha equivocado todavía. Va en el tono
+     apagado del resto de las indicaciones, no en el del fallo. */
+  .falta {
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+  .falta.inline {
     margin: 0.5rem 0 0;
   }
 

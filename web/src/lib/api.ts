@@ -10,7 +10,9 @@ import type {
   Job,
   InventoryRow,
   ProcessedDocument,
-  SourceDisposition
+  SourceDisposition,
+  UsuarioApi,
+  FuidTabla
 } from './types';
 
 const BASE = '/api';
@@ -30,8 +32,33 @@ export function setOperator(name: string | null): void {
   operator = name;
 }
 
+/**
+ * La cédula de quien entró, con la que el servicio averigua su perfil.
+ *
+ * Va aparte del nombre del operador porque contestan preguntas distintas: el
+ * nombre es una etiqueta que viaja hasta el libro mayor y la cédula es lo que
+ * el servicio busca entre las altas. Sin acentos ni espacios, así que no hace
+ * falta codificarla.
+ *
+ * No es una credencial y el servicio no la trata como tal. Lo que decide con
+ * ella -- si a este perfil se le deja bajar la planilla -- es una barrera de
+ * uso, no de seguridad, y está escrito así allá también.
+ */
+let cedula: string | null = null;
+
+export function setIdentidad(valor: string | null): void {
+  cedula = valor;
+}
+
 function attribution(): Record<string, string> {
-  return operator ? { 'X-Operator': encodeURIComponent(operator) } : {};
+  return {
+    ...(operator ? { 'X-Operator': encodeURIComponent(operator) } : {}),
+    ...(cedula ? { 'X-Cedula': cedula } : {})
+  };
+}
+
+function jsonHeaders(): Record<string, string> {
+  return { 'content-type': 'application/json', ...attribution() };
 }
 
 async function detailOf(response: Response): Promise<string> {
@@ -311,7 +338,7 @@ export async function documentFuidStatus(jobId: string): Promise<FuidStatus> {
  * depending on a new endpoint. A service older than this is not broken, it is
  * stale, and saying which is the difference between a restart and a bug hunt.
  */
-export const REQUIRED_API_REVISION = 14;
+export const REQUIRED_API_REVISION = 18;
 
 export interface Health {
   status: string;
@@ -523,4 +550,88 @@ export async function listFolderRuns(): Promise<FolderRun[]> {
   const response = await fetch(`${BASE}/folder-runs`);
   if (!response.ok) return [];
   return (await response.json()).runs ?? [];
+}
+
+// -----------------------------------------------------------------------------
+//  Entrar, y quién puede entrar
+// -----------------------------------------------------------------------------
+
+/**
+ * Reconocer a quien teclea su cédula y su correo.
+ *
+ * El perfil lo contesta el servicio a partir del alta que hizo el
+ * administrador; la pantalla no lo decide ni puede concedérselo. Sobre un
+ * archivo recién instalado, el primero que entra queda de administrador y la
+ * respuesta lo dice en `primer_administrador`.
+ */
+export async function entrar(cedula: string, correo: string): Promise<UsuarioApi> {
+  const response = await fetch(`${BASE}/sesion`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ cedula, correo })
+  });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return await response.json();
+}
+
+/** Quién está dado de alta. Sólo contesta al administrador. */
+export async function listarUsuarios(): Promise<UsuarioApi[]> {
+  const response = await fetch(`${BASE}/usuarios`, { headers: attribution() });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return (await response.json()).usuarios ?? [];
+}
+
+export async function crearUsuario(alta: {
+  cedula: string;
+  correo: string;
+  perfil: string;
+  nombre?: string;
+}): Promise<UsuarioApi> {
+  const response = await fetch(`${BASE}/usuarios`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ nombre: '', ...alta })
+  });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return await response.json();
+}
+
+/**
+ * Cambiar el correo, el perfil o el nombre de alguien ya dado de alta.
+ *
+ * La cédula no se cambia: es la clave, y cambiarla es dar de baja a una persona
+ * y de alta a otra, que conviene que se vea como dos actos y no como uno.
+ */
+export async function cambiarUsuario(
+  cedula: string,
+  cambio: { correo?: string; perfil?: string; nombre?: string }
+): Promise<UsuarioApi> {
+  const response = await fetch(`${BASE}/usuarios/${encodeURIComponent(cedula)}`, {
+    method: 'PATCH',
+    headers: jsonHeaders(),
+    body: JSON.stringify(cambio)
+  });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return await response.json();
+}
+
+export async function darDeBaja(cedula: string): Promise<void> {
+  const response = await fetch(`${BASE}/usuarios/${encodeURIComponent(cedula)}`, {
+    method: 'DELETE',
+    headers: attribution()
+  });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+}
+
+/**
+ * El FUID de un documento como tabla, para mirarlo sin descargarlo.
+ *
+ * Lo ven los tres perfiles. Sale del archivo que hay en el disco y no de una
+ * tabla armada en el navegador, por lo mismo que la descarga sirve el archivo
+ * escrito: lo que se mira y lo que se firma tienen que ser el mismo documento.
+ */
+export async function fuidTabla(jobId: string): Promise<FuidTabla> {
+  const response = await fetch(`${BASE}/jobs/${jobId}/fuid.tabla`, { headers: attribution() });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return await response.json();
 }

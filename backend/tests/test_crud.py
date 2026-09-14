@@ -22,7 +22,7 @@ def a_processed_document(name: str = "expediente.pdf", code: str = "00086"):
     """A finished job with one generated resolution, on disk and in the ledger."""
     from resolutions.api import main
 
-    job = main.registry.create(name, Path(name))
+    job = main.contexto.registry.create(name, Path(name))
     file_name = f"{code}__acta.pdf"
     report = {
         "document": name,
@@ -46,10 +46,10 @@ def a_processed_document(name: str = "expediente.pdf", code: str = "00086"):
             ],
         },
     }
-    main.registry.mark_done(job, report)
-    main.ledger.record(job.id, report)
+    main.contexto.registry.mark_done(job, report)
+    main.contexto.ledger.record(job.id, report)
 
-    directory = main.settings.output_dir / job.id
+    directory = main.contexto.settings.output_dir / job.id
     directory.mkdir(parents=True, exist_ok=True)
     (directory / file_name).write_bytes(b"%PDF-1.4 out")
     return job, file_name, directory
@@ -143,6 +143,38 @@ class TestRenamingAResolution:
             == 422
         )
 
+    def test_an_empty_title_is_refused(self, client):
+        """Un formulario enviado a medias, que es lo que las pantallas ya no dejan.
+
+        La regla vive aquí además de en la pantalla porque una que sólo está en
+        el formulario la esquiva cualquier petición escrita a mano.
+        """
+        job, file_name, _ = a_processed_document()
+
+        respuesta = client.patch(
+            f"/api/jobs/{job.id}/outputs/{file_name}",
+            json={"code": "00086", "title": "   "},
+        )
+
+        assert respuesta.status_code == 422
+        assert "en blanco" in respuesta.json()["detail"]
+
+    def test_but_correcting_only_the_number_still_works(self, client):
+        """Ausente y vacío son cosas distintas.
+
+        Ausente es una corrección parcial -- «cambia sólo el número» -- que el
+        endpoint admite desde siempre. Confundirlas obligaría a reescribir el
+        asunto cada vez que el OCR se come un dígito.
+        """
+        job, file_name, _ = a_processed_document(code="0OO86")
+
+        respuesta = client.patch(
+            f"/api/jobs/{job.id}/outputs/{file_name}", json={"code": "00086"}
+        )
+
+        assert respuesta.status_code == 200
+        assert respuesta.json()["code"] == "00086"
+
     def test_renaming_onto_an_existing_file_is_refused(self, client):
         job, file_name, directory = a_processed_document()
         (directory / "RESOLUCION_00072.pdf").write_bytes(b"%PDF-1.4")
@@ -229,8 +261,8 @@ class TestBatches:
 
         batch_id = client.post("/api/batches", json={"name": "Lote"}).json()["id"]
         for name in ("a.pdf", "b.pdf"):
-            job = main.registry.create(name, Path(name), batch_id=batch_id)
-            main.registry.mark_done(job, {"groups": [], "review_queue": []})
+            job = main.contexto.registry.create(name, Path(name), batch_id=batch_id)
+            main.contexto.registry.mark_done(job, {"groups": [], "review_queue": []})
 
         response = client.request("DELETE", f"/api/batches/{batch_id}")
 
@@ -241,9 +273,9 @@ class TestBatches:
         from resolutions.api import main
 
         batch_id = client.post("/api/batches", json={"name": "Lote"}).json()["id"]
-        job = main.registry.create("a.pdf", Path("a.pdf"), batch_id=batch_id)
-        main.registry.mark_done(job, {"groups": [], "review_queue": []})
-        directory = main.settings.output_dir / job.id
+        job = main.contexto.registry.create("a.pdf", Path("a.pdf"), batch_id=batch_id)
+        main.contexto.registry.mark_done(job, {"groups": [], "review_queue": []})
+        directory = main.contexto.settings.output_dir / job.id
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "00086__acta.pdf").write_bytes(b"%PDF")
 
@@ -254,9 +286,9 @@ class TestBatches:
         from resolutions.api import main
 
         batch_id = client.post("/api/batches", json={"name": "Lote"}).json()["id"]
-        job = main.registry.create("a.pdf", Path("a.pdf"), batch_id=batch_id)
-        main.registry.mark_done(job, {"groups": [], "review_queue": []})
-        directory = main.settings.output_dir / job.id
+        job = main.contexto.registry.create("a.pdf", Path("a.pdf"), batch_id=batch_id)
+        main.contexto.registry.mark_done(job, {"groups": [], "review_queue": []})
+        directory = main.contexto.settings.output_dir / job.id
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "00086__acta.pdf").write_bytes(b"%PDF")
 
@@ -267,8 +299,8 @@ class TestBatches:
         from resolutions.api import main
 
         batch_id = client.post("/api/batches", json={"name": "Lote"}).json()["id"]
-        job = main.registry.create("a.pdf", Path("a.pdf"), batch_id=batch_id)
-        main.registry.mark_running(job)
+        job = main.contexto.registry.create("a.pdf", Path("a.pdf"), batch_id=batch_id)
+        main.contexto.registry.mark_running(job)
 
         assert client.request("DELETE", f"/api/batches/{batch_id}").json()["removed"] == 0
         assert len(client.get("/api/jobs").json()["jobs"]) == 1
@@ -308,7 +340,7 @@ def a_document_with_two_resolutions(name: str = "expediente.pdf"):
     """A finished job whose two resolutions are both on disk and in the ledger."""
     from resolutions.api import main
 
-    job = main.registry.create(name, Path(name))
+    job = main.contexto.registry.create(name, Path(name))
     files = ["00086__acta.pdf", "00087__resuelve.pdf"]
     report = {
         "document": name,
@@ -344,10 +376,10 @@ def a_document_with_two_resolutions(name: str = "expediente.pdf"):
             ],
         },
     }
-    main.registry.mark_done(job, report)
-    main.ledger.record(job.id, report)
+    main.contexto.registry.mark_done(job, report)
+    main.contexto.ledger.record(job.id, report)
 
-    directory = main.settings.output_dir / job.id
+    directory = main.contexto.settings.output_dir / job.id
     directory.mkdir(parents=True, exist_ok=True)
     for file_name in files:
         (directory / file_name).write_bytes(b"%PDF-1.4 out")
@@ -468,8 +500,8 @@ class TestErasingAProcessedDocument:
     def test_a_document_still_being_processed_is_refused(self, client):
         from resolutions.api import main
 
-        job = main.registry.create("a.pdf", Path("a.pdf"))
-        main.registry.mark_running(job)
+        job = main.contexto.registry.create("a.pdf", Path("a.pdf"))
+        main.contexto.registry.mark_running(job)
 
         assert client.request("DELETE", f"/api/documents/{job.id}").status_code == 409
         assert client.get(f"/api/jobs/{job.id}").status_code == 200
@@ -485,7 +517,7 @@ class TestErasingAProcessedDocument:
         job, _, directory = a_document_with_two_resolutions()
         client.request("DELETE", f"/api/documents/{job.id}")
 
-        assert job.id not in main.ledger.job_ids()
+        assert job.id not in main.contexto.ledger.job_ids()
         assert not directory.exists()
 
 
@@ -503,9 +535,9 @@ class TestBorradoEnLote:
         """Un documento terminado en el registro, con su carpeta de salida."""
         from resolutions.api import main
 
-        job = main.registry.create(nombre, main.settings.upload_dir / nombre)
-        main.registry.mark_done(job, {"document": nombre, "page_count": 1})
-        (main.settings.output_dir / job.id).mkdir(parents=True, exist_ok=True)
+        job = main.contexto.registry.create(nombre, main.contexto.settings.upload_dir / nombre)
+        main.contexto.registry.mark_done(job, {"document": nombre, "page_count": 1})
+        (main.contexto.settings.output_dir / job.id).mkdir(parents=True, exist_ok=True)
         return job.id
 
     def test_borra_todos_los_que_se_le_den(self, client):
@@ -531,8 +563,8 @@ class TestBorradoEnLote:
         from resolutions.api import main
 
         bueno = self._procesado(client, "bueno.pdf")
-        corriendo = main.registry.create("corriendo.pdf", main.settings.upload_dir / "c.pdf")
-        main.registry.mark_running(corriendo)
+        corriendo = main.contexto.registry.create("corriendo.pdf", main.contexto.settings.upload_dir / "c.pdf")
+        main.contexto.registry.mark_running(corriendo)
 
         respuesta = client.request(
             "DELETE", "/api/documents", json={"job_ids": [corriendo.id, bueno]}
@@ -542,7 +574,7 @@ class TestBorradoEnLote:
         assert cuerpo["failed"][0]["job_id"] == corriendo.id
         assert "proces" in cuerpo["failed"][0]["reason"]
         # Y sigue ahí: rechazarlo significa no tocarlo.
-        assert main.registry.get(corriendo.id) is not None
+        assert main.contexto.registry.get(corriendo.id) is not None
 
     def test_los_repetidos_se_borran_una_sola_vez(self, client):
         uno = self._procesado(client, "uno.pdf")
@@ -557,7 +589,7 @@ class TestBorradoEnLote:
         assert respuesta.status_code == 422
 
     def test_hay_un_tope_por_peticion(self, client):
-        from resolutions.api.main import MAX_BULK_DELETE
+        from resolutions.api.routers.archivo import MAX_BULK_DELETE
 
         respuesta = client.request(
             "DELETE",
@@ -589,7 +621,7 @@ class TestFichaArchivada:
         """Un documento procesado y anotado en el inventario, ya fuera de pantalla."""
         from resolutions.api import main
 
-        job = main.registry.create(nombre, main.settings.upload_dir / nombre)
+        job = main.contexto.registry.create(nombre, main.contexto.settings.upload_dir / nombre)
         report = {
             "document": nombre,
             "page_count": 7,
@@ -610,10 +642,10 @@ class TestFichaArchivada:
                 ],
             },
         }
-        main.registry.mark_done(job, report)
-        main.ledger.record(job.id, report, operator="Ana", source_bytes=1024)
+        main.contexto.registry.mark_done(job, report)
+        main.contexto.ledger.record(job.id, report, operator="Ana", source_bytes=1024)
         # Y se limpia la pantalla, que es lo que hace el cierre del informe.
-        main.registry.remove_finished()
+        main.contexto.registry.remove_finished()
         return job.id
 
     def test_un_documento_fuera_de_pantalla_sigue_teniendo_ficha(self, client):

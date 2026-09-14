@@ -125,10 +125,10 @@ dependencias apunten hacia adentro.
 
 | Capa | Qué vive ahí |
 |---|---|
-| `domain/` | `fingerprint`, `segmentation`, `catalogo`, `tipo_documental`, `fechas`, `anchor`, `extraction`, `scoring`, `grouping`, `doctype`, `legibility`, `naming`, `validation` |
-| `application/` | `entrega`, `clasificacion`, `inventory`, `informe`, `segment_document`, `process_document`, `inventory_document`, `pipeline`, `fuid`, `task`, `control`, `ports` |
+| `domain/` | `fingerprint`, `segmentation`, `catalogo`, `tipo_documental`, `fechas`, `anchor`, `extraction`, `scoring`, `grouping`, `doctype`, `legibility`, `naming`, `validation`, `perfil`, `usuario` |
+| `application/` | `entrega`, `clasificacion`, `inventory`, `informe`, `segment_document`, `process_document`, `inventory_document`, `pipeline`, `fuid`, `task`, `control`, `usuarios`, `ports` |
 | `adapters/` | PyMuPDF, Tesseract, Claude/Gemini/Mistral, MySQL, openpyxl, JSONL |
-| `api/` | FastAPI, pool de workers, SSE, corridas de carpeta, janitor |
+| `api/` | FastAPI, pool de workers, SSE, corridas de carpeta, janitor, identidad |
 
 `application/ports.py` declara como `Protocol` lo que el caso de uso necesita
 del mundo —una fuente de páginas, un OCR, un oráculo, un ensamblador, un
@@ -195,8 +195,35 @@ se escribe en `data/inventory.jsonl`.
 
 SvelteKit con estado en runas (`*.svelte.ts`). Tres pantallas, un verbo cada
 una: **Procesar** hace el trabajo, **Archivo** encuentra lo que salió,
-**Revisión** arregla lo que quedó dudoso. Consume la API por HTTP y recibe el
-progreso por `/api/events` (SSE).
+**Revisión** arregla lo que quedó dudoso. Y **Usuarios**, que sólo ve el
+administrador. Consume la API por HTTP y recibe el progreso por `/api/events`
+(SSE).
+
+## Quién entra, y qué se le deja hacer
+
+Se entra con cédula y correo, sin contraseña. **Identifica y no autentica:**
+quien conozca los de un compañero entra como él, y eso está escrito en el
+código y en la pantalla para que nadie construya una costumbre encima.
+
+Lo que sí sostiene el perfil es el uso. El técnico y el de calidad ven el FUID
+en pantalla y no descargan el Excel, porque una planilla que sale de la máquina
+deja de estar bajo control del archivo y quien la revisa no es quien la firma.
+La comprobación vive en `api/identidad.py` y no sólo en la pantalla: una
+restricción que únicamente esconde un botón la esquiva quien escriba la
+dirección a mano.
+
+Aparte del perfil, y para todo el mundo: **ningún formulario se envía con un
+campo vacío.** El control está apagado hasta que todos digan algo y la pantalla
+dice cuál falta. Se comprueba otra vez en el servicio, por lo mismo que la
+descarga del FUID. Los buscadores quedan fuera: una casilla vacía ahí no es un
+campo sin llenar, es «sin filtro».
+
+`domain/perfil.py` dice qué puede cada perfil y es el único sitio donde se
+decide; `domain/usuario.py` normaliza la cédula y el correo, para que la misma
+persona no sea dos usuarios por escribir su cédula con puntos un día y sin
+ellos al siguiente. Las altas van a `data/usuarios.jsonl`, reescrito entero a un
+temporal y sustituido de un golpe: un archivo de usuarios truncado es la única
+avería que deja a todo el mundo fuera.
 
 ## La base
 

@@ -87,10 +87,11 @@ Las fallas se aíslan en tres niveles, para que nada se propague:
 - un **documento** que falla no detiene su lote
 - la **telemetría** que se rompe nunca interrumpe el trabajo que describía
 
-## Las tres pantallas
+## Las pantallas
 
-Un verbo cada una: **hacer** el trabajo, **encontrar** el trabajo, **arreglar**
-el trabajo.
+Tres para todo el mundo, con un verbo cada una: **hacer** el trabajo,
+**encontrar** el trabajo, **arreglar** el trabajo. Y una cuarta que sólo ve el
+administrador, para decidir **quién** hace el trabajo.
 
 **Procesar** recibe documentos y muestra sólo lo que está pasando ahora. Las
 subidas vienen en tres modos —individual hasta cinco, lote sin tope, o una
@@ -112,6 +113,10 @@ hace sobrevivir a limpiar la pantalla y a reiniciar el servicio.
 los documentos y agrupada por motivo. Las demás pantallas contestan «qué hizo»;
 ésta contesta «qué me necesita», que es la única pregunta con plazo. Enterrada de
 a un documento por vez era invisible.
+
+**Usuarios** sólo la ve el administrador, y es donde da de alta a quien entra y
+le asigna su perfil. No aparece para los demás: una pestaña que lleva a un 403
+enseña una puerta que no abre y deja al operador preguntándose qué hizo mal.
 
 `/inventario` y `/procesados` ya no son pantallas: redirigen a `/archivo`.
 Documentos y resoluciones eran dos destinos que mostraban el mismo trabajo en dos
@@ -138,19 +143,92 @@ totales, porque sus documentos se van del registro mucho antes de que alguien
 reabra el informe: sumar los trabajos daría cero, y un informe que afirma algo
 falso es peor que no tener informe.
 
-## Sesiones
+## Sesiones y perfiles
 
-La entrada pide un nombre y nada más. No hay contraseña, la pantalla lo dice con
-todas sus letras, y las pruebas lo fijan: leer, borrar y subir funcionan sin
-nombre. Si alguien alguna vez ata la cabecera a un permiso, esas pruebas fallan y
-la decisión hay que tomarla a propósito.
+La entrada pide dos datos y ninguno más: la **cédula** y el **correo**. Son los
+dos que el archivo ya tiene de cada empleado y los únicos que nadie tiene que
+recordar aparte.
 
-Lo que el nombre compra es real de todos modos. Cada trabajo lleva el operador
-que lo corrió hasta el libro mayor, así que el archivo contesta «quién procesó
-esto» mucho después de limpiar la pantalla. El nombre viaja percent-encoded,
-porque los valores de cabecera HTTP son ASCII y la mitad de los nombres de un
-edificio hispanohablante llevan tilde: mandar uno crudo revienta en el navegador
-antes de que salga la petición.
+**No hay contraseña, y la pantalla lo dice con todas sus letras.** Esto
+identifica, no autentica: quien conozca la cédula y el correo de un compañero
+entra como él. Conviene decirlo aquí también, porque lo que hay encima —un
+perfil que decide qué se deja hacer— se parece lo bastante a un control de
+acceso como para que alguien lo tome por uno.
+
+### Los tres perfiles
+
+Los usuarios los da de alta el administrador; nadie se registra solo.
+
+| Perfil | Qué hace | Descarga el FUID |
+|---|---|---|
+| **Administrador** | Todo, y es el único que da de alta a los demás | Sí |
+| **Técnico** | Procesa cajas | No: lo ve en pantalla |
+| **Calidad** | Revisa lo que salió | No: lo ve en pantalla |
+
+El técnico y el de calidad **ven** el FUID y no se lo **llevan**. Una planilla
+que sale de la máquina en un archivo de Excel deja de estar bajo control del
+archivo en el momento en que se copia a un correo, y las dos personas que la
+revisan no son las que la firman. Se mira en pantalla, columna por columna,
+leído del archivo que hay en el disco y no de una tabla armada en el navegador:
+lo que se mira y lo que se firma tienen que ser el mismo documento.
+
+La comprobación vive en el **servicio** y no sólo en la pantalla. Una
+restricción que únicamente esconde un botón la esquiva cualquiera que escriba la
+dirección a mano, y entonces no es ni siquiera una barrera de uso, sólo la
+apariencia de una. Lo que sí sigue abierto a todos los perfiles son las otras
+dos salidas en Excel —`/api/inventory.xlsx` y `/api/inventory.csv`—, que son el
+libro mayor y no el FUID.
+
+Un perfil desconocido no se adivina ni cae al más poderoso: `Perfil.parse`
+rechaza lo que no reconoce, que es lo que impide que una restricción deje de
+existir por una errata.
+
+### Ningún campo en blanco
+
+**Ningún formulario se envía con un campo vacío, en ningún perfil.** El control
+está apagado hasta que todos los campos digan algo, y la pantalla dice cuál
+falta en vez de dejar que se pulse y conteste el servicio: un formulario que se
+manda para que lo rechacen hace teclear dos veces lo mismo.
+
+Vale para los seis sitios donde se escribe algo:
+
+| Dónde | Qué exige |
+|---|---|
+| Entrada | cédula y correo |
+| Alta de un usuario | cédula, correo, nombre y perfil |
+| Renombrar un documento | el nombre |
+| Corregir una unidad, en la ficha | número y título |
+| Corregir una fila, en Archivo | número y título |
+| Carpeta local | origen y destino |
+
+**Los buscadores quedan fuera, y no por olvido.** Una casilla de búsqueda vacía
+no es un campo sin llenar: es «sin filtro», y exigirla haría imposible ver la
+lista entera.
+
+La regla vive además en el servicio, porque una que sólo está en el formulario
+la esquiva cualquier petición escrita a mano. Ahí hay una distinción que
+conviene no perder: en la corrección de una unidad, un título **ausente** es una
+corrección parcial —«cambia sólo el número»— y se admite; un título **mandado en
+blanco** es un formulario enviado a medias, y se rechaza.
+
+### Cómo nace el primer administrador
+
+Sobre un almacén de usuarios vacío, **la primera persona que entra queda como
+administradora**, y la respuesta lo dice. Un sistema recién instalado en el que
+no puede entrar nadie sólo se abre editando un archivo del disco a mano, y eso
+es peor que un permiso declarado en voz alta. Ocurre una sola vez en la vida del
+almacén.
+
+Las altas viven en `data/usuarios.jsonl`, junto al libro mayor y por el mismo
+motivo: es el otro dato que tiene que sobrevivir a limpiar la pantalla, a
+reiniciar el servicio y a borrar las salidas. Se reescribe entero a un temporal
+y se sustituye de un golpe, porque un archivo de usuarios truncado es la única
+avería que deja a todo el mundo fuera.
+
+Y siempre queda un administrador: darle de baja al último, o quitarle el perfil,
+se rechaza con un 409.
+
+### El turno
 
 ```
 anónimo --abrir()--> activa --inactiva(1h)--> inactiva --reanudar()--> activa
@@ -161,6 +239,18 @@ Inactiva no es un candado; un clic la reanuda, porque no hay nada que destrabar.
 Existe para que una consola que quedó abierta toda la noche deje de atribuirle el
 trabajo de la mañana siguiente a quien se fue. Cerrar la sesión puede limpiar la
 pantalla, pero nunca los archivos, y nunca sin preguntar.
+
+Al restaurar una sesión guardada se le vuelve a preguntar al servicio quién es
+esa persona: entre medias el administrador pudo haberle cambiado el perfil o
+haberla dado de baja. Un fallo de red no cierra la sesión —dejaría al operador
+fuera cada vez que se reinicia el servicio— y un rechazo del servicio sí.
+
+Cada trabajo sigue llevando el operador que lo corrió hasta el libro mayor, así
+que el archivo contesta «quién procesó esto» mucho después de limpiar la
+pantalla. El nombre viaja percent-encoded, porque los valores de cabecera HTTP
+son ASCII y la mitad de los nombres de un edificio hispanohablante llevan tilde:
+mandar uno crudo revienta en el navegador antes de que salga la petición. La
+cédula viaja en `X-Cedula` y no hace falta codificarla.
 
 ## El formato del encabezado
 
@@ -331,14 +421,15 @@ y ni una llamada al sistema de archivos.
 backend/
   src/resolutions/
     domain/       reglas puras, cero dependencias   (anchor, extraction, scoring,
-                  grouping, doctype, legibility, validation, naming)
+                  grouping, doctype, legibility, validation, naming,
+                  perfil, usuario)
     application/  casos de uso y puertos            (pipeline, process_document,
                   inventory_document, fuid, task, control)
     adapters/     uno por proveedor                 (PyMuPDF, Tesseract, Claude,
                   MySQL, openpyxl, archivos)
     api/          FastAPI, pool de workers, SSE
-  tests/          1023 pruebas; el dominio corre en menos de un segundo
-web/              SvelteKit 5 + Tailwind 4; 101 pruebas sobre los stores
+  tests/          1463 pruebas; el dominio corre en menos de un segundo
+web/              SvelteKit 5 + Tailwind 4; 126 pruebas sobre los stores
 db/               esquema MySQL: 7 tablas, 4 vistas, 11 claves foráneas
 docs/             arquitectura y flujo de ramas
 scripts/          verificación local y andamios de medición
@@ -437,8 +528,8 @@ necesita exponerse.
 ### Comprobar que quedó bien
 
 ```bash
-cd backend && pytest              # 1023 pruebas
-cd web && npm test                # 101 pruebas sobre los stores
+cd backend && pytest              # 1463 pruebas
+cd web && npm test                # 126 pruebas sobre los stores
 ```
 
 Y contra el servicio levantado, `GET http://localhost:8000/api/health` dice
@@ -552,6 +643,7 @@ Toda por variable de entorno. Ninguna credencial vive en el repositorio.
 | `RESOLUTIONS_QUEUE_LIMIT` | 10000 | documentos aceptados y no empezados antes de que la API responda 429 |
 | `RESOLUTIONS_MAX_UPLOAD_BYTES` | 4 GB | PDF más grande aceptado; acota disco, no memoria |
 | `RESOLUTIONS_SWEEP_SECONDS` | 30 | cada cuánto busca sobras el janitor ocioso |
+| `RESOLUTIONS_USERS` | `<data>/usuarios.jsonl` | quién está dado de alta y con qué perfil |
 
 ### Lectura
 

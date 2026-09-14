@@ -18,6 +18,7 @@ openpyxl = pytest.importorskip("openpyxl")
 
 from resolutions.adapters import excel_inventory  # noqa: E402
 from resolutions.api import main  # noqa: E402
+from resolutions.api.routers import salidas  # noqa: E402
 
 XLSX_MAGIC = b"PK\x03\x04"
 
@@ -52,12 +53,12 @@ def test_el_sufijo_que_busca_la_api_es_el_que_escribe_el_adaptador():
     arrancar -- así que repite la constante. Si alguien renombra la hoja, esto
     falla antes de que el botón de descarga empiece a dar 404 en silencio.
     """
-    assert main.SHEET_SUFFIX == excel_inventory.SUFFIX
+    assert salidas.SHEET_SUFFIX == excel_inventory.SUFFIX
 
 
 class TestInventarioDeUnDocumento:
     def test_entrega_la_hoja_que_quedo_junto_a_los_pdf(self, client):
-        carpeta = main.settings.output_dir / "job-1"
+        carpeta = main.contexto.settings.output_dir / "job-1"
         carpeta.mkdir(parents=True)
         hoja = carpeta / f"RESOLUCIONES 00072{excel_inventory.SUFFIX}"
         libro = openpyxl.Workbook()
@@ -68,7 +69,7 @@ class TestInventarioDeUnDocumento:
 
         assert respuesta.status_code == 200
         # El tipo es lo que hace que Windows lo abra con Excel en vez de preguntar.
-        assert respuesta.headers["content-type"] == main.XLSX_MEDIA
+        assert respuesta.headers["content-type"] == salidas.XLSX_MEDIA
         # El nombre viaja percent-codificado: la cabecera es ASCII y el archivo
         # lleva espacios. Lo que importa es que llegue con SU nombre y no con
         # el identificador interno del trabajo.
@@ -77,7 +78,7 @@ class TestInventarioDeUnDocumento:
         assert respuesta.content.startswith(XLSX_MAGIC)
 
     def test_un_documento_sin_hoja_lo_dice_en_vez_de_entregar_nada(self, client):
-        (main.settings.output_dir / "job-2").mkdir(parents=True)
+        (main.contexto.settings.output_dir / "job-2").mkdir(parents=True)
 
         respuesta = client.get("/api/jobs/job-2/inventory.xlsx")
 
@@ -90,12 +91,12 @@ class TestInventarioDeUnDocumento:
 
 class TestInventarioCompleto:
     def test_llega_un_libro_de_verdad_y_no_un_csv(self, client):
-        main.ledger.record("job-1", report())
+        main.contexto.ledger.record("job-1", report())
 
         respuesta = client.get("/api/inventory.xlsx")
 
         assert respuesta.status_code == 200
-        assert respuesta.headers["content-type"] == main.XLSX_MEDIA
+        assert respuesta.headers["content-type"] == salidas.XLSX_MEDIA
         assert "inventario.xlsx" in respuesta.headers["content-disposition"]
 
         libro = openpyxl.load_workbook(io.BytesIO(respuesta.content))
@@ -110,8 +111,8 @@ class TestInventarioCompleto:
         assert any("expediente.pdf" in value for value in texto)
 
     def test_el_filtro_de_la_pantalla_llega_hasta_el_libro(self, client):
-        main.ledger.record("job-1", report(document="marzo.pdf"))
-        main.ledger.record("job-2", report(document="abril.pdf"))
+        main.contexto.ledger.record("job-1", report(document="marzo.pdf"))
+        main.contexto.ledger.record("job-2", report(document="abril.pdf"))
 
         respuesta = client.get("/api/inventory.xlsx", params={"q": "marzo"})
 

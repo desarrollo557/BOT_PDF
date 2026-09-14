@@ -183,7 +183,7 @@ class TestCacheEndpoints:
     def test_a_manual_sweep_is_refused_while_work_is_in_flight(self, client):
         from resolutions.api import main
 
-        main.registry.mark_running(main.registry.create("a.pdf", Path("a.pdf")))
+        main.contexto.registry.mark_running(main.contexto.registry.create("a.pdf", Path("a.pdf")))
         payload = client.post("/api/cache/sweep").json()
         assert payload["swept"] is False
         assert payload["reason"] == "hay documentos en proceso"

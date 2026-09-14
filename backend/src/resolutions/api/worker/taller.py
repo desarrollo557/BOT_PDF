@@ -119,14 +119,21 @@ def _control(payload: dict) -> RunControl:
     El diccionario viene de un Manager, así que leerlo cruza a otro proceso.
     Por eso se consulta una vez por página y no dentro del bucle de una: a esa
     cadencia el coste es invisible y la orden llega en un segundo.
+
+    La clave por omisión es la del trabajo, porque lo normal es que procesar un
+    documento sea la única cosa que corre bajo su identificador. No siempre: el
+    FUID que se levanta a petición vuelve a leer un documento que ya terminó, y
+    ese trabajo tiene que poder abandonarse sin que la orden se confunda con la
+    del trabajo original -- que ya no existe, y cuya clave el registro reutiliza
+    para decir en qué estado quedó. De ahí ``control_key``.
     """
     from ...application.control import FlagRunControl, NullRunControl
 
     controls = payload.get("controls")
     if controls is None:
         return NullRunControl()
-    job_id = payload["job_id"]
-    return FlagRunControl(lambda: controls.get(job_id))
+    clave = payload.get("control_key") or payload["job_id"]
+    return FlagRunControl(lambda: controls.get(clave))
 
 
 def _reportero(payload: dict) -> ProgressReporter:

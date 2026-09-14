@@ -105,9 +105,9 @@ class TestClearEndpoints:
         """A finished job with output on disk, without waiting on a worker."""
         from resolutions.api import main
 
-        job = main.registry.create(name, Path(name))
-        main.registry.mark_done(job, {"groups": [], "review_queue": []})
-        directory = main.settings.output_dir / job.id
+        job = main.contexto.registry.create(name, Path(name))
+        main.contexto.registry.mark_done(job, {"groups": [], "review_queue": []})
+        directory = main.contexto.settings.output_dir / job.id
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "00086__acta.pdf").write_bytes(b"pdf")
         return job, directory
@@ -148,8 +148,8 @@ class TestClearEndpoints:
     def test_a_document_still_processing_is_refused(self, client):
         from resolutions.api import main
 
-        job = main.registry.create("busy.pdf", Path("busy.pdf"))
-        main.registry.mark_running(job)
+        job = main.contexto.registry.create("busy.pdf", Path("busy.pdf"))
+        main.contexto.registry.mark_running(job)
         response = client.request("DELETE", f"/api/jobs/{job.id}")
         assert response.status_code == 409
         assert response.json()["detail"] == "El documento todavía se está procesando"

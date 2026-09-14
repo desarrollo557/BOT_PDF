@@ -33,6 +33,18 @@
   let code = $state('');
   let title = $state('');
 
+  /**
+   * Qué hace falta para poder guardar: los dos campos, siempre.
+   *
+   * Vale para todos los perfiles. Una corrección se manda entera o no se manda:
+   * un título en blanco no es una decisión, es un campo que se quedó sin
+   * llenar, y se queda así para siempre porque nadie vuelve sobre un documento
+   * que ya salió. La misma regla rige en los demás formularios del programa.
+   */
+  const faltaElNumero = $derived(!code.trim());
+  const faltaElTitulo = $derived(!title.trim());
+  const puedeGuardar = $derived(!busy && !faltaElNumero && !faltaElTitulo);
+
   function edit() {
     // Reset from the group each time: an abandoned edit must not come back.
     code = group.code;
@@ -42,7 +54,10 @@
   }
 
   async function save() {
-    if (!fileName) return;
+    // La misma guarda que apaga el botón, otra vez aquí: el botón se puede
+    // pulsar con el teclado antes de que la pantalla repinte, y la regla tiene
+    // que estar donde se ejecuta la acción y no sólo donde se dibuja.
+    if (!fileName || !puedeGuardar) return;
     busy = true;
     error = null;
     try {
@@ -79,19 +94,33 @@
       <div class="fields">
         <label>
           <span>Número</span>
-          <input class="code" bind:value={code} spellcheck="false" />
+          <input
+            class="code"
+            bind:value={code}
+            spellcheck="false"
+            aria-invalid={faltaElNumero}
+          />
         </label>
         <label class="grow">
           <span>Título</span>
-          <input bind:value={title} placeholder="sin título" />
+          <input bind:value={title} placeholder="obligatorio" aria-invalid={faltaElTitulo} />
         </label>
       </div>
       <div class="actions">
-        <button class="primary" onclick={save} disabled={busy || !code.trim()}>
+        <button class="primary" onclick={save} disabled={!puedeGuardar}>
           {busy ? 'guardando…' : 'guardar'}
         </button>
         <button onclick={() => (mode = 'idle')} disabled={busy}>cancelar</button>
       </div>
+      {#if faltaElNumero || faltaElTitulo}
+        <p class="falta">
+          Falta {faltaElNumero && faltaElTitulo
+            ? 'el número y el título'
+            : faltaElNumero
+              ? 'el número'
+              : 'el título'}. Una corrección se manda entera.
+        </p>
+      {/if}
       {#if error}<p class="error">{error}</p>{/if}
     </td>
   {:else if mode === 'confirming'}
@@ -338,6 +367,14 @@
     margin: 0;
     font-size: 0.85rem;
     color: var(--ink-2);
+  }
+
+  /* Lo que falta no es un error: nadie se ha equivocado, sólo no ha terminado
+     de escribir. Apagado, como el resto de las indicaciones. */
+  .falta {
+    margin: 0.4rem 0 0;
+    font-size: 0.78rem;
+    color: var(--muted);
   }
   .warn b {
     font-family: var(--font-mono);

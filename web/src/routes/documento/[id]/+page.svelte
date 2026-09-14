@@ -10,9 +10,11 @@
     type ArchivedDocument
   } from '$lib/api';
   import { formatBytes } from '$lib/format';
+  import FuidViewer from '$lib/components/FuidViewer.svelte';
   import JobCard from '$lib/components/JobCard.svelte';
   import ValidationPanel from '$lib/components/ValidationPanel.svelte';
   import { jobStore } from '$lib/jobs.svelte';
+  import { session } from '$lib/session.svelte';
   import type { InventoryReport } from '$lib/types';
 
   const job = $derived(jobStore.get(page.params.id ?? ''));
@@ -81,6 +83,16 @@
   let draft = $state('');
   let error = $state<string | null>(null);
 
+  /**
+   * Un documento no se renombra a la nada.
+   *
+   * Vale para todos los perfiles, no sólo para el que exige el formulario
+   * completo: un nombre en blanco no es una elección, es un campo que se
+   * quedó sin llenar, y el archivo quedaría con un documento que no se puede
+   * nombrar al buscarlo.
+   */
+  const puedeRenombrar = $derived(draft.trim().length > 0);
+
   async function rename() {
     const name = draft.trim();
     if (!name) return;
@@ -113,7 +125,11 @@
           class="min-w-64 rounded border border-hairline bg-raised px-2 py-1 text-sm outline-none focus:border-accent"
           bind:value={draft}
         />
-        <button class="rounded border border-accent px-2.5 py-1 text-xs text-accent" onclick={rename}>
+        <button
+          class="rounded border border-accent px-2.5 py-1 text-xs text-accent disabled:cursor-not-allowed disabled:opacity-45"
+          onclick={rename}
+          disabled={!puedeRenombrar}
+        >
           Guardar
         </button>
         <button
@@ -193,12 +209,20 @@
         </p>
       </div>
       {#if fuid}
-        <a
-          class="rounded border border-accent px-3 py-1.5 font-mono text-xs text-accent transition-colors hover:bg-accent hover:text-raised"
-          href={documentFuidUrl(job.id)}
-        >
-          descargar el FUID
-        </a>
+        <!-- Verlo lo pueden los tres perfiles; bajarlo, sólo el que el servicio
+             deje. El botón de descarga vive dentro del visor, que es donde el
+             servicio ya contestó quién puede. -->
+        <div class="flex shrink-0 items-center gap-2">
+          <FuidViewer jobId={job.id} nombre={job.filename} />
+          {#if session.descargaPlanillas}
+            <a
+              class="rounded border border-accent px-3 py-1.5 font-mono text-xs text-accent transition-colors hover:bg-accent hover:text-raised"
+              href={documentFuidUrl(job.id)}
+            >
+              descargar el FUID
+            </a>
+          {/if}
+        </div>
       {:else if fuidError}
         <span class="font-mono text-xs text-critical">no se pudo escribir el FUID</span>
       {/if}

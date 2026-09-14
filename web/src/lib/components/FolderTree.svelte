@@ -7,6 +7,7 @@
     makeDocumentFuid
   } from '$lib/api';
   import { jobStore } from '$lib/jobs.svelte';
+  import { session } from '$lib/session.svelte';
   import type { FolderRun, Job } from '$lib/types';
 
   /**
@@ -32,7 +33,9 @@
   let abiertos = $state<Set<string>>(new Set());
 
   /** El estado del inventario de cada documento, mientras se levanta. */
-  let inventarios = $state<Record<string, { trabajando: boolean; error: string | null }>>({});
+  let inventarios = $state<
+    Record<string, { trabajando: boolean; error: string | null; aviso?: string | null }>
+  >({});
 
   /**
    * Los documentos de la corrida, en el orden en que los tomó.
@@ -96,8 +99,20 @@
       if (!estado.ready) {
         throw new Error('El documento se leyó y no produjo inventario');
       }
-      descargar(documentFuidUrl(job.id));
-      inventarios = { ...inventarios, [job.id]: { trabajando: false, error: null } };
+      // Bajarla sólo quien puede. A los demás se les dice dónde mirarla, en
+      // vez de dispararles una descarga que el servicio va a rechazar: un 403
+      // sin explicación se lee como una avería del programa.
+      if (session.descargaPlanillas) descargar(documentFuidUrl(job.id));
+      inventarios = {
+        ...inventarios,
+        [job.id]: {
+          trabajando: false,
+          error: null,
+          aviso: session.descargaPlanillas
+            ? null
+            : 'La planilla quedó escrita. Ábrala desde la ficha del documento.'
+        }
+      };
     } catch (problema) {
       inventarios = {
         ...inventarios,
@@ -111,6 +126,11 @@
     try {
       const respuesta = await fetch(documentInventoryUrl(job.id), { method: 'HEAD' });
       if (!respuesta.ok) return false;
+      // Quien no descarga planillas tampoco se lleva ésta por este atajo. No
+      // es el FUID -- es el inventario que el proceso deja junto a los PDF --
+      // pero es el mismo Excel saliendo por la misma puerta, y dejarlo abierto
+      // haría de la restricción una que sólo aplica a veces.
+      if (!session.descargaPlanillas) return false;
       descargar(documentInventoryUrl(job.id));
       return true;
     } catch {
@@ -204,6 +224,8 @@
 
         {#if inventario?.error}
           <p class="error">{inventario.error}</p>
+        {:else if inventario?.aviso}
+          <p class="aviso">{inventario.aviso}</p>
         {/if}
 
         {#if abiertos.has(job.id)}
@@ -406,6 +428,12 @@
     padding-left: 0.5rem;
     font-size: 0.72rem;
     color: var(--critical);
+  }
+  .aviso {
+    margin: 0.35rem 0 0 1.9rem;
+    font-size: 0.74rem;
+    line-height: 1.45;
+    color: var(--muted);
   }
 
   .nota {

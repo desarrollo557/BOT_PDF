@@ -115,29 +115,16 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         estadisticas=estadisticas,
         anexos=anexos,
     )
-    inventario = entregado.inventario
-    assembly = entregado.assembly
-
     # 3. El informe, con lo que sólo esta ruta sabe: el NIC, los avisos y cómo
     #    se decidió cada costura.
     report = {
         "document": taller.name,
         "page_count": page_count,
-        "groups": [
-            {
-                "code": group.code.value,
-                "title": group.title,
-                # Qué clase de papel resultó ser, con el nombre del catálogo del
-                # archivo. Va al informe además de al nombre del archivo porque
-                # es lo que alimenta el inventario, y porque un tipo discutible
-                # se corrige en la pantalla sin volver a leer la caja.
-                "type": group.kind,
-                "pages": group.page_numbers,
-                "size": group.size,
-                "attachments": anexos.get(group.code.value, []),
-            }
-            for group in grupos.groups
-        ],
+        # Las unidades como las lee la pantalla, armadas donde las arman las
+        # otras tres rutas. Estuvieron escritas a mano aquí, y esa copia se
+        # quedaba fuera de cada arreglo que entraba por el camino común: le
+        # faltaba la fecha de cada unidad, que la pantalla ya sabía leer.
+        "groups": entregado.grupos_para_el_informe,
         # Una caja no deja páginas huérfanas: toda hoja pertenece al documento
         # que se estuviera leyendo, aunque todavía no se sepa cuál es.
         "quarantine": [],
@@ -158,17 +145,15 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         # que manda es la que dice qué archivo tiene qué páginas. Llevan la
         # carpeta delante porque lo que la descarga recibe es la ruta dentro del
         # trabajo, no sólo el nombre del archivo.
-        "outputs": [item.file_name for item in inventario.items],
-        "unwritable_pages": {
-            str(page): error for page, error in assembly.unwritable_pages.items()
-        },
+        "outputs": entregado.salidas,
+        "unwritable_pages": entregado.ilegibles,
         # Qué salió de esta caja y de qué páginas salió cada cosa. Esta ruta no
         # levanta FUID -- el formulario pide datos que sólo se saben documento a
         # documento -- pero el inventario no es el FUID: es el rastro que
         # permite ir de un archivo a sus páginas de origen y al revés, y la
         # separación por continuidad lo necesita más que ninguna otra ruta,
         # porque sus nombres son un número de orden y no dicen nada por sí solos.
-        "inventory": inventario.as_dict(),
+        "inventory": entregado.inventario.as_dict(),
         # De qué suscriptor es esta caja. Va al informe para que la entrega en
         # carpeta pueda agrupar por él sin volver a abrir el PDF.
         "nic": nic,

@@ -30,8 +30,8 @@ def _graba(
     documento: str = "UPD2365925.pdf",
 ):
     """Un documento de una unidad en el libro mayor, con todo lo que se busca."""
-    job = main.registry.create(documento, Path("x.pdf"))
-    main.ledger.record(
+    job = main.contexto.registry.create(documento, Path("x.pdf"))
+    main.contexto.ledger.record(
         job.id,
         {
             "document": documento,
@@ -190,7 +190,7 @@ class TestLoInesperadoNoSaleConElTraceback:
         def revienta():
             raise RuntimeError("C:/secreto/inventory.jsonl no se pudo abrir")
 
-        monkeypatch.setattr(main.ledger, "rows", revienta)
+        monkeypatch.setattr(main.contexto.ledger, "rows", revienta)
         # Con `raise_server_exceptions` el cliente de pruebas relanza el error
         # en vez de devolver la respuesta, que es justo lo que hay que mirar.
         respuesta = TestClient(main.app, raise_server_exceptions=False).get("/api/inventory")
@@ -203,12 +203,12 @@ class TestLoInesperadoNoSaleConElTraceback:
         assert "RuntimeError" not in detalle
 
     def test_el_borrado_en_lote_tampoco_cuenta_interioridades(self, client, monkeypatch):
-        from resolutions.api import main
+        from resolutions.api.routers import archivo
 
-        def revienta(job_id):
+        def revienta(ctx, job_id):
             raise OSError("C:/secreto/outputs/abc no se pudo borrar")
 
-        monkeypatch.setattr(main, "_erase_document", revienta)
+        monkeypatch.setattr(archivo, "_erase_document", revienta)
         cuerpo = client.request("DELETE", "/api/documents", json={"job_ids": ["abc"]}).json()
         motivo = cuerpo["failed"][0]["reason"]
         assert "secreto" not in motivo
