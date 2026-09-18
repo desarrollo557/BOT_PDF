@@ -24,6 +24,7 @@ from .fingerprint import (
     SHEET_TOLERANCE,
     PageFingerprint,
 )
+from .folio_manuscrito import MarcaDeFolio, libro_alterna
 
 
 class Verdict(StrEnum):
@@ -123,7 +124,34 @@ def _decide(
     left: PageFingerprint,
     right: PageFingerprint,
     ubiquitous: frozenset[tuple[str, str]] = frozenset(),
+    *,
+    por_folio: bool = False,
 ) -> tuple[Verdict, str]:
+    # Antes que ninguna otra cosa, y sólo en un libro que va de dos en dos: el
+    # folio escrito a mano en la esquina alta. Va primero porque es la única
+    # evidencia de estas páginas que no pasó por un OCR -- en un libro de
+    # diplomas de 1982 todo lo demás está impreso igual en las cuatrocientas
+    # caras o escrito a mano, así que ninguna regla de texto distingue una hoja
+    # de la siguiente.
+    #
+    # Sólo la presencia decide, y conviene saber por qué, porque la regla nació
+    # diciendo las dos cosas. Que la esquina lleve folio prueba que ahí empieza
+    # una hoja nueva. Que llegue limpia **no** prueba que la cara pertenezca a
+    # la anterior: en el libro 7 de 1982 la foliación a mano numera hojas de
+    # papel y se escribe sólo en la cara de delante, mientras que cada cara --
+    # las dos -- es un diploma terminado de un graduado distinto. La página 1
+    # es el diploma de Álvaro Rhenals y la 2, que llega sin folio, es el de
+    # Antonia Rueda Peña, con su cédula y su "registrado al folio No. 2". Unir
+    # por la esquina limpia habría metido 199 diplomas dentro de otros 199 y
+    # los habría dejado fuera del inventario.
+    #
+    # De modo que la ausencia de folio no decide aquí nada y sigue el resto de
+    # reglas. Quien sí puede unir esas caras es la ruta de los libros de
+    # registro, porque lee la cédula de cada una y puede comprobar que las dos
+    # son del mismo graduado; esta ruta no lee, así que no supone.
+    if por_folio and right.folio_mark is MarcaDeFolio.PRESENTE:
+        return Verdict.STARTS, "la hoja lleva folio escrito en la esquina"
+
     left_pages, right_pages = left.pagination, right.pagination
 
     # The strongest evidence there is: the paper counting itself. A sheet that
@@ -483,9 +511,17 @@ def _ubiquitous(fingerprints: Sequence[PageFingerprint]) -> frozenset[tuple[str,
 def decide_boundaries(fingerprints: Sequence[PageFingerprint]) -> list[Boundary]:
     """Judge every seam on structure alone, free of charge."""
     ubicuos = _ubiquitous(fingerprints)
+    # Si esto es un libro encuadernado, se nota en el ritmo de sus folios: van
+    # de dos en dos porque cada hoja se escaneó por las dos caras. Cuando ese
+    # compás está ahí, manda sobre todas las reglas de texto -- lo escribió un
+    # archivista para decir dónde empieza cada hoja, y no depende de que el OCR
+    # supiera leer nada. Cuando no está, esta línea no cambia absolutamente
+    # nada: una caja de correspondencia no tiene folios manuscritos en la
+    # esquina, `libro_alterna` dice que no, y se decide como siempre.
+    por_folio = libro_alterna([huella.folio_mark for huella in fingerprints])
     boundaries: list[Boundary] = []
     for left, right in zip(fingerprints, fingerprints[1:], strict=False):
-        verdict, reason = _decide(left, right, ubicuos)
+        verdict, reason = _decide(left, right, ubicuos, por_folio=por_folio)
         boundaries.append(
             Boundary(
                 left=left.page_number,

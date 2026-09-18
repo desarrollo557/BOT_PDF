@@ -118,6 +118,24 @@ class PageSource(Protocol):
         """
         return None
 
+    def ink_of(self, page_number: int, band: Band) -> tuple[float, float] | None:
+        """Cuánta tinta hay en una banda de la página, sin leer qué dice.
+
+        Devuelve dos proporciones de columnas: la primera con tinta de espesor
+        de escritura, la segunda oscuras de arriba abajo -- que no es tinta
+        sino el canto del libro o la sombra del alimentador. Quien la usa las
+        interpreta; aquí sólo se cuentan.
+
+        Existe porque hay preguntas que se contestan sin leer. Un libro de
+        registro se folia a mano y la única pregunta que decide dónde empieza
+        cada uno es "¿hay algo escrito en esa esquina?", que cuesta once
+        segundos por libro contando píxeles y setecientos pasándole OCR.
+
+        Opcional como ``boxes_of`` y ``sheet_of``: una fuente sin píxeles
+        devuelve ``None``, y quien pregunta lo trata como una señal que no está.
+        """
+        return None
+
     def render(self, page_number: int, band: Band | None = None, dpi: int = 200) -> bytes: ...
 
     def close(self) -> None: ...

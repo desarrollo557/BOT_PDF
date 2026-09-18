@@ -1,6 +1,8 @@
 <script lang="ts">
   import FolderPicker from '$lib/components/FolderPicker.svelte';
   import { jobStore } from '$lib/jobs.svelte';
+  import type { LecturaChoice } from '$lib/lectura';
+  import type { TipoPedido } from '$lib/tipos';
   import type { OracleChoice } from '$lib/oracles';
   import type { SourceDisposition, TaskKind } from '$lib/types';
 
@@ -19,9 +21,27 @@
      * usara el automático no serviría para comparar dos modelos.
      */
     oracle?: OracleChoice;
+    /**
+     * Y con qué motor leer el papel. Una corrida entera comparte motor porque
+     * una carpeta suele traer un mismo tipo de material: la caja de libros
+     * manuscritos se lee con ayuda y la de expedientes mecanografiados no la
+     * necesita.
+     */
+    lectura?: LecturaChoice;
+    /**
+     * Y qué clase de documento trae la carpeta. Una estantería suele ser
+     * homogénea -- veinte libros de diplomas --, así que declararlo una vez
+     * vale para todos sus archivos.
+     */
+    tipo?: TipoPedido;
   }
 
-  let { task = 'split', oracle = 'auto' }: Props = $props();
+  let {
+    task = 'split',
+    oracle = 'auto',
+    lectura = 'local',
+    tipo = 'auto'
+  }: Props = $props();
 
   /**
    * Clean a pasted path in the field itself.
@@ -107,7 +127,9 @@
         disposition,
         watch,
         task,
-        oracle
+        oracle,
+        lectura,
+        tipo
       });
     } catch (problem) {
       error = (problem as Error).message;

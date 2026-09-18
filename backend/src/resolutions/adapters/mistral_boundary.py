@@ -24,6 +24,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
+from ..application.consumo import Consumo, anotar_uso_json
 from .boundary_prompt import (
     INSTRUCTIONS,
     build_question,
@@ -50,9 +51,15 @@ class MistralConfig:
 class MistralBoundaryOracle:
     """Judges undecided seams with Mistral. Satisfies `BoundaryOracle`."""
 
-    def __init__(self, api_key: str | None = None, config: MistralConfig | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        config: MistralConfig | None = None,
+        consumo: Consumo | None = None,
+    ) -> None:
         self._api_key = api_key or os.environ.get("MISTRAL_API_KEY", "")
         self._config = config or MistralConfig()
+        self._consumo = consumo
 
     def judge(
         self,
@@ -101,8 +108,11 @@ class MistralBoundaryOracle:
                 "Mistral no respondió (%s); las costuras dudosas van a revisión",
                 describe_failure(error),
             )
+            if self._consumo is not None:
+                self._consumo.fallo("mistral-bordes")
             return {}
 
+        anotar_uso_json(self._consumo, "mistral-bordes", payload)
         texto = _text_of(payload)
         answers = parse_answer(texto, seams)
         unusable = describe_unusable(texto, seams, answers)

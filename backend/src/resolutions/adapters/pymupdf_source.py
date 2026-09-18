@@ -11,6 +11,31 @@ from .mupdf_messages import drenar
 #: PDF user space is 72 dpi. Every render scales from there.
 _PDF_DPI = 72.0
 
+#: A cuánto se rasteriza para contar tinta. No se va a leer nada con esto: se
+#: va a preguntar si la esquina está escrita o en blanco, y para eso sobra.
+_INK_DPI = 144.0
+
+#: Por debajo de este lado en píxeles la banda no da para contar columnas.
+_INK_MIN_SIDE = 10
+
+#: Cuánto más oscuro que el papel de la banda para contar como entintado. Sobre
+#: el gris que devuelve el escáner en las hojas pegadas al lomo, menos de esto
+#: empieza a contar la propia textura del papel.
+_INK_CONTRAST = 45
+
+#: Y a partir de cuánto ya no es tinta de nadie. Lo escrito a mano sale gris
+#: medio; el canto del libro y la sombra del alimentador salen negro saturado.
+_INK_SATURATION = 150
+
+#: Qué parte de la columna tiene que estar entintada para que deje de ser un
+#: trazo. Una columna llena de arriba abajo es el canto, no una letra.
+_INK_FULL_COLUMN = 0.50
+
+#: Cuántas columnas a cada lado de esa franja se descartan con ella. El borde
+#: negro deja un halo gris alrededor que tiene el tono de la escritura, y sin
+#: esto ese halo se contaba como folio en las hojas más deterioradas del libro.
+_INK_HALO = 20
+
 
 class PyMuPDFPageSource:
     """A PDF opened once, read page by page.
@@ -120,6 +145,79 @@ class PyMuPDFPageSource:
                     lines.append(TextLine(text=text, y=y0, x=x0))
         lines.sort(key=lambda item: (item.y, item.x))
         return lines
+
+    def ink_of(self, page_number: int, band: Band) -> tuple[float, float] | None:
+        """Cuánta tinta hay en esa banda, por columnas y sin leer nada.
+
+        Dos cuentas, las dos en proporción de columnas de la banda: cuántas
+        llevan tinta de espesor de escritura y cuántas están oscuras de arriba
+        abajo. La segunda existe porque el canto del libro y la sombra del
+        alimentador entran en la banda tan negros como un trazo, y sólo se
+        distinguen por la forma: una firma se reparte a lo ancho, un defecto de
+        escaneo llena la columna entera.
+
+        El umbral es relativo al papel de la propia banda, no un valor fijo: el
+        escaneo de un libro encuadernado cambia de tono de una hoja a la
+        siguiente -- la que estaba junto al lomo sale gris -- y un umbral
+        absoluto leería esa hoja entera como tinta.
+
+        Se rasteriza a 144 ppp, que es poco para leer y de sobra para saber si
+        hay algo escrito. A esa escala la banda del folio son unos cuarenta mil
+        píxeles y el libro entero se mide en once segundos.
+        """
+        page = self._document[page_number - 1]
+        rect = page.rect
+        clip = pymupdf.Rect(
+            rect.x0 + band.x0 * rect.width,
+            rect.y0 + band.y0 * rect.height,
+            rect.x0 + band.x1 * rect.width,
+            rect.y0 + band.y1 * rect.height,
+        )
+        zoom = _INK_DPI / _PDF_DPI
+        pixmap = page.get_pixmap(
+            matrix=pymupdf.Matrix(zoom, zoom),
+            clip=clip,
+            colorspace=pymupdf.csGRAY,
+            alpha=False,
+        )
+        ancho, alto, muestras = pixmap.width, pixmap.height, pixmap.samples
+        if ancho < _INK_MIN_SIDE or alto < _INK_MIN_SIDE:
+            return None
+
+        # El papel de esta banda, no un blanco de referencia: la hoja pegada al
+        # lomo sale gris entera y un umbral absoluto la leería como tinta.
+        papel = sorted(muestras)[len(muestras) // 2]
+        entintado = papel - _INK_CONTRAST
+        saturado = papel - _INK_SATURATION
+
+        oscuras = [0] * ancho
+        trazo = [0] * ancho
+        for y in range(alto):
+            fila = y * ancho
+            for x in range(ancho):
+                valor = muestras[fila + x]
+                if valor < entintado:
+                    oscuras[x] += 1
+                    # Lo escrito a mano sale en grises; lo que pone el escáner
+                    # -- canto, sombra, borde de la hoja levantada -- sale negro
+                    # del todo. Quedarse con los grises descarta casi todo el
+                    # defecto de escaneo sin tocar la escritura.
+                    if valor >= saturado:
+                        trazo[x] += 1
+
+        # Una columna entintada de arriba abajo no es un trazo: es el canto del
+        # libro. Se veta ella y lo que tiene al lado, porque alrededor de esa
+        # franja queda un halo gris que sí tiene tono de escritura.
+        vetadas: set[int] = set()
+        for x in range(ancho):
+            if oscuras[x] > _INK_FULL_COLUMN * alto:
+                vetadas.update(range(max(0, x - _INK_HALO), min(ancho, x + _INK_HALO + 1)))
+
+        tinta = sum(trazo[x] for x in range(ancho) if x not in vetadas)
+        # Normalizado por el cuadrado del alto -- "cuántos caracteres caben en
+        # esto" -- y no por el área de la banda: medido en fracción de ancho, un
+        # folio de un dígito se perdía por pequeño al lado de uno de tres.
+        return (tinta / (alto * alto), len(vetadas) / ancho)
 
     def render(self, page_number: int, band: Band | None = None, dpi: int = 200) -> bytes:
         page = self._document[page_number - 1]

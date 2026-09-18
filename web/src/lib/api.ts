@@ -1,3 +1,5 @@
+import type { LecturaChoice } from './lectura';
+import type { TipoOption, TipoPedido } from './tipos';
 import type { OracleChoice } from './oracles';
 import type {
   Batch,
@@ -132,7 +134,9 @@ export async function uploadDocument(
   file: File,
   batchId?: string,
   task: TaskKind = 'split',
-  oracle: OracleChoice = 'auto'
+  oracle: OracleChoice = 'auto',
+  lectura: LecturaChoice = 'local',
+  tipo: TipoPedido = 'auto'
 ): Promise<{ id: string }> {
   const body = new FormData();
   body.append('file', file);
@@ -143,6 +147,13 @@ export async function uploadDocument(
   // El servicio rechaza con 422 un modelo sin llave, y lo hace antes de
   // recibir el archivo. No se manda 'auto' porque es el valor por omisión.
   if (oracle !== 'auto') query.set('oracle', oracle);
+  // Y tampoco 'local', por lo mismo: es lo que el servicio hace sin que se lo
+  // pidan, y mandarlo obligaría a los servicios viejos a entender un parámetro
+  // que no conocen.
+  if (lectura !== 'local') query.set('lectura', lectura);
+  // Y el tipo declarado, por lo mismo: 'auto' es lo que el servicio hace sin
+  // que se lo pidan.
+  if (tipo !== 'auto') query.set('tipo', tipo);
   const suffix = query.toString();
 
   const url = suffix ? `${BASE}/jobs?${suffix}` : `${BASE}/jobs`;
@@ -357,6 +368,20 @@ export interface Health {
    * diciendo por qué, en vez de adivinar.
    */
   oracles?: Record<OracleChoice, boolean>;
+  /**
+   * Con qué puede leer el papel este servicio. Ausente en cualquier servicio
+   * anterior a esta revisión, y ahí vale lo mismo que con `oracles`: no saber
+   * no es no haber, así que se ofrece el local y se apaga el resto diciendo
+   * por qué.
+   */
+  readers?: Record<LecturaChoice, boolean>;
+  /**
+   * Qué clases de documento se pueden declarar al cargar. Las enumera el
+   * servicio para que el front no tenga que mantener la misma lista en su
+   * idioma. Ausente en un servicio anterior a esta revisión, y ahí sólo se
+   * ofrece el automático.
+   */
+  document_types?: TipoOption[];
   queued: number;
   queue_limit: number;
 }
@@ -481,6 +506,10 @@ export function startFolderRun(options: {
   task?: TaskKind;
   /** Y a qué modelo preguntarle por los bordes dudosos. */
   oracle?: OracleChoice;
+  /** Y con qué motor leer el papel de esta carpeta. */
+  lectura?: LecturaChoice;
+  /** Y qué clase de documento trae, cuando el operador lo sabe. */
+  tipo?: TipoPedido;
 }): Promise<FolderRun> {
   return send(`${BASE}/folder-runs`, 'POST', options);
 }

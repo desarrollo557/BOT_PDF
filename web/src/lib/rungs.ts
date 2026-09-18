@@ -121,3 +121,39 @@ export const COUNTED_STAGES = new Set([
  * ruido. Por encima, callarse es lo que hace que la pantalla parezca colgada.
  */
 export const SILENCE_THRESHOLD_SECONDS = 4;
+
+/**
+ * Qué está haciendo el trabajo ahora mismo, en una línea.
+ *
+ * Vive aquí y no en cada pantalla porque las dos que lo enseñan -- la tarjeta
+ * del lote y el monitor de un documento -- tienen que decir lo mismo, y cuando
+ * cada una lo componía por su cuenta sólo una de ellas acabó enseñando el
+ * detalle: el monitor decía "Reconociendo el documento" durante doce minutos de
+ * lectura, sin un número, mientras el trabajo iba por la página trescientas.
+ *
+ * El nombre de la etapa no basta: "Escribiendo los PDF" dice exactamente lo
+ * mismo en el archivo 1 que en el 287. Por eso lleva detrás el contador de la
+ * etapa y lo que el worker haya querido contar de ella.
+ */
+export function stageActivity(progress: {
+  stage: string;
+  pages_done?: number;
+  page_count?: number;
+  pages_per_second?: number;
+  stage_done?: number;
+  stage_total?: number;
+  detail?: string | null;
+}): string {
+  const label = STAGE_LABELS[progress.stage] ?? progress.stage;
+  if (progress.stage === 'analysing' || progress.stage === 'page') {
+    const rate = progress.pages_per_second
+      ? ` · ${progress.pages_per_second.toFixed(1)} p/s`
+      : '';
+    return `${label} · ${progress.pages_done ?? 0} de ${progress.page_count ?? 0} páginas${rate}`;
+  }
+  const done = progress.stage_done ?? 0;
+  const total = progress.stage_total ?? 0;
+  const counter = total ? ` · ${done} de ${total}` : '';
+  const detail = progress.detail ? ` · ${progress.detail}` : '';
+  return `${label}${counter}${detail}`;
+}

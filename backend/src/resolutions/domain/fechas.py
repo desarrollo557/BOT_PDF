@@ -60,15 +60,22 @@ CONTEXTO_DE_CITA = 60
 ANIO_MINIMO = 1990
 
 
-def _valida(dia: int, mes: int, anio: int) -> date | None:
-    if not (ANIO_MINIMO <= anio <= 2100):
+def _valida(dia: int, mes: int, anio: int, hoy: date | None = None) -> date | None:
+    if anio < ANIO_MINIMO:
         return None
     try:
-        return date(anio, mes, dia)
+        fecha = date(anio, mes, dia)
     except ValueError:
         # "31/02/2022" y "13/25/2021" salen del OCR más veces de lo que
         # parece: una fecha imposible no es una fecha.
         return None
+    # Y una fecha que todavía no ha llegado tampoco. Un papel que ya está
+    # escaneado no pudo firmarse mañana, así que una fecha futura es siempre un
+    # error de lectura: el OCR lee "19/02/2024" y escribe "19/02/2074" porque el
+    # 2 y el 7 se parecen en un escaneo malo. Sin este corte esa errata se
+    # convertía en la fecha extrema final del expediente -- la más reciente gana
+    # -- y el inventario salía diciendo que el documento se cierra en 2074.
+    return fecha if fecha <= (hoy or date.today()) else None
 
 
 def _citada(texto: str, inicio: int) -> bool:
@@ -76,10 +83,10 @@ def _citada(texto: str, inicio: int) -> bool:
     return bool(_CITA.search(texto[max(0, inicio - CONTEXTO_DE_CITA) : inicio]))
 
 
-def fechas_de(texto: str) -> list[date]:
+def fechas_de(texto: str, *, hoy: date | None = None) -> list[date]:
     """Todas las fechas que el texto declara como suyas, en orden de aparición.
 
-    Descarta las imposibles y las citadas. Devuelve lista y no conjunto porque
+    Descarta las imposibles, las futuras y las citadas. Devuelve lista y no conjunto porque
     el orden en la página es información: la primera fecha de un oficio suele
     ser la suya, y la última de un acta es la de su firma.
     """
@@ -88,7 +95,7 @@ def fechas_de(texto: str) -> list[date]:
 
     for hallazgo in _EN_CIFRAS.finditer(plano):
         dia, mes, anio = (int(g) for g in hallazgo.groups())
-        fecha = _valida(dia, mes, anio)
+        fecha = _valida(dia, mes, anio, hoy)
         if fecha is not None and not _citada(plano, hallazgo.start()):
             encontradas.append((hallazgo.start(), fecha))
 
@@ -96,7 +103,7 @@ def fechas_de(texto: str) -> list[date]:
         mes = MESES.get(hallazgo.group(2).lower())
         if mes is None:
             continue
-        fecha = _valida(int(hallazgo.group(1)), mes, int(hallazgo.group(3)))
+        fecha = _valida(int(hallazgo.group(1)), mes, int(hallazgo.group(3)), hoy)
         if fecha is not None and not _citada(plano, hallazgo.start()):
             encontradas.append((hallazgo.start(), fecha))
 
@@ -104,7 +111,7 @@ def fechas_de(texto: str) -> list[date]:
     return [fecha for _, fecha in encontradas]
 
 
-def ultima_fecha(paginas: list[str]) -> date | None:
+def ultima_fecha(paginas: list[str], *, hoy: date | None = None) -> date | None:
     """La fecha más reciente que aparece en un documento entero.
 
     Es la que fecha la unidad documental: la fecha extrema final, en el
@@ -115,11 +122,11 @@ def ultima_fecha(paginas: list[str]) -> date | None:
     que pidió el operador: un acta con cuatro anexos puede llevar la fecha de
     la visita en la hoja uno y la de la notificación en la última.
     """
-    todas = [fecha for pagina in paginas for fecha in fechas_de(pagina)]
+    todas = [fecha for pagina in paginas for fecha in fechas_de(pagina, hoy=hoy)]
     return max(todas) if todas else None
 
 
-def primera_fecha(paginas: list[str]) -> date | None:
+def primera_fecha(paginas: list[str], *, hoy: date | None = None) -> date | None:
     """La más antigua del documento: la fecha extrema inicial del FUID."""
-    todas = [fecha for pagina in paginas for fecha in fechas_de(pagina)]
+    todas = [fecha for pagina in paginas for fecha in fechas_de(pagina, hoy=hoy)]
     return min(todas) if todas else None

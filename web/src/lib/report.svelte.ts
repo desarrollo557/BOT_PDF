@@ -1,4 +1,4 @@
-import type { Job } from './types';
+import type { Consumo, Job } from './types';
 
 /**
  * A finished unit of work, summarised from what actually happened.
@@ -27,6 +27,12 @@ export interface Completion {
   escalated: number;
   /** Where each page's answer came from, keyed by rung. */
   provenance: Record<string, number>;
+  /**
+   * Lo que costó producir todo esto, sumado de los informes de cada documento.
+   * `null` cuando ninguno gastó nada: una tanda leída con el motor local no
+   * enseña un gasto en cero.
+   */
+  consumo: Consumo | null;
 
   /** One line per document, for the detail table. */
   items: {
@@ -77,11 +83,13 @@ export function summarise(
   let repairs = 0;
   let quarantine = 0;
   let escalated = 0;
+  let consumo: Consumo | null = null;
 
   for (const job of jobs) {
     const report = job.report;
     if (!report) continue;
     pages += report.page_count;
+    consumo = sumarConsumo(consumo, report.consumo ?? null);
     // Cada clave se lee con red. Un informe de inventario no traía ninguna de
     // éstas y tumbaba el resumen entero -- y con él el modal de cierre, que es
     // lo único que le dice al operador que el trabajo terminó bien. Un informe
@@ -121,6 +129,7 @@ export function summarise(
     quarantine,
     escalated,
     provenance,
+    consumo,
     items: jobs.map((job) => ({
       jobId: job.id,
       filename: job.filename,
@@ -146,10 +155,12 @@ export function summarise(
  */
 export function merge(parts: Completion[]): Completion {
   const provenance: Record<string, number> = {};
+  let consumo: Completion['consumo'] = null;
   for (const part of parts) {
     for (const [rung, count] of Object.entries(part.provenance)) {
       provenance[rung] = (provenance[rung] ?? 0) + count;
     }
+    consumo = sumarConsumo(consumo, part.consumo);
   }
 
   const add = (pick: (part: Completion) => number) =>
@@ -168,6 +179,7 @@ export function merge(parts: Completion[]): Completion {
     kind: 'tanda',
     title: `${parts.length} unidades procesadas`,
     finishedAt,
+    consumo,
     elapsedSeconds: Math.max(0, (finishedAt - startedAt) / 1000),
     operator: parts.find((part) => part.operator)?.operator ?? null,
     documents: add((part) => part.documents),
@@ -249,3 +261,48 @@ export class Reports {
 }
 
 export const reports = new Reports();
+
+/**
+ * Dos consumos, sumados unidad por unidad y proveedor por proveedor.
+ *
+ * Las páginas facturadas se suman con páginas y los tokens con tokens; nunca
+ * entre sí. El dinero sólo se suma si las dos partes lo traen: mezclar un
+ * documento con precio y otro sin él daría un total que parece completo y no
+ * lo es.
+ */
+function sumarConsumo(a: Consumo | null, b: Consumo | null): Consumo | null {
+  if (!a) return b;
+  if (!b) return a;
+  const proveedores: Consumo['proveedores'] = { ...a.proveedores };
+  for (const [nombre, cuenta] of Object.entries(b.proveedores)) {
+    const previa = proveedores[nombre];
+    proveedores[nombre] = previa
+      ? {
+          peticiones: previa.peticiones + cuenta.peticiones,
+          paginas_facturadas: previa.paginas_facturadas + cuenta.paginas_facturadas,
+          tokens_entrada: previa.tokens_entrada + cuenta.tokens_entrada,
+          tokens_salida: previa.tokens_salida + cuenta.tokens_salida,
+          tokens_cache: previa.tokens_cache + cuenta.tokens_cache,
+          rechazos: previa.rechazos + cuenta.rechazos,
+          fallos: previa.fallos + cuenta.fallos
+        }
+      : { ...cuenta };
+  }
+  const coste =
+    a.coste_estimado !== null && b.coste_estimado !== null
+      ? a.coste_estimado + b.coste_estimado
+      : null;
+  return {
+    proveedores,
+    peticiones: a.peticiones + b.peticiones,
+    paginas_facturadas: a.paginas_facturadas + b.paginas_facturadas,
+    tokens_entrada: a.tokens_entrada + b.tokens_entrada,
+    tokens_salida: a.tokens_salida + b.tokens_salida,
+    tokens_cache: a.tokens_cache + b.tokens_cache,
+    tokens: a.tokens + b.tokens,
+    rechazos: a.rechazos + b.rechazos,
+    fallos: a.fallos + b.fallos,
+    coste_estimado: coste,
+    moneda: a.moneda
+  };
+}

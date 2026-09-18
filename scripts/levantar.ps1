@@ -47,6 +47,27 @@ function Get-Puerto([int]$pedido, [string]$para) {
 
 $raiz = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
+function Cargar-Env {
+    # Las llaves de los proveedores, del archivo .env de la raiz al entorno de
+    # este proceso. Se hace aca y no con setx para que la llave viva en un solo
+    # sitio, se pueda cambiar con un editor de texto y no quede pegada al perfil
+    # de Windows de quien la puso. El archivo esta en .gitignore.
+    param([string]$ruta)
+    if (-not (Test-Path $ruta)) { return }
+    foreach ($linea in Get-Content $ruta) {
+        $limpia = $linea.Trim()
+        if ($limpia -eq "" -or $limpia.StartsWith("#")) { continue }
+        $corte = $limpia.IndexOf("=")
+        if ($corte -lt 1) { continue }
+        $nombre = $limpia.Substring(0, $corte).Trim()
+        $valor = $limpia.Substring($corte + 1).Trim().Trim('"').Trim("'")
+        Set-Item -Path "Env:$nombre" -Value $valor
+    }
+    Write-Host "   llaves cargadas desde .env"
+}
+
+Cargar-Env (Join-Path $raiz ".env")
+
 $py = Join-Path $raiz "backend\.venv\Scripts\python.exe"
 if (-not (Test-Path $py)) { $py = "python" }
 
@@ -62,7 +83,11 @@ $WebPort = Get-Puerto $WebPort "el front"
 
 Write-Host ""
 Write-Host "-- backend --"
-$argumentos = @("-m", "uvicorn", "resolutions.api.main:app", "--port", "$ApiPort")
+# Sin bufer y sin el registro de acceso de uvicorn: el servicio ya anota cada
+# peticion con su duracion y su query, y con las dos cosas la consola ensena lo
+# que pasa segun pasa y no en bloques de cuarenta lineas medio minuto tarde.
+$env:PYTHONUNBUFFERED = "1"
+$argumentos = @("-m", "uvicorn", "resolutions.api.main:app", "--port", "$ApiPort", "--no-access-log")
 $backend = Start-Process -FilePath $py -ArgumentList $argumentos -WorkingDirectory (Join-Path $raiz "backend") -PassThru -NoNewWindow
 
 try {

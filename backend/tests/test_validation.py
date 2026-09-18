@@ -55,9 +55,33 @@ class TestCamposQueFaltan:
         hallazgos = validate_diplomas([dudoso])
         assert any(h.field == "lectura" and h.severity is Severity.ERROR for h in hallazgos)
 
-    def test_un_campo_ausente_es_un_error_y_no_un_aviso(self):
+    def test_un_campo_ausente_es_un_aviso_y_no_un_error(self):
+        """Una ausencia va al FUID como N/A; un error es algo que se leyó mal.
+
+        Como error, en el libro 7 de 1982 la cola de revisión traía 398 páginas
+        de 398, porque la fecha, el título y el libro están escritos a mano. Una
+        cola donde está todo no señala nada.
+        """
         hallazgos = validate_diplomas([registro(1, degree=None)])
-        assert any(h.severity is Severity.ERROR for h in hallazgos)
+        assert hallazgos and all(h.severity is Severity.WARNING for h in hallazgos)
+
+    def test_la_vuelta_de_una_hoja_no_produce_hallazgos(self):
+        """Sus datos son los de la cara que la abre; pedírselos a un reverso en
+        blanco ponía cinco hallazgos por cada página par del libro."""
+        from resolutions.domain.folio_manuscrito import MarcaDeFolio
+
+        cara = registro(1)
+        vuelta = registro(
+            2,
+            folio=None,
+            registered_folio=None,
+            name=None,
+            degree=None,
+            graduation_date=None,
+            book=None,
+            folio_mark=MarcaDeFolio.AUSENTE,
+        )
+        assert [h.page_number for h in validate_diplomas([cara, vuelta])] == []
 
 
 class TestCoherenciaDelLibro:

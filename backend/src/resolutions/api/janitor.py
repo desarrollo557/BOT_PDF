@@ -11,6 +11,35 @@ from .settings import Settings
 
 logger = logging.getLogger(__name__)
 
+def _guarda_un_producto(directorio: Path) -> bool:
+    """Si en esta carpeta hay algo que nadie puede volver a generar barriéndola.
+
+    El barrendero decide qué sobra mirando quién referencia cada carpeta: un
+    trabajo vivo en memoria, o el libro mayor. Eso vale mientras lo que se
+    produce sean PDF, porque los PDF se anotan en el libro mayor y quedan
+    referenciados para siempre.
+
+    Un trabajo de inventario no produce PDF: su único producto es el FUID, y el
+    FUID no se anota en el libro mayor porque ahí van documentos generados. De
+    modo que en cuanto el trabajo salía del registro en memoria -- al reiniciar
+    el servicio, sin ir más lejos -- su carpeta quedaba sin nadie que la
+    reclamara y se barría con la planilla dentro. El operador procesaba, iba a
+    descargar su inventario y se encontraba un 404.
+
+    Esta comprobación es el suelo: cueste lo que cueste el listado, una carpeta
+    con un FUID dentro no es espacio que reclamar. El propio barrendero lo dice
+    en su descripción -- nada de lo que borra es un producto -- y esto es lo que
+    hace que siga siendo verdad.
+    """
+    # Importado aquí y no arriba porque el paquete del worker arrastra el
+    # mundo, y el barrendero arranca con el servicio.
+    from .worker import FUID_SUFFIX
+
+    try:
+        return any(directorio.glob(f"*{FUID_SUFFIX}"))
+    except OSError:  # pragma: no cover - una carpeta ilegible no se toca
+        return True
+
 
 @dataclass(frozen=True, slots=True)
 class SweepResult:
@@ -136,11 +165,19 @@ class IdleJanitor:
             entries = list(directory.iterdir())
         except OSError:
             return []
-        return [
-            entry
-            for entry in entries
-            if (entry.is_file() if files else entry.is_dir()) and entry.name not in keep
-        ]
+        sobran = []
+        for entry in entries:
+            if not (entry.is_file() if files else entry.is_dir()):
+                continue
+            if entry.name in keep:
+                continue
+            # Una carpeta de salida con un FUID dentro no es espacio que
+            # reclamar aunque nadie la referencie: es el producto de un trabajo
+            # de inventario, que no deja rastro en el libro mayor.
+            if not files and _guarda_un_producto(entry):
+                continue
+            sobran.append(entry)
+        return sobran
 
     @staticmethod
     def _compact_ribbons(jobs: list) -> int:

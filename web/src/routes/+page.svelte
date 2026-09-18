@@ -6,6 +6,8 @@
   import SingleDocumentMonitor from '$lib/components/SingleDocumentMonitor.svelte';
   import UploadPanel from '$lib/components/UploadPanel.svelte';
   import { consoleLog } from '$lib/console.svelte';
+  import type { LecturaChoice } from '$lib/lectura';
+  import type { TipoPedido } from '$lib/tipos';
   import type { OracleChoice } from '$lib/oracles';
   import { formatBytes } from '$lib/format';
   import { jobStore } from '$lib/jobs.svelte';
@@ -200,14 +202,17 @@
     split: 'dividir',
     inventory: 'inventariar',
     both: 'dividir e inventariar',
-    segment: 'separar por documento'
+    segment: 'separar por documento',
+    inventory_file: 'inventariar el archivo'
   };
 
   async function handle(
     files: File[],
     asBatch: boolean,
     task: TaskKind = 'split',
-    oracle: OracleChoice = 'auto'
+    oracle: OracleChoice = 'auto',
+    lectura: LecturaChoice = 'local',
+    tipo: TipoPedido = 'auto'
   ) {
     errors = [];
     uploaded = 0;
@@ -237,7 +242,7 @@
 
     await withConcurrency(files, UPLOAD_CONCURRENCY, async (file) => {
       try {
-        await uploadDocument(file, batchId, task, oracle);
+        await uploadDocument(file, batchId, task, oracle, lectura, tipo);
         consoleLog.push('UP', `${formatBytes(file.size)} subidos`, 'net', file.name);
       } catch (error) {
         errors = [...errors, `${file.name}: ${(error as Error).message}`];

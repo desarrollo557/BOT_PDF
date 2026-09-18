@@ -94,6 +94,11 @@ def validate_diplomas(records: Sequence[DiplomaRecord]) -> list[Issue]:
 def _per_record(records: Sequence[DiplomaRecord]) -> list[Issue]:
     issues: list[Issue] = []
     for record in records:
+        # La vuelta de una hoja no es un registro: sus datos son los de la cara
+        # que la abre, y pedirle folio, nombre y fecha a un reverso en blanco
+        # ponía cinco hallazgos por cada página par del libro.
+        if record.continua_la_anterior:
+            continue
         # Los avisos que el propio lector levantó al leer la página: el folio
         # que no coincide consigo mismo, el nombre con un carácter imposible.
         issues.extend(
@@ -114,11 +119,17 @@ def _per_record(records: Sequence[DiplomaRecord]) -> list[Issue]:
             ("libro", record.book, "el número de libro"),
         ):
             if not value:
+                # Aviso y no error: un campo que no se leyó es una ausencia, y
+                # las ausencias van al FUID como N/A, que es lo que pide la
+                # instrucción. Un error es una contradicción -- algo que se leyó
+                # mal -- y sólo eso manda una página a la cola de revisión.
+                # Como error, en el libro 7 de 1982 la cola traía 398 páginas de
+                # 398, porque la fecha, el título y el libro están manuscritos.
                 issues.append(
                     Issue(
                         field=field,
                         reason=f"no se pudo leer {label}",
-                        severity=Severity.ERROR,
+                        severity=Severity.WARNING,
                         page_number=record.page_number,
                     )
                 )
@@ -145,8 +156,14 @@ def _across_the_book(records: Sequence[DiplomaRecord]) -> list[Issue]:
     """Lo que sólo se ve mirando el libro entero, no una página."""
     issues: list[Issue] = []
 
-    # Un empaste es un libro. Si una página dice que es el 8 y otra que es el 1,
-    # una de las dos se leyó mal, y sin este cruce nadie lo notaría.
+    # Un empaste suele ser un libro, y cuando una página dice otro número
+    # conviene saberlo. Pero es un aviso y no un error, y hubo que mirar el
+    # papel para entenderlo: en el libro 7 de 1982 la página 1 dice "del libro
+    # No. 7" escrito a mano sobre la línea, y las páginas 21 y 33 dicen "del
+    # libro No. 1" **impreso** en el formulario. Las dos lecturas son correctas
+    # -- el número de libro de registro que cita cada diploma varía dentro del
+    # mismo tomo -- y como error mandaba a revisión las páginas que decían 7,
+    # que eran justamente las que estaban bien leídas.
     libros: dict[str, list[int]] = {}
     for record in records:
         if record.book:
@@ -163,7 +180,7 @@ def _across_the_book(records: Sequence[DiplomaRecord]) -> list[Issue]:
                         f"esta página dice libro No. {libro} y el resto del "
                         f"documento dice {mayoritario}"
                     ),
-                    severity=Severity.ERROR,
+                    severity=Severity.WARNING,
                     page_number=pagina,
                     observed=libro,
                 )

@@ -11,6 +11,8 @@ import {
   streamEvents
 } from './api';
 import { consoleLog } from './console.svelte';
+import type { LecturaChoice } from './lectura';
+import type { TipoPedido } from './tipos';
 import type { OracleChoice } from './oracles';
 import type { FolderRun, Job, SourceDisposition, TaskKind } from './types';
 
@@ -203,6 +205,10 @@ class JobStore {
     task?: TaskKind;
     /** Y a qué modelo preguntarle por los bordes dudosos. */
     oracle?: OracleChoice;
+    /** Y con qué motor leer el papel de esta carpeta. */
+    lectura?: LecturaChoice;
+    /** Y qué clase de documento trae, cuando el operador lo sabe. */
+    tipo?: TipoPedido;
   }): Promise<FolderRun> {
     const run = await startFolderRun(options);
     this.#upsertRun(run);

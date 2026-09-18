@@ -91,7 +91,9 @@ class TestDanoDelOcr:
             page_number=269,
         )
         assert registro.name is None
-        assert "no se pudo leer el nombre" in registro.warnings[0]
+        # Y no lo avisa: un nombre que no se leyó es una ausencia, no una
+        # contradicción, y va al FUID como N/A sin mandar la página a revisar.
+        assert registro.warnings == []
 
     def test_avisa_cuando_el_nombre_trae_un_digito(self):
         # Página 269: el OCR escribe 2ABALETA donde el papel dice ZABALETA.
@@ -285,6 +287,20 @@ class TestFechaEnLetras:
         assert fecha_en_letras(
             "a los veinte días del mes de Agosto de mil novecientos sesenta y tres"
         ) == "20/08/1963"
+
+    def test_el_ano_escrito_en_cifras(self):
+        """El impreso deja el hueco y quien rellenó el diploma escribió "81".
+
+        Las dos formas conviven en el mismo libro. Aceptar sólo las letras
+        dejaba el FUID sin fechas extremas -- N/A en las veinte filas de la
+        muestra medida -- teniendo el dato escrito en el papel y leído.
+        """
+        assert fecha_en_letras(
+            "a los 17 días del mes de Julio de mil novecientos 81"
+        ) == "17/07/1981"
+        assert fecha_en_letras(
+            "a los 1 días del mes de Mayo de mil novecientos 82"
+        ) == "01/05/1982"
 
     def test_un_ano_ilegible_no_se_completa(self):
         assert fecha_en_letras(

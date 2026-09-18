@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
+from ..application.consumo import Consumo, anotar_uso_json
 from .boundary_prompt import (
     INSTRUCTIONS,
     build_question,
@@ -41,9 +42,15 @@ class GeminiConfig:
 class GeminiBoundaryOracle:
     """Judges undecided seams with Gemini. Satisfies `BoundaryOracle`."""
 
-    def __init__(self, api_key: str | None = None, config: GeminiConfig | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        config: GeminiConfig | None = None,
+        consumo: Consumo | None = None,
+    ) -> None:
         self._api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         self._config = config or GeminiConfig()
+        self._consumo = consumo
 
     def judge(
         self,
@@ -80,8 +87,11 @@ class GeminiBoundaryOracle:
                 "Gemini no respondió (%s); las costuras dudosas van a revisión",
                 describe_failure(error),
             )
+            if self._consumo is not None:
+                self._consumo.fallo("gemini-bordes")
             return {}
 
+        anotar_uso_json(self._consumo, "gemini-bordes", payload)
         texto = _text_of(payload)
         answers = parse_answer(texto, seams)
         unusable = describe_unusable(texto, seams, answers)

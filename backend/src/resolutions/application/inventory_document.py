@@ -38,7 +38,7 @@ from .matricula_split import group_by_student
 from .pipeline import ClassificationPipeline
 from .ports import HEADER_BAND, OcrEngine, PageSource
 from .progress import NullProgressReporter, ProgressEvent, ProgressReporter, Stage
-from .read_diploma_book import BookReadingStats, ReadDiplomaBook
+from .read_diploma_book import LECTORES, BookReadingStats, ReadDiplomaBook
 from .read_student_records import ReadStudentRecords, RecordsReadingStats
 from .resolution_fuid import filas_de_resoluciones
 
@@ -101,7 +101,11 @@ class InventoryOutcome:
         """
         motivos: dict[int, list[str]] = {}
         for issue in self.issues:
-            if issue.page_number:
+            # Sólo lo que pesa como error. Los avisos -- un campo que no se
+            # leyó, un folio repetido -- están en el informe y en el FUID, pero
+            # no traen a nadie a abrir la página: una cola donde está todo no
+            # señala nada.
+            if issue.page_number and issue.severity is Severity.ERROR:
                 motivos.setdefault(issue.page_number, []).append(issue.reason)
         return [
             {"page": pagina, "reason": "; ".join(razones)}
@@ -193,12 +197,17 @@ class InventoryDocument:
         grouping: GroupingEngine | None = None,
         progress: ProgressReporter | None = None,
         control: RunControl | None = None,
+        workers: int = LECTORES,
     ) -> None:
         self._ocr = ocr
         self._pipeline = pipeline
         self._grouping = grouping or GroupingEngine()
         self._progress = progress or NullProgressReporter()
         self._control = control or NullRunControl()
+        #: Cuántas páginas se leen a la vez. Leer un libro es esperar al
+        #: proveedor de OCR, no calcular, así que este número es el que decide
+        #: si un libro de 398 páginas tarda veinte minutos o tres.
+        self._workers = max(1, workers)
 
     def execute(
         self,
@@ -300,7 +309,10 @@ class InventoryDocument:
         first_order: int,
     ) -> InventoryOutcome:
         lector = ReadDiplomaBook(
-            ocr=self._ocr, progress=self._progress, control=self._control
+            ocr=self._ocr,
+            progress=self._progress,
+            control=self._control,
+            workers=self._workers,
         )
         records, stats = lector.execute(source)
 
@@ -461,3 +473,33 @@ def template_for(document_type: DocumentType) -> Path:
 def default_template() -> Path:
     """La plantilla genérica, para cuando no se sabe qué documento es."""
     return template_for(DocumentType.DESCONOCIDO)
+
+
+#: Los formatos de inventario que el sistema sabe rellenar, por su código. Son
+#: formatos de clientes distintos y no versiones de uno solo: FO-GD-008 es el de
+#: la Universidad, con dieciocho columnas y bloque de firmas al pie, y F-PSD-001
+#: el de una empresa, con veintisiete y sin cabecera aparte. Cada uno lo escribe
+#: su propio adaptador, porque lo único que comparten es el instructivo.
+FORMATO_UNIVERSIDAD = "fo-gd-008"
+FORMATO_PSD001 = "f-psd-001"
+
+_FORMATOS = {
+    FORMATO_UNIVERSIDAD: "fuid-fo-gd-008.xlsx",
+    FORMATO_PSD001: "fuid-f-psd-001.xlsx",
+    "diplomas": "fuid-diplomas.xlsx",
+}
+
+
+def template_named(formato: str | None) -> Path | None:
+    """La plantilla de un formato pedido por su código, o ``None`` si no existe.
+
+    ``None`` y no una excepción: que alguien escriba mal el código de un formato
+    en los ajustes no debe dejar sin inventario un trabajo que ya se leyó. Quien
+    llama se queda con la plantilla que le tocaba por tipo de documento.
+    """
+    if not formato:
+        return None
+    archivo = _FORMATOS.get(str(formato).strip().lower())
+    if archivo is None:
+        return None
+    return Path(__file__).resolve().parents[1] / "assets" / archivo

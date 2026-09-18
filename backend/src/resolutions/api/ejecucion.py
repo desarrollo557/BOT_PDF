@@ -35,6 +35,13 @@ async def _run(ctx: Contexto, job: Job) -> None:
         "operator": job.operator,
         "task": job.task,
         "oracle": job.oracle,
+        # Con qué leer. Viaja con el trabajo y no se toma de los ajustes del
+        # servicio: el operador lo eligió para este documento, y dos documentos
+        # de la misma cola pueden querer motores distintos.
+        "lectura": job.lectura,
+        # Y qué dijo el operador que es. Va con el trabajo porque decide a qué
+        # habilidad entra, que es la decisión más consecuente de todas.
+        "tipo": job.tipo,
         # Dónde quedará la entrega, cuando el trabajo viene de una carpeta. La
         # planilla lo escribe en su columna de destino.
         "destination": job.destination,

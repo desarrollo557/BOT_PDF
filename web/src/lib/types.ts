@@ -1,3 +1,4 @@
+import type { LecturaChoice } from './lectura';
 import type { OracleChoice } from './oracles';
 
 export type JobState = 'queued' | 'running' | 'paused' | 'done' | 'failed' | 'cancelled';
@@ -99,6 +100,40 @@ export interface Validation {
  * libros de diplomas, y no decirlo hacía que la pantalla se rompiera al
  * terminar uno en vez de fallar al compilar.
  */
+/**
+ * Lo que el trabajo le pidió a los proveedores de pago, en sus unidades.
+ *
+ * El OCR cobra por página procesada -- es él quien lleva la cuenta, y es lo
+ * que se anota --; los modelos de chat cobran por token. No se suman entre sí
+ * porque no son la misma cosa ni cuestan lo mismo. El dinero sólo aparece si
+ * el operador configuró un precio: una cifra inventada sería la única de la
+ * pantalla que no sale de una medida.
+ */
+export interface Consumo {
+  proveedores: Record<
+    string,
+    {
+      peticiones: number;
+      paginas_facturadas: number;
+      tokens_entrada: number;
+      tokens_salida: number;
+      tokens_cache: number;
+      rechazos: number;
+      fallos: number;
+    }
+  >;
+  peticiones: number;
+  paginas_facturadas: number;
+  tokens_entrada: number;
+  tokens_salida: number;
+  tokens_cache: number;
+  tokens: number;
+  rechazos: number;
+  fallos: number;
+  coste_estimado: number | null;
+  moneda: string;
+}
+
 export interface Report {
   document: string;
   page_count: number;
@@ -122,6 +157,8 @@ export interface Report {
   /** Nombre del FUID escrito, cuando la acción lo incluía. */
   fuid?: string;
   fuid_error?: string;
+  /** Lo que costó producir este documento. Ausente en los informes anteriores. */
+  consumo?: Consumo | null;
 }
 
 /** Lo que devuelve un trabajo de inventario, que no escribe ningún PDF. */
@@ -172,6 +209,8 @@ export interface Progress {
    * Ausente en cualquier servicio anterior a que esto existiera.
    */
   review?: Record<string, string>;
+  /** Lo gastado hasta ahora con los proveedores de pago, según el último aviso del worker. */
+  consumo?: Consumo | null;
   /** One character per page: . pending, t text, h header OCR, f full OCR, v model, x needs review. */
   ribbon: string;
   percent: number;
@@ -201,8 +240,13 @@ export interface Progress {
  * siempre. `inventory` sólo lo lee y levanta su FUID, dejando el original
  * entero: es la única opción para un libro empastado, que no se desencuaderna.
  * `both` hace las dos cosas sobre una sola lectura.
+ *
+ * `inventory_file` también deja el original entero, pero la unidad documental
+ * es el archivo: sale una sola fila con su asunto, sus fechas extremas y sus
+ * folios. Se distingue de `inventory` en eso -- aquél saca una fila por registro
+ * de dentro del libro -- y es lo que se usa cuando el PDF ya es un documento.
  */
-export type TaskKind = 'split' | 'inventory' | 'both' | 'segment';
+export type TaskKind = 'split' | 'inventory' | 'both' | 'segment' | 'inventory_file';
 
 export interface Job {
   id: string;
@@ -218,6 +262,7 @@ export interface Job {
   task: TaskKind;
   /** A qué modelo se le pidió juzgar los bordes dudosos de esta caja. */
   oracle?: OracleChoice;
+  lectura?: LecturaChoice;
   state: JobState;
   created_at: string;
   started_at: string | null;
@@ -310,6 +355,7 @@ export interface FolderRun {
   task?: TaskKind;
   /** Y a qué modelo se le preguntó por los bordes dudosos. */
   oracle?: OracleChoice;
+  lectura?: LecturaChoice;
   operator: string | null;
   state: RunState;
   started_at: string;

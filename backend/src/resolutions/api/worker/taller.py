@@ -15,9 +15,10 @@ aceptar una subida.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from ...application.consumo import Consumo
 from ...application.control import RunControl
 from ...application.progress import ProgressEvent, ProgressReporter, Stage
 
@@ -47,9 +48,20 @@ class Taller:
     control: RunControl
     #: Qué modelo pidió el operador para las costuras dudosas, si pidió alguno.
     oracle_choice: str | None
+    #: Con qué se transcribe el papel: sólo Tesseract, o Tesseract y el OCR de
+    #: Mistral donde el de casa no saque nada. Lo elige el operador al cargar el
+    #: archivo, porque es él quien sabe si tiene delante un expediente
+    #: mecanografiado -- donde el remoto no aportaría nada y se pagaría igual --
+    #: o un libro donde todo lo que identifica al documento está escrito a mano.
+    lectura_choice: str | None
     #: A dónde acabará la copia en una corrida sobre carpeta local.
     delivered_to: str | None
     operator: str | None
+    #: Dónde se anota lo que este trabajo le pide a los proveedores de pago.
+    #: Uno por trabajo y compartido por todos los adaptadores que el taller
+    #: construya, para que el informe pueda decir cuánto costó el documento y
+    #: no cuánto costó cada llamada por separado.
+    consumo: Consumo = field(default_factory=Consumo)
 
     @classmethod
     def desde(cls, payload: dict) -> Taller:
@@ -64,14 +76,50 @@ class Taller:
             progress=_reportero(payload),
             control=_control(payload),
             oracle_choice=payload.get("oracle"),
+            lectura_choice=payload.get("lectura"),
             delivered_to=payload.get("destination"),
             operator=payload.get("operator"),
+            # El despachador lo crea antes de elegir ruta y lo deja en el
+            # payload, para poder adjuntarlo al informe cuando la ruta vuelva.
+            consumo=(
+                payload["consumo"]
+                if isinstance(payload.get("consumo"), Consumo)
+                else Consumo(precio_por_pagina=settings.get("precio_ocr_por_pagina"))
+            ),
         )
 
     def ocr(self):
-        from ...adapters.tesseract_ocr import HeaderAndPageOcr
+        """El motor de lectura de este trabajo, que es el mismo para todas.
 
-        return HeaderAndPageOcr(language=self.settings["ocr_language"])
+        Las cuatro habilidades piden su OCR aquí y ninguna sabe cuál le tocó:
+        la de resoluciones le pedirá el número del encabezado, la de registros
+        el folio de la esquina, la de correspondencia el texto con que decide
+        las costuras y la de inventario la portada del archivo. Por eso activar
+        el motor de pago las alcanza a las cuatro sin tocar ninguna.
+
+        Sin llave se devuelve el local y no se avisa aquí: pedir un motor que no
+        se puede pedir ya se rechazó en la API, antes de recibir el archivo.
+        """
+        from ...adapters.tesseract_ocr import HeaderAndPageOcr
+        from ...application.lectura import LecturaChoice
+
+        local = HeaderAndPageOcr(language=self.settings["ocr_language"])
+        if LecturaChoice.parse(self.lectura_choice) is not LecturaChoice.MISTRAL:
+            return local
+
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            logger.warning(
+                "se pidió leer con Mistral y no hay llave; se lee sólo con Tesseract"
+            )
+            return local
+
+        from ...adapters.mistral_ocr import MistralOcr
+        from ...adapters.ocr_cascada import OcrEnCascada
+
+        return OcrEnCascada(
+            local=local, remoto=MistralOcr(api_key=llave, consumo=self.consumo)
+        )
 
     def vision(self):
         """El modelo de visión para el último peldaño de la cascada, o nadie."""
@@ -89,6 +137,7 @@ class Taller:
         return ClaudeVisionOracle(
             client=Anthropic(api_key=api_key),
             config=ClaudeVisionConfig(model=self.settings["vision_model"]),
+            consumo=self.consumo,
         )
 
     def pipeline(self, ocr):
@@ -107,7 +156,7 @@ class Taller:
         )
 
     def oraculo_de_bordes(self):
-        return _boundary_oracle(self.settings, self.oracle_choice)
+        return _boundary_oracle(self.settings, self.oracle_choice, consumo=self.consumo)
 
     def ubicacion(self):
         return _ubicacion(self.settings)
@@ -172,10 +221,15 @@ def _anunciar(
     queue = payload.get("progress_queue")
     if queue is None:
         return
+    # Y lo que lleva gastado hasta aquí, cuando algo se gastó: la pantalla lo
+    # enseña en vivo y no sólo al final, que es cuando ya no hay nada que decidir.
+    consumo = payload.get("consumo")
+    cuentas = consumo.as_dict() if isinstance(consumo, Consumo) and not consumo.vacio else None
     try:
         QueueProgressReporter(queue, payload["job_id"]).emit(
             ProgressEvent(
-                stage=stage, page_count=page_count, detail=detail, done=done, total=total
+                stage=stage, page_count=page_count, detail=detail, done=done, total=total,
+                consumo=cuentas,
             )
         )
     except Exception:  # noqa: BLE001 - la telemetría nunca rompe el trabajo
@@ -193,7 +247,7 @@ def _ubicacion(settings: dict):
     )
 
 
-def _boundary_oracle(settings: dict, choice=None):
+def _boundary_oracle(settings: dict, choice=None, consumo: Consumo | None = None):
     """Quién juzga las costuras que la estructura no pudo decidir.
 
     Con una elección explícita se respeta o no se contesta. Nunca se sustituye:
@@ -234,16 +288,16 @@ def _boundary_oracle(settings: dict, choice=None):
                 eleccion.env_var,
             )
             return NullBoundaryOracle()
-        return _oracle_named(eleccion.value, settings)
+        return _oracle_named(eleccion.value, settings, consumo)
 
     for candidate in _CASCADE:
         if OracleChoice(candidate).is_available(settings):
-            return _oracle_named(candidate, settings)
+            return _oracle_named(candidate, settings, consumo)
 
     return NullBoundaryOracle()
 
 
-def _oracle_named(name: str, settings: dict):
+def _oracle_named(name: str, settings: dict, consumo: Consumo | None = None):
     """Construye un proveedor concreto, ya sabiendo que su llave está puesta."""
     if name == "claude":
         from anthropic import Anthropic
@@ -251,14 +305,19 @@ def _oracle_named(name: str, settings: dict):
         from ...adapters.claude_boundary import ClaudeBoundaryOracle
 
         return ClaudeBoundaryOracle(
-            client=Anthropic(api_key=str(settings.get("anthropic_api_key")))
+            client=Anthropic(api_key=str(settings.get("anthropic_api_key"))),
+            consumo=consumo,
         )
 
     if name == "gemini":
         from ...adapters.gemini_boundary import GeminiBoundaryOracle
 
-        return GeminiBoundaryOracle(api_key=str(settings.get("gemini_api_key")))
+        return GeminiBoundaryOracle(
+            api_key=str(settings.get("gemini_api_key")), consumo=consumo
+        )
 
     from ...adapters.mistral_boundary import MistralBoundaryOracle
 
-    return MistralBoundaryOracle(api_key=str(settings.get("mistral_api_key")))
+    return MistralBoundaryOracle(
+        api_key=str(settings.get("mistral_api_key")), consumo=consumo
+    )

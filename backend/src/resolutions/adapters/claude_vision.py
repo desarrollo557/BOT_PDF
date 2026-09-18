@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from anthropic import Anthropic
 
+from ..application.consumo import Consumo, anotar_uso_anthropic
 from ..application.ports import Crop
 
 logger = logging.getLogger(__name__)
@@ -44,9 +45,15 @@ class ClaudeVisionOracle:
     removes it from the bill entirely on every request after the first.
     """
 
-    def __init__(self, client: Anthropic | None = None, config: ClaudeVisionConfig | None = None):
+    def __init__(
+        self,
+        client: Anthropic | None = None,
+        config: ClaudeVisionConfig | None = None,
+        consumo: Consumo | None = None,
+    ):
         self._client = client or Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
         self._config = config or ClaudeVisionConfig()
+        self._consumo = consumo
 
     def read_codes(self, crops: list[Crop]) -> dict[int, str | None]:
         if not crops:
@@ -85,8 +92,11 @@ class ClaudeVisionOracle:
             # A model outage degrades the run to "these pages need a human", it
             # does not fail the document and it never invents an answer.
             logger.exception("vision batch failed for pages %s", [c.page_number for c in crops])
+            if self._consumo is not None:
+                self._consumo.fallo("claude-vision")
             return {crop.page_number: None for crop in crops}
 
+        anotar_uso_anthropic(self._consumo, "claude-vision", message)
         return self._parse(message, labels)
 
     @staticmethod

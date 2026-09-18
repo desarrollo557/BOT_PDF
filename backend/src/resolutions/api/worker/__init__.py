@@ -24,7 +24,7 @@ from pathlib import Path
 
 from ...application.progress import Stage
 from .correspondencia import _segment_job
-from .inventario import _inventory_job
+from .inventario import _inventory_file_job, _inventory_job
 from .planillas import FUID_SUFFIX, _escribir_fuid, _escribir_planilla
 from .registros import _record_split_job
 from .resoluciones import _split_job
@@ -39,6 +39,7 @@ __all__ = [
     "_control",
     "_escribir_fuid",
     "_escribir_planilla",
+    "_inventory_file_job",
     "_inventory_job",
     "_record_split_job",
     "_reportero",
@@ -56,6 +57,27 @@ _SIN_RECONOCER = object()
 
 
 def process_document_job(payload: dict) -> dict:
+    """Do what was asked of one PDF, and say what it cost.
+
+    El contador de consumo se crea aquí, antes de elegir ruta, y vive en el
+    payload para que el taller de cualquier ruta lo encuentre. Al volver el
+    informe se le adjunta el total: cuántas páginas se pagaron, cuántos tokens,
+    cuántas veces el proveedor pidió esperar. Es lo que permite mirar una
+    carpeta de doscientos archivos y saber qué costó producirla.
+    """
+    from ...application.consumo import Consumo
+
+    consumo = Consumo(
+        precio_por_pagina=(payload.get("settings") or {}).get("precio_ocr_por_pagina")
+    )
+    payload["consumo"] = consumo
+    report = _despachar(payload)
+    if isinstance(report, dict):
+        report["consumo"] = consumo.as_dict()
+    return report
+
+
+def _despachar(payload: dict) -> dict:
     """Do what was asked of one PDF, in a worker process, so it stays picklable.
 
     Two things can be asked. Splitting writes one document per unit and is what
@@ -66,8 +88,43 @@ def process_document_job(payload: dict) -> dict:
     from ...application.task import TaskKind
 
     task = TaskKind.parse(payload.get("task"))
+
+    # Inventariar el archivo entero no necesita reconocer nada antes: la unidad
+    # documental es el PDF, y qué es se lee de su propio encabezado al pasar por
+    # él. Va delante de todo lo demás porque preguntarle a esta ruta de qué tipo
+    # es el documento sería justo el paso que no hace falta.
+    if task is TaskKind.INVENTORY_FILE:
+        return _inventory_file_job(payload)
+
     if not task.writes_documents:
         return _inventory_job(payload)
+
+    from ...application.tipo_pedido import TipoPedido
+    from ...domain.doctype import DocumentType
+
+    # Lo que el operador declaró estar cargando, que manda sobre todo lo demás.
+    declarado = TipoPedido.parse(payload.get("tipo")).document_type
+
+    # Incluso sobre la acción, y esto hay que justificarlo porque pisa una
+    # elección suya. Declarar "esto es un libro de diplomas" y pedir "sepáralo
+    # por continuidad" son dos instrucciones incompatibles: la segunda ruta no
+    # lee el papel, así que no puede saber de quién es cada hoja ni nombrar el
+    # archivo con su cédula, y devuelve el libro cortado por donde la estructura
+    # alcanzó. Medido sobre el libro 7, tres corridas seguidas: 199 documentos
+    # con el tipo equivocado y numerados 001, 002, 003 en vez de por su
+    # graduado. De las dos instrucciones, la que dice **qué es** el documento es
+    # más específica que la que dice cómo trocearlo, así que gana ella.
+    #
+    # No en silencio: se avisa, porque una elección que se cambia sin decirlo es
+    # la forma más rápida de que alguien deje de fiarse de la pantalla.
+    if declarado is DocumentType.DIPLOMA and task is TaskKind.SEGMENT:
+        aviso = (
+            "se declaró un libro de diplomas: se parte por folio leyendo cada cara, "
+            "no por continuidad, que no lee el papel y no sabría de quién es cada hoja"
+        )
+        logger.info("%s: %s", payload.get("filename"), aviso)
+        _anunciar(payload, Stage.IDENTIFYING, detail=aviso)
+        return _record_split_job(payload, TaskKind.SPLIT)
 
     # Separar por continuidad no necesita saber qué documento es -- corta por
     # dónde acaba una hoja y empieza la otra, no por lo que digan -- pero el
@@ -77,7 +134,9 @@ def process_document_job(payload: dict) -> dict:
     # justo el número impreso que esta ruta no lee. Se reconoce, se avisa, y se
     # hace lo que pidió: la elección es suya.
     if task is TaskKind.SEGMENT:
-        return _segment_job(payload, task, avisos=_aviso_de_ruta(payload, _SIN_RECONOCER))
+        return _segment_job(
+            payload, task, avisos=_aviso_de_ruta(payload, declarado or _SIN_RECONOCER)
+        )
 
     # Un libro de folios no se parte por herencia sino uno a uno, y un legajo
     # de matrículas se parte por persona, así que hay que saber qué documento es
@@ -87,6 +146,20 @@ def process_document_job(payload: dict) -> dict:
     # justo al principio del trabajo.
     from ...application.inventory_document import SAMPLE_PAGES
 
+    # Si el operador dijo qué está cargando, se le cree y no se reconoce nada.
+    # No es sólo ahorrarse la muestra: es que una muestra equivocada condena el
+    # archivo entero, y quien tiene el libro delante sabe lo que es antes de
+    # subirlo.
+    if declarado is DocumentType.DIPLOMA:
+        _anunciar(
+            payload,
+            Stage.IDENTIFYING,
+            detail="libro de diplomas, declarado por el operador",
+            done=SAMPLE_PAGES,
+            total=SAMPLE_PAGES,
+        )
+        return _record_split_job(payload, task)
+
     _anunciar(
         payload,
         Stage.IDENTIFYING,
@@ -94,7 +167,6 @@ def process_document_job(payload: dict) -> dict:
         done=0,
         total=SAMPLE_PAGES,
     )
-    from ...domain.doctype import DocumentType
 
     reconocido = _recognise(payload)
     # Los dos van al mismo sitio, y no por comodidad: los dos se parten por lo

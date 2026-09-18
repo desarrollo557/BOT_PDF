@@ -1,3 +1,10 @@
+# Las llaves de los proveedores. Viven en la maquina del operador y no en el
+# repositorio: una llave commiteada es una llave quemada, aunque el repositorio
+# sea privado y aunque se borre despues, porque queda en el historial.
+.env
+.env.*
+!.env.example
+
 # Runtime state, never source
 data/
 smoke-data/

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import multiprocessing
+import time
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
 
@@ -33,6 +34,7 @@ from .errores import explicar_validacion
 from .folders import FolderRunner
 from .janitor import IdleJanitor
 from .jobs import JobRegistry
+from .registro_en_consola import configurar, configurar_worker
 from .routers import (
     archivo,
     carpetas,
@@ -49,6 +51,9 @@ from .settings import Settings
 from .worker import process_document_job
 
 logger = logging.getLogger(__name__)
+
+# Antes de arrancar nada: lo primero que se hace es dejar la consola escuchando.
+configurar()
 
 #: How often folded progress is pushed to browsers. Four times a second is
 #: smooth enough for a bar and cheap enough that 50 documents at once do not
@@ -116,7 +121,13 @@ async def lifespan(app: FastAPI):
 
     # One process per document. Sized at cores-1 so the event loop always has a
     # core left to accept uploads while the pool is saturated.
-    ctx.pool = ProcessPoolExecutor(max_workers=ctx.settings.document_workers)
+    ctx.pool = ProcessPoolExecutor(
+        max_workers=ctx.settings.document_workers,
+        # Cada proceso hijo configura su propio registro al nacer: en Windows
+        # no hereda los manejadores del padre, y es en los hijos donde ocurre
+        # todo lo que interesa ver.
+        initializer=configurar_worker,
+    )
     ctx.manager = multiprocessing.Manager()
     ctx.progress_queue = ctx.manager.Queue(maxsize=PROGRESS_QUEUE_SIZE)
     # Lo que el worker consulta entre página y página para saber si sigue. Vive
@@ -143,6 +154,24 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Separador de resoluciones", version="0.2.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def registrar_cada_peticion(request: Request, call_next):
+    """Una línea por petición, con lo que tardó y lo que contestó.
+
+    Sustituye al registro de acceso de uvicorn, que dice la ruta y el código
+    pero no cuánto tardó ni qué se pidió en la query -- y la query es donde
+    viajan la acción, el tipo y el motor de lectura, que es lo que hace falta
+    para saber a qué habilidad fue cada documento sin abrir el informe.
+    """
+    inicio = time.perf_counter()
+    respuesta = await call_next(request)
+    tardo = (time.perf_counter() - inicio) * 1000
+    destino = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+    logger.info("%s %s -> %s en %.0f ms", request.method, destino, respuesta.status_code, tardo)
+    return respuesta
+
 app.state.contexto = contexto
 app.add_middleware(
     CORSMiddleware,

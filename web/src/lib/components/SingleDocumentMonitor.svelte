@@ -4,7 +4,7 @@
   import PageRibbon from '$lib/components/PageRibbon.svelte';
   import RunStats from '$lib/components/RunStats.svelte';
   import ThroughputChart from '$lib/components/ThroughputChart.svelte';
-  import { STAGE_LABELS } from '$lib/rungs';
+  import { SILENCE_THRESHOLD_SECONDS, stageActivity } from '$lib/rungs';
   import { unitFor } from '$lib/format';
   import type { Job } from '$lib/types';
 
@@ -44,6 +44,15 @@
 
   /** Lo que ya salió de este documento, llamado por su nombre. */
   const units = $derived(job.report?.groups?.length ?? null);
+
+  /**
+   * Desde cuándo no llega noticia.
+   *
+   * Nunca es una alarma: es información. Una tanda de ocho páginas contra el
+   * proveedor de OCR tarda sus segundos sin que pase nada malo, y decirlo es lo
+   * que evita que parezca que el trabajo se ha muerto.
+   */
+  const silence = $derived(progress.silent_seconds ?? 0);
   const unitLabel = $derived(unitFor(job.report?.stats, units ?? 0));
 </script>
 
@@ -51,9 +60,13 @@
   <header>
     <span class="lamp" aria-hidden="true"></span>
     <h3 title={job.filename}>{job.filename}</h3>
-    <span class="stage">{STAGE_LABELS[progress.stage] ?? progress.stage}</span>
+    <span class="stage">{stageActivity(progress)}</span>
     <RunControls jobId={job.id} runState={job.state} />
   </header>
+
+  {#if running && silence >= SILENCE_THRESHOLD_SECONDS}
+    <p class="silence">sin novedades desde hace {Math.round(silence)} s</p>
+  {/if}
 
   <!-- A meter, not a chart: one ratio against a known total. -->
   <div
@@ -78,6 +91,7 @@
     {elapsedSeconds}
     {remainingSeconds}
     settled={!running}
+    consumo={progress.consumo ?? job.report?.consumo ?? null}
   />
 
   <ThroughputChart rate={progress.pages_per_second} live={running} />
@@ -116,6 +130,13 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .silence {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+
   .stage {
     margin-left: auto;
     flex-shrink: 0;

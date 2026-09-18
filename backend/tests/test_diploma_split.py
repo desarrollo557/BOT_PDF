@@ -8,6 +8,7 @@ otro cuando el libro repite un folio, y que una página ilegible siga saliendo.
 
 from resolutions.application.diploma_split import group_by_record
 from resolutions.domain.diploma import DiplomaRecord
+from resolutions.domain.folio_manuscrito import MarcaDeFolio
 from resolutions.domain.naming import output_filename
 
 
@@ -59,6 +60,10 @@ class TestNombres:
             ]
         ).groups[0]
         nombre = output_filename(grupo.code, grupo.title, prefix=None)
+        # En el disco el guión bajo sale como guión: lo normaliza el nombrador
+        # del proyecto, que reserva "__" para separar el código del asunto.
+        # La cedula delante, sin prefijo: de que es el archivo lo dice el
+        # tipo documental, que va al final del nombre.
         assert nombre.startswith("22793650__")
         assert "alix-josefina-marin" in nombre
         assert "especialista-en-gestion-de-la-calidad" in nombre
@@ -95,9 +100,17 @@ class TestNombres:
         assert codigos[0] == "CEDULA-1"
         assert codigos[1] == "CEDULA-2"
 
-    def test_sin_folio_legible_se_usa_el_numero_de_pagina(self):
+    def test_sin_folio_legible_se_usa_el_orden_del_documento(self):
+        """El consecutivo dentro del libro, que es lo que hay en la carpeta.
+
+        Antes se usaba el número de página, y contaba otra cosa: "pagina-152"
+        obliga a dividir mentalmente para saber por dónde va, mientras que el
+        documento 76 es el archivo 76 de 199. Es además lo que permite partir un
+        libro entero sin pagar una sola lectura -- el corte sale de la tinta de
+        la esquina, no del OCR.
+        """
         grupo = group_by_record([registro(152)]).groups[0]
-        assert "152" in grupo.code.value
+        assert grupo.code.value == "001"
 
     def test_una_pagina_ilegible_sigue_saliendo_como_archivo(self):
         """Para que alguien pueda mirarla, en vez de perderse en un montón común."""
@@ -170,3 +183,85 @@ class TestLaVueltaDeUnFolio:
             self.vacia(5),
         ]
         group_by_record(registros).verify_integrity(total_pages=5)
+
+
+class TestLaUnionEsPorElFolio:
+    """Unir dos hojas depende del folio y sólo del folio.
+
+    Hubo aquí una segunda condición -- que las cédulas de las dos hojas no se
+    contradijeran -- y el operador la quitó después de verla correr. La cédula
+    es manuscrita, el OCR la lee con errores, y "cédulas distintas" salía cierto
+    en costuras que no lo eran: el libro volvía partido de más.
+
+    La cédula se sigue leyendo y sigue nombrando el archivo, con la de la hoja
+    que abre el documento. Lo que ya no hace es decidir dónde se corta.
+    """
+
+    def hoja(self, pagina, marca, cedula=None):
+        return DiplomaRecord(
+            page_number=pagina, folio_mark=marca, identity_number=cedula
+        )
+
+    def test_la_vuelta_sin_cedula_se_une_igual(self):
+        """El caso corriente: el padre trae cédula y la vuelta llega en blanco."""
+        registros = [
+            self.hoja(1, MarcaDeFolio.PRESENTE, "7882907"),
+            self.hoja(2, MarcaDeFolio.AUSENTE),
+        ]
+        grupos = group_by_record(registros).groups
+        assert [grupo.page_numbers for grupo in grupos] == [[1, 2]]
+
+    def test_la_vuelta_que_repite_la_cedula_se_une(self):
+        registros = [
+            self.hoja(1, MarcaDeFolio.PRESENTE, "7882907"),
+            self.hoja(2, MarcaDeFolio.AUSENTE, "7882907"),
+        ]
+        grupos = group_by_record(registros).groups
+        assert [grupo.page_numbers for grupo in grupos] == [[1, 2]]
+
+    def test_una_hoja_con_otra_cedula_se_une_igual(self):
+        """Lo que decide es el folio, no de quién sea la cédula que lleve.
+
+        Fija el cambio de criterio para que no se revierta sin querer: aquí se
+        comprobaba la cédula y se cortaba cuando no coincidía.
+        """
+        registros = [
+            self.hoja(1, MarcaDeFolio.PRESENTE, "7882907"),
+            self.hoja(2, MarcaDeFolio.AUSENTE, "45437535"),
+        ]
+        grupos = group_by_record(registros).groups
+        assert [grupo.page_numbers for grupo in grupos] == [[1, 2]]
+
+    def test_el_documento_lleva_la_cedula_de_la_hoja_que_lo_abre(self):
+        """La del primer documento, que es como lo pidió el operador.
+
+        La hoja que abre lleva el folio escrito y es la que trae los datos del
+        graduado; la que le sigue puede traer otros o ninguno, y no cambian el
+        nombre del archivo.
+        """
+        registros = [
+            self.hoja(1, MarcaDeFolio.PRESENTE, "7882907"),
+            self.hoja(2, MarcaDeFolio.AUSENTE, "45437535"),
+        ]
+        grupos = group_by_record(registros).groups
+        assert [grupo.page_numbers for grupo in grupos] == [[1, 2]]
+        assert grupos[0].code.value == "7882907"
+
+    def test_el_archivo_lleva_la_cedula_y_el_tipo(self):
+        """El nombre que pidió el operador: la cédula y que es un diploma.
+
+        El tipo no se le pregunta al catálogo del archivo, que es de
+        correspondencia de servicios públicos y contestaba DOCUMENTO DE
+        IDENTIDAD a las 199 unidades del libro medido -- el diploma empieza por
+        "LA REPUBLICA DE COLOMBIA", que es también como empieza una cédula.
+        """
+        registros = [
+            self.hoja(1, MarcaDeFolio.PRESENTE, "7882907"),
+            self.hoja(2, MarcaDeFolio.AUSENTE),
+        ]
+        grupos = group_by_record(registros).groups
+        assert grupos[0].code.value == "7882907"
+        assert grupos[0].kind == "DIPLOMA"
+        assert output_filename(
+            grupos[0].code, grupos[0].title, prefix=None, kind=grupos[0].kind
+        ) == "7882907_DIPLOMA.pdf"

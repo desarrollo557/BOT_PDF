@@ -60,6 +60,10 @@ class ProgressEvent:
     #: entender el número.
     done: int | None = None
     total: int | None = None
+    #: Lo gastado con los proveedores de pago hasta este momento, cuando algo
+    #: se gastó. Va en el evento y no aparte porque la pantalla ya escucha los
+    #: eventos, y un canal más sería una segunda forma de perderse noticias.
+    consumo: dict | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -72,6 +76,7 @@ class ProgressEvent:
             "detail": self.detail,
             "done": self.done,
             "total": self.total,
+            "consumo": self.consumo,
         }
 
 

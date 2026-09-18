@@ -47,6 +47,18 @@ class TaskKind(StrEnum):
     #: distintas.
     SEGMENT = "segment"
 
+    #: Anotar el archivo en el inventario y nada más: una fila por PDF, con su
+    #: asunto, sus fechas extremas y sus folios. No se parte ni se le busca por
+    #: dentro dónde empieza cada cosa, porque aquí el archivo ya **es** el
+    #: documento -- una nota de ajuste, un comprobante de egreso -- y la unidad
+    #: documental que hay que inventariar es él entero.
+    #:
+    #: Es distinto de INVENTORY, que también deja el original intacto pero saca
+    #: una fila por registro de dentro. Los dos errores que evita la distinción
+    #: son simétricos: un libro de cuatrocientos diplomas anotado en un solo
+    #: renglón, o una nota de ajuste de dos hojas repartida en doce filas.
+    INVENTORY_FILE = "inventory_file"
+
     @property
     def label(self) -> str:
         """Lo que se lee en pantalla y en el acta."""
@@ -58,7 +70,7 @@ class TaskKind(StrEnum):
 
     @property
     def writes_inventory(self) -> bool:
-        return self in (TaskKind.INVENTORY, TaskKind.BOTH)
+        return self in (TaskKind.INVENTORY, TaskKind.BOTH, TaskKind.INVENTORY_FILE)
 
     @classmethod
     def parse(cls, value: str | None) -> TaskKind:
@@ -77,4 +89,5 @@ _LABELS = {
     TaskKind.INVENTORY: "Solo inventariar",
     TaskKind.BOTH: "Dividir e inventariar",
     TaskKind.SEGMENT: "Separar por documento",
+    TaskKind.INVENTORY_FILE: "Inventariar el archivo",
 }

@@ -95,6 +95,15 @@ class FolderRun:
     #: nunca podía dejar su inventario.
     task: str = "split"
     oracle: str = "auto"
+    #: Con qué leer el papel de esta carpeta. Una corrida entera comparte motor
+    #: porque una carpeta suele ser un mismo tipo de material: la caja de libros
+    #: manuscritos se lee con ayuda y la de expedientes mecanografiados no la
+    #: necesita.
+    lectura: str = "local"
+    #: Y qué clase de documento trae esta carpeta, cuando el operador lo sabe.
+    #: Una carpeta suele ser homogénea -- una estantería de libros de diplomas
+    #: --, así que declararlo una vez vale para todos sus archivos.
+    tipo: str = "auto"
     #: Who started it. Attribution, never authorisation.
     operator: str | None = None
     state: RunState = RunState.SCANNING
@@ -149,6 +158,8 @@ class FolderRun:
             "watch": self.watch,
             "task": self.task,
             "oracle": self.oracle,
+            "lectura": self.lectura,
+            "tipo": self.tipo,
             "operator": self.operator,
             "state": str(self.state),
             "started_at": self.started_at,
@@ -289,6 +300,8 @@ class FolderRunner:
         operator: str | None = None,
         task: str = "split",
         oracle: str = "auto",
+        lectura: str = "local",
+        tipo: str = "auto",
     ) -> FolderRun:
         origin, target = validate_folders(source, destination)
 
@@ -305,6 +318,8 @@ class FolderRunner:
             operator=operator,
             task=task,
             oracle=oracle,
+            lectura=lectura,
+            tipo=tipo,
         )
         self._runs[run.id] = run
         self._tasks[run.id] = asyncio.create_task(self._drain(run))
@@ -474,6 +489,8 @@ class FolderRunner:
             operator=run.operator,
             task=run.task,
             oracle=run.oracle,
+            lectura=run.lectura,
+            tipo=run.tipo,
             # Adónde irá lo que produzca. Se calcula antes de procesarlo, con
             # el nombre del origen, y la entrega lo recalcula después con el
             # NIC si el expediente lo trae: lo que va en la planilla es dónde

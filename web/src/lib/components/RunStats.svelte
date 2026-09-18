@@ -1,6 +1,7 @@
 <script lang="ts">
   import StatTile from '$lib/components/StatTile.svelte';
   import { formatBytes, formatDuration } from '$lib/format';
+  import type { Consumo } from '$lib/types';
 
   /**
    * Las cifras de un trabajo en curso, sean uno o cincuenta documentos.
@@ -34,6 +35,13 @@
     failed?: number | null;
     /** El trabajo ya terminó: las medidas dejan de ser «ahora» y pasan a ser «en total». */
     settled?: boolean;
+    /**
+     * Lo gastado con los proveedores de pago. Se enseña en sus unidades --
+     * páginas facturadas, tokens -- y en dinero sólo si hay un precio puesto.
+     * Sin consumo no aparece nada: una carga leída con el motor local no
+     * enseña un gasto en cero.
+     */
+    consumo?: Consumo | null;
   }
 
   let {
@@ -48,8 +56,23 @@
     remainingSeconds = null,
     queued = null,
     failed = null,
-    settled = false
+    settled = false,
+    consumo = null
   }: Props = $props();
+
+  /** Cuántas veces el proveedor pidió esperar o no contestó, en una frase. */
+  const incidencias = $derived.by(() => {
+    if (!consumo) return '';
+    const partes: string[] = [];
+    if (consumo.rechazos) partes.push(`${consumo.rechazos} esperas`);
+    if (consumo.fallos) partes.push(`${consumo.fallos} sin respuesta`);
+    return partes.join(' · ');
+  });
+
+  const costeTexto = $derived.by(() => {
+    if (!consumo || consumo.coste_estimado === null || consumo.coste_estimado === undefined) return null;
+    return `${consumo.coste_estimado.toFixed(2)} ${consumo.moneda}`;
+  });
 
   const percent = $derived(pagesTotal ? Math.min(100, (100 * pagesDone) / pagesTotal) : 0);
 
@@ -104,6 +127,30 @@
 
   {#if failed}
     <StatTile label="Con error" value={failed} note="no se pudieron procesar" tone="warning" />
+  {/if}
+
+  {#if consumo && consumo.paginas_facturadas}
+    <StatTile
+      label="Páginas facturadas"
+      value={consumo.paginas_facturadas}
+      note={`OCR de pago · ${consumo.peticiones} peticiones`}
+    />
+  {/if}
+
+  {#if consumo && consumo.tokens}
+    <StatTile
+      label="Tokens"
+      value={consumo.tokens.toLocaleString('es-CO')}
+      note={`${consumo.tokens_entrada.toLocaleString('es-CO')} entrada · ${consumo.tokens_salida.toLocaleString('es-CO')} salida`}
+    />
+  {/if}
+
+  {#if costeTexto}
+    <StatTile label={settled ? 'Costó' : 'Coste estimado'} value={costeTexto} note="según el precio configurado" />
+  {/if}
+
+  {#if incidencias}
+    <StatTile label="Proveedor" value={incidencias} note="reintentos y pérdidas" tone="warning" />
   {/if}
 </div>
 

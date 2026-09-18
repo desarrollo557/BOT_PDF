@@ -155,6 +155,43 @@
         <dd class="tabular">{formatDuration(completion.elapsedSeconds)}</dd>
         <dd class="note">de reloj</dd>
       </div>
+      {#if completion.consumo?.paginas_facturadas}
+        <div>
+          <dt>Páginas facturadas</dt>
+          <dd class="tabular">{completion.consumo.paginas_facturadas}</dd>
+          <dd class="note">{completion.consumo.peticiones} peticiones al OCR de pago</dd>
+        </div>
+      {/if}
+      {#if completion.consumo?.tokens}
+        <div>
+          <dt>Tokens</dt>
+          <dd class="tabular">{completion.consumo.tokens.toLocaleString('es-CO')}</dd>
+          <dd class="note">
+            {completion.consumo.tokens_entrada.toLocaleString('es-CO')} entrada ·
+            {completion.consumo.tokens_salida.toLocaleString('es-CO')} salida
+          </dd>
+        </div>
+      {/if}
+      {#if completion.consumo && completion.consumo.coste_estimado !== null}
+        <div>
+          <dt>Costó</dt>
+          <dd class="tabular">
+            {completion.consumo.coste_estimado.toFixed(2)} {completion.consumo.moneda}
+          </dd>
+          <dd class="note">según el precio configurado</dd>
+        </div>
+      {/if}
+      {#if completion.consumo && (completion.consumo.rechazos || completion.consumo.fallos)}
+        <div>
+          <dt>Proveedor</dt>
+          <dd class="tabular" class:warn={completion.consumo.fallos > 0}>
+            {completion.consumo.rechazos + completion.consumo.fallos}
+          </dd>
+          <dd class="note">
+            {completion.consumo.rechazos} esperas · {completion.consumo.fallos} sin respuesta
+          </dd>
+        </div>
+      {/if}
       <div>
         <dt>Requiere revisión</dt>
         <dd class="tabular" class:warn={completion.reviewItems > 0}>{completion.reviewItems}</dd>

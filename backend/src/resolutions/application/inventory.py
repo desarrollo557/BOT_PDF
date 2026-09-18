@@ -182,6 +182,54 @@ def _por_codigo(outputs: list[str]) -> dict[str, str]:
     return {clave: valor for clave, valor in encontrados.items() if valor}
 
 
+def _fila_del_archivo_inventariado(report: dict) -> dict[str, object] | None:
+    """La fila de un PDF que se inventarió entero, o ``None`` si no es el caso.
+
+    Se reconoce por la acción con que se procesó y no por los campos que trae:
+    un informe al que le falte todo lo demás -- un archivo cuyo encabezado no se
+    dejó leer y sin una sola fecha -- sigue siendo un documento que pasó por el
+    sistema y que el operador tiene que poder encontrar.
+
+    El archivo que se nombra es el FUID y no un PDF, porque es lo único que este
+    trabajo escribe: el original se queda donde estaba, intacto, que es
+    justamente lo que se pidió.
+    """
+    from .task import TaskKind
+
+    if report.get("task") != str(TaskKind.INVENTORY_FILE):
+        return None
+
+    folios = int(report.get("folios") or report.get("page_count") or 0)
+    return {
+        # El número impreso del documento cuando lo trae, que es por lo que
+        # alguien lo va a buscar. Vacío si no lo trae: no todos estos papeles
+        # llevan consecutivo, y un código inventado no se puede cotejar.
+        "code": _sin_na(report.get("consecutivo_inicial")) or "",
+        "title": report.get("asunto"),
+        "type": report.get("tipo_documental"),
+        # La fecha extrema final, que es lo que esta columna significa en el
+        # resto del archivo: la más reciente escrita en el documento.
+        "fecha": _sin_na(report.get("fecha_final")),
+        "file_name": report.get("fuid") or "",
+        "page_count": folios,
+        "first_page": 1 if folios else 0,
+        "last_page": folios,
+        "page_numbers": [],
+        "attachments": [],
+    }
+
+
+def _sin_na(valor: object) -> str | None:
+    """El valor, o ``None`` si es el N/A con que el FUID declara un hueco.
+
+    El libro mayor ya tiene una forma de decir "esto no se sabe" y es la celda
+    vacía, que es la que sus filtros entienden. Dejar entrar la cadena "N/A"
+    haría que buscar por fecha encontrara documentos sin fecha.
+    """
+    texto = str(valor).strip() if valor is not None else ""
+    return texto or None if texto.upper() != "N/A" else None
+
+
 def rows_of(report: dict) -> list[dict[str, object]]:
     """Las filas que un informe terminado aporta al inventario.
 
@@ -201,6 +249,16 @@ def rows_of(report: dict) -> list[dict[str, object]]:
     items = list(inventory.get("items") or [])
     if items:
         return items
+
+    # La tercera forma de terminar: inventariar el archivo sin partirlo. No deja
+    # grupos ni PDF -- ese es el encargo -- así que por aquí no salía ninguna
+    # fila y el documento no aparecía en la pantalla de Archivo. Es el mismo
+    # agujero que dejó fuera a las cajas separadas por continuidad, y se tapa
+    # igual: lo que el trabajo produjo se anota, aunque lo que produjera sea una
+    # sola fila y una planilla.
+    fila = _fila_del_archivo_inventariado(report)
+    if fila is not None:
+        return [fila]
 
     groups = report.get("groups") or []
     outputs = report.get("outputs") or []

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 
 from anthropic import Anthropic
 
+from ..application.consumo import Consumo, anotar_uso_anthropic
 from .boundary_prompt import (
     INSTRUCTIONS,
     build_question,
@@ -46,9 +47,11 @@ class ClaudeBoundaryOracle:
         self,
         client: Anthropic | None = None,
         config: ClaudeBoundaryConfig | None = None,
+        consumo: Consumo | None = None,
     ) -> None:
         self._client = client or Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
         self._config = config or ClaudeBoundaryConfig()
+        self._consumo = consumo
 
     def judge(
         self,
@@ -76,8 +79,11 @@ class ClaudeBoundaryOracle:
                 "Claude no respondió (%s); las costuras dudosas van a revisión",
                 describe_failure(error),
             )
+            if self._consumo is not None:
+                self._consumo.fallo("claude-bordes")
             return {}
 
+        anotar_uso_anthropic(self._consumo, "claude-bordes", message)
         usage = getattr(message, "usage", None)
         if usage is not None:
             logger.info(

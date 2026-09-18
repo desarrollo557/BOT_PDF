@@ -93,6 +93,10 @@ class JobProgress:
     #: desde hace 8 s" en vez de callar, que es la diferencia entre un sistema
     #: que tarda y uno que parece colgado.
     last_event_monotonic: float | None = None
+    #: Lo gastado con los proveedores de pago, tal como lo contó el worker la
+    #: última vez que avisó. Es una foto, no una cuenta propia: quien cuenta es
+    #: el trabajo, y aquí sólo se guarda lo último que dijo.
+    consumo: dict | None = None
 
     @property
     def elapsed_seconds(self) -> float:
@@ -140,6 +144,8 @@ class JobProgress:
     def apply(self, event: dict) -> None:
         stage = str(event.get("stage") or "")
         self.last_event_monotonic = time.monotonic()
+        if isinstance(event.get("consumo"), dict):
+            self.consumo = event["consumo"]
 
         if stage == "opened":
             self.page_count = int(event.get("page_count") or 0)
@@ -255,6 +261,7 @@ class JobProgress:
             "stage_total": self.stage_total,
             "stage_elapsed_seconds": round(self.stage_elapsed_seconds, 2),
             "silent_seconds": round(self.silent_seconds, 2),
+            "consumo": self.consumo,
         }
 
 
@@ -284,6 +291,17 @@ class Job:
     #: porque dos cajas de la misma corrida pueden haberse decidido con
     #: modelos distintos, y el informe tiene que poder decir con cuál.
     oracle: str = "auto"
+    #: Con qué se leyó el papel: sólo Tesseract, o Tesseract y el OCR de pago
+    #: donde el de casa no alcanzó. Se guarda por el mismo motivo que el modelo
+    #: de bordes: dos cajas de la misma corrida pueden haberse leído con
+    #: motores distintos, y el informe tiene que poder decir con cuál, porque
+    #: una lectura de pago y una gratis no producen el mismo inventario.
+    lectura: str = "local"
+    #: Qué clase de documento declaró el operador estar cargando, o "auto" para
+    #: que lo averigüe el sistema. Se guarda con el trabajo porque cambia a qué
+    #: habilidad fue, y el informe tiene que poder decir por qué se cortó como
+    #: se cortó.
+    tipo: str = "auto"
     #: La carpeta a la que se entregará lo que produzca, cuando el trabajo
     #: viene de una corrida sobre carpeta local. Se guarda al crearlo porque la
     #: planilla del inventario se escribe dentro del worker, que no conoce la
@@ -309,6 +327,8 @@ class Job:
             "operator": self.operator,
             "task": self.task,
             "oracle": self.oracle,
+            "lectura": self.lectura,
+            "tipo": self.tipo,
             "state": str(self.state),
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -410,6 +430,8 @@ class JobRegistry:
         operator: str | None = None,
         task: str = "split",
         oracle: str = "auto",
+        lectura: str = "local",
+        tipo: str = "auto",
         destination: str | None = None,
     ) -> Job:
         job = Job(
@@ -422,6 +444,8 @@ class JobRegistry:
             operator=operator,
             task=task,
             oracle=oracle,
+            lectura=lectura,
+            tipo=tipo,
             destination=destination,
         )
         self._jobs[job.id] = job

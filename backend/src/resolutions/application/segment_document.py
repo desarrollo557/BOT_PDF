@@ -14,9 +14,18 @@ classifier pick one answer for ninety pages of different things.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
+from dataclasses import replace
 
 from ..domain.fingerprint import Heading, PageFingerprint, fingerprint_page
+from ..domain.folio_manuscrito import (
+    BANDA_DEL_FOLIO,
+    MarcaDeFolio,
+    TrazoEnEsquina,
+    marca_de_folio,
+    marcas_en_ritmo,
+)
 from ..domain.segmentation import (
     Boundary,
     SegmentationResult,
@@ -25,8 +34,10 @@ from ..domain.segmentation import (
     decide_boundaries,
 )
 from .control import NullRunControl, RunControl
-from .ports import BoundaryOracle, PageSource
+from .ports import Band, BoundaryOracle, PageSource
 from .progress import ProgressEvent, ProgressReporter, Stage
+
+logger = logging.getLogger(__name__)
 
 
 class SegmentDocument:
@@ -72,6 +83,7 @@ class SegmentDocument:
                 source.text_of(page_number),
                 self._headings(source, page_number),
                 self._sheet(source, page_number),
+                self._folio_mark(source, page_number),
             )
             fingerprints.append(huella)
             # Qué se pudo leer de la hoja, en el mismo vocabulario que usa la
@@ -88,7 +100,44 @@ class SegmentDocument:
                 )
             )
             self._report(Stage.IDENTIFYING, page_number, total, "leyendo la caja")
-        return fingerprints
+        return self._en_ritmo(fingerprints)
+
+    @staticmethod
+    def _folio_mark(source: PageSource, page_number: int):
+        """Si la esquina alta de la hoja lleva folio escrito a mano.
+
+        Igual que el tamaño de la hoja: una fuente que no sepa dar píxeles no es
+        un error, sólo pierde esta señal y las demás siguen decidiendo. Cuesta
+        unos milisegundos por página -- se cuentan píxeles de una banda estrecha,
+        no se lee nada -- y es la única señal de esta ruta que sobrevive a un
+        escaneo sin capa de texto.
+        """
+        medir = getattr(source, "ink_of", None)
+        if medir is None:
+            return None
+        try:
+            trazo = medir(page_number, Band(*BANDA_DEL_FOLIO))
+        except Exception:  # noqa: BLE001 - medir la esquina no puede tumbar la caja
+            logger.debug("no se pudo medir la esquina de la página %s", page_number)
+            return None
+        return marca_de_folio(TrazoEnEsquina(*trazo) if trazo is not None else None)
+
+    @staticmethod
+    def _en_ritmo(fingerprints: list[PageFingerprint]) -> list[PageFingerprint]:
+        """Las mismas huellas, con las esquinas que rompen el compás rebajadas.
+
+        Sólo se puede hacer con la caja entera leída, porque el compás es del
+        documento y no de una hoja. En una caja que no sea un libro no cambia
+        nada: sin ritmo demostrado, `marcas_en_ritmo` devuelve lo que recibió.
+        """
+        marcas = [huella.folio_mark or MarcaDeFolio.SIN_MEDIR for huella in fingerprints]
+        ajustadas = marcas_en_ritmo(marcas)
+        if ajustadas == marcas:
+            return fingerprints
+        return [
+            huella if nueva is vieja else replace(huella, folio_mark=nueva)
+            for huella, vieja, nueva in zip(fingerprints, marcas, ajustadas, strict=True)
+        ]
 
     @staticmethod
     def _sheet(source: PageSource, page_number: int) -> tuple[int, int] | None:

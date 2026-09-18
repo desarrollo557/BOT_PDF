@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from ...application.lectura import available_readers
 from ...application.oracle import available_oracles
+from ...application.tipo_pedido import tipos_declarables
 from .. import native_picker
 from ..contexto import Ctx
 
@@ -80,6 +82,13 @@ async def health(ctx: Ctx) -> dict[str, object]:
         # deshabilita lo que no se puede pedir y dice por qué, en vez de
         # ofrecerlo y cosechar un 422 cuando el operador ya eligió.
         "oracles": available_oracles(ctx.settings.as_worker_payload()),
+        # Con qué se puede leer el papel en este servicio. Lo mismo que arriba
+        # pero para el paso anterior: sin lectura no hay nada que juzgar.
+        "readers": available_readers(ctx.settings.as_worker_payload()),
+        # Qué clases de documento se pueden declarar al cargar. Sale de aquí y
+        # no escrito a mano en el front para que añadir una sea una línea en un
+        # solo archivo.
+        "document_types": tipos_declarables(),
         "native_picker": native_picker.available(),
         "inventory_backend": ctx.inventory_backend,
         "queued": ctx.registry.pending,

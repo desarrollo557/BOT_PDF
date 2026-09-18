@@ -66,10 +66,26 @@ class FuidRow:
 
 @dataclass(frozen=True, slots=True)
 class Cabecera:
-    """Lo que cambia de una entrega a otra en la parte alta del formato."""
+    """Lo que cambia de una entrega a otra en la parte alta del formato.
+
+    Los dos primeros campos son los que la plantilla de la Universidad lleva
+    escritos arriba, en dos celdas. Los demás son del formato F-PSD-001, que en
+    vez de una cabecera aparte los repite en una columna de cada fila: son
+    constantes de la entrega, no datos que se lean del papel, y por eso viajan
+    aquí y no en la fila.
+
+    Todos son opcionales y ninguno se inventa. El que no se indique sale como
+    N/A, que es lo que el instructivo manda escribir donde no hay dato.
+    """
 
     oficina_productora: str | None = None
     objeto: str | None = None
+    entidad_remitente: str | None = None
+    entidad_productora: str | None = None
+    unidad_administrativa: str | None = None
+    serie: str | None = None
+    subserie: str | None = None
+    elaborado_por: str | None = None
 
 
 #: El número de la unidad documental que la Universidad estampa en el empaste o

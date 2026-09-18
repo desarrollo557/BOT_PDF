@@ -22,6 +22,7 @@ def _record_split_job(payload: dict, task) -> dict:
     from ...adapters.pymupdf_source import PyMuPDFPageSource
     from ...application.entrega import Destino, entregar
     from ...application.inventory_document import InventoryDocument
+    from ...domain.doctype import DocumentType
 
     taller = Taller.desde(payload)
 
@@ -29,7 +30,13 @@ def _record_split_job(payload: dict, task) -> dict:
     #    sale ya la agrupación hecha -- un folio por cara, una persona por
     #    carátula -- y las filas del FUID.
     use_case = InventoryDocument(
-        ocr=taller.ocr(), progress=taller.progress, control=taller.control
+        ocr=taller.ocr(),
+        progress=taller.progress,
+        control=taller.control,
+        # Cuántas páginas se leen a la vez. Es el mismo ajuste con el que las
+        # otras rutas reparten sus páginas, porque mide lo mismo: cuánto trabajo
+        # de espera aguanta esta máquina a la vez.
+        workers=int(taller.settings.get("page_workers") or 8),
     )
     source = PyMuPDFPageSource(taller.source, taller.name)
     try:
@@ -81,7 +88,21 @@ def _record_split_job(payload: dict, task) -> dict:
                 control=taller.control,
                 progress=taller.progress,
                 naming_prefix=None,
-                con_titulo=True,
+                # El nombre de un diploma es la cédula y el tipo, y nada más:
+                # "7882907_DIPLOMA.pdf". Lo pidió así el operador y además es lo
+                # que sale limpio -- el nombre del graduando y su título están
+                # escritos a mano sobre un formulario impreso, y lo que el OCR
+                # entrega mezcla los dos: "alberto-fernandez-pucela-le-expide-el
+                # -presente-diploma-al". Un nombre de archivo con media leyenda
+                # del formulario dentro no se busca ni se lee.
+                #
+                # Lo leído no se pierde: el graduando va a su columna del FUID,
+                # que es donde se busca por texto, y la cédula del nombre basta
+                # para encontrar el archivo en el disco.
+                #
+                # Un legajo de matrículas conserva el título, que ahí es el
+                # nombre del expediente y llega impreso y limpio.
+                con_titulo=outcome.document_type is not DocumentType.DIPLOMA,
                 nombre=taller.name,
             ),
             en_revision=[

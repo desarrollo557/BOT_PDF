@@ -83,6 +83,74 @@ def _escribir_fuid(
         report["fuid_error"] = f"{type(error).__name__}: {error}"
 
 
+def _escribir_fuid_de_archivo(
+    report: dict,
+    filas: list,
+    *,
+    settings: dict,
+    destination: Path,
+    name: str,
+    control=None,
+    payload: dict | None = None,
+) -> None:
+    """El FUID de un archivo inventariado entero, en el formato F-PSD-001.
+
+    Va por su propio camino y no por `_escribir_fuid` porque el formato es otro:
+    veintisiete columnas en vez de dieciocho, sin cabecera en celdas sueltas y
+    sin bloque de firmas que recolocar. Lo que comparten es el instructivo, no
+    la plantilla, así que compartir el escritor obligaría a llenarlo de "si es
+    el formato de la Universidad" en cada paso.
+
+    Que falle no invalida la lectura, igual que en el otro: se anota el motivo.
+    """
+    if not filas:
+        return
+    if payload is not None:
+        _anunciar(
+            payload,
+            Stage.INVENTORYING,
+            detail="preparando la planilla",
+            done=0,
+            total=len(filas),
+        )
+    if control is not None:
+        control.check()
+
+    from ...adapters.fuid_psd001 import FuidPsd001
+    from ...application.fuid import Cabecera
+    from ...application.inventory_document import FORMATO_PSD001, template_named
+    from ...domain.naming import sheet_filename
+
+    # El formato lo puede fijar el operador en los ajustes; si no dice nada, el
+    # de esta acción es el F-PSD-001, que es para el que se hizo.
+    plantilla = template_named(settings.get("fuid_formato")) or template_named(FORMATO_PSD001)
+    if settings.get("fuid_template"):
+        plantilla = Path(settings["fuid_template"])
+
+    destino = destination / sheet_filename(
+        name, FUID_SUFFIX, directory_length=len(str(destination))
+    )
+    try:
+        escrito = FuidPsd001(plantilla, progress=_reportero(payload or {})).write(
+            filas,
+            destino,
+            cabecera=Cabecera(
+                oficina_productora=settings.get("fuid_oficina"),
+                entidad_productora=settings.get("fuid_entidad_productora"),
+                entidad_remitente=settings.get("fuid_entidad_remitente"),
+                unidad_administrativa=settings.get("fuid_unidad_administrativa"),
+                objeto=settings.get("fuid_objeto"),
+                serie=settings.get("fuid_serie"),
+                subserie=settings.get("fuid_subserie"),
+                elaborado_por=settings.get("fuid_elaborado_por"),
+            ),
+        )
+        report["fuid"] = escrito.name
+    except Exception as error:  # noqa: BLE001 - la lectura sirvió igual
+        logger.warning("no se pudo escribir el FUID del archivo", exc_info=True)
+        report["fuid_error"] = f"{type(error).__name__}: {error}"
+
+
 def _escribir_planilla(report: dict, destination: Path, payload: dict) -> None:
     """Deja la planilla del inventario junto a los PDF que describe.
 

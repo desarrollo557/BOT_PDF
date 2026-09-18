@@ -187,3 +187,40 @@ class TestCacheEndpoints:
         payload = client.post("/api/cache/sweep").json()
         assert payload["swept"] is False
         assert payload["reason"] == "hay documentos en proceso"
+
+
+class TestElFuidNoSeBarre:
+    """Una carpeta con un FUID dentro es un producto, no espacio que reclamar.
+
+    El barrendero decide mirando quién referencia cada carpeta: un trabajo vivo
+    en memoria o el libro mayor. Eso basta mientras lo que se produce sean PDF,
+    porque los PDF se anotan en el libro mayor. Un trabajo de inventario no
+    produce PDF -- su único producto es la planilla -- y no se anota en ninguna
+    parte, así que en cuanto salía del registro en memoria su carpeta quedaba
+    huérfana y se barría con el inventario dentro. El operador procesaba su caja,
+    iba a descargar el FUID y se encontraba un 404.
+    """
+
+    def test_una_carpeta_con_fuid_sobrevive_aunque_nadie_la_referencie(self, workspace):
+        directorio = workspace.output_dir / "trabajo-inventariado"
+        directorio.mkdir(parents=True)
+        (directorio / "CAJA 12__FUID.xlsx").write_bytes(b"xlsx")
+
+        janitor = IdleJanitor(JobRegistry(), workspace)
+        plan = sweep(janitor, force=True)
+
+        assert plan is not None
+        assert directorio not in plan.outputs
+        assert directorio.is_dir()
+
+    def test_la_carpeta_sin_fuid_se_sigue_barriendo(self, workspace):
+        # El arreglo protege el producto, no desactiva la limpieza: una carpeta
+        # de PDF que ya nadie referencia se sigue reclamando como siempre.
+        huerfana = outputs(workspace, "trabajo-que-ya-no-existe")
+
+        janitor = IdleJanitor(JobRegistry(), workspace)
+        plan = sweep(janitor, force=True)
+
+        assert plan is not None
+        assert huerfana in plan.outputs
+        assert not huerfana.exists()

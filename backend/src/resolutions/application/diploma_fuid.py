@@ -29,7 +29,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import replace
 
-from ..domain.diploma import DiplomaRecord
+from ..domain.diploma import DiplomaRecord, pertenece_al_anterior
 from .fuid import NO_APLICA, FuidRow, Ubicacion
 
 _FECHA = re.compile(r"^(\d{1,2})\s*/\s*(\d{1,2})\s*/\s*(\d{2,4})$")
@@ -105,8 +105,9 @@ def filas_del_libro(
     upd = donde.carpeta_de(nombre_del_archivo)
 
     filas: list[FuidRow] = []
+    padres: list[DiplomaRecord] = []
     for registro in registros:
-        if registro.carries_no_identifier and filas:
+        if filas and pertenece_al_anterior(registro, padres[-1]):
             anterior = filas[-1]
             filas[-1] = replace(
                 anterior,
@@ -114,6 +115,7 @@ def filas_del_libro(
                 folios_siar=anterior.folios_siar + 1,
             )
             continue
+        padres.append(registro)
         folio, _ = folio_confiable(registro)
         fecha = fecha_fuid(registro.graduation_date)
         filas.append(

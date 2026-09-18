@@ -7,7 +7,7 @@
   import RunControls from '$lib/components/RunControls.svelte';
   import StatTile from '$lib/components/StatTile.svelte';
   import { unitFor } from '$lib/format';
-  import { SILENCE_THRESHOLD_SECONDS, STAGE_LABELS, STATE_LABELS } from '$lib/rungs';
+  import { SILENCE_THRESHOLD_SECONDS, STAGE_LABELS, STATE_LABELS, stageActivity } from '$lib/rungs';
   import type { Job } from '$lib/types';
 
   interface Props {
@@ -52,20 +52,7 @@
    * etapa cuenta lo suyo: páginas la que lee, archivos la que escribe, filas la
    * que rellena el inventario.
    */
-  const activity = $derived.by(() => {
-    const label = STAGE_LABELS[progress.stage] ?? progress.stage;
-    if (progress.stage === 'analysing') {
-      const rate = progress.pages_per_second
-        ? ` · ${progress.pages_per_second.toFixed(1)} p/s`
-        : '';
-      return `${label} · ${progress.pages_done} de ${progress.page_count} páginas${rate}`;
-    }
-    const done = progress.stage_done ?? 0;
-    const total = progress.stage_total ?? 0;
-    const counter = total ? ` · ${done} de ${total}` : '';
-    const detail = progress.detail ? ` · ${progress.detail}` : '';
-    return `${label}${counter}${detail}`;
-  });
+  const activity = $derived(stageActivity(progress));
 
   /** Cuánto lleva en la etapa actual, cuando ya lleva lo bastante como para notarse. */
   const stageElapsed = $derived(progress.stage_elapsed_seconds ?? 0);
@@ -191,6 +178,27 @@
         value={`${progress.elapsed_seconds.toFixed(1)} s`}
         note={progress.pages_per_second ? `${progress.pages_per_second.toFixed(1)} p/s` : undefined}
       />
+      {#if report.consumo?.paginas_facturadas}
+        <StatTile
+          label="Páginas facturadas"
+          value={report.consumo.paginas_facturadas}
+          note={`${report.consumo.peticiones} peticiones al OCR de pago`}
+        />
+      {/if}
+      {#if report.consumo?.tokens}
+        <StatTile
+          label="Tokens"
+          value={report.consumo.tokens.toLocaleString('es-CO')}
+          note={`${report.consumo.tokens_entrada.toLocaleString('es-CO')} entrada · ${report.consumo.tokens_salida.toLocaleString('es-CO')} salida`}
+        />
+      {/if}
+      {#if report.consumo && report.consumo.coste_estimado !== null && report.consumo.coste_estimado !== undefined}
+        <StatTile
+          label="Costó"
+          value={`${report.consumo.coste_estimado.toFixed(2)} ${report.consumo.moneda}`}
+          note="según el precio configurado"
+        />
+      {/if}
     </div>
 
     <div class="mt-6 grid gap-7 md:grid-cols-2">

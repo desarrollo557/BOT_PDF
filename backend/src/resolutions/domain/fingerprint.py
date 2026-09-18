@@ -21,6 +21,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from .folio_manuscrito import MarcaDeFolio
 from .legibility import is_garbled
 from .tipo_documental import identificar_rotulo
 
@@ -370,6 +371,13 @@ class PageFingerprint:
     #: señal de esta huella que no sale del texto, así que sobrevive a un OCR
     #: que no leyó nada.
     sheet: tuple[int, int] | None = None
+    #: Si la esquina alta de la hoja lleva folio escrito a mano. Es la señal
+    #: más fuerte que puede traer un libro encuadernado y la única de esta
+    #: huella que no depende de que se leyera una palabra: la pone el archivista
+    #: al foliar, en la cara de delante de cada hoja, y la vuelta no la lleva
+    #: porque nunca la tuvo. ``None`` en una fuente que no da píxeles, y
+    #: entonces las demás señales deciden como decidían antes.
+    folio_mark: MarcaDeFolio | None = None
     #: Si la hoja anuncia, al final, que detrás vienen anexos.
     announces_attachments: bool = False
     #: Si la hoja se presenta a sí misma como un anexo.
@@ -665,6 +673,7 @@ def fingerprint_page(
     text: str,
     headings: list[Heading] | None = None,
     sheet: tuple[int, int] | None = None,
+    folio_mark: MarcaDeFolio | None = None,
 ) -> PageFingerprint:
     """Reduce one page to the facts that decide its boundaries."""
     headings = headings or []
@@ -694,6 +703,7 @@ def fingerprint_page(
         identifiers=_identifiers(flat, headings),
         folio=_folio(headings),
         sheet=sheet,
+        folio_mark=folio_mark,
         announces_attachments=bool(_ANNOUNCES_ATTACHMENTS.search(flat[-ATTACHMENT_TAIL_CHARS:])),
         is_attachment=bool(_IS_ATTACHMENT.match(flat[:HEAD_CHARS].lstrip())),
         cedula=_cedula(flat),

@@ -12,8 +12,10 @@ from uuid import uuid4
 from fastapi import APIRouter, Header, HTTPException, UploadFile
 
 from ...application.control import RunState
+from ...application.lectura import LecturaChoice
 from ...application.oracle import OracleChoice
 from ...application.task import TaskKind
+from ...application.tipo_pedido import TipoPedido
 from ..contexto import Contexto, Ctx
 from ..ejecucion import _run
 from ..jobs import IN_FLIGHT, Job, JobState
@@ -32,6 +34,8 @@ async def enqueue(
     batch_id: str | None = None,
     task: str | None = None,
     oracle: str | None = None,
+    lectura: str | None = None,
+    tipo: str | None = None,
     x_operator: str | None = Header(default=None),
 ) -> dict[str, object]:
     if not (file.filename or "").lower().endswith(".pdf"):
@@ -44,6 +48,8 @@ async def enqueue(
     # una caja escaneada son cientos de megabytes. Una elección imposible tiene
     # que costar un 422 y no un archivo en disco que nadie va a procesar.
     choice = _oracle_choice(ctx, oracle)
+    lectura_choice = _lectura_choice(ctx, lectura)
+    tipo_choice = _tipo_choice(tipo)
     if batch_id and ctx.registry.get_batch(batch_id) is None:
         raise HTTPException(status_code=404, detail="El lote no existe")
     if ctx.registry.pending >= ctx.settings.queue_limit:
@@ -67,6 +73,8 @@ async def enqueue(
         operator=_operator(x_operator),
         task=str(kind),
         oracle=str(choice),
+        lectura=str(lectura_choice),
+        tipo=str(tipo_choice),
     )
     ctx.registry.publish(job)
     asyncio.create_task(_run(ctx, job))
@@ -76,8 +84,48 @@ async def enqueue(
         "state": str(job.state),
         "task": job.task,
         "oracle": job.oracle,
+        "lectura": job.lectura,
+        "tipo": job.tipo,
         "bytes": written,
     }
+
+def _tipo_choice(value: str | None) -> TipoPedido:
+    """Qué declaró el operador estar cargando.
+
+    No se comprueba contra ninguna llave -- declarar un tipo no consume nada --
+    pero sí que sea uno de los que el sistema sabe atender: un tipo inventado
+    llegaría al despachador como "auto" y el operador creería haber elegido.
+    """
+    try:
+        return TipoPedido.parse(value)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+def _lectura_choice(ctx: Contexto, value: str | None) -> LecturaChoice:
+    """Con qué motor se pidió leer, o por qué no se puede pedir.
+
+    Se comprueba antes de escribir un byte, igual que la elección de modelo y
+    por el mismo motivo: el cuerpo de esta petición es el archivo, y una caja
+    escaneada son cientos de megabytes. Descubrir que falta la llave después de
+    recibirla sería gastarle al operador la subida entera.
+    """
+    try:
+        choice = LecturaChoice.parse(value)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    if not choice.is_available(ctx.settings.as_worker_payload()):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{choice.label} no está configurado: falta {choice.env_var} en el "
+                "entorno del servicio. Elegir un motor de lectura no sustituye por "
+                "otro, así que la caja no se procesó."
+            ),
+        )
+    return choice
+
 
 def _oracle_choice(ctx: Contexto, value: str | None) -> OracleChoice:
     """Qué modelo se pidió, o por qué no se puede pedir.

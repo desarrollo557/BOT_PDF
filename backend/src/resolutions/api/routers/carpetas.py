@@ -12,7 +12,7 @@ from ...application.task import TaskKind
 from .. import native_picker
 from ..contexto import Ctx
 from ..folders import FolderError, SourceDisposition, clean_path
-from .trabajos import _operator, _oracle_choice
+from .trabajos import _lectura_choice, _operator, _oracle_choice, _tipo_choice
 
 router = APIRouter()
 
@@ -46,6 +46,8 @@ async def start_folder_run(
     # Se valida antes de tocar las carpetas: una elección imposible no tiene por
     # qué esperar a que se descubra que el destino era el mismo que el origen.
     choice = _oracle_choice(ctx, payload.get("oracle"))
+    lectura_choice = _lectura_choice(ctx, payload.get("lectura"))
+    tipo_choice = _tipo_choice(payload.get("tipo"))
 
     try:
         run = ctx.folders.start(
@@ -56,6 +58,8 @@ async def start_folder_run(
             operator=_operator(x_operator),
             task=str(kind),
             oracle=str(choice),
+            lectura=str(lectura_choice),
+            tipo=str(tipo_choice),
         )
     except FolderError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None

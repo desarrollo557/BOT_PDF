@@ -7,6 +7,17 @@ from pathlib import Path
 DEFAULT_ROOT = Path(os.environ.get("RESOLUTIONS_DATA_DIR", "./data")).resolve()
 
 
+def _float_opcional(name: str) -> float | None:
+    """Un número decimal del entorno, o nada. Un valor ilegible es nada, no cero."""
+    raw = os.environ.get(name)
+    if not raw:
+        return None
+    try:
+        return float(raw.replace(",", "."))
+    except ValueError:
+        return None
+
+
 def _int(name: str, fallback: int) -> int:
     try:
         return int(os.environ[name])
@@ -57,6 +68,12 @@ class Settings:
     #: estructura decida sola.
     mistral_api_key: str | None = None
 
+    #: Cuánto cuesta una página del OCR de pago, para estimar el gasto de un
+    #: trabajo. Opcional a propósito: el precio cambia, varía por cuenta y por
+    #: moneda, y una cifra inventada aquí sería la única de la pantalla que no
+    #: sale de una medida. Sin él se enseñan páginas y tokens, que sí se miden.
+    precio_ocr_por_pagina: float | None = None
+
     #: Uploads are streamed to disk in chunks and never held in memory, so this
     #: bounds disk use rather than RAM. Four gigabytes covers a full archive box
     #: scanned at 300 dpi; set it higher when the scanner disagrees.
@@ -106,6 +123,7 @@ class Settings:
             vision_model=os.environ.get("RESOLUTIONS_VISION_MODEL", "claude-sonnet-5"),
             gemini_api_key=os.environ.get("GEMINI_API_KEY") or None,
             mistral_api_key=os.environ.get("MISTRAL_API_KEY") or None,
+            precio_ocr_por_pagina=_float_opcional("RESOLUTIONS_PRECIO_OCR_POR_PAGINA"),
             max_upload_bytes=_int("RESOLUTIONS_MAX_UPLOAD_BYTES", 4 * 1024 * 1024 * 1024),
             ledger_path=Path(
                 os.environ.get("RESOLUTIONS_LEDGER", DEFAULT_ROOT / "inventory.jsonl")
@@ -138,6 +156,7 @@ class Settings:
             "vision_model": self.vision_model,
             "gemini_api_key": self.gemini_api_key,
             "mistral_api_key": self.mistral_api_key,
+            "precio_ocr_por_pagina": self.precio_ocr_por_pagina,
             "fuid_template": self.fuid_template,
             "fuid_caja": self.fuid_caja,
             "fuid_otro": self.fuid_otro,

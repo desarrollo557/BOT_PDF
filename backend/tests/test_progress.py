@@ -320,11 +320,35 @@ class TestMotivoDeLaRevision:
         assert progreso.as_dict()["review"] == {}
         assert progreso.as_dict()["failed_pages"] == 0
 
-    def test_el_campo_que_falta_se_nombra(self):
+    def test_un_campo_que_falta_no_manda_a_revisar_la_pagina(self):
+        """Una hoja con su folio y su graduando se archiva aunque falte la fecha.
+
+        Exigir todos los campos hacía inútil la cola: en el libro 7 de 1982 la
+        fecha está escrita a mano y sólo se lee en cuatro de cada diez páginas,
+        así que 354 de sus 398 páginas salían marcadas. Una cola donde está casi
+        todo no señala nada y el operador acaba ignorándola entera.
+
+        El dato no se pierde: el FUID escribe "N/A", que es lo que la
+        instrucción archivística pide para lo que el papel no trae.
+        """
         progreso = self._progreso([self.FOLIO_SIN_FECHA])
-        assert progreso.as_dict()["review"] == {
-            "1": "no se pudo leer la fecha de graduación"
-        }
+        assert progreso.as_dict()["review"] == {}
+        assert progreso.as_dict()["failed_pages"] == 0
+
+    def test_una_hoja_sin_cedula_leida_tampoco_se_marca(self):
+        """Se llama por su orden en el libro, que es un dato cierto.
+
+        Exigir la cédula o el folio marcaba las 398 páginas del libro 7 en
+        cuanto se leía sin el motor de pago: en ese libro todo lo que identifica
+        al graduado es manuscrito. La pantalla entera en rojo no señala nada.
+        """
+        progreso = self._progreso([("ALIX MARIN", "Nombres y apellidos del graduando")])
+        assert progreso.as_dict()["review"] == {}
+
+    def test_la_costura_sin_evidencia_si_se_declara(self):
+        """Ante la duda se une, y la costura se dice: es la otra mitad de la regla."""
+        progreso = self._progreso([FOLIO_COMPLETO, ("",)])
+        assert "se unió a la anterior" in progreso.as_dict()["review"]["2"]
 
     def test_los_folios_que_discrepan_se_citan_los_dos(self):
         progreso = self._progreso([self.FOLIOS_QUE_NO_COINCIDEN])
