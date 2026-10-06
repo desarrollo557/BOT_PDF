@@ -19,7 +19,7 @@ router = APIRouter()
 #: running across an update answers 404 to every new route and 405 to every new
 #: method -- which reads as a broken request rather than as a stale service.
 #: The screen compares this against what it was built for and says so plainly.
-API_REVISION = 18
+API_REVISION = 23
 
 #: What this revision can do, so the screen can name what is missing rather than
 #: only that something is.
@@ -54,9 +54,9 @@ API_FEATURES = (
     # Y elegir a qué modelo se le pregunta por los bordes, en vez de heredar el
     # que la cascada encuentre primero.
     "oracle-choice",
-    # Entrar con cédula y correo, y que el perfil decida qué se deja hacer. La
-    # pantalla lo necesita para saber si hay dónde entrar: contra un servicio
-    # sin esto, la pantalla de entrada pediría dos datos que nadie va a leer.
+    # Que haya perfiles y que el perfil decida qué se deja hacer. La pantalla
+    # lo necesita para saber si hay dónde entrar: contra un servicio sin esto,
+    # la pantalla de entrada pediría algo que nadie va a leer.
     "perfiles",
     # Administrar las altas: quién entra y con qué perfil.
     "usuarios",
@@ -67,6 +67,29 @@ API_FEATURES = (
     # Y abandonar el FUID que se está levantando, que hasta ahora no se podía:
     # su carga útil viajaba sin canal de control.
     "fuid-cancel",
+    # Entregar una caja de correspondencia con un archivo por mes en vez de
+    # uno por documento. Un servicio sin esto ignoraría el parámetro en
+    # silencio y la caja saldría como siempre, que es peor que un aviso.
+    "agrupar-por-mes",
+    # Entrar como «siar», sin contraseña. Contra un servicio anterior la
+    # pantalla de entrada manda un usuario que el servicio no sabe leer, y el
+    # aviso tiene que poder decir qué falta en vez de un error de campos.
+    "usuario-siar",
+    # Inventariar actas de consejo: una fila por PDF con el acta, su fecha, el
+    # folio inicial y el final, cuántos folios son y el resumen.
+    "acta-consejo",
+    # Y bajar el Excel de las actas de una carpeta entera, con una fila por PDF.
+    "folder-inventario",
+    # Cada documento recuerda de qué carpeta o lote salió, y el Excel general
+    # de una carpeta se baja desde el Archivo aunque la corrida ya no esté.
+    "origenes",
+    # Dividir un libro de actas de consejo: una carpeta por sesión y un PDF por
+    # pieza -- portada, citación, asistencia, acta y cada anexo --.
+    "acta-piezas",
+    # Los folios de un libro de actas encadenados acta con acta, y la lista de
+    # los PDF y el Excel de cada trabajo para bajarlos desde su tarjeta.
+    "folios-encadenados",
+    "archivos-del-trabajo",
 )
 
 @router.get("/api/health")

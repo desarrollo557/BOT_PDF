@@ -36,8 +36,10 @@ Nombre = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2)]
 
 
 class Credenciales(BaseModel):
-    cedula: str = Field(description="La cédula de quien entra; se compara sin puntos")
-    correo: str = Field(description="Su correo; se compara en minúsculas")
+    #: La entrada de la pantalla: «siar», sin contraseña.
+    usuario: str | None = Field(default=None, description="Nombre de usuario; hoy sólo «siar»")
+    cedula: str | None = Field(default=None, description="La cédula de quien entra; se compara sin puntos")
+    correo: str | None = Field(default=None, description="Su correo; se compara en minúsculas")
 
 
 class Alta(BaseModel):
@@ -77,13 +79,18 @@ class Cambio(BaseModel):
 
 @router.post("/api/sesion")
 async def entrar(ctx: Ctx, credenciales: Credenciales) -> dict[str, object]:
-    """Reconocer a quien teclea su cédula y su correo.
+    """Dejar entrar a quien lo pide.
 
-    Las dos cosas tienen que cuadrar contra la misma alta. Con la cédula sola
-    bastaría con leer cualquier planilla, que es donde está impresa.
+    Desde la pantalla, con el usuario «siar» y nada más, que es lo que pidió el
+    archivo. Por la API sigue valiendo la cédula con el correo de un alta, y ahí
+    las dos cosas tienen que cuadrar: con la cédula sola bastaría con leer
+    cualquier planilla, que es donde está impresa.
     """
     try:
-        entrada = ctx.usuarios.entrar(credenciales.cedula, credenciales.correo)
+        if credenciales.usuario is not None:
+            entrada = ctx.usuarios.entrar_como(credenciales.usuario)
+        else:
+            entrada = ctx.usuarios.entrar(credenciales.cedula, credenciales.correo)
     except UsuarioInvalido as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except NoIdentificado as error:

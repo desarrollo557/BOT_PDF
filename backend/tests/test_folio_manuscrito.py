@@ -18,7 +18,7 @@ from resolutions.adapters.pymupdf_source import PyMuPDFPageSource
 from resolutions.application.diploma_fuid import filas_del_libro
 from resolutions.application.diploma_split import group_by_record
 from resolutions.application.ports import Band
-from resolutions.domain.diploma import DiplomaRecord
+from resolutions.domain.diploma import CriterioDeCorte, DiplomaRecord
 from resolutions.domain.folio_manuscrito import (
     BANDA_DEL_FOLIO,
     TINTA_DE_FOLIO,
@@ -30,6 +30,11 @@ from resolutions.domain.folio_manuscrito import (
     marca_de_folio,
     marcas_en_ritmo,
 )
+
+#: Lo que se fija aquí es la regla del folio, así que se corta por él. El
+#: criterio por omisión es otro -- cada cara es un diploma -- y con él no hay
+#: vueltas que unir.
+POR_FOLIO = CriterioDeCorte.FOLIO
 
 
 def registro(pagina, marca=None, folio=None, nombre=None, cedula=None):
@@ -91,7 +96,7 @@ class TestElRepartoDelLibro:
             registro(3, MarcaDeFolio.PRESENTE, folio="2"),
             registro(4, MarcaDeFolio.AUSENTE),
         ]
-        grupos = group_by_record(registros).groups
+        grupos = group_by_record(registros, POR_FOLIO).groups
         assert [grupo.page_numbers for grupo in grupos] == [[1, 2], [3, 4]]
 
     def test_la_marca_manda_sobre_lo_que_el_ocr_creyo_leer(self):
@@ -105,7 +110,7 @@ class TestElRepartoDelLibro:
             registro(1, MarcaDeFolio.PRESENTE, folio="1", nombre="ALIX MARIN"),
             registro(2, MarcaDeFolio.AUSENTE, nombre="LA REPUBLICA DE COLOMBIA"),
         ]
-        grupos = group_by_record(registros).groups
+        grupos = group_by_record(registros, POR_FOLIO).groups
         assert len(grupos) == 1
         assert grupos[0].page_numbers == [1, 2]
 
@@ -114,11 +119,11 @@ class TestElRepartoDelLibro:
             registro(n, MarcaDeFolio.PRESENTE if n % 2 else MarcaDeFolio.AUSENTE)
             for n in range(1, 9)
         ]
-        group_by_record(registros).verify_integrity(total_pages=8)
+        group_by_record(registros, POR_FOLIO).verify_integrity(total_pages=8)
 
     def test_la_primera_pagina_abre_aunque_no_se_le_vea_la_marca(self):
         """No hay registro anterior al que pegarla, así que abre ella."""
-        grupos = group_by_record([registro(1, MarcaDeFolio.AUSENTE)]).groups
+        grupos = group_by_record([registro(1, MarcaDeFolio.AUSENTE)], POR_FOLIO).groups
         assert [grupo.page_numbers for grupo in grupos] == [[1]]
 
     def test_dos_capturas_de_la_misma_cara_no_son_dos_registros(self):
@@ -131,7 +136,7 @@ class TestElRepartoDelLibro:
             registro(1, MarcaDeFolio.PRESENTE, folio="51", cedula="45437535"),
             registro(2, MarcaDeFolio.PRESENTE, folio="51", cedula="45437535"),
         ]
-        grupos = group_by_record(registros).groups
+        grupos = group_by_record(registros, POR_FOLIO).groups
         assert len(grupos) == 1
         assert grupos[0].page_numbers == [1, 2]
 
@@ -140,7 +145,7 @@ class TestElRepartoDelLibro:
             registro(1, MarcaDeFolio.PRESENTE, folio="51", cedula="45437535"),
             registro(2, MarcaDeFolio.PRESENTE, folio="51", cedula="22793650"),
         ]
-        assert len(group_by_record(registros).groups) == 2
+        assert len(group_by_record(registros, POR_FOLIO).groups) == 2
 
     def test_la_duda_une_en_vez_de_cortar(self):
         """La norma de la casa: sin evidencia de apertura, la hoja se queda.
@@ -153,7 +158,7 @@ class TestElRepartoDelLibro:
             registro(1, MarcaDeFolio.PRESENTE, folio="1"),
             registro(2, MarcaDeFolio.DUDOSA, nombre="LA REPUBLICA DE COLOMBIA"),
         ]
-        grupos = group_by_record(registros).groups
+        grupos = group_by_record(registros, POR_FOLIO).groups
         assert [grupo.page_numbers for grupo in grupos] == [[1, 2]]
 
     def test_la_union_por_duda_queda_dicha(self):
@@ -176,7 +181,7 @@ class TestElRepartoDelLibro:
             registro(2),
             registro(3, folio="331"),
         ]
-        grupos = group_by_record(registros).groups
+        grupos = group_by_record(registros, POR_FOLIO).groups
         assert [grupo.page_numbers for grupo in grupos] == [[1, 2], [3]]
 
 
@@ -189,8 +194,8 @@ class TestElFuidCuentaLoMismoQueLaCarpeta:
             registro(3, MarcaDeFolio.PRESENTE, folio="2", nombre="JOSE TORRES"),
             registro(4, MarcaDeFolio.AUSENTE),
         ]
-        filas = filas_del_libro(registros, nombre_del_archivo="UPD3859766.pdf")
-        grupos = group_by_record(registros).groups
+        filas = filas_del_libro(registros, nombre_del_archivo="UPD3859766.pdf", criterio=POR_FOLIO)
+        grupos = group_by_record(registros, POR_FOLIO).groups
         assert len(filas) == len(grupos) == 2
         assert [fila.folios for fila in filas] == [2, 2]
 
@@ -262,13 +267,13 @@ class TestLaMedidaSobrePapel:
 
         fuente = PyMuPDFPageSource(libro)
         try:
-            registros, _ = ReadDiplomaBook().execute(fuente)
+            registros, _ = ReadDiplomaBook(criterio=POR_FOLIO).execute(fuente)
         finally:
             fuente.close()
 
         assert registros[0].folio_mark is MarcaDeFolio.PRESENTE
         assert registros[1].folio_mark is MarcaDeFolio.AUSENTE
-        grupos = group_by_record(registros).groups
+        grupos = group_by_record(registros, POR_FOLIO).groups
         assert [grupo.page_numbers for grupo in grupos] == [[1, 2]]
 
 
@@ -339,7 +344,7 @@ class TestElRitmoDelLibro:
             registro(5, MarcaDeFolio.PRESENTE, folio="3"),
             registro(6, MarcaDeFolio.AUSENTE),
         ]
-        grupos = group_by_record(registros).groups
+        grupos = group_by_record(registros, POR_FOLIO).groups
         assert [grupo.page_numbers for grupo in grupos] == [[1, 2], [3, 4], [5, 6]]
 
 
@@ -421,7 +426,7 @@ class TestElNumeroDelFolio:
             ),
             DiplomaRecord(page_number=4, folio_mark=MarcaDeFolio.AUSENTE),
         ]
-        grupos = group_by_record(registros).groups
+        grupos = group_by_record(registros, POR_FOLIO).groups
         assert [grupo.code.value for grupo in grupos] == ["1", "2"]
         assert [grupo.page_numbers for grupo in grupos] == [[1, 2], [3, 4]]
 
@@ -443,8 +448,8 @@ class TestLaCarpetaYElInventarioCuentanIgual:
             registro(2, MarcaDeFolio.PRESENTE, folio="51", cedula="45437535"),
             registro(3, MarcaDeFolio.PRESENTE, folio="52", cedula="22793650"),
         ]
-        grupos = group_by_record(registros).groups
-        filas = filas_del_libro(registros, nombre_del_archivo="UPD3859766.pdf")
+        grupos = group_by_record(registros, POR_FOLIO).groups
+        filas = filas_del_libro(registros, nombre_del_archivo="UPD3859766.pdf", criterio=POR_FOLIO)
 
         assert len(grupos) == len(filas) == 2
         assert grupos[0].page_numbers == [1, 2]
@@ -455,8 +460,8 @@ class TestLaCarpetaYElInventarioCuentanIgual:
             registro(1, MarcaDeFolio.PRESENTE, folio="51", cedula="45437535"),
             registro(2, MarcaDeFolio.PRESENTE, folio="51", cedula="22793650"),
         ]
-        assert len(group_by_record(registros).groups) == 2
-        assert len(filas_del_libro(registros, nombre_del_archivo="x.pdf")) == 2
+        assert len(group_by_record(registros, POR_FOLIO).groups) == 2
+        assert len(filas_del_libro(registros, nombre_del_archivo="x.pdf", criterio=POR_FOLIO)) == 2
 
     def test_la_vuelta_sin_folio_suma_a_la_fila_de_arriba(self):
         registros = [
@@ -465,8 +470,8 @@ class TestLaCarpetaYElInventarioCuentanIgual:
             registro(3, MarcaDeFolio.PRESENTE, folio="2", cedula="22793650"),
             registro(4, MarcaDeFolio.AUSENTE),
         ]
-        grupos = group_by_record(registros).groups
-        filas = filas_del_libro(registros, nombre_del_archivo="x.pdf")
+        grupos = group_by_record(registros, POR_FOLIO).groups
+        filas = filas_del_libro(registros, nombre_del_archivo="x.pdf", criterio=POR_FOLIO)
 
         assert len(grupos) == len(filas) == 2
         assert [fila.folios for fila in filas] == [2, 2]
@@ -489,7 +494,7 @@ class TestUnLibroSeParteSinPagarLectura:
             marca = MarcaDeFolio.PRESENTE if pagina % 2 else MarcaDeFolio.AUSENTE
             registros.append(registro(pagina, marca))
 
-        grupos = group_by_record(registros).groups
+        grupos = group_by_record(registros, POR_FOLIO).groups
 
         assert [grupo.code.value for grupo in grupos] == [
             "001", "002", "003", "004", "005", "006"
@@ -504,7 +509,7 @@ class TestUnLibroSeParteSinPagarLectura:
             registro(pagina, MarcaDeFolio.PRESENTE if pagina % 2 else MarcaDeFolio.AUSENTE)
             for pagina in range(1, 21)
         ]
-        codigos = [grupo.code.value for grupo in group_by_record(registros).groups]
+        codigos = [grupo.code.value for grupo in group_by_record(registros, POR_FOLIO).groups]
         assert codigos[-1] == "010"
         assert codigos == sorted(codigos)
 
@@ -516,7 +521,7 @@ class TestUnLibroSeParteSinPagarLectura:
             registro(3, MarcaDeFolio.PRESENTE),
             registro(4, MarcaDeFolio.AUSENTE),
         ]
-        grupos = group_by_record(registros).groups
+        grupos = group_by_record(registros, POR_FOLIO).groups
         assert [grupo.code.value for grupo in grupos] == ["7882907", "002"]
         assert [grupo.page_numbers for grupo in grupos] == [[1, 2], [3, 4]]
 

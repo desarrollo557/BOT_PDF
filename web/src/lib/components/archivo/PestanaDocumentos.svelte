@@ -14,6 +14,7 @@
   import { formatBytes } from '$lib/format';
   import { reports } from '$lib/report.svelte';
   import BarraDeSeleccion from './BarraDeSeleccion.svelte';
+  import CarpetaCard from './CarpetaCard.svelte';
   import FiltrosDelArchivo from './FiltrosDelArchivo.svelte';
 
   interface Totales {
@@ -22,6 +23,8 @@
     pages: number;
     bytes: number;
     review: number;
+    /** Cuántas carpetas locales o lotes hay entre lo que se ve. */
+    carpetas: number;
   }
 
   interface Seleccionados {
@@ -55,6 +58,7 @@
     historyTotal,
     nameOf,
     onpick,
+    onpickmany,
     onpickall,
     onclearselection,
     onremoveselected,
@@ -81,6 +85,8 @@
     historyTotal: number;
     nameOf: (jobId: string) => string;
     onpick: (jobId: string) => void;
+    /** Marcar o desmarcar todos los PDF de una carpeta de una vez. */
+    onpickmany: (jobIds: string[]) => void;
     onpickall: () => void;
     onclearselection: () => void;
     onremoveselected: () => void;
@@ -93,15 +99,20 @@
      "how much is this" without anybody adding up cards. -->
 <section class="summary">
   <StatTile
-    label={narrowed ? 'Documentos filtrados' : 'Documentos'}
+    label={narrowed ? 'PDF filtrados' : 'PDF procesados'}
     value={totals.documents}
-    note={narrowed ? `de ${everything.length} en total` : 'procesados'}
+    note={narrowed ? `de ${everything.length} en total` : 'de origen'}
   />
-  <StatTile label="Resoluciones" value={totals.resolutions} note="archivos generados" />
-  <StatTile label="Páginas" value={totals.pages} />
-  <StatTile label="Peso neto" value={formatBytes(totals.bytes)} note="de los PDF de origen" />
   <StatTile
-    label="Requiere revisión"
+    label="Carpetas y lotes"
+    value={totals.carpetas}
+    note={totals.carpetas ? 'enteros' : 'ninguno'}
+  />
+  <StatTile label="Unidades" value={totals.resolutions} note="generadas" />
+  <StatTile label="Páginas" value={totals.pages} />
+  <StatTile label="Peso neto" value={formatBytes(totals.bytes)} note="de origen" />
+  <StatTile
+    label="En revisión"
     value={totals.review}
     tone={totals.review ? 'warning' : 'good'}
     note={totals.review ? 'ver en Revisión' : 'sin pendientes'}
@@ -147,6 +158,19 @@
   </div>
 {/if}
 
+{#if shown.length}
+  <div class="list-bar">
+    <span class="tabular">
+      {shown.length}
+      PDF{#if totals.carpetas}, {totals.carpetas}
+        {totals.carpetas === 1 ? 'carpeta o lote' : 'carpetas o lotes'}{/if}
+    </span>
+    <button class="ghost" onclick={onpickall}>
+      {allPicked ? 'quitar selección' : `seleccionar los ${shown.length} visibles`}
+    </button>
+  </div>
+{/if}
+
 <BarraDeSeleccion
   totals={pickedTotals}
   busy={bulkBusy}
@@ -160,25 +184,24 @@
   <section class="day">
     <header class="day-head">
       <h3>{day.label}</h3>
-      {#if day === days[0]}
-        <button class="pick-all ghost" onclick={onpickall}>
-          {allPicked ? 'quitar selección' : `seleccionar los ${shown.length} visibles`}
-        </button>
-      {/if}
       <span class="day-totals tabular">
-        {day.documents} doc · {day.resolutions} res · {day.pages} pág · {formatBytes(day.bytes)}
+        {day.documents} PDF · {day.resolutions} unidades · {day.pages} pág · {formatBytes(day.bytes)}
         {#if day.review}<b class="warn">· {day.review} en revisión</b>{/if}
       </span>
     </header>
 
     <div class="cards">
-      {#each day.entries as entry (entry.key)}
-        <ProcessedCard
-          {entry}
-          selected={selected.has(entry.jobId)}
-          onselect={onpick}
-          {onchange}
-        />
+      {#each day.items as item (item.key)}
+        {#if item.kind === 'grupo'}
+          <CarpetaCard grupo={item.grupo} {selected} onselectmany={onpickmany} {onchange} />
+        {:else}
+          <ProcessedCard
+            entry={item.entry}
+            selected={selected.has(item.entry.jobId)}
+            onselect={onpick}
+            {onchange}
+          />
+        {/if}
       {/each}
     </div>
   </section>
@@ -192,10 +215,12 @@
 {/if}
 
 <style>
+  /* Las seis cifras en una fila mientras quepan a 5.75rem cada una: con huecos
+     fijos de 2.25rem partían en dos renglones al lado de la consola. */
   .summary {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1rem 2.25rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(5.75rem, 1fr));
+    gap: 0.75rem;
     border: 1px solid var(--hairline);
     border-radius: 14px;
     background: var(--surface-2);
@@ -293,12 +318,20 @@
 
   .cards {
     display: grid;
+    align-items: start;
     grid-template-columns: repeat(auto-fill, minmax(16.5rem, 1fr));
     gap: 0.9rem;
   }
 
-  .pick-all {
-    margin-left: auto;
+  .list-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    font-size: 0.76rem;
+    color: var(--muted);
   }
 
   .muted.small {

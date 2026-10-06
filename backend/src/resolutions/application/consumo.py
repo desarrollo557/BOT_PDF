@@ -66,8 +66,37 @@ class Consumo:
     #: estima dinero", que es distinto de cero.
     precio_por_pagina: float | None = None
     moneda: str = "USD"
+    #: Cuántas páginas facturadas como máximo puede gastar este trabajo.
+    #:
+    #: ``None`` es "sin tope", que es lo que había. Con un número, el motor de
+    #: pago deja de pedirse en cuanto se alcanza y lo que falte se lee con el
+    #: local. No se cancela el trabajo: el corte de un libro de diplomas sale de
+    #: medir tinta y no necesita OCR, así que pasado el tope se siguen
+    #: produciendo los documentos, sólo que nombrados por su folio o su orden.
+    #:
+    #: Existe porque una caja son cientos de páginas y el motor remoto cobra por
+    #: cada una: hasta ahora la única forma de enterarse de que un trabajo se
+    #: había comido el crédito era que el proveedor contestara "sin presupuesto"
+    #: en mitad del libro siguiente.
+    tope_de_paginas: int | None = None
     _por_proveedor: dict[str, ConsumoDeProveedor] = field(default_factory=dict)
     _candado: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    @property
+    def tope_alcanzado(self) -> bool:
+        """Si este trabajo ya gastó todo lo que se le autorizó.
+
+        Se lee bajo el mismo candado con que se escribe, porque quien pregunta
+        son los ocho lectores en paralelo y la respuesta decide si se gasta.
+        """
+        if self.tope_de_paginas is None:
+            return False
+        with self._candado:
+            return self._paginas_facturadas() >= self.tope_de_paginas
+
+    def _paginas_facturadas(self) -> int:
+        """El total facturado hasta ahora. Sin candado: lo pone quien llama."""
+        return sum(uno.paginas_facturadas for uno in self._por_proveedor.values())
 
     def _de(self, proveedor: str) -> ConsumoDeProveedor:
         return self._por_proveedor.setdefault(proveedor, ConsumoDeProveedor())

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -256,4 +257,39 @@ class UserStore(Protocol):
 
     def delete(self, cedula: str) -> bool:
         """Da de baja. Contesta si había algo que dar de baja."""
+        ...
+
+
+class ResumenNoDisponible(RuntimeError):
+    """El resumen no se pudo escribir, y por qué, dicho para quien revise.
+
+    No es una avería del trabajo: el acta se inventaría igual, con su número y
+    su fecha, y la columna de notas dice que el resumen falta y el motivo.
+    """
+
+
+@runtime_checkable
+class Resumidor(Protocol):
+    """Quien escribe el resumen de un documento a partir de su texto.
+
+    Recibe texto y no imágenes, a propósito: el texto ya lo sacó el OCR de casa,
+    que es gratis, y mandar la imagen sería pagar por volver a leerla. Qué
+    proveedor contesta no es asunto de esta capa.
+    """
+
+    def resumir(self, texto: str) -> str:
+        """El resumen, o `ResumenNoDisponible` con el motivo si no lo hay."""
+        ...
+
+
+@runtime_checkable
+class LectorDeEsquinas(Protocol):
+    """Quien lee lo que va escrito a mano en la esquina del folio de unas hojas.
+
+    Varias esquinas en una sola lectura, porque el proveedor que lee manuscrito
+    cobra por página procesada y no por esquina.
+    """
+
+    def leer_esquinas(self, source: PageSource, paginas: Sequence[int]) -> str:
+        """El texto leído en esas esquinas, de arriba abajo y en el orden dado."""
         ...

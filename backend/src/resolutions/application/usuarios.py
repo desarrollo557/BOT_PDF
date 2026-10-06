@@ -36,6 +36,12 @@ from ..domain.usuario import (
 )
 from .ports import UserStore
 
+#: El usuario de la casa. Entra escribiendo «siar», sin contraseña ni alta
+#: previa, con perfil de administrador. No vive en el almacén: está aquí para
+#: que el sistema nunca quede cerrado con la llave dentro.
+USUARIO_SIAR = "siar"
+SIAR = Usuario(cedula=USUARIO_SIAR, correo="", perfil=Perfil.ADMINISTRADOR, nombre="SIAR")
+
 
 class NoAutorizado(Exception):
     """Quien lo pide no tiene el perfil que hace falta."""
@@ -83,6 +89,8 @@ class Usuarios:
 
     def buscar(self, cedula: str | None) -> Usuario | None:
         """Quién es esta cédula, o nadie. No levanta: preguntar no es entrar."""
+        if str(cedula or "").strip().lower() == USUARIO_SIAR:
+            return SIAR
         try:
             clave = normalizar_cedula(cedula)
         except UsuarioInvalido:
@@ -94,6 +102,12 @@ class Usuarios:
         return not self._store.all()
 
     # -- entrar ----------------------------------------------------------------
+
+    def entrar_como(self, usuario: str | None) -> Entrada:
+        """Entrar con el nombre de usuario, sin contraseña. Sólo existe «siar»."""
+        if str(usuario or "").strip().lower() != USUARIO_SIAR:
+            raise NoIdentificado(f"Usuario no reconocido. Entre como «{USUARIO_SIAR}».")
+        return Entrada(usuario=SIAR)
 
     def entrar(self, cedula: str | None, correo: str | None) -> Entrada:
         """Reconocer a quien teclea su cédula y su correo.

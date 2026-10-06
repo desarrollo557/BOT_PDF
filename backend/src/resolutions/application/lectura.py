@@ -42,6 +42,17 @@ class LecturaChoice(StrEnum):
     #: leer, que en estos archivos es lo escrito a mano.
     MISTRAL = "mistral"
 
+    #: Como la anterior, pero pagando por la franja del nombre y no por la hoja
+    #: entera. El motor de pago cobra por **página procesada**, de modo que diez
+    #: franjas apiladas en una imagen son una página: medido sobre el libro de
+    #: posgrados 3858080, dieciséis caras leídas por dos páginas facturadas.
+    #:
+    #: Lo que se deja de leer es el folio, la fecha y el título de esas caras. En
+    #: un libro manuscrito eso no cuesta nada -- salen ilegibles igual y el FUID
+    #: los escribe N/A con esta opción y sin ella -- y es justo donde el ahorro
+    #: hace falta, porque son los libros que obligan a pagar cada cara.
+    MISTRAL_NOMBRES = "mistral-nombres"
+
     @property
     def label(self) -> str:
         return _LABELS[self]
@@ -86,11 +97,22 @@ def available_readers(settings: Mapping[str, object]) -> dict[str, bool]:
     return {choice.value: choice.is_available(settings) for choice in LecturaChoice}
 
 
+#: Cómo se llaman las dos opciones donde las ve una persona: en la pantalla, en
+#: el informe del trabajo y en la planilla. Sin nombres de producto, porque
+#: quien elige es el archivista y lo que sabe de su caja es si está escrita a
+#: mano o a máquina, no qué motor de OCR lee cada cosa.
 _LABELS = {
-    LecturaChoice.LOCAL: "Tesseract",
-    LecturaChoice.MISTRAL: "Tesseract + Mistral OCR",
+    LecturaChoice.LOCAL: "Solo OCR",
+    LecturaChoice.MISTRAL: "OCR + IA",
+    LecturaChoice.MISTRAL_NOMBRES: "OCR + IA (ahorro)",
 }
 
-_KEY_SETTINGS = {LecturaChoice.MISTRAL: "mistral_api_key"}
+_KEY_SETTINGS = {
+    LecturaChoice.MISTRAL: "mistral_api_key",
+    LecturaChoice.MISTRAL_NOMBRES: "mistral_api_key",
+}
 
-_ENV_VARS = {LecturaChoice.MISTRAL: "MISTRAL_API_KEY"}
+_ENV_VARS = {
+    LecturaChoice.MISTRAL: "MISTRAL_API_KEY",
+    LecturaChoice.MISTRAL_NOMBRES: "MISTRAL_API_KEY",
+}

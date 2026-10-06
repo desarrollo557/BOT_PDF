@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
 
+  import { descargarPlanilla, folderInventarioUrl } from '$lib/api';
   import FolderTree from '$lib/components/FolderTree.svelte';
   import PageRibbon from '$lib/components/PageRibbon.svelte';
   import RunStats from '$lib/components/RunStats.svelte';
@@ -84,6 +85,31 @@
     }
   }
 
+  let bajando = $state(false);
+
+  /**
+   * Cuántas actas van ya en el inventario de la carpeta. Lo dice el servicio,
+   * que es quien junta las filas; uno anterior a la revisión 20 no lo dice, y
+   * entonces no hay inventario de actas que enseñar.
+   */
+  const actasDelInventario = $derived(run.inventario_filas ?? 0);
+
+  /**
+   * Bajar el Excel con todas las actas de la carpeta. Por `fetch`, para que un
+   * fallo se diga aquí con palabras en vez de abrir una página de error.
+   */
+  async function bajarInventario() {
+    bajando = true;
+    error = null;
+    try {
+      await descargarPlanilla(folderInventarioUrl(run.id), run.inventario ?? 'inventario.xlsx');
+    } catch (problem) {
+      error = (problem as Error).message;
+    } finally {
+      bajando = false;
+    }
+  }
+
   /**
    * Quitar la tarjeta de la pantalla.
    *
@@ -133,6 +159,34 @@
   {/if}
   {#if error}
     <p class="error">{error}</p>
+  {/if}
+
+  <!-- El inventario general de la carpeta: un Excel con una fila por PDF, que
+       se reescribe con cada acta. Va arriba de todo y con el botón grande
+       porque es lo que se entrega: el «Excel de esta acta» de cada PDF, más
+       abajo, es sólo de ese documento, y confundirlos dejaba al operador con
+       una fila en vez de la carpeta entera. -->
+  {#if actasDelInventario > 0 || run.inventario_error}
+    <div class="inventario" data-listo={run.inventario ? 'si' : 'no'}>
+      {#if run.inventario}
+        <div class="texto">
+          <b>Inventario general de la carpeta</b>
+          <small>
+            {actasDelInventario}
+            {actasDelInventario === 1 ? 'acta' : 'actas'}{active ? ' hasta ahora' : ''}, una fila
+            por PDF · quedó en la carpeta de destino como
+            <code title={run.inventario_ruta ?? run.inventario}>{run.inventario}</code>
+          </small>
+        </div>
+        <button class="bajar" onclick={bajarInventario} disabled={bajando}>
+          {bajando
+            ? 'descargando…'
+            : `Descargar inventario general (${actasDelInventario} ${actasDelInventario === 1 ? 'acta' : 'actas'})`}
+        </button>
+      {:else}
+        <p class="error">No se pudo escribir el inventario de actas: {run.inventario_error}</p>
+      {/if}
+    </div>
   {/if}
 
   <RunStats
@@ -338,6 +392,56 @@
   .column {
     border-top: 1px solid var(--rule);
     padding-top: 0.8rem;
+  }
+
+  .inventario {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.8rem 1.2rem;
+    border: 1px solid color-mix(in oklab, var(--s4) 45%, var(--hairline));
+    border-radius: 12px;
+    background: color-mix(in oklab, var(--s4) 9%, var(--surface-2));
+    padding: 0.85rem 1rem;
+  }
+  .inventario .texto {
+    display: flex;
+    min-width: 0;
+    flex: 1 1 18rem;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .inventario .texto b {
+    font-size: 0.92rem;
+    font-weight: 650;
+  }
+  .inventario .texto small {
+    font-size: 0.74rem;
+    color: var(--muted);
+  }
+  .inventario code {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    overflow-wrap: anywhere;
+  }
+  .inventario .bajar {
+    flex-shrink: 0;
+    border: 0;
+    border-radius: 9px;
+    background: var(--s4);
+    padding: 0.6rem 1.05rem;
+    font-size: 0.82rem;
+    font-weight: 650;
+    color: #fff;
+    cursor: pointer;
+    box-shadow: var(--shadow);
+  }
+  .inventario .bajar:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+  .inventario .bajar:disabled {
+    cursor: default;
+    opacity: 0.6;
   }
   .section-label {
     display: block;

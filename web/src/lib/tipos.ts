@@ -1,4 +1,9 @@
 import type { Health } from './api';
+import type { TaskKind } from './types';
+import type { CorteChoice } from './habilidades';
+import type { AgruparChoice } from './habilidades';
+import type { OracleChoice } from './oracles';
+import type { LecturaChoice } from './lectura';
 
 /**
  * Qué clase de documento declara el operador que está cargando.
@@ -36,3 +41,12 @@ export function tipoOptions(health: Health | null): TipoOption[] {
   if (!declarados || declarados.length === 0) return SOLO_AUTO;
   return declarados;
 }
+
+// Re-export types for convenience
+export type {
+  TaskKind,
+  CorteChoice,
+  AgruparChoice,
+  OracleChoice,
+  LecturaChoice,
+};

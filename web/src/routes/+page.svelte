@@ -6,6 +6,7 @@
   import SingleDocumentMonitor from '$lib/components/SingleDocumentMonitor.svelte';
   import UploadPanel from '$lib/components/UploadPanel.svelte';
   import { consoleLog } from '$lib/console.svelte';
+  import type { AgruparChoice, CorteChoice } from '$lib/habilidades';
   import type { LecturaChoice } from '$lib/lectura';
   import type { TipoPedido } from '$lib/tipos';
   import type { OracleChoice } from '$lib/oracles';
@@ -140,13 +141,22 @@
 
     for (const job of jobStore.jobs) {
       if (job.batch_id) continue;
+      // A document taken from a folder is reported with its run, not alone.
+      // Por su origen y no sólo por la lista de la corrida: el PDF puede
+      // terminar antes de que esa lista llegue a la pantalla, y entonces se
+      // contaba dos veces -- suelto y dentro de su carpeta --, que es como
+      // una carpeta de 10 PDF salía en el informe con 11 documentos.
+      if (
+        job.origen?.tipo === 'carpeta' ||
+        jobStore.runs.some((run) => run.job_ids?.includes(job.id))
+      ) {
+        continue;
+      }
       const id = `doc:${job.id}`;
       if (job.state === 'queued' || job.state === 'running' || job.state === 'paused') {
         reports.watch(id);
         continue;
       }
-      // A document taken from a folder is reported with its run, not alone.
-      if (jobStore.runs.some((run) => run.job_ids?.includes(job.id))) continue;
       reports.register(summarise(id, 'documento', job.filename, [job]));
     }
 
@@ -174,10 +184,23 @@
    */
   function fromRun(id: string, run: (typeof jobStore.runs)[number]) {
     const jobs = jobStore.jobs.filter((job) => run.job_ids?.includes(job.id));
-    const completion = summarise(id, 'carpeta', run.source, jobs);
+    // Con el nombre de la carpeta raíz, que es como se la reconoce; la ruta
+    // entera va en la entrega.
+    const nombre = run.source.split(/[\\/]/).filter(Boolean).at(-1) ?? run.source;
+    const completion = summarise(id, 'carpeta', nombre, jobs);
 
     completion.destination = run.destination;
     completion.delivered = run.delivered;
+    completion.entregas = [
+      {
+        nombre,
+        origen: run.source,
+        destino: run.destination,
+        archivos: run.delivered,
+        inventarioDe: run.inventario ? run.id : null,
+        inventario: run.inventario ?? null
+      }
+    ];
     completion.operator = completion.operator ?? run.operator;
     // The run is the authority on its own totals; the jobs are only richer
     // while they are still around.
@@ -212,7 +235,9 @@
     task: TaskKind = 'split',
     oracle: OracleChoice = 'auto',
     lectura: LecturaChoice = 'local',
-    tipo: TipoPedido = 'auto'
+    tipo: TipoPedido = 'auto',
+    corte: CorteChoice = 'folio',
+    agrupar: AgruparChoice = 'documento'
   ) {
     errors = [];
     uploaded = 0;
@@ -242,7 +267,7 @@
 
     await withConcurrency(files, UPLOAD_CONCURRENCY, async (file) => {
       try {
-        await uploadDocument(file, batchId, task, oracle, lectura, tipo);
+        await uploadDocument(file, batchId, task, oracle, lectura, tipo, corte, agrupar);
         consoleLog.push('UP', `${formatBytes(file.size)} subidos`, 'net', file.name);
       } catch (error) {
         errors = [...errors, `${file.name}: ${(error as Error).message}`];
@@ -258,14 +283,11 @@
 <!-- One job for this screen: take documents in, and show the work while it is
      happening. Nothing that has finished belongs here -- it is on Procesados,
      and the count on that tab is what says so. -->
+<div class="workspace-frame">
 <div class="workspace" class:busy={conAlgoQueVer}>
   <section class="intake">
     <div class="intake-head">
       <h2>Cargar documentos</h2>
-      <p>
-        Cada página se dirige a la resolución que le corresponde. Una página sin número queda con
-        la resolución anterior, hasta que aparezca una nueva.
-      </p>
     </div>
 
     <UploadPanel onfiles={handle} disabled={uploading} />
@@ -334,26 +356,13 @@
     </section>
   {:else}
     <aside class="hint">
-      <ol>
-        <li>
-          <b>Carga individual</b>
-          <span>hasta cinco documentos, con la estadística completa de cada uno</span>
-        </li>
-        <li>
-          <b>Carga por lotes</b>
-          <span>sin límite de cantidad, con el peso neto y el avance del lote entero</span>
-        </li>
-        <li>
-          <b>Carpeta local</b>
-          <span>toma un PDF por vez de una carpeta y entrega las resoluciones en otra</span>
-        </li>
-      </ol>
       <p class="closing">
         Lo que termine se guarda en el <a href="/archivo">archivo</a>, con su fecha, y lo que
         necesite un ojo humano queda listado en <a href="/revision">revisión</a>.
       </p>
     </aside>
   {/if}
+</div>
 </div>
 
 <style>
@@ -404,23 +413,31 @@
     color: var(--critical);
   }
 
-  /* Idle: one column, centred, nothing but the intake. Busy: the work takes the
-     right-hand side and the intake stays put on the left. */
+  /* Idle: the intake takes the free width beside the console, so the options
+     of each step sit side by side instead of in one long column that has to be
+     scrolled. It was a centred 34rem column, and on a wide screen that left
+     more empty space than form. Busy: the work takes the right-hand side and
+     the intake stays put on the left.
+
+     Measured on the space actually left for the page, not on the window: the
+     console takes up to half of it, and a breakpoint on the viewport width
+     put two columns in a room that only fits one. */
+  .workspace-frame {
+    container: workspace / inline-size;
+  }
   .workspace {
     display: grid;
     justify-content: center;
-    gap: 1.75rem;
-    grid-template-columns: minmax(0, 34rem);
-    padding-top: 2rem;
+    gap: 1.5rem;
+    grid-template-columns: minmax(0, 72rem);
   }
   .workspace.busy {
     justify-content: stretch;
-    padding-top: 0;
   }
-  @media (min-width: 1280px) {
+  @container workspace (min-width: 62rem) {
     .workspace.busy {
       align-items: start;
-      grid-template-columns: minmax(0, 25rem) minmax(0, 1fr);
+      grid-template-columns: minmax(0, 26rem) minmax(0, 1fr);
     }
   }
 
@@ -439,16 +456,6 @@
     font-size: 1.15rem;
     font-weight: 650;
     letter-spacing: -0.015em;
-  }
-  .intake-head p {
-    margin: 0.35rem 0 0;
-    max-width: 52ch;
-    font-size: 0.84rem;
-    line-height: 1.5;
-    color: var(--muted);
-  }
-  .busy .intake-head p {
-    display: none;
   }
 
   .progress .track {
@@ -491,35 +498,8 @@
     gap: 1.1rem;
   }
 
-  .hint ol {
-    display: flex;
-    flex-direction: column;
-    gap: 0.55rem;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-  .hint li {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    border-left: 2px solid var(--rule);
-    padding-left: 0.8rem;
-  }
-  .hint b {
-    font-size: 0.82rem;
-    font-weight: 600;
-  }
-  .hint span {
-    font-size: 0.78rem;
-    line-height: 1.45;
-    color: var(--muted);
-  }
-
   .closing {
-    margin: 1.1rem 0 0;
-    border-top: 1px solid var(--rule);
-    padding-top: 0.9rem;
+    margin: 0;
     font-size: 0.8rem;
     color: var(--muted);
   }

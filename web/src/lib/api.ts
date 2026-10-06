@@ -1,3 +1,4 @@
+import type { AgruparChoice, CorteChoice } from './habilidades';
 import type { LecturaChoice } from './lectura';
 import type { TipoOption, TipoPedido } from './tipos';
 import type { OracleChoice } from './oracles';
@@ -136,7 +137,9 @@ export async function uploadDocument(
   task: TaskKind = 'split',
   oracle: OracleChoice = 'auto',
   lectura: LecturaChoice = 'local',
-  tipo: TipoPedido = 'auto'
+  tipo: TipoPedido = 'auto',
+  corte: CorteChoice = 'pagina',
+  agrupar: AgruparChoice = 'documento'
 ): Promise<{ id: string }> {
   const body = new FormData();
   body.append('file', file);
@@ -154,6 +157,14 @@ export async function uploadDocument(
   // Y el tipo declarado, por lo mismo: 'auto' es lo que el servicio hace sin
   // que se lo pidan.
   if (tipo !== 'auto') query.set('tipo', tipo);
+  // Y el criterio con que se parte un libro de diplomas. 'pagina' es lo que el
+  // servicio hace sin que se lo pidan, así que no viaja: mandarlo obligaría a
+  // los servicios anteriores a esta revisión a entender un parámetro que no
+  // conocen, y los haría contestar 422 a un trabajo que sabían hacer.
+  if (corte !== 'pagina') query.set('corte', corte);
+  // Y qué va en cada archivo de una caja de correspondencia. 'documento' es lo
+  // de siempre y no viaja, por lo mismo que el corte.
+  if (agrupar !== 'documento') query.set('agrupar', agrupar);
   const suffix = query.toString();
 
   const url = suffix ? `${BASE}/jobs?${suffix}` : `${BASE}/jobs`;
@@ -197,6 +208,23 @@ export function streamEvents(handlers: {
     }
   };
   return () => events.close();
+}
+
+/** Los PDF y el Excel que dejó un trabajo, tal como están en el disco. */
+export interface ArchivosDelTrabajo {
+  archivos: { ruta: string; nombre: string; bytes: number }[];
+  inventario: string | null;
+}
+
+/** Todo lo que dejó un trabajo, sus PDF y su Excel, en un solo ZIP. */
+export function archivosZipUrl(jobId: string): string {
+  return `${BASE}/jobs/${jobId}/archivos.zip`;
+}
+
+export async function fetchArchivos(jobId: string): Promise<ArchivosDelTrabajo> {
+  const response = await fetch(`${BASE}/jobs/${jobId}/archivos`, { headers: attribution() });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
 }
 
 export function downloadUrl(jobId: string, name: string): string {
@@ -318,6 +346,59 @@ export function documentFuidUrl(jobId: string): string {
   return `${BASE}/jobs/${jobId}/fuid.xlsx`;
 }
 
+/** El inventario de las actas de una carpeta entera: una fila por PDF. */
+export function folderInventarioUrl(runId: string): string {
+  return `${BASE}/folder-runs/${runId}/inventario.xlsx`;
+}
+
+/**
+ * El Excel general de una carpeta desde el Archivo. Sirve también cuando la
+ * corrida ya no está en pantalla: el servicio lo busca donde quedó entregado.
+ */
+export function origenInventarioUrl(origenId: string): string {
+  return `${BASE}/origenes/${encodeURIComponent(origenId)}/inventario.xlsx`;
+}
+
+/**
+ * Baja una planilla que el servicio sólo entrega a quien se identifica.
+ *
+ * No vale un enlace con `href`: el navegador lo sigue sin las cabeceras de esta
+ * pantalla, el servicio no sabe quién lo pide y contesta 401 -- y lo que el
+ * operador veía al pulsar «descargar el Excel» era una página con un error en
+ * vez de su planilla. Así que se pide con `fetch`, que sí lleva la cédula, y lo
+ * que vuelve se guarda como archivo con el nombre que dio el servicio.
+ */
+export async function descargarPlanilla(url: string, nombre = 'inventario.xlsx'): Promise<void> {
+  const response = await fetch(url, { headers: attribution() });
+  if (!response.ok) {
+    throw Object.assign(new ApiError(await detailOf(response)), { status: response.status });
+  }
+  const archivo = nombreDeLaDescarga(response.headers.get('content-disposition')) ?? nombre;
+  const enlace = document.createElement('a');
+  enlace.href = URL.createObjectURL(await response.blob());
+  enlace.download = archivo;
+  document.body.appendChild(enlace);
+  enlace.click();
+  enlace.remove();
+  // Después de que el navegador haya empezado a guardarlo, no antes.
+  setTimeout(() => URL.revokeObjectURL(enlace.href), 10_000);
+}
+
+/** El nombre que trae `Content-Disposition`, en su forma UTF-8 si la trae. */
+export function nombreDeLaDescarga(cabecera: string | null): string | null {
+  if (!cabecera) return null;
+  const utf8 = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(cabecera);
+  if (utf8) {
+    try {
+      return decodeURIComponent(utf8[1].trim().replace(/^"|"$/g, ''));
+    } catch {
+      // Mal codificado: se prueba con la forma simple.
+    }
+  }
+  const simple = /filename="?([^";]+)"?/i.exec(cabecera);
+  return simple ? simple[1].trim() : null;
+}
+
 /**
  * Levantar el inventario de un documento que ya se procesó.
  *
@@ -349,7 +430,7 @@ export async function documentFuidStatus(jobId: string): Promise<FuidStatus> {
  * depending on a new endpoint. A service older than this is not broken, it is
  * stale, and saying which is the difference between a restart and a bug hunt.
  */
-export const REQUIRED_API_REVISION = 18;
+export const REQUIRED_API_REVISION = 23;
 
 export interface Health {
   status: string;
@@ -508,6 +589,10 @@ export function startFolderRun(options: {
   oracle?: OracleChoice;
   /** Y con qué motor leer el papel de esta carpeta. */
   lectura?: LecturaChoice;
+  /** Y por dónde partir cada libro de diplomas que traiga. */
+  corte?: CorteChoice;
+  /** Y qué va en cada archivo de una caja de correspondencia. */
+  agrupar?: AgruparChoice;
   /** Y qué clase de documento trae, cuando el operador lo sabe. */
   tipo?: TipoPedido;
 }): Promise<FolderRun> {
@@ -586,18 +671,18 @@ export async function listFolderRuns(): Promise<FolderRun[]> {
 // -----------------------------------------------------------------------------
 
 /**
- * Reconocer a quien teclea su cédula y su correo.
+ * Entrar con el usuario «siar», sin contraseña.
  *
  * El perfil lo contesta el servicio a partir del alta que hizo el
  * administrador; la pantalla no lo decide ni puede concedérselo. Sobre un
  * archivo recién instalado, el primero que entra queda de administrador y la
  * respuesta lo dice en `primer_administrador`.
  */
-export async function entrar(cedula: string, correo: string): Promise<UsuarioApi> {
+export async function entrar(usuario: string): Promise<UsuarioApi> {
   const response = await fetch(`${BASE}/sesion`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ cedula, correo })
+    body: JSON.stringify({ usuario })
   });
   if (!response.ok) throw new ApiError(await detailOf(response));
   return await response.json();

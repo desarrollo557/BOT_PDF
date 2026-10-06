@@ -19,6 +19,7 @@ from resolutions.adapters.fuid_inventory import (
 )
 from resolutions.application.diploma_fuid import (
     asunto,
+    con_los_archivos,
     fecha_fuid,
     filas_del_libro,
     folio_confiable,
@@ -31,9 +32,13 @@ from resolutions.application.fuid import (
     Ubicacion,
     upd_del_archivo,
 )
-from resolutions.domain.diploma import DiplomaRecord
+from resolutions.domain.diploma import CriterioDeCorte, DiplomaRecord
 
 LIBRO = "6.3858084 REGISTRO DE DIPLOMAS N°08 2012-2013.pdf"
+
+#: El criterio en que una cara sin identificador es la vuelta de la anterior.
+#: El de por omisión es otro -- cada cara es un diploma -- y ahí no hay vueltas.
+POR_FOLIO = CriterioDeCorte.FOLIO
 
 REGISTRO = DiplomaRecord(
     page_number=1,
@@ -249,13 +254,13 @@ class TestLaVueltaDeUnFolioNoEsUnaFila:
 
     def test_it_does_not_open_a_row_of_its_own(self):
         filas = filas_del_libro(
-            [REGISTRO, self.vacia(REGISTRO.page_number + 1)], nombre_del_archivo=LIBRO
+            [REGISTRO, self.vacia(REGISTRO.page_number + 1)], nombre_del_archivo=LIBRO, criterio=POR_FOLIO
         )
         assert len(filas) == 1
 
     def test_it_counts_as_a_folio_of_the_row_above(self):
         filas = filas_del_libro(
-            [REGISTRO, self.vacia(REGISTRO.page_number + 1)], nombre_del_archivo=LIBRO
+            [REGISTRO, self.vacia(REGISTRO.page_number + 1)], nombre_del_archivo=LIBRO, criterio=POR_FOLIO
         )
         assert filas[0].folios == 2
         assert filas[0].folios_siar == 2
@@ -271,7 +276,7 @@ class TestLaVueltaDeUnFolioNoEsUnaFila:
             self.vacia(92),
             replace(REGISTRO, page_number=93, folio="342"),
         ]
-        filas = filas_del_libro(registros, nombre_del_archivo=LIBRO)
+        filas = filas_del_libro(registros, nombre_del_archivo=LIBRO, criterio=POR_FOLIO)
         assert [fila.orden for fila in filas] == [1, 2, 3]
 
     def test_the_inventory_and_the_split_agree_on_how_many_units_there_are(self):
@@ -280,7 +285,85 @@ class TestLaVueltaDeUnFolioNoEsUnaFila:
             self.vacia(90),
             replace(REGISTRO, page_number=91, folio="341"),
         ]
-        filas = filas_del_libro(registros, nombre_del_archivo=LIBRO)
-        grupos = group_by_record(registros).groups
+        filas = filas_del_libro(registros, nombre_del_archivo=LIBRO, criterio=POR_FOLIO)
+        grupos = group_by_record(registros, POR_FOLIO).groups
         assert len(filas) == len(grupos) == 2
         assert [fila.folios for fila in filas] == [group.size for group in grupos]
+
+
+class TestElInventarioDiceComoSeLlamaSuArchivo:
+    """Cada fila nombra el PDF que le corresponde, y lo nombra bien.
+
+    La planilla y la carpeta de salida son las dos mitades de la misma entrega
+    y hasta ahora sólo se podían cruzar contando: la fila 57 correspondía al
+    archivo 57 si nadie se había equivocado en medio. Lo que se fija aquí es
+    que se crucen por la página y no por la posición, que es lo que hace que
+    una unidad que no se pudo escribir deje un hueco en vez de correr los
+    nombres siguientes una fila.
+    """
+
+    def libro(self):
+        return [
+            DiplomaRecord(
+                page_number=pagina,
+                folio=str(pagina),
+                registered_folio=str(pagina),
+                identity_number=cedula,
+                name="ANA MARIA GOMEZ",
+            )
+            for pagina, cedula in ((1, "7882907"), (2, "9089958"), (3, "45437535"))
+        ]
+
+    def test_la_nota_lleva_el_nombre_del_archivo(self):
+        filas = filas_del_libro(self.libro(), nombre_del_archivo="UPD3859766.pdf")
+        conNombre = con_los_archivos(
+            filas,
+            {1: "7882907_DIPLOMA.pdf", 2: "9089958_DIPLOMA.pdf", 3: "45437535_DIPLOMA.pdf"},
+        )
+        assert "Archivo: 7882907_DIPLOMA.pdf" in conNombre[0].notas
+        assert "Archivo: 9089958_DIPLOMA.pdf" in conNombre[1].notas
+
+    def test_la_nota_conserva_el_folio_de_registro(self):
+        """El nombre se suma a lo que ya decía la nota, no lo sustituye."""
+        filas = filas_del_libro(self.libro(), nombre_del_archivo="UPD3859766.pdf")
+        conNombre = con_los_archivos(filas, {1: "7882907_DIPLOMA.pdf"})
+        assert "Registrado a folio No. 1" in conNombre[0].notas
+        assert "Archivo: 7882907_DIPLOMA.pdf" in conNombre[0].notas
+
+    def test_una_unidad_sin_archivo_no_hereda_el_del_vecino(self):
+        """El caso que obliga a emparejar por página y no por posición.
+
+        Si la segunda unidad no se pudo escribir, desaparece de la lista de
+        archivos. Emparejando por posición, la fila 2 recibiría el nombre del
+        archivo de la 3 y todo el inventario quedaría corrido una fila.
+        """
+        filas = filas_del_libro(self.libro(), nombre_del_archivo="UPD3859766.pdf")
+        conNombre = con_los_archivos(
+            filas, {1: "7882907_DIPLOMA.pdf", 3: "45437535_DIPLOMA.pdf"}
+        )
+        assert "Archivo:" not in conNombre[1].notas
+        assert "Archivo: 45437535_DIPLOMA.pdf" in conNombre[2].notas
+
+    def test_una_cedula_que_no_se_sostiene_no_entra_en_la_columna(self):
+        """N/A se puede filtrar; "30761" se da por bueno y nadie lo revisa."""
+        filas = filas_del_libro(
+            [DiplomaRecord(page_number=1, folio="1", identity_number="30761")],
+            nombre_del_archivo="UPD3859766.pdf",
+        )
+        assert filas[0].consecutivo_inicial == NO_APLICA
+
+    def test_el_nombre_del_archivo_no_se_escribe_dos_veces(self):
+        filas = filas_del_libro(self.libro(), nombre_del_archivo="UPD3859766.pdf")
+        una = con_los_archivos(filas, {1: "7882907_DIPLOMA.pdf"})
+        dos = con_los_archivos(una, {1: "7882907_DIPLOMA.pdf"})
+        assert dos[0].notas.count("Archivo:") == 1
+
+    def test_las_columnas_del_formato_siguen_siendo_dieciseis(self):
+        """`pagina_inicial` es una costura interna, no una columna del FUID.
+
+        Añadirle al formato una columna decimoséptima rompería la plantilla que
+        se firma, así que el dato viaja en la fila pero no llega al Excel.
+        """
+        filas = filas_del_libro(self.libro(), nombre_del_archivo="UPD3859766.pdf")
+        assert filas[0].pagina_inicial == 1
+        assert len(filas[0].as_cells()) == 16

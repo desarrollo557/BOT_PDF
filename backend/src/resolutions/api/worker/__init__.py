@@ -24,7 +24,7 @@ from pathlib import Path
 
 from ...application.progress import Stage
 from .correspondencia import _segment_job
-from .inventario import _inventory_file_job, _inventory_job
+from .inventario import _acta_consejo_job, _inventory_file_job, _inventory_job
 from .planillas import FUID_SUFFIX, _escribir_fuid, _escribir_planilla
 from .registros import _record_split_job
 from .resoluciones import _split_job
@@ -34,6 +34,7 @@ __all__ = [
     "FUID_SUFFIX",
     "Taller",
     "process_document_job",
+    "_acta_consejo_job",
     "_anunciar",
     "_boundary_oracle",
     "_control",
@@ -67,13 +68,23 @@ def process_document_job(payload: dict) -> dict:
     """
     from ...application.consumo import Consumo
 
+    ajustes = payload.get("settings") or {}
     consumo = Consumo(
-        precio_por_pagina=(payload.get("settings") or {}).get("precio_ocr_por_pagina")
+        precio_por_pagina=ajustes.get("precio_ocr_por_pagina"),
+        # El tope viaja con el trabajo igual que el precio. Se pone aquí, en el
+        # contador que comparten todos los adaptadores de este trabajo, y no en
+        # cada adaptador: lo que se limita es lo que **el trabajo** gasta, y un
+        # tope por adaptador se multiplicaría por los que hubiera.
+        tope_de_paginas=ajustes.get("tope_paginas_ocr"),
     )
     payload["consumo"] = consumo
     report = _despachar(payload)
     if isinstance(report, dict):
         report["consumo"] = consumo.as_dict()
+        # Y cómo se eligió la ruta, cuando hubo que reconocer el documento: el
+        # mismo lugar para las cuatro rutas, igual que el consumo.
+        if "reconocimiento" in payload:
+            report.setdefault("reconocimiento", payload["reconocimiento"])
     return report
 
 
@@ -86,8 +97,22 @@ def _despachar(payload: dict) -> dict:
     book of diploma registrations, because nobody is going to unbind it.
     """
     from ...application.task import TaskKind
+    from ...application.tipo_pedido import TipoPedido
 
     task = TaskKind.parse(payload.get("task"))
+
+    # Un acta de consejo declarada va a su habilidad con cualquier acción: cada
+    # PDF es un acta entera, no hay nada que partir, y lo que se pide de ella
+    # es su fila del inventario. Pedirle que la divida no tiene respuesta
+    # distinta, así que se hace lo único que tiene sentido y se dice.
+    if TipoPedido.parse(payload.get("tipo")) is TipoPedido.ACTA_CONSEJO:
+        if task.writes_documents:
+            _anunciar(
+                payload,
+                Stage.IDENTIFYING,
+                detail="un acta de consejo no se parte: se inventaría entera",
+            )
+        return _acta_consejo_job(payload)
 
     # Inventariar el archivo entero no necesita reconocer nada antes: la unidad
     # documental es el PDF, y qué es se lee de su propio encabezado al pasar por
@@ -99,7 +124,6 @@ def _despachar(payload: dict) -> dict:
     if not task.writes_documents:
         return _inventory_job(payload)
 
-    from ...application.tipo_pedido import TipoPedido
     from ...domain.doctype import DocumentType
 
     # Lo que el operador declaró estar cargando, que manda sobre todo lo demás.
@@ -124,7 +148,7 @@ def _despachar(payload: dict) -> dict:
         )
         logger.info("%s: %s", payload.get("filename"), aviso)
         _anunciar(payload, Stage.IDENTIFYING, detail=aviso)
-        return _record_split_job(payload, TaskKind.SPLIT)
+        return _record_split_job(payload, TaskKind.SPLIT, tipo=declarado)
 
     # Separar por continuidad no necesita saber qué documento es -- corta por
     # dónde acaba una hoja y empieza la otra, no por lo que digan -- pero el
@@ -158,7 +182,7 @@ def _despachar(payload: dict) -> dict:
             done=SAMPLE_PAGES,
             total=SAMPLE_PAGES,
         )
-        return _record_split_job(payload, task)
+        return _record_split_job(payload, task, tipo=declarado)
 
     _anunciar(
         payload,
@@ -169,12 +193,28 @@ def _despachar(payload: dict) -> dict:
     )
 
     reconocido = _recognise(payload)
+    # Unas actas de consejo no se parten nunca: cada PDF se inventaría entero,
+    # una fila con su acta, su fecha, sus folios y su resumen. Sin este desvío,
+    # una carpeta de actas cargada con «No estoy seguro» acababa separada por
+    # continuidad -- «01_DOCUMENTO.pdf», «07_DOCUMENTO-DE-IDENTIDAD.pdf» -- y con
+    # un inventario de pedazos en vez del de las actas (carpeta UPD3859771).
+    if reconocido is DocumentType.ACTA_CONSEJO:
+        _anunciar(
+            payload,
+            Stage.IDENTIFYING,
+            detail="actas de consejo: se inventarían enteras, sin partir nada",
+            done=SAMPLE_PAGES,
+            total=SAMPLE_PAGES,
+        )
+        return _acta_consejo_job(payload)
     # Los dos van al mismo sitio, y no por comodidad: los dos se parten por lo
     # que dice cada hoja de sí misma -- un folio por cara en el libro de
     # diplomas, una persona por carátula en el legajo de matrículas -- y de las
     # dos lecturas sale ya la agrupación hecha.
     if reconocido in (DocumentType.DIPLOMA, DocumentType.MATRICULA):
-        return _record_split_job(payload, task)
+        # Y se le pasa lo reconocido, para que la lectura no vuelva a
+        # muestrear el libro que el despachador acaba de muestrear.
+        return _record_split_job(payload, task, tipo=reconocido)
 
     # Y aquí el desvío que evita el peor resultado posible de esta pantalla. Si
     # las páginas no dicen que sean resoluciones, diplomas ni matrículas, partir
@@ -218,17 +258,34 @@ def _recognise(payload: dict):
     Se decide sobre una muestra y sobre lo que está impreso en las páginas,
     nunca sobre el nombre del archivo. No reconocer nada es una respuesta, no un
     fallo: es la que manda una caja revuelta al camino que sabe cortarla.
+
+    Lo decide el orquestador de habilidades (`application.orquestador`). Si los
+    marcadores impresos de la muestra deciden, se hace lo de siempre y no se
+    gasta nada más; si no, se consulta a todas las habilidades y gana la única
+    que compruebe algo, leyendo enteras unas pocas páginas si la banda superior
+    no bastó. Todo con Tesseract: reconocer nunca paga a un proveedor.
+
+    Cómo se decidió queda en ``payload["reconocimiento"]``, para que el informe
+    pueda decir por qué el documento fue a la ruta a la que fue.
     """
     from ...adapters.pymupdf_source import PyMuPDFPageSource
     from ...adapters.tesseract_ocr import HeaderAndPageOcr
-    from ...application.inventory_document import InventoryDocument
+    from ...application import inventory_document
+    from ...application.orquestador import DecididoPor, Orquestador
+
+    def primera_mirada(fuente, motor):
+        # La primera pregunta sigue siendo la del inventario, por el mismo
+        # camino de siempre: lo que reconoce «Solo inventariar» y lo que
+        # reconoce este despachador no pueden discrepar sobre el mismo papel.
+        return inventory_document.InventoryDocument(ocr=motor).identify(fuente)
 
     settings = payload["settings"]
     source = PyMuPDFPageSource(Path(payload["source"]), payload.get("filename"))
     try:
-        verdict = InventoryDocument(
-            ocr=HeaderAndPageOcr(language=settings["ocr_language"])
-        ).identify(source)
+        eleccion = Orquestador(
+            HeaderAndPageOcr(language=settings["ocr_language"]),
+            primera_mirada=primera_mirada,
+        ).elegir(source)
     except Exception:  # noqa: BLE001 - no reconocerlo no es motivo para fallar
         # `None` y no un tipo: una avería no es un veredicto. Quien enruta la
         # trata como el camino de siempre y quien avisa se calla, que es lo que
@@ -237,7 +294,19 @@ def _recognise(payload: dict):
         return None
     finally:
         source.close()
-    return verdict.document_type
+
+    payload["reconocimiento"] = eleccion.as_dict()
+    if eleccion.decidido_por is not DecididoPor.MARCADORES:
+        # Lo nuevo no puede pasar en silencio: que la ruta la eligiera una
+        # habilidad, o que no la eligiera nadie, se dice con su motivo.
+        logger.info("%s: %s", payload.get("filename"), eleccion.motivo)
+        if eleccion.decidido_por is DecididoPor.HABILIDAD:
+            _anunciar(
+                payload,
+                Stage.IDENTIFYING,
+                detail=f"el orquestador eligió {eleccion.motivo}",
+            )
+    return eleccion.tipo
 
 
 def _aviso_de_ruta(payload: dict, recognised: object) -> list[str]:

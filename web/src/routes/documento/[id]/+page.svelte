@@ -2,6 +2,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import {
+    descargarPlanilla,
     documentFuidUrl,
     documentInventoryUrl,
     downloadUrl,
@@ -57,6 +58,8 @@
   /** El FUID existe cuando la acción lo incluía y se pudo escribir. */
   const fuid = $derived(job?.report?.fuid ?? inventory?.fuid ?? null);
   const fuidError = $derived(job?.report?.fuid_error ?? inventory?.fuid_error ?? null);
+  /** Por qué no bajó el FUID, si al pulsar el botón falló la descarga. */
+  let errorDeDescarga = $state<string | null>(null);
 
   /**
    * Cómo se llama en pantalla lo que el sistema reconoció. Se muestra en las
@@ -218,9 +221,20 @@
             <a
               class="rounded border border-accent px-3 py-1.5 font-mono text-xs text-accent transition-colors hover:bg-accent hover:text-raised"
               href={documentFuidUrl(job.id)}
+              onclick={(evento) => {
+                // Por `fetch`, que lleva la cédula: siguiendo el enlace el
+                // servicio no sabe quién lo pide y contesta 401.
+                evento.preventDefault();
+                descargarPlanilla(documentFuidUrl(job.id), `${job.filename}__FUID.xlsx`).catch(
+                  (problema) => (errorDeDescarga = (problema as Error).message)
+                );
+              }}
             >
               descargar el FUID
             </a>
+          {/if}
+          {#if errorDeDescarga}
+            <span class="font-mono text-xs text-critical">{errorDeDescarga}</span>
           {/if}
         </div>
       {:else if fuidError}
@@ -340,7 +354,17 @@
                      esta tabla, "de la 1 a la 8, un derecho de petición", y es
                      también el orden en que están en la caja de origen. -->
                 <td class="tabular py-1.5 pr-3 text-muted">{row.pages}</td>
-                <td class="py-1.5 pr-3 text-ink">{row.type ?? '—'}</td>
+                <!-- El tipo y, debajo, lo que declara el documento: su asunto
+                     o su referencia. Un archivo por mes junta varias cartas y
+                     «DOCUMENTO» solo no dice cuáles; el título sí. La
+                     procedencia («páginas 1-2») no se repite: ya está en la
+                     columna de al lado. -->
+                <td class="py-1.5 pr-3 text-ink">
+                  {row.type ?? '—'}
+                  {#if row.title && !/^p[aá]ginas? /i.test(row.title)}
+                    <span class="block text-xs text-muted">{row.title}</span>
+                  {/if}
+                </td>
                 <!-- La fecha más reciente que lleva escrita el documento. Se
                      lee de todas sus páginas, no sólo de la primera: un acta
                      puede llevar la de la visita arriba y la del acuse detrás. -->

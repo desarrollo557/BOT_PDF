@@ -210,3 +210,33 @@ class TestElAvisoDeQueLaAccionNoPega:
         monkeypatch.setattr(worker, "_recognise", revienta)
         monkeypatch.setattr(worker, "_anunciar", lambda *a, **k: None)
         assert worker._aviso_de_ruta(payload(TaskKind.SEGMENT), worker._SIN_RECONOCER) == []
+
+
+class TestLoQueYaSeSabeDelDocumentoViajaConElTrabajo:
+    """La lectura no vuelve a muestrear lo que el despachador ya decidió.
+
+    Reconocer cuesta una muestra de doce páginas -- doce pasadas de OCR en un
+    escaneo -- y ocurría dos veces por trabajo: una aquí, para elegir la ruta, y
+    otra dentro de la lectura, que no sabía que ya se había hecho.
+    """
+
+    @pytest.fixture
+    def recibido(self, monkeypatch):
+        llegado = {}
+
+        def marcar(payload, task, tipo=None):
+            llegado["tipo"] = tipo
+            return {"ruta": "_record_split_job"}
+
+        monkeypatch.setattr(worker, "_record_split_job", marcar)
+        monkeypatch.setattr(worker, "_anunciar", lambda *a, **k: None)
+        return llegado
+
+    def test_el_tipo_declarado_por_el_operador_llega_a_la_lectura(self, recibido):
+        worker.process_document_job({**payload(TaskKind.SPLIT), "tipo": "diploma"})
+        assert recibido["tipo"] is DocumentType.DIPLOMA
+
+    def test_y_tambien_el_reconocido_por_la_muestra(self, recibido, monkeypatch):
+        reconoce(monkeypatch, DocumentType.MATRICULA)
+        worker.process_document_job(payload(TaskKind.SPLIT))
+        assert recibido["tipo"] is DocumentType.MATRICULA

@@ -29,6 +29,8 @@ class DocumentType(StrEnum):
     RESOLUCION = "resolucion"
     DIPLOMA = "diploma"
     MATRICULA = "matricula"
+    ACTA = "acta"
+    ACTA_CONSEJO = "acta-consejo"
     DESCONOCIDO = "desconocido"
 
     @property
@@ -41,6 +43,8 @@ _LABELS = {
     DocumentType.RESOLUCION: "Resoluciones",
     DocumentType.DIPLOMA: "Registro de diplomas",
     DocumentType.MATRICULA: "Registros de matrícula",
+    DocumentType.ACTA: "Actas de grado",
+    DocumentType.ACTA_CONSEJO: "Actas de consejo",
     DocumentType.DESCONOCIDO: "Sin identificar",
 }
 
@@ -139,10 +143,51 @@ _RESOLUCION_MARKERS = (
     Marker("DADA EN CARTAGENA", 1.5),
 )
 
+_ACTA_MARKERS = (
+    # Encabezado principal del acta de grado
+    Marker("ACTA DE GRADO", 6.0),
+    Marker("ACTA DE GRADO N", 6.0),
+    # Texto característico del acta
+    Marker("CEREMONIA SOLEMNE DE GRADUACION", 5.0),
+    Marker("OTORGA EL TITULO DE", 5.0),
+    Marker("PORTADORA DE LA CEDULA", 4.0),
+    Marker("PORTADOR DE LA CEDULA", 4.0),
+    Marker("JURAMENTO DE RIGOR", 4.0),
+    Marker("PARA CONSTANCIA SE FIRMA", 4.0),
+    Marker("SE LLEVO A CABO CEREMONIA", 3.0),
+    Marker("POR SOLICITUD DE LA DECANA", 3.0),
+    Marker("AUTORIZO EL ACTO MEDIANTE RESOLUCION", 3.0),
+)
+
+#: Las actas de sesión de un consejo. Salen de las diez actas del Consejo de
+#: Facultad de Odontología de la carpeta UPD3859771: la citación y el orden del
+#: día, que llevan todas, y el encabezado del acta. Ninguna de estas frases
+#: aparece en un libro de diplomas, una resolución o la correspondencia de la
+#: empresa -- que sí trae «ACTA DE IRREGULARIDAD» o «ACTA DE REVISION», y por eso
+#: «ACTA» a secas no es un marcador --.
+_ACTA_CONSEJO_MARKERS = (
+    Marker("VERIFICACION DEL QUORUM", 6.0),
+    Marker("LLAMADO A LISTA", 5.0),
+    Marker("ACTA ORDINARIA", 6.0),
+    Marker("ACTA EXTRAORDINARIA", 6.0),
+    Marker("APROBACION DEL ACTA ANTERIOR", 5.0),
+    Marker("APROBACION ACTA ANTERIOR", 5.0),
+    Marker("ORDEN DEL DIA", 4.0),
+    Marker("PROPOSICIONES Y VARIOS", 4.0),
+    Marker("PROPOSICIONES O VARIOS", 4.0),
+    Marker("SESION ORDINARIA", 4.0),
+    Marker("SESION EXTRAORDINARIA", 4.0),
+    Marker("LA PRESENTE ACTA CONSTA DE", 4.0),
+    Marker("FINALIZA LA SESION", 3.0),
+    Marker("CONSEJO DE FACULTAD", 3.0),
+)
+
 MARKERS: dict[DocumentType, tuple[Marker, ...]] = {
     DocumentType.DIPLOMA: _DIPLOMA_MARKERS,
     DocumentType.MATRICULA: _MATRICULA_MARKERS,
     DocumentType.RESOLUCION: _RESOLUCION_MARKERS,
+    DocumentType.ACTA: _ACTA_MARKERS,
+    DocumentType.ACTA_CONSEJO: _ACTA_CONSEJO_MARKERS,
 }
 
 #: An official resolution header -- the anchor word, a numbering token and a

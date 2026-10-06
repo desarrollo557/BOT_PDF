@@ -22,7 +22,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .diploma import DiplomaRecord
+from .diploma import CriterioDeCorte, DiplomaRecord, es_informativo, pertenece_al_anterior
 from .grouping import GroupingResult
 from .matricula import StudentRecord
 from .page import PageClassification, Provenance
@@ -83,29 +83,71 @@ def _folio_number(value: str | None) -> int | None:
     return int(digits) if digits else None
 
 
-def validate_diplomas(records: Sequence[DiplomaRecord]) -> list[Issue]:
-    """Todo lo que no se sostiene en la lectura de un libro de diplomas."""
+def validate_diplomas(
+    records: Sequence[DiplomaRecord],
+    criterio: CriterioDeCorte = CriterioDeCorte.PAGINA,
+) -> list[Issue]:
+    """Todo lo que no se sostiene en la lectura de un libro de diplomas.
+
+    Con el mismo criterio con que se partió el libro, y tiene que ser el mismo:
+    qué cara es una unidad documental y cuál es la vuelta de otra lo decide el
+    criterio, y una comprobación que lo decidiera por su cuenta señalaría
+    huecos en hojas que no son documentos o callaría en hojas que sí lo son.
+    Cortando cara a cara, la cara de esquina limpia es un diploma más y se le
+    exige lo mismo que a las demás.
+    """
     issues: list[Issue] = []
-    issues.extend(_per_record(records))
+    issues.extend(_per_record(records, criterio))
     issues.extend(_across_the_book(records))
     return sorted(issues, key=lambda item: (item.page_number or 0, item.field))
 
 
-def _per_record(records: Sequence[DiplomaRecord]) -> list[Issue]:
+def _per_record(records: Sequence[DiplomaRecord], criterio: CriterioDeCorte) -> list[Issue]:
     issues: list[Issue] = []
+    padre: DiplomaRecord | None = None
     for record in records:
+        vuelta = pertenece_al_anterior(record, padre, criterio)
+        if not vuelta:
+            padre = record
+        # Lo primero, porque es lo que el operador pidió que no pasara: ningún
+        # documento debería quedar sin cédula y sin nombre. Cuando pasa, el
+        # archivo acaba llamándose por su folio o por su orden, y así no lo
+        # encuentra quien busque a esa persona. No se puede impedir -- hay papel
+        # que no se deja leer -- pero sí se puede **declarar**, que es la
+        # diferencia entre una promesa comprobable y una intención.
+        if not vuelta and not record.identity_creible and not record.name:
+            issues.append(
+                Issue(
+                    field="identidad",
+                    reason=(
+                        "el documento queda sin cédula y sin nombre del graduando: "
+                        "se archivará por su folio o por su orden"
+                    ),
+                    severity=Severity.ERROR,
+                    page_number=record.page_number,
+                )
+            )
         # La vuelta de una hoja no es un registro: sus datos son los de la cara
         # que la abre, y pedirle folio, nombre y fecha a un reverso en blanco
         # ponía cinco hallazgos por cada página par del libro.
-        if record.continua_la_anterior:
+        if vuelta:
             continue
         # Los avisos que el propio lector levantó al leer la página: el folio
         # que no coincide consigo mismo, el nombre con un carácter imposible.
+        #
+        # Salvo los informativos, que el dominio distingue: una cédula que se
+        # leyó y no se sostiene es un aviso y no un error -- el archivo sale
+        # nombrado por el graduando y el FUID dice N/A, que es lo que manda el
+        # instructivo para lo que no se dejó leer --, y lo mismo una cédula que
+        # dos lecturas confirmaron contra una tercera. Como error, la primera
+        # ponía en la cola de revisión cincuenta caras del libro 7 que habían
+        # salido con su nombre. Si además no hay nombre, lo dice el hallazgo de
+        # identidad de arriba, que sí es un error.
         issues.extend(
             Issue(
                 field="lectura",
                 reason=warning,
-                severity=Severity.ERROR,
+                severity=Severity.WARNING if es_informativo(warning) else Severity.ERROR,
                 page_number=record.page_number,
             )
             for warning in record.warnings
@@ -137,6 +179,10 @@ def _per_record(records: Sequence[DiplomaRecord]) -> list[Issue]:
         if record.identity_number:
             digits = len(_DIGITS.findall(record.identity_number))
             if not (_MIN_IDENTITY_DIGITS <= digits <= _MAX_IDENTITY_DIGITS):
+                # Aviso y no error: un número de forma imposible no se sostiene
+                # como cédula, así que ni nombra el archivo ni va al FUID, que
+                # dice N/A. Como error mandaba a revisión hojas que habían
+                # salido con su nombre por un número que ya se había descartado.
                 issues.append(
                     Issue(
                         field="documento",
@@ -144,7 +190,7 @@ def _per_record(records: Sequence[DiplomaRecord]) -> list[Issue]:
                             f"el número de identificación tiene {digits} cifras, "
                             "que no es una cantidad posible"
                         ),
-                        severity=Severity.ERROR,
+                        severity=Severity.WARNING,
                         page_number=record.page_number,
                         observed=record.identity_number,
                     )

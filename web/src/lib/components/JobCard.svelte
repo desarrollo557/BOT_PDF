@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { actasDelInforme } from '$lib/actas';
   import { documentInventoryUrl, downloadUrl } from '$lib/api';
   import GroupsChart from '$lib/components/GroupsChart.svelte';
   import PageRibbon from '$lib/components/PageRibbon.svelte';
@@ -6,7 +7,7 @@
   import ProvenanceBar from '$lib/components/ProvenanceBar.svelte';
   import RunControls from '$lib/components/RunControls.svelte';
   import StatTile from '$lib/components/StatTile.svelte';
-  import { unitFor } from '$lib/format';
+  import { pageRange, unitFor } from '$lib/format';
   import { SILENCE_THRESHOLD_SECONDS, STAGE_LABELS, STATE_LABELS, stageActivity } from '$lib/rungs';
   import type { Job } from '$lib/types';
 
@@ -18,6 +19,10 @@
 
   const report = $derived(job.report);
   const inventory = $derived(report?.inventory ?? null);
+  /** La fila de un acta de consejo, cuando el trabajo fue eso. */
+  const acta = $derived(report?.inventario_actas?.[0] ?? null);
+  /** Todas las actas del PDF, cada una con su PDF si el libro se dividió. */
+  const actas = $derived(actasDelInforme(report));
   const progress = $derived(job.progress);
   const live = $derived(job.state === 'running' && progress.page_count > 0);
 
@@ -81,22 +86,6 @@
     return inventory?.items.find((item) => item.code === code)?.file_name;
   }
 
-  function pageRange(pages: number[]): string {
-    if (!pages.length) return '';
-    const parts: string[] = [];
-    let start = pages[0];
-    let previous = pages[0];
-    for (const page of pages.slice(1)) {
-      if (page === previous + 1) {
-        previous = page;
-        continue;
-      }
-      parts.push(start === previous ? `${start}` : `${start}–${previous}`);
-      start = previous = page;
-    }
-    parts.push(start === previous ? `${start}` : `${start}–${previous}`);
-    return parts.join(', ');
-  }
 </script>
 
 <article class="mb-4 rounded-xl border border-hairline bg-raised shadow-[var(--shadow)] p-5">
@@ -201,6 +190,17 @@
       {/if}
     </div>
 
+    {#if report.notices?.length}
+      <!-- Lo que el worker dice del trabajo en una frase. Sin esto, una caja
+           pedida por mes que no tenía ni una fecha salía por documento y nada
+           en la pantalla lo contaba. -->
+      <ul class="mt-4 grid gap-1 rounded-lg border border-hairline px-3 py-2 text-sm text-ink-2">
+        {#each report.notices as aviso, i (i)}
+          <li>{aviso}</li>
+        {/each}
+      </ul>
+    {/if}
+
     <div class="mt-6 grid gap-7 md:grid-cols-2">
       {#if stats}
         <ProvenanceBar {stats} pageCount={report.page_count} />
@@ -272,7 +272,54 @@
       </section>
     {/if}
 
-    {#if inventory}
+    {#if acta}
+      <!-- Un acta de consejo no deja PDF: deja su fila del inventario. Se
+           enseña aquí lo mismo que dirá el Excel, para no tener que abrirlo
+           para saber si salió bien. -->
+      <footer class="mt-5 flex flex-col gap-1 border-t border-hairline pt-3 text-sm text-muted">
+        {#if actas.length > 1}
+          <!-- Un libro: todas sus actas, cada una con sus folios y, si se
+               dividió, el PDF en que quedó. -->
+          <span class="text-ink">
+            Libro de {actas.length} actas{report?.dividido ? `, dividido en ${actas.filter((item) => item.pdf).length} PDF` : ''}
+          </span>
+          <ul class="mt-1 flex flex-col gap-1">
+            {#each actas as item, indice (indice)}
+              <li class="flex flex-wrap items-baseline gap-x-2">
+                <b class="text-ink">{item.fila.acta}</b>
+                <span>{item.fila.fecha}</span>
+                <span class="tabular">
+                  folios {item.fila.folio_inicial} a {item.fila.folio_final} ({item.fila.folios})
+                </span>
+                {#if item.pdf}
+                  <a class="text-accent hover:underline" href={downloadUrl(job.id, item.pdf)} download>
+                    PDF
+                  </a>
+                {/if}
+                {#if item.fila.observaciones}
+                  <span class="basis-full text-xs text-warning">{item.fila.observaciones}</span>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <span class="text-ink">
+            <b>{acta.acta}</b> · {acta.fecha} · folios {acta.folio_inicial} a {acta.folio_final}
+            ({acta.folios})
+          </span>
+          {#if acta.observaciones}
+            <span class="text-xs text-warning">{acta.observaciones}</span>
+          {/if}
+        {/if}
+        {#if report?.inventario}
+          <a class="text-accent hover:underline" href={documentInventoryUrl(job.id)} download>
+            Excel de esta acta
+          </a>
+        {:else if report?.inventario_error}
+          <span class="text-xs text-critical">no se pudo escribir el Excel: {report.inventario_error}</span>
+        {/if}
+      </footer>
+    {:else if inventory}
       <footer
         class="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-hairline pt-3 text-sm text-muted"
       >

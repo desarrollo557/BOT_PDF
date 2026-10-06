@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from .inventory import Inventory
 from .pipeline import ClassificationPipeline, PipelineStats
 from .ports import DocumentAssembler, DocumentStore, InventoryStore
 from .progress import NullProgressReporter, ProgressEvent, ProgressReporter, Stage
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,8 +220,10 @@ class ProcessDocument:
     def _report(self, event: ProgressEvent) -> None:
         try:
             self._progress.emit(event)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:  # noqa: BLE001 - la telemetría nunca rompe el trabajo
+            # Se traga, pero deja rastro: un aviso que falla en silencio deja la
+            # pantalla quieta y hace que un trabajo sano parezca colgado.
+            logger.debug("el reportero de progreso falló, se sigue", exc_info=True)
 
     @staticmethod
     def _build_review_queue(
@@ -277,6 +282,7 @@ class ProcessDocument:
                 reason=f"la página no pudo copiarse al PDF de salida: {error}",
             )
             for page, error in (unwritable_pages or {}).items()
+
         ]
 
         # Las páginas cuya capa de texto no correspondía a lo impreso NO entran

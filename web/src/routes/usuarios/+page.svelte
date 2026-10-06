@@ -155,9 +155,10 @@
   <header class="intro">
     <h1>Usuarios</h1>
     <p>
-      Quién entra al separador y qué se le deja hacer. Se entra con la cédula y el correo, sin
-      contraseña, así que esto ordena el trabajo pero no lo protege: quien conozca los datos de
-      un compañero puede entrar como él.
+      Quién está dado de alta y con qué perfil. Desde la pantalla se entra como «siar», sin
+      contraseña y como administrador; las altas de aquí fijan el perfil de quien opere el
+      servicio por la API con su cédula y su correo. Nada de esto protege el acceso: ordena el
+      trabajo.
     </p>
   </header>
 
@@ -265,10 +266,11 @@
 </section>
 
 <style>
+  /* Sin margen propio: el de la página ya lo pone, y sumarlo empujaba esta
+     vista más abajo que las demás. */
   .wrap {
-    max-width: 68rem;
-    margin: 0 auto;
-    padding: 1.5rem 1rem 3rem;
+    container: usuarios / inline-size;
+    max-width: 80rem;
   }
   .intro h1 {
     margin: 0;
@@ -302,15 +304,19 @@
     color: var(--accent);
   }
 
+  /* El alta ocupa el ancho y reparte sus campos en fila; la lista va debajo.
+     Era una columna de 20rem con los tres campos y los tres perfiles apilados,
+     más alta que la pantalla, al lado de una lista casi vacía. Con sitio de
+     sobra -- la consola cerrada -- van una al lado de la otra. */
   .columnas {
     display: grid;
-    gap: 1.25rem;
-    grid-template-columns: minmax(0, 20rem) minmax(0, 1fr);
+    gap: 1rem;
+    grid-template-columns: minmax(0, 1fr);
     align-items: start;
   }
-  @media (max-width: 60rem) {
+  @container usuarios (min-width: 70rem) {
     .columnas {
-      grid-template-columns: minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
     }
   }
 
@@ -343,9 +349,19 @@
     box-shadow: var(--shadow);
   }
   .alta {
-    display: flex;
-    flex-direction: column;
-    gap: 0.85rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+    gap: 0.75rem;
+  }
+  .alta > h2,
+  .alta > fieldset,
+  .alta > .falta {
+    grid-column: 1 / -1;
+  }
+  .alta > button {
+    grid-column: 1 / -1;
+    justify-self: end;
+    min-width: 10rem;
   }
 
   label {
@@ -385,11 +401,16 @@
     border-color: var(--accent);
   }
 
+  /* Los tres perfiles en fila cuando caben: apilados, el alta medía más que
+     la pantalla. */
   fieldset {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+    gap: 0.25rem 0.9rem;
     border: 1px solid var(--rule);
     border-radius: 9px;
     margin: 0;
-    padding: 0.6rem 0.7rem 0.7rem;
+    padding: 0.5rem 0.7rem 0.6rem;
   }
   legend {
     padding: 0 0.35rem;

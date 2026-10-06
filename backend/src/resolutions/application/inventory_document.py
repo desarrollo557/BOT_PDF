@@ -16,7 +16,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..domain.diploma import DiplomaRecord
+from ..domain.diploma import CriterioDeCorte, DiplomaRecord
 from ..domain.doctype import DocumentType, TypeVerdict, classify_pages
 from ..domain.grouping import GroupingEngine, GroupingResult
 from ..domain.matricula import StudentRecord
@@ -29,14 +29,18 @@ from ..domain.validation import (
     validate_matriculas,
     validate_resolutions,
 )
+from .acta_fuid import filas_de_actas
+from .acta_split import ActaSplit
 from .control import NullRunControl, RunControl
 from .diploma_fuid import filas_del_libro
 from .diploma_split import group_by_record
 from .fuid import FuidRow, Ubicacion
 from .matricula_fuid import filas_de_expedientes
 from .matricula_split import group_by_student
+from .orquestador import MIN_SAMPLE_CHARS as MIN_SAMPLE_CHARS
+from .orquestador import SAMPLE_PAGES, muestrear
 from .pipeline import ClassificationPipeline
-from .ports import HEADER_BAND, OcrEngine, PageSource
+from .ports import OcrEngine, PageSource
 from .progress import NullProgressReporter, ProgressEvent, ProgressReporter, Stage
 from .read_diploma_book import LECTORES, BookReadingStats, ReadDiplomaBook
 from .read_student_records import ReadStudentRecords, RecordsReadingStats
@@ -44,14 +48,10 @@ from .resolution_fuid import filas_de_resoluciones
 
 logger = logging.getLogger(__name__)
 
-#: Cuántas páginas se miran para decidir de qué documento se trata. Doce bastan
-#: y cuestan nada: en un libro de cuatrocientas páginas todas dicen lo mismo, y
-#: en una caja mal ordenada doce repartidas de punta a punta ven la mezcla.
-SAMPLE_PAGES = 12
-
-#: Por debajo de esto la capa de texto de la página no sirve para reconocer nada
-#: y hay que mirar la imagen.
-MIN_SAMPLE_CHARS = 80
+# La muestra con que se reconoce el documento -- cuántas páginas, desde cuántos
+# caracteres sirve la capa de texto -- vive con el orquestador, que es quien la
+# usa para algo más que los marcadores. `SAMPLE_PAGES` y `MIN_SAMPLE_CHARS` se
+# siguen pudiendo importar desde aquí, que es donde las busca quien ya las usaba.
 
 
 @dataclass(slots=True)
@@ -198,6 +198,13 @@ class InventoryDocument:
         progress: ProgressReporter | None = None,
         control: RunControl | None = None,
         workers: int = LECTORES,
+        criterio: CriterioDeCorte = CriterioDeCorte.PAGINA,
+        rastreo=None,
+        mosaico=None,
+        mosaico_de_cedulas=None,
+        mosaico_de_fechas=None,
+        lectura_de_ahorro: bool = False,
+        mistral_summary=None,  # MistralSummaryAdapter para resúmenes de actas
     ) -> None:
         self._ocr = ocr
         self._pipeline = pipeline
@@ -208,6 +215,22 @@ class InventoryDocument:
         #: proveedor de OCR, no calcular, así que este número es el que decide
         #: si un libro de 398 páginas tarda veinte minutos o tres.
         self._workers = max(1, workers)
+        #: Con qué señal se corta un libro de diplomas. Viaja desde la
+        #: pantalla porque es una decisión del operador sobre su papel, no
+        #: del servicio: un libro foliado hoja a hoja y uno donde cada
+        #: graduado ocupa varias caras se parten por cosas distintas.
+        self._criterio = criterio
+        #: Quién rastrea localmente una cédula que la lectura normal dejó
+        #: escapar, antes de que llegue a pagarse.
+        self._rastreo = rastreo
+        #: Quien lee los nombres de varias caras en una sola imagen, cuando
+        #: el operador eligió pagar por la franja y no por la hoja.
+        self._mosaico = mosaico
+        self._mosaico_de_cedulas = mosaico_de_cedulas
+        self._mosaico_de_fechas = mosaico_de_fechas
+        self._lectura_de_ahorro = lectura_de_ahorro
+        #: Adaptador para generar resúmenes de actas con Mistral
+        self._mistral_summary = mistral_summary
 
     def execute(
         self,
@@ -216,29 +239,48 @@ class InventoryDocument:
         document_name: str,
         ubicacion: Ubicacion | None = None,
         first_order: int = 1,
+        declarado: DocumentType | None = None,
     ) -> InventoryOutcome:
         self._report(ProgressEvent(stage=Stage.OPENED, page_count=source.page_count))
-        # Reconocer el documento cuesta una muestra de doce páginas y, en un
-        # escaneo sin capa de texto, doce pasadas de OCR. Ocurre antes de la
-        # primera página, así que callarlo deja la pantalla en blanco justo al
-        # arrancar, que es cuando el operador está mirando.
-        self._report(
-            ProgressEvent(
-                stage=Stage.IDENTIFYING,
-                done=0,
-                total=SAMPLE_PAGES,
-                detail="reconociendo de qué documento se trata",
+        if declarado is not None:
+            # Lo que el operador dijo que está cargando manda, y no se comprueba
+            # contra una muestra: la muestra cuesta doce páginas -- doce pasadas
+            # de OCR en un escaneo --, y cuando se equivoca condena el libro
+            # entero a la ruta que no sabe cortarlo. Quien tiene el papel
+            # delante sabe lo que es; el despachador ya lo dio por bueno, y
+            # volver a preguntárselo al papel aquí era la segunda muestra del
+            # mismo trabajo.
+            verdict = TypeVerdict(document_type=declarado, confidence=1.0)
+            self._report(
+                ProgressEvent(
+                    stage=Stage.IDENTIFYING,
+                    done=SAMPLE_PAGES,
+                    total=SAMPLE_PAGES,
+                    detail=f"{declarado.label}, declarado por el operador",
+                )
             )
-        )
-        verdict = self.identify(source)
-        self._report(
-            ProgressEvent(
-                stage=Stage.IDENTIFYING,
-                done=SAMPLE_PAGES,
-                total=SAMPLE_PAGES,
-                detail=verdict.document_type.label,
+        else:
+            # Reconocer el documento cuesta una muestra de doce páginas y, en un
+            # escaneo sin capa de texto, doce pasadas de OCR. Ocurre antes de la
+            # primera página, así que callarlo deja la pantalla en blanco justo
+            # al arrancar, que es cuando el operador está mirando.
+            self._report(
+                ProgressEvent(
+                    stage=Stage.IDENTIFYING,
+                    done=0,
+                    total=SAMPLE_PAGES,
+                    detail="reconociendo de qué documento se trata",
+                )
             )
-        )
+            verdict = self.identify(source)
+            self._report(
+                ProgressEvent(
+                    stage=Stage.IDENTIFYING,
+                    done=SAMPLE_PAGES,
+                    total=SAMPLE_PAGES,
+                    detail=verdict.document_type.label,
+                )
+            )
 
         if verdict.document_type is DocumentType.DIPLOMA:
             return self._diplomas(
@@ -250,6 +292,8 @@ class InventoryDocument:
             return self._matriculas(
                 source, verdict, document_name, ubicacion, first_order
             )
+        if verdict.document_type is DocumentType.ACTA:
+            return self._actas(source, verdict, document_name, ubicacion, first_order)
 
         # Ni una cosa ni la otra. No se inventa una lectura: se dice que no se
         # reconoció y el documento queda a la espera de que alguien lo mire.
@@ -277,26 +321,10 @@ class InventoryDocument:
         return classify_pages(self._sample(source))
 
     def _sample(self, source: PageSource) -> list[tuple[int, str]]:
-        total = source.page_count
-        if total == 0:
-            return []
-        paso = max(1, total // SAMPLE_PAGES)
-        numeros = list(range(1, total + 1, paso))[:SAMPLE_PAGES]
-
-        muestra: list[tuple[int, str]] = []
-        for numero in numeros:
-            try:
-                texto = source.text_of(numero)
-                if len(texto) < MIN_SAMPLE_CHARS and self._ocr is not None:
-                    # Escaneo sin capa de texto: la banda superior basta para
-                    # reconocer el encabezado impreso, y cuesta la décima parte
-                    # que la página entera.
-                    texto = self._ocr.read(source.render(numero, HEADER_BAND, 200)).text
-            except Exception:  # noqa: BLE001 - una página ilegible no decide nada
-                logger.debug("no se pudo muestrear la página %s", numero, exc_info=True)
-                continue
-            muestra.append((numero, texto))
-        return muestra
+        # Doce páginas repartidas, por su capa de texto o, en un escaneo, por la
+        # banda superior: la misma muestra que mira el orquestador, sacada por
+        # la misma función para que los dos no puedan ver cosas distintas.
+        return muestrear(source, self._ocr)
 
     # -- libros de diplomas ---------------------------------------------------
 
@@ -313,6 +341,12 @@ class InventoryDocument:
             progress=self._progress,
             control=self._control,
             workers=self._workers,
+            criterio=self._criterio,
+            rastreo=self._rastreo,
+            mosaico=self._mosaico,
+            mosaico_de_cedulas=self._mosaico_de_cedulas,
+            mosaico_de_fechas=self._mosaico_de_fechas,
+            lectura_de_ahorro=self._lectura_de_ahorro,
         )
         records, stats = lector.execute(source)
 
@@ -321,6 +355,7 @@ class InventoryDocument:
             nombre_del_archivo=document_name,
             ubicacion=ubicacion,
             desde=first_order,
+            criterio=self._criterio,
         )
 
         return InventoryOutcome(
@@ -336,8 +371,8 @@ class InventoryDocument:
             # identificador, que es la vuelta de la hoja anterior y se archiva
             # con ella -- la misma decisión que toman las filas del FUID, para
             # que el inventario y la carpeta cuenten lo mismo.
-            grouping=group_by_record(records),
-            issues=validate_diplomas(records),
+            grouping=group_by_record(records, self._criterio),
+            issues=validate_diplomas(records, self._criterio),
         )
 
     # -- expedientes académicos -----------------------------------------------
@@ -430,6 +465,44 @@ class InventoryDocument:
             provenance=procedencia,
             grouping=result,
             issues=validate_resolutions(classifications, result),
+        )
+
+    # -- actas de grado --------------------------------------------------------
+
+    def _actas(
+        self,
+        source: PageSource,
+        verdict: TypeVerdict,
+        document_name: str,
+        ubicacion: Ubicacion | None,
+        first_order: int,
+    ) -> InventoryOutcome:
+        """Inventariar actas de grado: una fila por acta."""
+        if self._ocr is None:
+            raise ValueError("para inventariar actas hace falta OCR (Tesseract + Mistral)")
+
+        split = ActaSplit(
+            ocr=self._ocr,
+            mistral_summary=self._mistral_summary,
+            progress=self._progress,
+            control=self._control,
+            workers=self._workers,
+        )
+        result = split.execute(source, document_name=document_name, ubicacion=ubicacion)
+
+        # Convertir ActaSplitResult a InventoryOutcome
+        rows = filas_de_actas(
+            result.actas,
+            nombre_del_archivo=document_name,
+            ubicacion=ubicacion,
+        )
+
+        return InventoryOutcome(
+            document=document_name,
+            page_count=result.page_count,
+            verdict=verdict,
+            rows=rows,
+            issues=result.issues,
         )
 
     # -- telemetría -----------------------------------------------------------

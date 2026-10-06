@@ -253,6 +253,9 @@ CREATE TABLE revision (
 
   creada_en      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 
+  primary key (id),
+  
+
   PRIMARY KEY (id),
   UNIQUE KEY uq_revision_pagina (documento_id, pagina),
   KEY ix_revision_pendiente (resuelta, motivo, creada_en DESC),

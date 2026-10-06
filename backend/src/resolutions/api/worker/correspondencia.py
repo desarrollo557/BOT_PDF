@@ -26,6 +26,7 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     """
     from ...adapters.pymupdf_assembler import PyMuPDFAssembler
     from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...application.agrupacion import Agrupacion, agrupar_por_mes, leer_paginas
     from ...application.entrega import Destino, entregar
     from ...application.segment_document import SegmentDocument
     from ...application.segment_split import group_by_segment
@@ -34,6 +35,7 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     from ...domain.segmentation import Verdict
 
     taller = Taller.desde(payload)
+    agrupacion = taller.agrupacion()
     # Los PDF de una caja van juntos y bajo el nombre de la caja. La carpeta del
     # trabajo sigue siendo la de arriba -- es la que la pantalla y la descarga
     # saben encontrar -- pero quien abra el disco ve "UPD2366126" y no un
@@ -58,15 +60,27 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         # -- pero es con lo que el archivo identifica el expediente, y la
         # entrega en carpeta lo usa para nombrar la carpeta de destino.
         nic = nic_de_la_caja(segmentacion.fingerprints)
+        # Un archivo por mes necesita la fecha de cada página, y se busca aquí,
+        # con la fuente abierta: estas cajas suelen ser escaneos sin capa de
+        # texto, así que la fecha sale de la OCR, y la OCR lee la página
+        # rasterizada. Con el motor que eligió el operador, como las demás rutas.
+        leidas = None
+        if agrupacion is Agrupacion.MES:
+            leidas = leer_paginas(
+                source,
+                taller.ocr(),
+                workers=int(taller.settings.get("page_workers") or 4),
+                control=taller.control,
+                avance=lambda hechas, total: _anunciar(
+                    payload,
+                    Stage.GROUPING,
+                    detail="buscando la fecha de cada página",
+                    done=hechas,
+                    total=total,
+                ),
+            )
     finally:
         source.close()
-    _anunciar(
-        payload,
-        Stage.ASSEMBLING,
-        detail="preparando la escritura",
-        done=0,
-        total=len(grupos.groups),
-    )
     dudosas = [b for b in segmentacion.boundaries if b.verdict is Verdict.UNDECIDED]
     # De qué documento es cada anexo. Se calculaba y no salía a ninguna parte,
     # así que un acta con sus cuatro fotografías era indistinguible de un acta de
@@ -77,6 +91,39 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         for grupo, segmento in zip(grupos.groups, segmentacion.segments, strict=False)
         if segmento.attachment_pages
     }
+    # Un archivo por mes, si el operador lo pidió. Va después de los anexos
+    # y no antes: se emparejan con los segmentos por posición, y la posición
+    # sólo es la del corte mientras los documentos no se hayan unido.
+    #
+    # Y con él cambia lo que se manda a revisión. Una costura dudosa entre dos
+    # documentos ya no decide ningún archivo -- lo que sale es un mes, no un
+    # documento --, así que no se pide que nadie la mire. Lo que sí se declara
+    # es la página sin fecha que quedó entre dos meses distintos, porque ahí
+    # unirla a la anterior fue una elección.
+    costuras_en_revision = dudosas
+    sin_fecha_en_revision = []
+    avisos_de_agrupacion = []
+    entregado_por = Agrupacion.DOCUMENTO
+    if leidas is not None:
+        por_mes = agrupar_por_mes(
+            grupos, leidas.fechas, anexos, tipos=leidas.tipos, asuntos=leidas.asuntos
+        )
+        avisos_de_agrupacion.append(por_mes.aviso())
+        # Sólo si agrupó. Sin una sola página fechada la caja sale como la dejó
+        # el corte, con su revisión de siempre, y el informe dice que se entregó
+        # por documento: decir «mes» ahí sería afirmar algo que no se hizo.
+        if por_mes.agrupo:
+            grupos, anexos = por_mes.grupos, por_mes.anexos
+            costuras_en_revision = []
+            sin_fecha_en_revision = por_mes.en_revision
+            entregado_por = Agrupacion.MES
+    _anunciar(
+        payload,
+        Stage.ASSEMBLING,
+        detail="preparando la escritura",
+        done=0,
+        total=len(grupos.groups),
+    )
     del_modelo = [b for b in segmentacion.boundaries if not b.deterministic]
 
     # Lo que hace falta para saber si la caja salió cara o barata, y por qué.
@@ -91,6 +138,10 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         "model_decided": len(del_modelo),
         "undecided": len(dudosas),
     }
+    if leidas is not None:
+        # Cuántas páginas hubo que pasar por OCR para fecharlas: es lo que
+        # cuesta esta opción, y con el motor de pago se paga por página.
+        estadisticas["pages_dated_by_ocr"] = leidas.con_ocr
 
     # 2. Entregar: el tramo que es igual para las cuatro rutas. Sin prefijo en
     #    el nombre: lo forman el puesto en la caja y el tipo, y "DOCUMENTO" es
@@ -111,7 +162,8 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
             naming_prefix=None,
             nombre=taller.name,
         ),
-        en_revision=[boundary.right for boundary in dudosas],
+        en_revision=[boundary.right for boundary in costuras_en_revision]
+        + [pagina.page for pagina in sin_fecha_en_revision],
         estadisticas=estadisticas,
         anexos=anexos,
     )
@@ -138,8 +190,12 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
                 "page": boundary.right,
                 "reason": "no hay evidencia de si esta hoja abre un documento nuevo",
             }
-            for boundary in dudosas
-        ],
+            for boundary in costuras_en_revision
+        ]
+        # Y la página sin fecha que la agrupación por mes unió a la anterior
+        # estando entre dos meses: se unió porque ante la duda se une, y se
+        # declara por lo mismo.
+        + [{"page": pagina.page, "reason": pagina.motivo} for pagina in sin_fecha_en_revision],
         # Del inventario y no de `assembly.outputs`, aunque salgan de lo mismo:
         # dos listas construidas por caminos distintos acaban discrepando, y la
         # que manda es la que dice qué archivo tiene qué páginas. Llevan la
@@ -159,10 +215,12 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         "nic": nic,
         "stats": estadisticas,
         "task": str(task),
+        # Qué se entregó como un archivo: cada documento o cada mes.
+        "agrupar": str(entregado_por),
         # Los avisos viven en el informe y no sólo en el progreso: el progreso
         # se ve mientras corre y el informe se lee después, que es cuando el
         # operador se pregunta por qué salieron ochenta documentos.
-        "notices": list(avisos),
+        "notices": [*avisos, *avisos_de_agrupacion],
     }
     # 4. La planilla, junto a los PDF de la caja y sin que nadie la pida.
     _escribir_planilla(report, destination, payload)

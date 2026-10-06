@@ -15,7 +15,12 @@ from datetime import date
 
 import pytest
 
-from resolutions.domain.fechas import fechas_de, primera_fecha, ultima_fecha
+from resolutions.domain.fechas import (
+    fecha_de_la_pagina,
+    fechas_de,
+    primera_fecha,
+    ultima_fecha,
+)
 
 
 class TestLosTresFormatosDelCorpus:
@@ -97,3 +102,53 @@ class TestLaQueFechaLaUnidad:
 
     def test_un_documento_vacio_tampoco(self):
         assert ultima_fecha([]) is None
+
+
+class TestLaFechaDeUnaPagina:
+    """La fecha de una página suelta, para agrupar una caja por mes.
+
+    Los casos salen de un expediente escaneado real (UPD2532400), leído con la
+    OCR de casa. Cada uno es una página que la regla de «la más reciente»
+    fechaba mal o no fechaba.
+    """
+
+    def test_manda_el_encabezado_ciudad_fecha_sobre_una_fecha_posterior(self):
+        """Por la más reciente, esta carta de diciembre se iba a febrero."""
+        pagina = (
+            "Grupo-epm Cartagena, 21/12/2021 Señor Usuario Ref: respuesta. "
+            "Cuenta con plazo hasta el 01/02/2022 para interponer el recurso."
+        )
+        assert fecha_de_la_pagina(pagina) == date(2021, 12, 21)
+
+    def test_el_encabezado_tambien_se_reconoce_escrito_en_letra(self):
+        assert fecha_de_la_pagina("Sahagun, 07 de Diciembre de 2021 Señor Usuario") == date(
+            2021, 12, 7
+        )
+
+    def test_el_mes_delante_del_dia(self):
+        """«Mayo 20 de 2021»: así encabezan algunos oficios."""
+        assert fecha_de_la_pagina("Sahagún, Mayo 20 de 2021 CARIBEMAR") == date(2021, 5, 20)
+
+    def test_los_espacios_que_la_ocr_mete_entre_las_barras(self):
+        assert fecha_de_la_pagina("Consecutivo No.2021 SAHAGUN, 25/ 05/ 2021 Señor") == date(
+            2021, 5, 25
+        )
+
+    def test_la_formula_de_firma_de_un_pagare(self):
+        pagina = "Firmado en la ciudad de SAHAGUN alos 26 días del mes de — Abril del 2021"
+        assert fecha_de_la_pagina(pagina) == date(2021, 4, 26)
+
+    def test_sin_encabezado_manda_la_mas_reciente(self):
+        """La publicación de un aviso lleva la fecha del día en que se publica."""
+        pagina = (
+            "respuesta a la petición presentada el día 20/05/2021, se notifica el "
+            "aviso de 04-06-2021. El presente aviso se publica el día 18/06/2021."
+        )
+        assert fecha_de_la_pagina(pagina) == date(2021, 6, 18)
+
+    def test_una_pagina_sin_fechas(self):
+        assert fecha_de_la_pagina("REPUBLICA DE COLOMBIA IDENTIFICACION PERSONAL") is None
+
+    def test_no_cambia_lo_que_leen_las_otras_rutas(self):
+        """«Mayo 20 de 2021» no la reconoce fechas_de, y así sigue: sólo esto la lee."""
+        assert fechas_de("Sahagún, Mayo 20 de 2021") == []

@@ -9,6 +9,8 @@
 #   .\scripts\levantar.ps1                  puertos automaticos
 #   .\scripts\levantar.ps1 -WebPort 5200    uno concreto
 #   .\scripts\levantar.ps1 -Fijo            falla si el pedido esta ocupado
+#   .\scripts\levantar.ps1 -Ventanas        backend y front en dos ventanas cmd
+#                                           (es lo que hace "division-afinia" desde el cmd)
 #
 # Ctrl+C para los dos. El front corre en primer plano y el backend se para en
 # el bloque de limpieza, porque un backend que sobrevive al front es el que
@@ -16,7 +18,8 @@
 param(
     [int]$ApiPort = 8000,
     [int]$WebPort = 5173,
-    [switch]$Fijo
+    [switch]$Fijo,
+    [switch]$Ventanas
 )
 
 $ErrorActionPreference = "Stop"
@@ -80,6 +83,24 @@ Write-Host ""
 Write-Host "-- puertos --"
 $ApiPort = Get-Puerto $ApiPort "el backend"
 $WebPort = Get-Puerto $WebPort "el front"
+
+if ($Ventanas) {
+    # Cada uno en su ventana, y esta se cierra. Las ventanas heredan el entorno
+    # de este proceso, asi que las llaves del .env y API_URL llegan solas. Para
+    # parar, se cierra cada ventana (o Ctrl+C dentro de ella).
+    $env:PYTHONUNBUFFERED = "1"
+    $env:API_URL = "http://127.0.0.1:$ApiPort"
+    # El nombre del software en el titulo de cada ventana. La o con tilde se
+    # arma con su codigo porque este archivo es ASCII: PowerShell 5.1 lee un
+    # .ps1 sin BOM en la pagina de codigos del sistema y la romperia.
+    $nombre = "Divisi$([char]0x00F3)n de documentos AFINIA"
+    Start-Process -FilePath "cmd.exe" -WorkingDirectory (Join-Path $raiz "backend") -ArgumentList "/k title $nombre - backend :$ApiPort & `"$py`" -m uvicorn resolutions.api.main:app --port $ApiPort --no-access-log"
+    Start-Process -FilePath "cmd.exe" -WorkingDirectory (Join-Path $raiz "web") -ArgumentList "/k title $nombre - front :$WebPort & node_modules\.bin\vite.cmd dev --port $WebPort --strictPort"
+    Write-Host ""
+    Write-Host "   backend: http://127.0.0.1:$ApiPort"
+    Write-Host "   front:   http://localhost:$WebPort"
+    exit 0
+}
 
 Write-Host ""
 Write-Host "-- backend --"

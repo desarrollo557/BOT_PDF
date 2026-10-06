@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { descargarPlanilla, downloadUrl, origenInventarioUrl } from '$lib/api';
   import { consoleLog } from '$lib/console.svelte';
   import { formatBytes, formatDuration } from '$lib/format';
   import { jobStore } from '$lib/jobs.svelte';
@@ -19,6 +20,118 @@
   };
 
   const clean = $derived(completion.failedDocuments === 0 && completion.reviewItems === 0);
+
+  const capital = (texto: string) => texto.charAt(0).toUpperCase() + texto.slice(1);
+  /** «Actas», «Resoluciones», «Unidades documentales»: lo que de verdad salió. */
+  const Unidades = $derived(capital(completion.unidad[1]));
+  const soloActas = $derived(completion.actas > 0 && completion.actas === completion.resolutions);
+  const unidadDe = (cuantas: number, unidad: [string, string]) =>
+    `${cuantas} ${cuantas === 1 ? unidad[0] : unidad[1]}`;
+
+  /**
+   * El gasto, separado por lo que se pagó.
+   *
+   * Las páginas se facturan al OCR y los tokens a la IA que resume; sumar las
+   * peticiones de los dos decía «22 peticiones al OCR de pago» cuando once
+   * eran resúmenes.
+   */
+  const proveedores = $derived(Object.values(completion.consumo?.proveedores ?? {}));
+  const ocr = $derived(
+    proveedores
+      .filter((cuenta) => cuenta.paginas_facturadas > 0)
+      .reduce(
+        (total, cuenta) => ({
+          paginas: total.paginas + cuenta.paginas_facturadas,
+          peticiones: total.peticiones + cuenta.peticiones
+        }),
+        { paginas: 0, peticiones: 0 }
+      )
+  );
+  const ia = $derived(
+    proveedores
+      .filter((cuenta) => cuenta.paginas_facturadas === 0)
+      .reduce((total, cuenta) => total + cuenta.peticiones, 0)
+  );
+
+  /** Lo esencial en una frase, para quien escucha la pantalla en vez de verla. */
+  const resumenHablado = $derived(
+    [
+      `${completion.documents - completion.failedDocuments} de ${completion.documents} documentos completos`,
+      unidadDe(completion.resolutions, completion.unidad),
+      `${completion.pages} páginas`,
+      completion.reviewItems
+        ? `${completion.reviewItems} por revisar`
+        : 'nada pendiente de revisión'
+    ].join(', ')
+  );
+
+  let bajando = $state<string | null>(null);
+  let falloDeDescarga = $state<string | null>(null);
+
+  async function bajarInventario(runId: string, nombre: string) {
+    bajando = runId;
+    falloDeDescarga = null;
+    try {
+      await descargarPlanilla(origenInventarioUrl(runId), nombre);
+    } catch (problema) {
+      falloDeDescarga = (problema as Error).message;
+    } finally {
+      bajando = null;
+    }
+  }
+
+  /* -- teclado y foco -------------------------------------------------------
+     Un diálogo modal que se deja atrás con el tabulador no es modal: el foco
+     se iba a la pantalla de debajo, que no se ve. Al abrir se lleva al
+     título, Tab y Mayús+Tab dan la vuelta dentro, Escape cierra, y al cerrar
+     el foco vuelve a donde estaba. */
+  let sheet = $state<HTMLDivElement | null>(null);
+  let heading = $state<HTMLHeadingElement | null>(null);
+
+  $effect(() => {
+    const antes = document.activeElement as HTMLElement | null;
+    heading?.focus();
+    return () => antes?.focus?.();
+  });
+
+  function teclado(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      void dismiss();
+      return;
+    }
+    if (event.key !== 'Tab' || !sheet) return;
+    const enfocables = [
+      ...sheet.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input, [tabindex]:not([tabindex="-1"])'
+      )
+    ];
+    if (!enfocables.length) return;
+    const primero = enfocables[0];
+    const ultimo = enfocables[enfocables.length - 1];
+    if (event.shiftKey && (document.activeElement === primero || document.activeElement === heading)) {
+      event.preventDefault();
+      ultimo.focus();
+    } else if (!event.shiftKey && document.activeElement === ultimo) {
+      event.preventDefault();
+      primero.focus();
+    }
+  }
+
+  /** Flechas entre pestañas, como en cualquier lista de pestañas. */
+  function tecladoDePestanas(event: KeyboardEvent) {
+    const ids = tabs.map((item) => item.id);
+    const actual = ids.indexOf(tab);
+    let siguiente = actual;
+    if (event.key === 'ArrowRight') siguiente = (actual + 1) % ids.length;
+    else if (event.key === 'ArrowLeft') siguiente = (actual - 1 + ids.length) % ids.length;
+    else if (event.key === 'Home') siguiente = 0;
+    else if (event.key === 'End') siguiente = ids.length - 1;
+    else return;
+    event.preventDefault();
+    tab = ids[siguiente];
+    document.getElementById(`informe-tab-${tab}`)?.focus();
+  }
 
   /**
    * Cerrar el informe deja la pantalla lista para el siguiente lote. Siempre.
@@ -75,7 +188,7 @@
       { id: 'resumen', label: 'Resumen', count: 0 },
       { id: 'unidades', label: 'Unidades', count: completion.parts?.length ?? 0 },
       { id: 'documentos', label: 'Documentos', count: completion.items.length },
-      { id: 'resoluciones', label: 'Resoluciones', count: completion.codes.length }
+      { id: 'resoluciones', label: Unidades, count: completion.codes.length }
     ].filter((tab) => tab.id === 'resumen' || tab.count > 0)
   );
 
@@ -96,6 +209,24 @@
 
   const failed = $derived(completion.items.filter((item) => item.state === 'failed'));
 
+  /** El reparto de la lectura dicho con palabras, para el lector de pantalla. */
+  const repartoHablado = $derived(
+    rungs.map((entry) => `${entry.rung.label}: ${entry.count} páginas`).join(', ')
+  );
+
+  /** Lo que pasó por el camino, sólo lo que pasó: tres ceros no informan. */
+  const incidencias = $derived(
+    [
+      completion.escalated
+        ? `${completion.escalated} página${completion.escalated === 1 ? '' : 's'} se releyeron (${counted ? ((100 * completion.escalated) / counted).toFixed(1) : '0.0'} %)`
+        : null,
+      completion.repairs
+        ? `${completion.repairs} corrección${completion.repairs === 1 ? '' : 'es'} de OCR`
+        : null,
+      completion.quarantine ? `${completion.quarantine} en cuarentena` : null
+    ].filter(Boolean)
+  );
+
   function when(at: number): string {
     return new Date(at).toLocaleString('es', { dateStyle: 'medium', timeStyle: 'medium' });
   }
@@ -109,16 +240,37 @@
     if (event.target === event.currentTarget) void dismiss();
   }}
 >
-  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="informe-titulo">
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    class="sheet"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="informe-titulo"
+    aria-describedby="informe-resumen"
+    tabindex="-1"
+    bind:this={sheet}
+    onkeydown={teclado}
+  >
     <header>
       <div class="who">
-        <span class="badge" class:clean>{KIND[completion.kind]}</span>
-        <h2 id="informe-titulo">{completion.title}</h2>
+        <span class="badge" class:clean>
+          {KIND[completion.kind]}{clean ? '' : ' con pendientes'}
+        </span>
+        <h2 id="informe-titulo" tabindex="-1" bind:this={heading} title={completion.title}>
+          {completion.title}
+        </h2>
+        <p id="informe-resumen" class="sr">{resumenHablado}.</p>
       </div>
       <div class="meta">
-        {#if completion.operator}<span class="by">{completion.operator}</span>{/if}
-        <time>{when(completion.finishedAt)}</time>
-        <button class="close" onclick={() => void dismiss()} aria-label="Cerrar">✕</button>
+        {#if completion.operator}
+          <span class="by"><span class="sr">Operador: </span>{completion.operator}</span>
+        {/if}
+        <time datetime={new Date(completion.finishedAt).toISOString()}>
+          {when(completion.finishedAt)}
+        </time>
+        <button class="close" onclick={() => void dismiss()} aria-label="Cerrar el informe">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" /></svg>
+        </button>
       </div>
     </header>
 
@@ -136,9 +288,9 @@
         </dd>
       </div>
       <div>
-        <dt>Resoluciones</dt>
+        <dt>{Unidades}</dt>
         <dd class="tabular">{completion.resolutions}</dd>
-        <dd class="note">archivos generados</dd>
+        <dd class="note">{soloActas ? 'inventariadas en Excel' : 'archivos generados'}</dd>
       </div>
       <div>
         <dt>Páginas</dt>
@@ -155,20 +307,23 @@
         <dd class="tabular">{formatDuration(completion.elapsedSeconds)}</dd>
         <dd class="note">de reloj</dd>
       </div>
-      {#if completion.consumo?.paginas_facturadas}
+      {#if ocr.paginas}
         <div>
           <dt>Páginas facturadas</dt>
-          <dd class="tabular">{completion.consumo.paginas_facturadas}</dd>
-          <dd class="note">{completion.consumo.peticiones} peticiones al OCR de pago</dd>
+          <dd class="tabular">{ocr.paginas.toLocaleString('es-CO')}</dd>
+          <dd class="note">
+            {ocr.peticiones} {ocr.peticiones === 1 ? 'petición' : 'peticiones'} al OCR de pago
+          </dd>
         </div>
       {/if}
       {#if completion.consumo?.tokens}
         <div>
-          <dt>Tokens</dt>
+          <dt>Tokens de IA</dt>
           <dd class="tabular">{completion.consumo.tokens.toLocaleString('es-CO')}</dd>
           <dd class="note">
             {completion.consumo.tokens_entrada.toLocaleString('es-CO')} entrada ·
-            {completion.consumo.tokens_salida.toLocaleString('es-CO')} salida
+            {completion.consumo.tokens_salida.toLocaleString('es-CO')} salida{#if ia}{' · '}{ia}
+              {ia === 1 ? 'consulta' : 'consultas'}{/if}
           </dd>
         </div>
       {/if}
@@ -195,28 +350,99 @@
       <div>
         <dt>Requiere revisión</dt>
         <dd class="tabular" class:warn={completion.reviewItems > 0}>{completion.reviewItems}</dd>
-        <dd class="note">{completion.reviewItems ? 'páginas' : 'sin pendientes'}</dd>
+        <dd class="note">
+          {completion.reviewItems
+            ? completion.reviewItems === 1
+              ? 'página por revisar'
+              : 'páginas por revisar'
+            : 'sin pendientes'}
+        </dd>
       </div>
     </dl>
 
     {#if tabs.length > 1}
-      <nav class="tabs">
+      <div class="tabs" role="tablist" aria-label="Secciones del informe" tabindex="-1" onkeydown={tecladoDePestanas}>
         {#each tabs as item (item.id)}
-          <button class:current={tab === item.id} onclick={() => (tab = item.id)}>
+          <button
+            id={`informe-tab-${item.id}`}
+            role="tab"
+            aria-selected={tab === item.id}
+            aria-controls="informe-panel"
+            tabindex={tab === item.id ? 0 : -1}
+            class:current={tab === item.id}
+            onclick={() => (tab = item.id)}
+          >
             {item.label}
             {#if item.count}<span class="count tabular">{item.count}</span>{/if}
           </button>
         {/each}
-      </nav>
+      </div>
     {/if}
 
-    <div class="body">
+    <div
+      class="body"
+      id="informe-panel"
+      role={tabs.length > 1 ? 'tabpanel' : undefined}
+      aria-labelledby={tabs.length > 1 ? `informe-tab-${tab}` : undefined}
+    >
       {#if tab === 'resumen'}
-        {#if completion.destination}
-          <p class="destination">
-            Entregado en <b>{completion.destination}</b>
-            {#if completion.delivered}· {completion.delivered} archivos{/if}
-          </p>
+        {#if completion.entregas.length}
+          <section>
+            <h3>Entrega</h3>
+            <ul class="entregas">
+              {#each completion.entregas as entrega (entrega.origen + entrega.destino)}
+                <li>
+                  <b class="entrega-nombre">Carpeta {entrega.nombre}</b>
+                  <dl>
+                    <div><dt>Origen</dt><dd title={entrega.origen}>{entrega.origen}</dd></div>
+                    <div><dt>Destino</dt><dd title={entrega.destino}>{entrega.destino}</dd></div>
+                    {#if entrega.inventario}
+                      <div><dt>Inventario</dt><dd>{entrega.inventario}</dd></div>
+                    {:else if entrega.archivos}
+                      <div><dt>Archivos</dt><dd>{entrega.archivos} entregados</dd></div>
+                    {/if}
+                  </dl>
+                  {#if entrega.inventarioDe}
+                    <button
+                      class="bajar"
+                      onclick={() =>
+                        bajarInventario(entrega.inventarioDe!, entrega.inventario ?? 'inventario.xlsx')}
+                      disabled={bajando === entrega.inventarioDe}
+                    >
+                      <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <path d="M8 2.5v7m0 0 3-3m-3 3-3-3" />
+                        <path d="M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" />
+                      </svg>
+                      {bajando === entrega.inventarioDe
+                        ? 'Descargando…'
+                        : 'Descargar inventario general (Excel)'}
+                    </button>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+            {#if falloDeDescarga}<p class="bad small" role="alert">{falloDeDescarga}</p>{/if}
+          </section>
+        {/if}
+
+        {#if completion.archivos.length}
+          <section>
+            <h3>PDF generados ({completion.archivos.length})</h3>
+            <ul class="archivos">
+              {#each completion.archivos as archivo (archivo.jobId + archivo.ruta)}
+                <li>
+                  <span class="archivo" title={archivo.ruta}>{archivo.ruta.split('/').pop()}</span>
+                  <a
+                    href={downloadUrl(archivo.jobId, archivo.ruta)}
+                    download
+                    aria-label={`Descargar ${archivo.ruta.split('/').pop()}`}
+                  >
+                    Descargar
+                  </a>
+                </li>
+              {/each}
+            </ul>
+          </section>
         {/if}
 
         {#if failed.length}
@@ -235,7 +461,7 @@
                labelled, with a 2px surface gap rather than a border. -->
           <section>
             <h3>Cómo se leyó cada página</h3>
-            <div class="stack" role="img" aria-label="Reparto de páginas por rung del cascade">
+            <div class="stack" role="img" aria-label={`Cómo se leyeron las páginas: ${repartoHablado}`}>
               {#each rungs as entry (entry.rung.key)}
                 <span
                   class="segment"
@@ -255,15 +481,29 @@
                 </li>
               {/each}
             </ul>
-            <p class="footnote">
-              {completion.escalated} página{completion.escalated === 1 ? '' : 's'} llegaron al
-              modelo de visión ({counted
-                ? ((100 * completion.escalated) / counted).toFixed(1)
-                : '0.0'} %) · {completion.repairs} corrección{completion.repairs === 1
-                ? ''
-                : 'es'} de OCR · {completion.quarantine} en cuarentena
-            </p>
+            {#if incidencias.length}
+              <p class="footnote">{incidencias.join(' · ')}</p>
+            {/if}
+
+            <!-- Lo que se dejó de pagar. Va aparte y con su propio énfasis porque
+                 no es una estadística más: es la respuesta a "¿por qué esta caja
+                 costó la mitad que la anterior?", y sin ella el ahorro existe
+                 pero nadie lo ve. -->
+            {#if completion.unread > 0}
+              <p class="footnote ahorro">
+                <b>{completion.unread}</b> cara{completion.unread === 1 ? '' : 's'} no hizo
+                falta leerla{completion.unread === 1 ? '' : 's'}: pertenecía{completion.unread ===
+                1
+                  ? ''
+                  : 'n'} a la hoja anterior, así que no nombran ningún archivo ni abren fila del
+                inventario.
+              </p>
+            {/if}
           </section>
+        {/if}
+
+        {#if !completion.entregas.length && !completion.archivos.length && !failed.length && !counted}
+          <p class="footnote">Todo terminó sin errores y no queda nada pendiente.</p>
         {/if}
       {:else if tab === 'unidades'}
         <!-- El desglose de una tanda: qué fue cada cosa que corrió. -->
@@ -272,7 +512,7 @@
             <li>
               <span class="tag">{KIND[part.kind]}</span>
               <span class="name" title={part.title}>{part.title}</span>
-              <span class="num tabular">{part.resolutions} res.</span>
+              <span class="num tabular">{unidadDe(part.resolutions, part.unidad)}</span>
               <span class="num tabular">{part.pages} pág.</span>
               <span class="num tabular">{formatDuration(part.elapsedSeconds)}</span>
               {#if part.failedDocuments}
@@ -283,19 +523,22 @@
         </ul>
       {:else if tab === 'documentos'}
         <table>
+          <caption class="sr">Documentos procesados, uno por fila</caption>
           <thead>
             <tr>
-              <th>Archivo</th>
-              <th>Páginas</th>
-              <th>Resoluciones</th>
-              <th>Tamaño</th>
-              <th>Revisión</th>
+              <th scope="col">Archivo</th>
+              <th scope="col" class="num">Páginas</th>
+              <th scope="col" class="num">{Unidades}</th>
+              <th scope="col" class="num">Tamaño</th>
+              <th scope="col" class="num">Revisión</th>
             </tr>
           </thead>
           <tbody>
             {#each completion.items as item (item.jobId)}
               <tr class:failed={item.state === 'failed'}>
-                <td title={item.error ?? item.filename}>{item.filename}</td>
+                <td title={item.error ?? item.filename}>
+                  {item.filename}{#if item.state === 'failed'}<span class="sr"> (falló: {item.error ?? 'error desconocido'})</span>{/if}
+                </td>
                 <td class="num tabular">{item.pages || '—'}</td>
                 <td class="num tabular">{item.resolutions || '—'}</td>
                 <td class="num tabular">{formatBytes(item.bytes)}</td>
@@ -307,8 +550,10 @@
       {:else if tab === 'resoluciones'}
         <input
           class="search"
+          type="search"
           bind:value={filter}
           placeholder="Filtrar por número, título o documento"
+          aria-label="Filtrar por número, título o documento"
           spellcheck="false"
         />
         <ul class="codes">
@@ -321,7 +566,7 @@
             </li>
           {/each}
           {#if !shown.length}
-            <li class="empty">Ninguna resolución coincide con la búsqueda.</li>
+            <li class="empty">Nada coincide con la búsqueda.</li>
           {/if}
         </ul>
       {/if}
@@ -339,7 +584,7 @@
       <a href="/archivo" onclick={() => void dismiss()}>Ver en el archivo</a>
       {#if completion.reviewItems}
         <a class="warn" href="/revision" onclick={() => void dismiss()}>
-          Revisar {completion.reviewItems} páginas
+          Revisar {completion.reviewItems} {completion.reviewItems === 1 ? 'página' : 'páginas'}
         </a>
       {/if}
       <button onclick={() => void dismiss()}>Cerrar</button>
@@ -430,15 +675,47 @@
     color: var(--muted);
   }
   .close {
-    border: 0;
+    display: grid;
+    width: 2rem;
+    height: 2rem;
+    place-items: center;
+    border: 1px solid transparent;
+    border-radius: 8px;
     background: none;
-    padding: 0 0 0 0.25rem;
-    font-size: 0.9rem;
+    padding: 0;
     color: var(--muted);
     cursor: pointer;
   }
   .close:hover {
+    border-color: var(--hairline);
     color: var(--ink);
+  }
+  .close svg {
+    width: 0.9rem;
+    height: 0.9rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+  }
+
+  /* Visible para quien escucha la pantalla, no para quien la mira. */
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .sheet:focus,
+  header h2:focus {
+    outline: none;
+  }
+  .sheet :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
   }
 
   .tiles {
@@ -526,15 +803,112 @@
     padding: 1.25rem;
   }
 
-  .destination {
+  .entregas {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
     margin: 0;
-    border-left: 2px solid var(--s4);
-    padding-left: 0.7rem;
-    font-size: 0.82rem;
-    color: var(--ink-2);
+    padding: 0;
+    list-style: none;
   }
-  .destination b {
+  .entregas li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    border-left: 2px solid var(--accent);
+    padding-left: 0.75rem;
+  }
+  .entrega-nombre {
+    flex-basis: 100%;
+    font-size: 0.86rem;
+  }
+  .entregas dl {
+    display: grid;
+    flex: 1 1 22rem;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.15rem 0.75rem;
+    margin: 0;
+  }
+  .entregas dl div {
+    display: contents;
+  }
+  .entregas dt {
+    font-size: 0.7rem;
+    color: var(--muted);
+  }
+  .entregas dd {
+    overflow: hidden;
+    margin: 0;
     font-family: var(--font-mono);
+    font-size: 0.74rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .bajar {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    border: 1px solid color-mix(in oklab, var(--accent) 55%, var(--hairline));
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--accent) 8%, transparent);
+    padding: 0.4rem 0.8rem;
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .bajar:hover:not(:disabled) {
+    background: color-mix(in oklab, var(--accent) 16%, transparent);
+  }
+  .bajar:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .bajar svg {
+    width: 0.9rem;
+    height: 0.9rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .archivos {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
+    gap: 2px 1rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .archivos li {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    border-bottom: 1px solid var(--rule);
+    padding: 0.3rem 0;
+  }
+  .archivo {
+    overflow: hidden;
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .archivos a {
+    flex-shrink: 0;
+    font-size: 0.78rem;
+    color: var(--accent);
+    text-decoration: none;
+  }
+  .archivos a:hover {
+    text-decoration: underline;
+  }
+  .small {
+    margin: 0.4rem 0 0;
     font-size: 0.76rem;
   }
 
@@ -614,6 +988,14 @@
     color: var(--muted);
   }
 
+  .ahorro {
+    color: var(--ink-2);
+  }
+
+  .ahorro b {
+    color: var(--ink);
+  }
+
   .footnote {
     margin: 0.6rem 0 0;
     font-size: 0.75rem;
@@ -687,6 +1069,12 @@
     font-family: var(--font-mono);
     font-size: 0.76rem;
     color: var(--ink-2);
+  }
+  thead th.num {
+    font-family: inherit;
+    font-size: 0.62rem;
+    text-align: right;
+    color: var(--muted);
   }
   tr.failed td {
     color: var(--critical);

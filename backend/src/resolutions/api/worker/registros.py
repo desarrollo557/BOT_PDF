@@ -11,18 +11,27 @@ se pidió, el FUID -- no depende de cuál de los dos sea.
 
 from __future__ import annotations
 
+import logging
+
 from ...application.progress import Stage
 from .planillas import _escribir_fuid, _escribir_planilla
 from .taller import Taller, _anunciar
 
+logger = logging.getLogger(__name__)
 
-def _record_split_job(payload: dict, task) -> dict:
-    """Un PDF por folio o por expediente, más el FUID si se pidió."""
+
+def _record_split_job(payload: dict, task, tipo=None) -> dict:
+    """Un PDF por folio o por expediente, más el FUID si se pidió.
+
+    ``tipo`` es lo que ya se sabe del documento -- declarado por el operador o
+    reconocido por el despachador --, para que la lectura no vuelva a
+    muestrearlo. ``None`` es no saber nada, y entonces se reconoce.
+    """
     from ...adapters.pymupdf_assembler import PyMuPDFAssembler
     from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...application.diploma_fuid import con_los_archivos
     from ...application.entrega import Destino, entregar
     from ...application.inventory_document import InventoryDocument
-    from ...domain.doctype import DocumentType
 
     taller = Taller.desde(payload)
 
@@ -37,11 +46,24 @@ def _record_split_job(payload: dict, task) -> dict:
         # otras rutas reparten sus páginas, porque mide lo mismo: cuánto trabajo
         # de espera aguanta esta máquina a la vez.
         workers=int(taller.settings.get("page_workers") or 8),
+        criterio=taller.criterio(),
+        # La segunda mirada local a la cédula, que corre entre la lectura
+        # normal y la IA: lo que recupere aquí no llega a pagarse.
+        rastreo=taller.rastreo(),
+        # Y, si el operador eligió la lectura de ahorro, quien lee los
+        # nombres en mosaico: diez caras por página facturada.
+        mosaico=taller.mosaico(),
+        # Y la repesca de la cédula en franjas, para lo que la lectura
+        # entera deje sin ella.
+        mosaico_de_cedulas=taller.mosaico_de_cedulas(),
+        lectura_de_ahorro=taller.lectura_de_ahorro(),
+        # Resúmenes de actas con Mistral
+        mistral_summary=taller.mistral_summary(),
     )
     source = PyMuPDFPageSource(taller.source, taller.name)
     try:
         outcome = use_case.execute(
-            source, document_name=taller.name, ubicacion=taller.ubicacion()
+            source, document_name=taller.name, ubicacion=taller.ubicacion(), declarado=tipo
         )
         # Qué clase de papel es cada folio o expediente, con la fuente todavía
         # abierta. Lo hace `entregar` más abajo, pero necesita el texto y la
@@ -57,6 +79,10 @@ def _record_split_job(payload: dict, task) -> dict:
 
     report = outcome.as_dict()
     report["task"] = str(task)
+    _dejar_las_lecturas(outcome, taller.destination)
+    # Las filas del inventario tal como salieron de la lectura. Si además se
+    # escriben los archivos, más abajo se les añade el nombre de cada uno.
+    filas = outcome.rows
 
     # 2. Entregar: el mismo tramo que las otras rutas -- describir, comprobar,
     #    escribir e inventariar. Lo que aquí cambia es cómo se llaman los
@@ -88,21 +114,11 @@ def _record_split_job(payload: dict, task) -> dict:
                 control=taller.control,
                 progress=taller.progress,
                 naming_prefix=None,
-                # El nombre de un diploma es la cédula y el tipo, y nada más:
-                # "7882907_DIPLOMA.pdf". Lo pidió así el operador y además es lo
-                # que sale limpio -- el nombre del graduando y su título están
-                # escritos a mano sobre un formulario impreso, y lo que el OCR
-                # entrega mezcla los dos: "alberto-fernandez-pucela-le-expide-el
-                # -presente-diploma-al". Un nombre de archivo con media leyenda
-                # del formulario dentro no se busca ni se lee.
-                #
-                # Lo leído no se pierde: el graduando va a su columna del FUID,
-                # que es donde se busca por texto, y la cédula del nombre basta
-                # para encontrar el archivo en el disco.
-                #
-                # Un legajo de matrículas conserva el título, que ahí es el
-                # nombre del expediente y llega impreso y limpio.
-                con_titulo=outcome.document_type is not DocumentType.DIPLOMA,
+                # La identidad debe quedar visible en el archivo: la cédula si
+                # existe y, cuando no, el nombre del graduado. Para un diploma,
+                # el título del grupo empieza por el nombre de la persona.
+                con_titulo=True,
+                mayusculas=True,
                 nombre=taller.name,
             ),
             en_revision=[
@@ -115,6 +131,15 @@ def _record_split_job(payload: dict, task) -> dict:
         report["inventory"] = entregado.inventario.as_dict()
         report["outputs"] = entregado.salidas
         report["unwritable_pages"] = entregado.ilegibles
+        # Y con los archivos ya escritos, se les pone el nombre a las filas del
+        # inventario. Hasta este punto no se podía: la fila se arma al leer el
+        # libro y el nombre del archivo no existe hasta que el escritor
+        # terminó de partirlo. Quien recibe la carpeta puede entonces leer una
+        # fila del FUID y saber qué PDF abrir, sin contar filas.
+        filas = con_los_archivos(
+            filas,
+            {item.first_page: item.file_name for item in entregado.inventario.items},
+        )
 
     # 3. Las planillas: el FUID si se pidió, y la misma planilla del documento
     #    para un libro de folios o un legajo de matrículas -- quien recibe la
@@ -122,7 +147,7 @@ def _record_split_job(payload: dict, task) -> dict:
     if task.writes_inventory:
         _escribir_fuid(
             report,
-            outcome.rows,
+            filas,
             settings=taller.settings,
             destination=taller.destination,
             name=taller.name,
@@ -134,3 +159,32 @@ def _record_split_job(payload: dict, task) -> dict:
 
     _anunciar(payload, Stage.DONE)
     return report
+
+
+#: Cómo se llama el archivo con lo que el motor de pago contestó de cada cara.
+LECTURAS_IA = "_lecturas-ia.jsonl"
+
+
+def _dejar_las_lecturas(outcome, destination) -> None:
+    """Lo que la IA leyó de cada cara, tal cual, junto a la entrega.
+
+    Es lo que permite revisar una hoja sin volver a pagarla: la cola de
+    revisión dice qué cara mirar, y este archivo dice qué vio la IA en ella.
+    Sin él, averiguar por qué un nombre no salió obligaba a repetir la
+    lectura -- y a pagarla -- para ver la respuesta.
+    """
+    import json
+
+    lecturas = getattr(outcome.reading, "lecturas", None) or {}
+    if not lecturas:
+        return
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+        with open(destination / LECTURAS_IA, "w", encoding="utf-8") as archivo:
+            for pagina in sorted(lecturas):
+                archivo.write(
+                    json.dumps({"pagina": pagina, "texto": lecturas[pagina]}, ensure_ascii=False)
+                    + "\n"
+                )
+    except Exception:  # noqa: BLE001 - es un extra para revisar, no la entrega
+        logger.warning("no se pudieron dejar las lecturas de la IA", exc_info=True)

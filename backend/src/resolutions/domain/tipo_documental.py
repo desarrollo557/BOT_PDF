@@ -468,3 +468,32 @@ def _por_encabezado(texto: str) -> Coincidencia | None:
 
 def _por_mencion(texto: str) -> Coincidencia | None:
     return identificar(texto)
+
+
+#: Lo más largo que se deja ser a un asunto. Un asunto de verdad cabe en un
+#: renglón; lo que pase de ahí es la OCR que se comió el salto de línea y siguió
+#: leyendo el cuerpo.
+MAX_ASUNTO = 120
+
+
+def asunto_de(texto: str) -> str | None:
+    """Lo que la hoja declara en su renglón de «Asunto:» o «Ref.:», tal cual.
+
+    Es el título del documento dicho por el propio documento, y por eso se
+    devuelve con sus palabras y no traducido al catálogo: «Petición No.
+    RE9411202102942» dice más que «PETICION», que es lo que el catálogo sabe.
+
+    Al principio del renglón, por lo mismo que :func:`identificar_asunto`: un
+    acta de notificación lleva dentro un formulario con «Tipo de PQR o Asunto:
+    QUEJA», y ése es el asunto de la PQR notificada, no el del acta.
+    """
+    for linea in texto.splitlines():
+        hallazgo = _ASUNTO.match(linea.strip())
+        if hallazgo is None:
+            continue
+        # «Ref.: …» deja el punto o los dos puntos delante del asunto, porque el
+        # patrón admite cualquiera de los dos y la OCR a veces escribe ambos.
+        asunto = " ".join(hallazgo.group(1).split()).lstrip(":.-— ").rstrip(" .,;:")
+        if len(asunto) >= 3:
+            return asunto[:MAX_ASUNTO].rstrip()
+    return None

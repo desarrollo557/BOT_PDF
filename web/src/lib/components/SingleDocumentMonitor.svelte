@@ -32,6 +32,11 @@
   });
 
   const percent = $derived(progress.percent);
+  const stageDone = $derived(progress.stage_done ?? progress.pages_done);
+  const stageTotal = $derived(progress.stage_total ?? progress.page_count);
+  const visualPercent = $derived(
+    progress.percent || (stageTotal ? (100 * stageDone) / stageTotal : 0)
+  );
 
   /** Bytes of the source read so far, apportioned by pages. */
   const bytesDone = $derived(job.bytes ? Math.round((job.bytes * percent) / 100) : 0);
@@ -64,6 +69,18 @@
     <RunControls jobId={job.id} runState={job.state} />
   </header>
 
+  {#if running && (progress.detail || stageTotal)}
+    <p class="stage-detail">
+      <span>{progress.detail ?? stageActivity(progress)}</span>
+      {#if stageTotal}
+        <b>{stageDone} / {stageTotal}</b>
+      {/if}
+      {#if progress.stage_elapsed_seconds}
+        <small>{progress.stage_elapsed_seconds.toFixed(0)} s en esta etapa</small>
+      {/if}
+    </p>
+  {/if}
+
   {#if running && silence >= SILENCE_THRESHOLD_SECONDS}
     <p class="silence">sin novedades desde hace {Math.round(silence)} s</p>
   {/if}
@@ -77,7 +94,7 @@
     aria-valuemax="100"
     aria-label="Avance del documento"
   >
-    <div class="fill" style:width={`${percent}%`}></div>
+    <div class="fill" style:width={`${visualPercent}%`}></div>
   </div>
 
   <RunStats
@@ -91,6 +108,8 @@
     {elapsedSeconds}
     {remainingSeconds}
     settled={!running}
+    stageDone={running ? stageDone : null}
+    stageTotal={running ? stageTotal : null}
     consumo={progress.consumo ?? job.report?.consumo ?? null}
   />
 
@@ -129,6 +148,25 @@
     letter-spacing: -0.01em;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .stage-detail {
+    display: flex;
+    align-items: baseline;
+    gap: 0.65rem;
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    color: var(--ink-2);
+  }
+  .stage-detail span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .stage-detail b,
+  .stage-detail small {
+    flex-shrink: 0;
+    color: var(--muted);
   }
   .silence {
     margin: 0;

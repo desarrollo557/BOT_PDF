@@ -95,6 +95,10 @@
 </script>
 
 {#if !inside}
+  <!-- También delante de la entrada: contra un servicio que quedó corriendo
+       desde antes de una actualización, entrar falla, y sin este aviso el
+       operador no tiene cómo saber que lo que falta es reiniciarlo. -->
+  <StaleServiceBanner />
   <LoginScreen />
 {:else}
   <div class="beside">
@@ -284,7 +288,7 @@
   main {
     display: block;
     min-height: calc(100dvh - 4.5rem);
-    padding: 1.75rem 1.5rem 3rem;
+    padding: 1.25rem 1.5rem 2rem;
   }
   @media (min-width: 1536px) {
     main {

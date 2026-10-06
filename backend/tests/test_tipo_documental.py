@@ -243,3 +243,36 @@ class TestComoSeLlamaElArchivo:
         assert len(nombre) <= 45
         assert "DOCUMENTO-DE-IDENTIDAD" in nombre
         assert nombre.startswith("1128047041")
+
+
+class TestElAsuntoDeUnaHoja:
+    """Lo que la hoja declara en su renglón de asunto, con sus propias palabras.
+
+    Los casos salen del expediente escaneado UPD2532400, leído con la OCR de
+    casa, sin los datos de la persona.
+    """
+
+    def test_el_renglon_de_asunto(self):
+        from resolutions.domain.tipo_documental import asunto_de
+
+        assert asunto_de("Señor\nASUNTO: Petición No. RE9411202102942.\nCordial saludo") == (
+            "Petición No. RE9411202102942"
+        )
+
+    def test_la_referencia_con_punto_y_dos_puntos(self):
+        from resolutions.domain.tipo_documental import asunto_de
+
+        assert asunto_de("Ref.: Reconocimiento de deuda y propuesta de acuerdo de pago") == (
+            "Reconocimiento de deuda y propuesta de acuerdo de pago"
+        )
+
+    def test_no_el_asunto_de_la_pqr_que_un_acta_notifica(self):
+        """«Tipo de PQR o Asunto: QUEJA» es del formulario, no del acta."""
+        from resolutions.domain.tipo_documental import asunto_de
+
+        assert asunto_de("NOTIFICACIÓN PERSONAL\nTipo de PQR o Asunto:QUEJA") is None
+
+    def test_una_hoja_sin_asunto(self):
+        from resolutions.domain.tipo_documental import asunto_de
+
+        assert asunto_de("REPUBLICA DE COLOMBIA\nIDENTIFICACION PERSONAL") is None

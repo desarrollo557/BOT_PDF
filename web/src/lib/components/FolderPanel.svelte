@@ -1,6 +1,7 @@
 <script lang="ts">
   import FolderPicker from '$lib/components/FolderPicker.svelte';
   import { jobStore } from '$lib/jobs.svelte';
+  import type { AgruparChoice, CorteChoice } from '$lib/habilidades';
   import type { LecturaChoice } from '$lib/lectura';
   import type { TipoPedido } from '$lib/tipos';
   import type { OracleChoice } from '$lib/oracles';
@@ -29,6 +30,18 @@
      */
     lectura?: LecturaChoice;
     /**
+     * Y por dónde partir cada libro de diplomas que traiga: por el folio de
+     * la esquina o por el número de cédula. Como el motor, vale para toda la
+     * corrida porque una estantería suele ser homogénea.
+     */
+    corte?: CorteChoice;
+    /**
+     * Y qué va en cada archivo cuando la carpeta trae cajas de correspondencia:
+     * cada documento, o todos los de un mismo mes juntos. Vale para toda la
+     * corrida, como el corte.
+     */
+    agrupar?: AgruparChoice;
+    /**
      * Y qué clase de documento trae la carpeta. Una estantería suele ser
      * homogénea -- veinte libros de diplomas --, así que declararlo una vez
      * vale para todos sus archivos.
@@ -40,7 +53,9 @@
     task = 'split',
     oracle = 'auto',
     lectura = 'local',
-    tipo = 'auto'
+    tipo = 'auto',
+    corte = 'pagina',
+    agrupar = 'documento'
   }: Props = $props();
 
   /**
@@ -129,7 +144,9 @@
         task,
         oracle,
         lectura,
-        tipo
+        tipo,
+        corte,
+        agrupar
       });
     } catch (problem) {
       error = (problem as Error).message;

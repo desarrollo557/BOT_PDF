@@ -26,11 +26,14 @@ Las reglas salen del instructivo del propio FUID, que acompaña al formato:
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
-from ..domain.diploma import DiplomaRecord, pertenece_al_anterior
-from .fuid import NO_APLICA, FuidRow, Ubicacion
+from ..domain.diploma import CriterioDeCorte, DiplomaRecord, pertenece_al_anterior
+from .fuid import NO_APLICA, FuidRow, Ubicacion, con_los_archivos
+
+#: Se reexporta porque nació aquí y hay quien la importa de este módulo.
+__all__ = ["asunto", "con_los_archivos", "fecha_fuid", "filas_del_libro", "folio_confiable"]
 
 _FECHA = re.compile(r"^(\d{1,2})\s*/\s*(\d{1,2})\s*/\s*(\d{2,4})$")
 
@@ -66,18 +69,40 @@ def folio_confiable(registro: DiplomaRecord) -> tuple[str, bool]:
 
 
 def asunto(registro: DiplomaRecord) -> str:
-    """El nombre del graduando y el título, que es lo que identifica el registro."""
+    """El nombre del graduando y la carrera en mayúsculas: NOMBRE - CARRERA."""
     nombre = (registro.name or "").strip()
-    titulo = (registro.degree or "").strip()
+    carrera = (registro.degree or "").strip().upper()
     folio = (registro.trusted_folio or "").strip()
-    if nombre and titulo:
-        base = f"{nombre} - {titulo}"
+    if nombre and carrera:
+        base = f"{nombre} - {carrera}"
         return f"{base} ({folio})" if folio else base
     if nombre:
         return f"{nombre} ({folio})" if folio else nombre
-    if titulo:
-        return f"{titulo} ({folio})" if folio else titulo
-    return folio or NO_APLICA
+    if carrera:
+        return f"{carrera} ({folio})" if folio else carrera
+    return NO_APLICA
+
+
+def _notas(folio: str, archivo: str | None) -> str:
+    """Lo relevante de esta fila que no cabe en ninguna columna del formato.
+
+    El nombre del archivo va aquí porque la planilla y la carpeta de salida son
+    las dos mitades de la misma entrega y hasta ahora sólo se podían cruzar
+    contando: la fila 57 correspondía al archivo 57 si nadie se había
+    equivocado en medio. Escribirlo convierte esa correspondencia en algo
+    comprobable -- quien recibe la caja lee la fila y sabe qué abrir --, y de
+    paso deja constancia de cuáles se nombraron por su folio o por su orden
+    porque la cédula no se dejó leer.
+
+    Se escribe sólo lo que hay. Una nota que dijera "Archivo: N/A" gastaría la
+    única columna libre del formato en decir que no sabe nada.
+    """
+    partes = []
+    if folio != NO_APLICA:
+        partes.append(f"Registrado a folio No. {folio}")
+    if archivo:
+        partes.append(f"Archivo: {archivo}")
+    return "; ".join(partes)
 
 
 def filas_del_libro(
@@ -86,6 +111,8 @@ def filas_del_libro(
     nombre_del_archivo: str,
     ubicacion: Ubicacion | None = None,
     desde: int = 1,
+    archivos: Mapping[int, str] | None = None,
+    criterio: CriterioDeCorte = CriterioDeCorte.PAGINA,
 ) -> list[FuidRow]:
     """Una fila por registro, en el orden en que están en el PDF.
 
@@ -100,14 +127,23 @@ def filas_del_libro(
     toma el separador al meter esa página en el PDF de ese registro. Si las dos
     partes no dijeran lo mismo, el inventario prometería más diplomas de los que
     hay archivos en la carpeta.
+
+    ``archivos`` dice cómo se llamó el PDF que se escribió para cada registro,
+    indexado por la página que lo abre. Es opcional porque el inventario se
+    levanta también cuando no se escribe ningún archivo -- un libro empastado
+    que sólo se inventaría --, y entonces no hay ningún nombre que anotar.
     """
     donde = ubicacion or Ubicacion()
     upd = donde.carpeta_de(nombre_del_archivo)
+    nombres = archivos or {}
 
     filas: list[FuidRow] = []
     padres: list[DiplomaRecord] = []
     for registro in registros:
-        if filas and pertenece_al_anterior(registro, padres[-1]):
+        # El mismo criterio con que el separador partió la carpeta, y tiene que
+        # ser el mismo: si el inventario contara una fila donde la carpeta
+        # escribe media, prometería más diplomas de los que hay.
+        if filas and pertenece_al_anterior(registro, padres[-1], criterio):
             anterior = filas[-1]
             filas[-1] = replace(
                 anterior,
@@ -125,8 +161,14 @@ def filas_del_libro(
                 asunto=asunto(registro),
                 # El número de identificación de la unidad documental. En estos
                 # libros es la cédula del graduando; los libros antiguos no la
-                # traen, y entonces es N/A.
-                consecutivo_inicial=registro.identity_number or NO_APLICA,
+                # traen, y entonces es N/A. También va N/A cuando lo que se leyó
+                # no se sostiene como cédula: un inventario documental con
+                # "30761" en la columna de identificación es peor que uno con
+                # N/A, porque N/A se puede filtrar y buscar, y un número
+                # incompleto se da por bueno y nadie vuelve a mirarlo.
+                consecutivo_inicial=(
+                    registro.identity_number if registro.identity_creible else NO_APLICA
+                ),
                 # El código del estudiante. Los libros de diplomas no lo
                 # imprimen, así que aquí no se rellena nunca desde el papel.
                 consecutivo_final=NO_APLICA,
@@ -146,11 +188,14 @@ def filas_del_libro(
                 folios_siar=1,
                 soporte=NO_APLICA,
                 frecuencia=NO_APLICA,
-                # El folio de registro no tiene columna propia en el FUID y es
-                # el dato con el que se localiza el asiento dentro del empaste,
-                # así que va donde el instructivo manda lo relevante que no cabe
-                # en las demás columnas.
-                notas=f"Registrado a folio No. {folio}" if folio != NO_APLICA else "",
+                # El folio de registro y el nombre del archivo, que son los dos
+                # datos relevantes sin columna propia en el formato. El
+                # instructivo reserva Notas exactamente para eso -- "los datos
+                # que sean relevantes y no se hayan registrado en las columnas
+                # anteriores" --, y añadirle al FUID una columna decimoséptima
+                # rompería la plantilla que se firma.
+                notas=_notas(folio, nombres.get(registro.page_number)),
+                pagina_inicial=registro.page_number,
             )
         )
     return filas

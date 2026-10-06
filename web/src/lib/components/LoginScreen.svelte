@@ -2,32 +2,20 @@
   import { session } from '$lib/session.svelte';
 
   /**
-   * Entrada, no autenticación.
-   *
-   * Dos datos y ninguno más, que fue lo que pidió el archivo: la cédula y el
-   * correo, que son los dos que ya tiene de cada empleado y que nadie tiene que
-   * recordar aparte. Sin contraseña, y la pantalla lo dice en vez de insinuar
-   * una seguridad que no hay.
-   *
-   * El perfil no se elige aquí. Lo contesta el servicio a partir del alta que
-   * hizo el administrador, y por eso este formulario no tiene dónde escogerlo:
-   * un selector de perfil en la pantalla de entrada sería pedirle a cada uno
-   * que declare qué se le permite.
+   * Entrada sin contraseña: el usuario «siar» y el botón. El perfil lo
+   * contesta el servicio.
    */
-  let cedula = $state('');
-  let correo = $state('');
+  let usuario = $state('siar');
   let attempted = $state(false);
 
-  const cedulaValida = $derived(cedula.replace(/\D/g, '').length >= 5);
-  const correoValido = $derived(/^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/.test(correo.trim()));
-  const valid = $derived(cedulaValida && correoValido);
+  const valid = $derived(usuario.trim().length > 0);
   const resuming = $derived(session.state === 'idle');
 
   async function submit(event: Event) {
     event.preventDefault();
     attempted = true;
     if (!valid || session.entrando) return;
-    await session.open(cedula, correo);
+    await session.open(usuario);
   }
 </script>
 
@@ -61,44 +49,28 @@
         </p>
         <p class="muted">
           Nadie la bloqueó: sólo pasó una hora sin actividad y el sistema dejó de atribuirle
-          trabajo. Continúe, o entre con otra cédula.
+          trabajo. Continúe, o vuelva a ingresar.
         </p>
         <div class="actions">
           <button class="primary" onclick={() => session.resume()}>
             Continuar como {session.name}
           </button>
-          <button class="ghost" onclick={() => session.close()}>Entrar con otra cédula</button>
+          <button class="ghost" onclick={() => session.close()}>Salir</button>
         </div>
       </div>
     {:else}
       <form onsubmit={submit}>
         <label>
-          <span>Cédula</span>
+          <span>Usuario</span>
           <input
-            bind:value={cedula}
-            placeholder="1 047 382 991"
-            inputmode="numeric"
+            bind:value={usuario}
+            placeholder="siar"
             autocomplete="username"
             spellcheck="false"
-            aria-invalid={attempted && !cedulaValida}
+            aria-invalid={attempted && !valid}
           />
-          {#if attempted && !cedulaValida}
-            <small class="bad">Escriba su número de cédula.</small>
-          {/if}
-        </label>
-
-        <label>
-          <span>Correo</span>
-          <input
-            bind:value={correo}
-            placeholder="nombre@unicartagena.edu.co"
-            type="email"
-            autocomplete="email"
-            spellcheck="false"
-            aria-invalid={attempted && !correoValido}
-          />
-          {#if attempted && !correoValido}
-            <small class="bad">Escriba su correo electrónico.</small>
+          {#if attempted && !valid}
+            <small class="bad">Escriba el usuario.</small>
           {/if}
         </label>
 
@@ -107,18 +79,9 @@
         {/if}
 
         <button class="primary wide" type="submit" disabled={!valid || session.entrando}>
-          {session.entrando ? 'Entrando…' : 'Entrar'}
+          {session.entrando ? 'Ingresando…' : 'Ingresar'}
         </button>
       </form>
-
-      <!-- Dicho en la pantalla, para que nadie construya una costumbre sobre
-           una promesa que el programa no está haciendo. -->
-      <p class="disclaimer">
-        <b>Sin contraseña.</b> Esto no restringe el acceso ni protege nada frente a quien quiera
-        saltárselo: identifica quién está operando, para que cada documento procesado quede con
-        su nombre, y aplica el perfil que le asignó el administrador. Quien conozca la cédula y el
-        correo de un compañero puede entrar como él.
-      </p>
     {/if}
 
     <p class="owner-note">Software de <b>SIAR</b></p>
@@ -320,15 +283,4 @@
     margin-top: 1.1rem;
   }
 
-  .disclaimer {
-    margin: 1.25rem 0 0;
-    border-top: 1px solid var(--rule);
-    padding-top: 0.9rem;
-    font-size: 0.76rem;
-    line-height: 1.55;
-    color: var(--muted);
-  }
-  .disclaimer b {
-    color: var(--ink-2);
-  }
 </style>

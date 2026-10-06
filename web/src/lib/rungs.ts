@@ -88,8 +88,13 @@ export const STAGE_LABELS: Record<string, string> = {
   cancelled: 'Cancelado por el operador',
   analysing: 'Leyendo páginas',
   identifying: 'Reconociendo el documento',
-  verifying: 'Contrastando lo leído',
-  grouping: 'Agrupando por resolución',
+  verifying: 'Leyendo lo que falta',
+  // Sin decir por qué se agrupa: depende de la ruta y del criterio que eligió
+  // el operador -- por folio, por cédula, por número de resolución, por
+  // continuidad --, y ponerle aquí el nombre de uno de ellos hacía que la
+  // pantalla dijera "Agrupando por resolución" mientras partía un libro de
+  // diplomas por cédula. Qué se está agrupando lo cuenta el detalle.
+  grouping: 'Agrupando las páginas',
   assembling: 'Escribiendo los PDF',
   inventorying: 'Escribiendo el inventario',
   delivering: 'Guardando el resultado',
@@ -154,6 +159,24 @@ export function stageActivity(progress: {
   const done = progress.stage_done ?? 0;
   const total = progress.stage_total ?? 0;
   const counter = total ? ` · ${done} de ${total}` : '';
+  // Cuando el worker manda un detalle que ya es una frase entera -- "leyendo 25
+  // caras con el motor de pago" -- manda él y la etiqueta sobra: juntarlas daba
+  // "Leyendo lo que falta · 12 de 25 · leyendo 25 caras con el motor de pago",
+  // que dice tres veces lo mismo y empuja el contador fuera de la línea.
+  if (progress.detail && EMPIEZA_POR_VERBO.test(progress.detail)) {
+    const frase = progress.detail[0].toUpperCase() + progress.detail.slice(1);
+    return `${frase}${counter}`;
+  }
   const detail = progress.detail ? ` · ${progress.detail}` : '';
   return `${label}${counter}${detail}`;
 }
+
+/**
+ * Un detalle que ya se explica solo, y por tanto no necesita etiqueta delante.
+ *
+ * Son los gerundios con que el worker cuenta lo que está haciendo: "leyendo",
+ * "midiendo", "preparando", "escribiendo". Lo que no empieza así es un matiz
+ * -- "el motor local no recupera nada en este libro" -- y ahí la etiqueta sí
+ * hace falta para saber de qué etapa habla.
+ */
+const EMPIEZA_POR_VERBO = /^(leyendo|midiendo|preparando|escribiendo|buscando)\b/i;

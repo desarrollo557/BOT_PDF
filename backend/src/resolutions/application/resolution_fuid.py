@@ -41,6 +41,9 @@ def filas_de_resoluciones(
             # unidad documental, que es lo que el instructivo pide en esta
             # columna.
             consecutivo_inicial=group.code.value,
+            # Por dónde empieza esta resolución, que es la costura con la que la
+            # fila se vuelve a encontrar con el archivo que se escribió de ella.
+            pagina_inicial=group.page_numbers[0] if group.page_numbers else None,
             consecutivo_final=NO_APLICA,
             fecha_inicial=NO_APLICA,
             fecha_final=NO_APLICA,

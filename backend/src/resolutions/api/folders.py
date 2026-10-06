@@ -100,6 +100,14 @@ class FolderRun:
     #: manuscritos se lee con ayuda y la de expedientes mecanografiados no la
     #: necesita.
     lectura: str = "local"
+    #: Con qué señal se parte cada libro de diplomas de esta carpeta. Una
+    #: estantería suele ser homogénea, así que declararlo una vez vale para
+    #: todos sus archivos.
+    corte: str = "pagina"
+    #: Qué se entrega como un archivo en una caja de correspondencia. Se fija
+    #: para la corrida entera y se copia a cada archivo que entre, igual que el
+    #: corte.
+    agrupar: str = "documento"
     #: Y qué clase de documento trae esta carpeta, cuando el operador lo sabe.
     #: Una carpeta suele ser homogénea -- una estantería de libros de diplomas
     #: --, así que declararlo una vez vale para todos sus archivos.
@@ -124,6 +132,18 @@ class FolderRun:
     #: the destination folder. Kept whole -- unlike `deliveries`, which is a
     #: window for the live view -- because the sheet has to list every file.
     manifest: list[dict] = field(default_factory=list)
+    #: La fila de cada acta de consejo inventariada, en el orden en que se
+    #: tomaron. Con ellas se escribe **un** Excel para la carpeta entera, que
+    #: es lo que se entrega: una carpeta de cien actas son cien filas de una
+    #: planilla, no cien planillas de una fila.
+    inventario_filas: list[dict] = field(default_factory=list)
+    #: Dónde quedó ese Excel, cuando ya se escribió.
+    inventario: str | None = None
+    #: Por qué no se pudo escribir, si falló.
+    inventario_error: str | None = None
+    #: Cuántas filas llevaba la última vez que se escribió, para no reescribirlo
+    #: mientras una carpeta vigilada espera sin novedades.
+    inventario_escritas: int = 0
 
     discovered: int = 0
     processed: int = 0
@@ -159,6 +179,8 @@ class FolderRun:
             "task": self.task,
             "oracle": self.oracle,
             "lectura": self.lectura,
+            "corte": self.corte,
+            "agrupar": self.agrupar,
             "tipo": self.tipo,
             "operator": self.operator,
             "state": str(self.state),
@@ -178,6 +200,12 @@ class FolderRun:
             "failed": self.failed,
             "delivered": self.delivered,
             "resolutions": self.resolutions,
+            # El Excel de las actas de la carpeta, por su nombre: la ruta
+            # completa es del disco del servicio y la pantalla sólo la enseña.
+            "inventario": Path(self.inventario).name if self.inventario else None,
+            "inventario_ruta": self.inventario,
+            "inventario_filas": len(self.inventario_filas),
+            "inventario_error": self.inventario_error,
             # Newest first: the live view reads from the top.
             "deliveries": [item.as_dict() for item in reversed(self.deliveries)],
         }
@@ -301,7 +329,9 @@ class FolderRunner:
         task: str = "split",
         oracle: str = "auto",
         lectura: str = "local",
+        corte: str = "pagina",
         tipo: str = "auto",
+        agrupar: str = "documento",
     ) -> FolderRun:
         origin, target = validate_folders(source, destination)
 
@@ -319,6 +349,8 @@ class FolderRunner:
             task=task,
             oracle=oracle,
             lectura=lectura,
+            corte=corte,
+            agrupar=agrupar,
             tipo=tipo,
         )
         self._runs[run.id] = run
@@ -394,6 +426,7 @@ class FolderRunner:
                     # each time the folder empties: otherwise the destination
                     # would hold PDFs with no inventory until somebody stopped it.
                     self._write_manifest(run)
+                    await asyncio.to_thread(self._escribir_inventario_de_actas, run)
                     run.state = RunState.WATCHING
                     run.queue = []
                     run.current = None
@@ -406,6 +439,10 @@ class FolderRunner:
                 if not run.watch:
                     break
 
+            # El Excel antes de dar la carpeta por terminada: la pantalla enseña
+            # el botón de descarga en cuanto la ve terminada, y un botón que
+            # aparece antes que el archivo es un botón que falla.
+            await asyncio.to_thread(self._escribir_inventario_de_actas, run)
             run.state = RunState.DONE
             run.finished_at = _now()
             run.current = None
@@ -413,7 +450,11 @@ class FolderRunner:
             self._write_manifest(run)
             self._publish(run)
         except asyncio.CancelledError:
-            # stop() already recorded the state; do not overwrite it.
+            # stop() already recorded the state; do not overwrite it. Pero lo
+            # inventariado hasta aquí se deja escrito: detener una carpeta de
+            # cien actas a la mitad no tiene por qué perder las cincuenta leídas.
+            self._escribir_inventario_de_actas(run)
+            self._publish(run)
             raise
         except Exception as error:  # noqa: BLE001 - surfaced to the operator
             logger.exception("folder run %s failed", run.id)
@@ -490,12 +531,23 @@ class FolderRunner:
             task=run.task,
             oracle=run.oracle,
             lectura=run.lectura,
+            corte=run.corte,
+            agrupar=run.agrupar,
             tipo=run.tipo,
             # Adónde irá lo que produzca. Se calcula antes de procesarlo, con
             # el nombre del origen, y la entrega lo recalcula después con el
             # NIC si el expediente lo trae: lo que va en la planilla es dónde
             # quedará, que es lo que el operador necesita saber.
             destination=str(self._output_dir(run, path)),
+            # La carpeta raíz, que es como el operador la reconoce en el
+            # Archivo: sin esto cada PDF salía como una carpeta con su propio
+            # nombre de archivo.
+            origen={
+                "id": run.id,
+                "nombre": run.source.name or str(run.source),
+                "tipo": "carpeta",
+                "inventario": str(self._ruta_del_inventario(run)),
+            },
         )
         run.current_job_id = job.id
         run.job_ids.append(job.id)
@@ -555,6 +607,26 @@ class FolderRunner:
         The document's own spreadsheet travels with its PDFs, because whoever
         receives the folder needs to know what arrived without opening the app.
         """
+        # Un acta no entrega PDF ni planilla propia: su fila va al Excel de la
+        # carpeta, que es lo que se entrega. La planilla de entrega de un
+        # documento cuenta las páginas que acabaron en archivos, y de un acta
+        # que no se parte diría que se perdieron todas. Se reescribe en cada
+        # acta, que cuesta milisegundos, para que el Excel esté siempre al día
+        # aunque la corrida se corte.
+        filas = (job.report or {}).get("inventario_actas") or []
+        if filas:
+            # La carpeta de cada fila es su ruta desde la raíz elegida: con
+            # subcarpetas, «00C003284\UPD3859772» y no sólo «UPD3859772». Es lo
+            # que agrupa el Excel de cada subcarpeta y lo que encadena sus folios.
+            carpeta = self._carpeta_de(run, origin)
+            run.inventario_filas.extend({**fila, "carpeta": carpeta} for fila in filas)
+            # Las actas son sus unidades: un libro cuenta tantas como trae.
+            run.resolutions += len(filas)
+            self._record(run, job, origin)
+            self._entregar_actas(run, job, origin)
+            self._escribir_inventario_de_actas(run)
+            return
+
         produced = self._settings.output_dir / job.id
         try:
             # Recursivo: los documentos de una caja se escriben en una carpeta
@@ -692,6 +764,146 @@ class FolderRunner:
             )
         except Exception:  # noqa: BLE001 - the delivery already happened
             logger.warning("could not write the run inventory", exc_info=True)
+
+    @staticmethod
+    def _raiz(run: FolderRun) -> str:
+        """El nombre de la carpeta elegida como fuente, que abre el espejo en el destino."""
+        return run.source.name or "RAIZ"
+
+    def _carpeta_de(self, run: FolderRun, origin: Path) -> str:
+        """La carpeta de un PDF vista desde la raíz: «00C003284\\UPD3859772»."""
+        return str(Path(self._raiz(run)) / self._relative(run, origin).parent)
+
+    def _espejo(self, run: FolderRun, origin: Path) -> Path:
+        """Dónde va en el destino lo de este PDF: la misma ruta que tiene en la fuente.
+
+        ``FUENTE\\00C003284\\UPD3859772\\libro.pdf`` deja lo suyo en
+        ``DESTINO\\00C003284\\UPD3859772\\``: el destino es un espejo de la
+        fuente, con la carpeta elegida delante y el trabajo hecho dentro.
+        """
+        return run.destination / self._carpeta_de(run, origin)
+
+    def _entregar_actas(self, run: FolderRun, job: Job, origin: Path) -> None:
+        """Deja en la carpeta espejo del destino el resultado de este PDF de actas.
+
+        * Un libro que se dividió: sus actas, en una carpeta con el nombre del
+          libro (``UPD3859772\\2N° 002…\\03_ACTA-EXTRAORDINARIA-NO-017….pdf``).
+        * Un PDF que ya era un acta, cuando se pidió dividir: el PDF tal cual,
+          para que el destino quede completo como la fuente.
+        * Si sólo se pidió inventariar, no se copia ningún PDF: el destino lleva
+          la misma estructura de carpetas, cada una con su Excel.
+
+        Volver a procesar **reemplaza** lo que había en vez de dejar al lado un
+        «(2)», igual que el Excel: el operador espera la sesión con su nombre,
+        no dos copias que discrepan.
+        """
+        from ..application.task import TaskKind
+
+        report = job.report or {}
+        espejo = self._espejo(run, origin)
+        producido = self._settings.output_dir / job.id
+        salidas = report.get("outputs") or []
+        if salidas:
+            copias = [(producido / salida, espejo / salida) for salida in salidas]
+        elif run.task in (str(TaskKind.SPLIT), str(TaskKind.BOTH)):
+            copias = [(origin, espejo / origin.name)]
+        else:
+            return
+        for desde, hasta in copias:
+            try:
+                hasta.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(desde, hasta)
+            except OSError as error:
+                logger.warning("no se pudo entregar %s: %s", hasta.name, error)
+                continue
+            run.record(
+                Delivery(
+                    file_name=hasta.name,
+                    source_document=str(self._relative(run, origin)),
+                    destination=str(hasta.parent),
+                )
+            )
+        self._publish(run)
+
+    @classmethod
+    def _ruta_del_inventario(cls, run: FolderRun) -> Path:
+        """Dónde queda el Excel general: en la carpeta raíz del espejo.
+
+        Se calcula antes de leer nada porque cada trabajo la apunta en el
+        inventario al crearse: es lo que deja descargarlo desde el Archivo
+        cuando la corrida ya no está en memoria.
+        """
+        return cls._ruta_de_un_excel(run.destination / cls._raiz(run))
+
+    @staticmethod
+    def _ruta_de_un_excel(carpeta: Path) -> Path:
+        """«ACTAS UPD3859772__inventario.xlsx» dentro de la carpeta que inventaría."""
+        from ..adapters.excel_actas import SUFIJO
+        from ..domain.naming import sheet_filename
+
+        return carpeta / sheet_filename(
+            f"ACTAS {carpeta.name}".strip(),
+            SUFIJO,
+            directory_length=len(str(carpeta)),
+        )
+
+    def _escribir_inventario_de_actas(self, run: FolderRun) -> None:
+        """Deja en el espejo del destino el Excel general y el de cada subcarpeta.
+
+        El general va en la carpeta raíz -- ``DESTINO\\00C003284\\ACTAS
+        00C003284__inventario.xlsx`` -- con todas las actas; y cada subcarpeta
+        que tenga PDF lleva el suyo, sólo con sus actas: quien abre
+        ``UPD3859772`` en el destino encuentra ahí su inventario, como encontraría
+        los papeles en la caja. Las filas van en el orden de la carpeta y
+        numeradas desde 1, y los folios se encadenan dentro de cada subcarpeta.
+
+        Volver a procesar la misma carpeta al mismo destino **actualiza** esos
+        archivos en vez de dejar al lado un «(2)». Sólo si uno está abierto en
+        Excel -- que lo bloquea -- se escribe con otro nombre, y la pantalla
+        enseña cuál.
+
+        Que falle no deshace nada: las filas siguen en la corrida y cada acta
+        conserva su propio Excel junto a su trabajo.
+        """
+        if not run.inventario_filas or len(run.inventario_filas) == run.inventario_escritas:
+            return
+        try:
+            from ..application.acta_consejo import inventario_de_la_carpeta
+
+            # En el orden de la carpeta y con los folios que la continuidad de
+            # la foliación permite deducir de las actas vecinas.
+            filas = inventario_de_la_carpeta(run.inventario_filas)
+            general = Path(run.inventario) if run.inventario else self._ruta_del_inventario(run)
+            run.inventario = str(self._escribir_un_excel(run, filas, general))
+
+            por_carpeta: dict[str, list[dict]] = {}
+            for fila in filas:
+                por_carpeta.setdefault(str(fila.get("carpeta") or ""), []).append(fila)
+            for carpeta, suyas in por_carpeta.items():
+                destino = self._ruta_de_un_excel(run.destination / carpeta)
+                if carpeta and destino != general:
+                    self._escribir_un_excel(run, suyas, destino)
+
+            run.inventario_error = None
+            run.inventario_escritas = len(run.inventario_filas)
+        except Exception as error:  # noqa: BLE001 - lo leído sigue en la corrida
+            logger.warning("no se pudo escribir el inventario de actas", exc_info=True)
+            run.inventario_error = f"{type(error).__name__}: {error}"
+
+    @staticmethod
+    def _escribir_un_excel(run: FolderRun, filas: list[dict], destino: Path) -> Path:
+        """Escribe un inventario de actas, con otro nombre sólo si el suyo está abierto."""
+        from ..adapters.excel_actas import escribir_inventario_de_actas
+        from ..application.acta_consejo import SIN_IA
+
+        nota = SIN_IA if run.lectura == "local" else None
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            escribir_inventario_de_actas(filas, destino, carpeta=str(run.source), nota=nota)
+        except PermissionError:
+            destino = unique_path(destino.parent, destino.name)
+            escribir_inventario_de_actas(filas, destino, carpeta=str(run.source), nota=nota)
+        return destino
 
     def _dispose(self, run: FolderRun, path: Path) -> None:
         """Leave, move aside, or delete the original, as the operator chose."""

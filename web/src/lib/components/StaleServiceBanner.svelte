@@ -30,9 +30,11 @@
       ['browse', 'el selector de carpetas'],
       ['inventory-task', 'inventariar sin dividir'],
       ['job-fuid', 'descargar el FUID de un documento'],
-      ['perfiles', 'entrar con cédula y correo'],
+      ['perfiles', 'los perfiles de usuario'],
+      ['usuario-siar', 'entrar como «siar»'],
       ['usuarios', 'administrar quién entra'],
-      ['fuid-tabla', 'ver el FUID en pantalla']
+      ['fuid-tabla', 'ver el FUID en pantalla'],
+      ['agrupar-por-mes', 'un archivo por mes en la caja de correspondencia']
     ].filter(([key]) => !has.has(key));
   });
 

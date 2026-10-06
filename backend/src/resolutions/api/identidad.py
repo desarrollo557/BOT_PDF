@@ -13,8 +13,9 @@ que escriba la dirección a mano —y entonces no es ni siquiera una barrera de
 uso, sólo la apariencia de una.
 
 **Lo que no sostiene:** nada frente a alguien que quiera saltárselo. Para eso
-haría falta una contraseña, y el archivo pidió expresamente entrar con dos
-datos y ninguno más.
+haría falta una contraseña, y el archivo pidió expresamente lo contrario:
+desde la pantalla se entra como «siar», sin contraseña, y la cédula de las
+altas sólo la manda quien opere el servicio por la API.
 
 Una petición sin cédula es una petición de nadie, y a nadie no se le deja
 descargar. Es la única lectura que hace que el permiso signifique algo: si la
@@ -59,7 +60,7 @@ def exigir_identificado(quien: Usuario | None) -> Usuario:
         raise HTTPException(
             status_code=401,
             detail=(
-                "Hay que entrar con cédula y correo para hacer esto. "
+                "Hay que entrar (como «siar») para hacer esto. "
                 "Si acaba de entrar, vuelva a hacerlo."
             ),
         )

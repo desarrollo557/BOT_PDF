@@ -14,18 +14,23 @@ primero y nadie volvería a saber que la duplicación existió.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
-from ..domain.diploma import DiplomaRecord, pertenece_al_anterior
+from ..domain.diploma import CriterioDeCorte, DiplomaRecord, pertenece_al_anterior
 from ..domain.folio_manuscrito import folios_comprobados
 from ..domain.grouping import GroupingResult, PageGroup
+from ..domain.naming import CODE_SLUG_LENGTH
 from ..domain.resolution_code import ResolutionCode
+from ..domain.title import slugify
 
 #: El tipo documental de lo que sale de aquí. No se consulta al catálogo del
 #: archivo -- que es de correspondencia de servicios públicos y no tiene ningún
 #: tipo para un diploma universitario -- porque en esta ruta el dato se conoce:
 #: el operador eligió partir un libro de diplomas.
 TIPO_DIPLOMA = "DIPLOMA"
+
+_DANO_EN_EL_NOMBRE = re.compile(r"[^A-ZÁÉÍÓÚÜÑ'. \\-]", re.I)
 
 
 def _identity(
@@ -49,6 +54,14 @@ def _identity(
     en la carpeta: el documento 57 es el archivo 57 de 199, mientras que
     "pagina-113" obliga a dividir mentalmente para saber por dónde va.
 
+    La cédula sólo nombra cuando **se sostiene**: siete dígitos o más, o cuatro
+    si vino escrita con sus puntos de millar. Lo que no llega a eso no es una
+    cédula corta sino una cédula a la que el OCR le comió dígitos, y un archivo
+    llamado `30761_DIPLOMA.pdf` es peor que uno llamado `004_DIPLOMA.pdf`:
+    los dos son ilocalizables por cédula, pero el primero además parece un dato
+    y nadie vuelve a revisarlo. Esa cédula no se pierde -- queda leída en el
+    registro y declarada en la cola de revisión --, sólo que no nombra.
+
     No pretende ser el folio, y conviene no confundirlos: en el libro medido la
     cara 199 lleva escrito el folio 200, porque el foliador se saltó un número.
     Cuál es el folio de verdad sólo lo dice quien sepa leer manuscrito; el
@@ -58,26 +71,62 @@ def _identity(
     -- `7882907__ALBERTO-FERNANDEZ_DIPLOMA.pdf` -- y decirlo dos veces sólo
     gastaría los caracteres que Windows cuenta para su límite de ruta.
 
-    Cuando no se pudo leer, el folio; y cuando tampoco, la página, que es un
+    Y cuando la cédula no se dejó leer, **el nombre del graduando**, antes que
+    el folio y mucho antes que el consecutivo. Lo pidió así el operador: ningún
+    documento debería quedar sin nombre ni sin cédula, y entre
+    `ANGELICA-MARIA-CUELLO-SALCEDO_DIPLOMA.pdf` y `004_DIPLOMA.pdf` el primero
+    lo encuentra cualquiera y el segundo no lo encuentra nadie.
+
+    La cédula sigue yendo primero, y no es una preferencia estética: es única y
+    el nombre no. Dos graduados homónimos existen, y sus archivos se
+    distinguirán por la página que se les añade; dos cédulas iguales son la
+    misma persona.
+
+    Cuando tampoco hay nombre, el folio; y cuando tampoco, la página, que es un
     dato cierto. Nunca se inventa un número: un archivo mal nombrado se busca
     peor que uno llamado por su página.
     """
-    identity = (record.identity_number or "").strip()
-    base = identity or (folio or "").strip() or f"{orden:03d}"
+    identity = (record.identity_number or "").strip() if record.identity_creible else ""
+    base = identity or _del_nombre(record) or (folio or "").strip() or f"{orden:03d}"
     candidate = base if base not in taken else f"{base}-p{record.page_number}"
     taken.add(candidate)
+    # `try_parse` exige al menos un dígito, porque nació para números de
+    # resolución. Un nombre de persona no lo tiene y no por eso es un mal
+    # identificador, así que se construye el código directamente.
     return ResolutionCode.try_parse(candidate) or ResolutionCode(
-        value=f"PAGINA-{record.page_number}", raw=candidate
+        value=candidate or f"PAGINA-{record.page_number}", raw=candidate
     )
 
 
+def _del_nombre(record: DiplomaRecord) -> str:
+    """El nombre del graduando en forma de nombre de archivo, si se leyó.
+
+    Se descarta lo que venga dañado -- un nombre con un dígito dentro es una
+    lectura rota, y `ELI2ABETH-SM1TH_DIPLOMA.pdf` no lo busca nadie --, porque
+    para eso ya está el folio detrás en la cola de alternativas.
+    """
+    if not record.nombre_creible:
+        return ""
+    nombre = record.name.strip()
+    return slugify(nombre, max_length=CODE_SLUG_LENGTH)
+
+
 def _subject(record: DiplomaRecord) -> str | None:
-    """Lo que va en el nombre del archivo después del folio."""
-    partes = [part for part in (record.name, record.degree) if part]
-    return " ".join(partes) if partes else None
+    """Lo que va en el nombre del archivo: NOMBRE - CARRERA (mayúsculas)."""
+    nombre = (record.name or "").strip()
+    carrera = (record.degree or "").strip().upper()
+    if nombre and carrera:
+        return f"{nombre} - {carrera}"
+    if nombre:
+        return nombre
+    if carrera:
+        return carrera
+    return None
 
 
-def _folios_creibles(records: Sequence[DiplomaRecord]) -> dict[int, str]:
+def _folios_creibles(
+    records: Sequence[DiplomaRecord], criterio: CriterioDeCorte
+) -> dict[int, str]:
     """De los folios leídos, los que encajan con la progresión del libro.
 
     Se comprueban todos igual, los impresos y los escritos a mano, porque en
@@ -95,7 +144,9 @@ def _folios_creibles(records: Sequence[DiplomaRecord]) -> dict[int, str]:
     aperturas = [
         record
         for indice, record in enumerate(records)
-        if not pertenece_al_anterior(record, records[indice - 1] if indice else None)
+        if not pertenece_al_anterior(
+            record, records[indice - 1] if indice else None, criterio
+        )
     ]
 
     # Se comprueba la parte numérica y se conserva el folio tal como lo escribe
@@ -119,7 +170,10 @@ def _folios_creibles(records: Sequence[DiplomaRecord]) -> dict[int, str]:
     }
 
 
-def group_by_record(records: Sequence[DiplomaRecord]) -> GroupingResult:
+def group_by_record(
+    records: Sequence[DiplomaRecord],
+    criterio: CriterioDeCorte = CriterioDeCorte.PAGINA,
+) -> GroupingResult:
     """Un archivo por registro, con las páginas que ese registro se lleve.
 
     Lo que decide dónde empieza cada registro es el folio escrito a mano en la
@@ -133,16 +187,26 @@ def group_by_record(records: Sequence[DiplomaRecord]) -> GroupingResult:
     en estos libros todo lo variable está manuscrito y el OCR no lo lee. Medido
     sobre `UPD3859766`, 398 páginas: la marca reconoce 197 de las 199 caras de
     delante en once segundos, mientras que pasarle OCR cuesta 752 y deja el
-    folio sin leer en 228 páginas. Cuando no se pudo mirar la esquina se cae a
-    la regla anterior, la de los identificadores leídos, y donde tampoco ella
-    dice nada la hoja se queda con el registro abierto.
+    folio sin leer en 228 páginas.
+
+    Eso vale para lo que la marca **sí** prueba, que es la apertura. Su ausencia
+    no prueba la continuidad, y por eso una cara de esquina limpia todavía abre
+    documento cuando trae la prueba escrita de ser otro asiento: un folio de
+    registro distinto al pie, o una cédula creíble que no es la de la cara
+    anterior. En estos libros esa es la mitad del trabajo -- cada cara del papel
+    es un diploma terminado --, y sin ello el libro salía con la mitad de los
+    graduados metidos dentro de la otra mitad y fuera del FUID.
+
+    Cuando no se pudo mirar la esquina se cae a la regla anterior, la de los
+    identificadores leídos, y donde no hay ninguna de las tres señales la hoja
+    se queda con el registro abierto, que es lo que manda ante la duda.
 
     Cuando dos páginas repiten el mismo folio, sólo se agrupan si pertenecen a la
     misma cédula. Si el folio repite pero el graduando es distinto, no hay
     excepción: son dos registros diferentes y cada uno sale por su identidad.
     """
     taken: set[str] = set()
-    creibles = _folios_creibles(records)
+    creibles = _folios_creibles(records, criterio)
     abiertos: list[tuple[ResolutionCode, list[int], str | None, DiplomaRecord]] = []
     for record in records:
         # Lo primero que se mira, porque es lo primero que miraría un archivista:
@@ -154,7 +218,7 @@ def group_by_record(records: Sequence[DiplomaRecord]) -> GroupingResult:
         # tiene que ser la misma: si el inventario contara una fila donde la
         # carpeta escribe media, prometería más diplomas de los que hay.
         padre = abiertos[-1][3] if abiertos else None
-        if abiertos and pertenece_al_anterior(record, padre):
+        if abiertos and pertenece_al_anterior(record, padre, criterio):
             abiertos[-1][1].append(record.page_number)
             continue
 

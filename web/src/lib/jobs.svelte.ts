@@ -11,6 +11,7 @@ import {
   streamEvents
 } from './api';
 import { consoleLog } from './console.svelte';
+import type { AgruparChoice, CorteChoice } from './habilidades';
 import type { LecturaChoice } from './lectura';
 import type { TipoPedido } from './tipos';
 import type { OracleChoice } from './oracles';
@@ -207,6 +208,10 @@ class JobStore {
     oracle?: OracleChoice;
     /** Y con qué motor leer el papel de esta carpeta. */
     lectura?: LecturaChoice;
+    /** Y por dónde partir cada libro de diplomas que traiga. */
+    corte?: CorteChoice;
+    /** Y qué va en cada archivo de una caja de correspondencia. */
+    agrupar?: AgruparChoice;
     /** Y qué clase de documento trae, cuando el operador lo sabe. */
     tipo?: TipoPedido;
   }): Promise<FolderRun> {

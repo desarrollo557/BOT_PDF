@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { documentFuidUrl, fuidTabla } from '$lib/api';
+  import { descargarPlanilla, documentFuidUrl, fuidTabla } from '$lib/api';
   import type { FuidTabla } from '$lib/types';
 
   /**
@@ -106,6 +106,21 @@
 
   function cerrar() {
     abierto = false;
+  }
+
+  /**
+   * Bajar el Excel. Por `fetch` y no siguiendo el enlace: el servicio sólo lo
+   * entrega a quien se identifica, y el enlace llega sin la cédula y vuelve
+   * con un 401 en vez de la planilla.
+   */
+  async function bajar(evento: MouseEvent) {
+    evento.preventDefault();
+    error = null;
+    try {
+      await descargarPlanilla(documentFuidUrl(jobId), nombre ? `${nombre}__FUID.xlsx` : undefined);
+    } catch (problema) {
+      error = (problema as Error).message;
+    }
   }
 
   /** Escape cierra el diálogo. Es la salida que se busca sin mirar. */
@@ -232,7 +247,7 @@
 
       <footer>
         {#if planilla.descargable}
-          <a class="bajar" href={documentFuidUrl(jobId)}>
+          <a class="bajar" href={documentFuidUrl(jobId)} onclick={bajar}>
             <svg viewBox="0 0 16 16" aria-hidden="true">
               <path d="M8 2.5v7m0 0 3-3m-3 3-3-3" />
               <path d="M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" />

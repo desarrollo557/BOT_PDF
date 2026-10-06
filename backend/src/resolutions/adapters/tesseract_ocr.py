@@ -31,6 +31,10 @@ TESSERACT_CMD = os.environ.get("RESOLUTIONS_TESSERACT_CMD") or "tesseract"
 #: needs the layout analyser. Using the right one is free accuracy.
 PSM_UNIFORM_BLOCK = 6
 PSM_AUTO = 3
+#: Un renglón suelto, que es lo que se le pasa al rastrear un campo concreto.
+#: Con el modo de página entera, Tesseract busca columnas y párrafos en una
+#: banda de cuatro centímetros y decide que no hay texto.
+PSM_UNA_LINEA = 7
 
 #: Cómo viaja la imagen al binario. PNG y no PGM crudo, medido sobre la banda
 #: de un encabezado real: pesa doce veces menos y Tesseract la lee un 20 % más
@@ -46,6 +50,17 @@ class TesseractConfig:
     #: routes the page to the next rung instead of poisoning a group.
     min_word_confidence: float = 40.0
     autocontrast: bool = True
+    #: Los únicos caracteres que se aceptan como respuesta, o ``None`` para
+    #: todos. Atarlo a dígitos al leer una cédula sube mucho el acierto: sin
+    #: esto, Tesseract propone letras donde hay números -- "7" leído "?" o "l",
+    #: "0" leído "O" -- porque el modelo del idioma español las espera.
+    whitelist: str | None = None
+    #: Cuánto se amplía la imagen antes de leerla. Un recorte estrecho a 400 dpi
+    #: sigue teniendo dígitos de pocos píxeles de alto, y Tesseract acierta
+    #: bastante más cuando la altura de la letra pasa de treinta píxeles.
+    escala: int = 1
+    #: Ninguna página puede dejar detenido el lote indefinidamente.
+    timeout_seconds: float = 15.0
 
 
 class TesseractError(RuntimeError):
@@ -125,12 +140,26 @@ class TesseractOcr:
             str(self._config.psm),
             "tsv",
         ]
+        if self._config.whitelist:
+            args[-1:-1] = ["-c", f"tessedit_char_whitelist={self._config.whitelist}"]
         extra: dict[str, object] = {}
         if sys.platform == "win32":
             # Sin esto, un servicio sin consola abre y cierra una ventana negra
             # por cada página que lee.
             extra["creationflags"] = subprocess.CREATE_NO_WINDOW
-        completed = subprocess.run(args, input=image, capture_output=True, check=False, **extra)
+        try:
+            completed = subprocess.run(
+                args,
+                input=image,
+                capture_output=True,
+                check=False,
+                timeout=self._config.timeout_seconds,
+                **extra,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise TesseractError(
+                f"Tesseract superó {self._config.timeout_seconds:g} s"
+            ) from error
         if completed.returncode != 0:
             motivo = completed.stderr.decode("utf-8", "replace").strip()
             raise TesseractError(motivo or f"tesseract terminó con código {completed.returncode}")
@@ -138,6 +167,11 @@ class TesseractOcr:
 
     def _prepare(self, image_png: bytes) -> Image.Image:
         image = Image.open(BytesIO(image_png)).convert("L")
+        if self._config.escala > 1:
+            image = image.resize(
+                (image.width * self._config.escala, image.height * self._config.escala),
+                Image.LANCZOS,
+            )
         return ImageOps.autocontrast(image) if self._config.autocontrast else image
 
     @staticmethod

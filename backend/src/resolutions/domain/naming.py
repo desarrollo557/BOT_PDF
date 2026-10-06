@@ -132,6 +132,7 @@ def output_filename(
     prefix: str | None = RESOLUTION_PREFIX,
     kind: str | None = None,
     con_titulo: bool = False,
+    mayusculas: bool = False,
 ) -> str:
     """Nombrar un archivo generado por lo que es y por su número.
 
@@ -189,7 +190,9 @@ def output_filename(
                 quien = slugify(quien, max_length=sobra)
             if len(etiqueta) > room:
                 etiqueta = etiqueta[:room].rstrip("-")
-        piezas = [fragment, *( [quien] if quien else [] ), etiqueta]
+        piezas = [fragment, *(([quien] if quien else [])), etiqueta]
+        if mayusculas:
+            piezas = [pieza.upper() for pieza in piezas]
         return PREFIX_SEPARATOR.join(piezas) + extension
 
     title_slug = slugify(title or "", max_length=TITLE_SLUG_LENGTH)

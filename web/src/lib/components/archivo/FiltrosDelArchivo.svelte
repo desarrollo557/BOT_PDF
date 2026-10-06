@@ -66,7 +66,7 @@
   <input
     class="search"
     type="search"
-    placeholder="Buscar por documento, operador o número…"
+    placeholder="Buscar por carpeta, documento, operador o número…"
     bind:value={filters.text}
   />
 

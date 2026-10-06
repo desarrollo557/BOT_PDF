@@ -60,7 +60,7 @@ class TestAQuienLlama:
         import resolutions.api.worker as worker
 
         llamadas = []
-        monkeypatch.setattr(worker, "_record_split_job", lambda p, t: llamadas.append("registros"))
+        monkeypatch.setattr(worker, "_record_split_job", lambda p, t, tipo=None: llamadas.append("registros"))
         monkeypatch.setattr(
             worker, "_recognise", lambda p: pytest.fail("no debía reconocer nada")
         )
@@ -74,7 +74,7 @@ class TestAQuienLlama:
         import resolutions.api.worker as worker
 
         reconocidos = []
-        monkeypatch.setattr(worker, "_record_split_job", lambda p, t: "registros")
+        monkeypatch.setattr(worker, "_record_split_job", lambda p, t, tipo=None: "registros")
         monkeypatch.setattr(worker, "_anunciar", lambda *a, **k: None)
 
         def reconocer(payload):
@@ -98,7 +98,7 @@ class TestAQuienLlama:
 
         llamadas = []
         avisos = []
-        monkeypatch.setattr(worker, "_record_split_job", lambda p, t: llamadas.append(t))
+        monkeypatch.setattr(worker, "_record_split_job", lambda p, t, tipo=None: llamadas.append(t))
         monkeypatch.setattr(
             worker, "_segment_job", lambda *a, **k: pytest.fail("no debía segmentar")
         )

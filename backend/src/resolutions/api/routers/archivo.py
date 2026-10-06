@@ -311,6 +311,9 @@ CAMPOS_BUSCABLES = (
     "file_name",
     "operator",
     "recorded_at",
+    # La carpeta raíz o el lote del que salió: «UPD3859771» encuentra todos
+    # sus PDF aunque ninguno se llame así.
+    "origen",
 )
 
 def _matches(row: dict, needle: str) -> bool:

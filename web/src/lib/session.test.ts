@@ -14,7 +14,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const entrar = vi.fn();
 
 vi.mock('$lib/api', () => ({
-  entrar: (cedula: string, correo: string) => entrar(cedula, correo),
+  entrar: (usuario: string) => entrar(usuario),
   ApiError: class ApiError extends Error {}
 }));
 
@@ -100,42 +100,36 @@ describe('transiciones', () => {
 
   it('entrar con cédula y correo la deja activa', async () => {
     const session = new Session();
-    expect(await session.open('1047382991', 'jefe@archivo.edu.co')).toBe(true);
+    expect(await session.open('1047382991')).toBe(true);
     expect(session.state).toBe('active');
     expect(session.cedula).toBe('1047382991');
   });
 
   it('el nombre que se enseña es el que contestó el servicio', async () => {
     const session = new Session();
-    await session.open('1047382991', 'jefe@archivo.edu.co');
+    await session.open('1047382991');
     expect(session.name).toBe('Ana Martínez');
   });
 
   it('quien no dio nombre se enseña por su cédula', async () => {
     entrar.mockResolvedValue({ ...JEFE, nombre: '' });
     const session = new Session();
-    await session.open('1047382991', 'jefe@archivo.edu.co');
+    await session.open('1047382991');
     expect(session.name).toBe('1047382991');
   });
 
-  it('sin cédula no se llama al servicio siquiera', async () => {
+  it('sin usuario no se llama al servicio siquiera', async () => {
     const session = new Session();
-    expect(await session.open('   ', 'jefe@archivo.edu.co')).toBe(false);
+    expect(await session.open('   ')).toBe(false);
     expect(entrar).not.toHaveBeenCalled();
     expect(session.state).toBe('anonymous');
-  });
-
-  it('sin correo tampoco', async () => {
-    const session = new Session();
-    expect(await session.open('1047382991', '  ')).toBe(false);
-    expect(entrar).not.toHaveBeenCalled();
   });
 
   it('un rechazo del servicio se cuenta con sus palabras', async () => {
     entrar.mockRejectedValue(new ApiError('No hay nadie dado de alta con esa cédula'));
     const session = new Session();
 
-    expect(await session.open('999999999', 'nadie@archivo.edu.co')).toBe(false);
+    expect(await session.open('999999999')).toBe(false);
 
     expect(session.state).toBe('anonymous');
     expect(session.error).toBe('No hay nadie dado de alta con esa cédula');
@@ -148,14 +142,14 @@ describe('transiciones', () => {
     entrar.mockRejectedValue(new TypeError('Failed to fetch'));
     const session = new Session();
 
-    await session.open('1047382991', 'jefe@archivo.edu.co');
+    await session.open('1047382991');
 
     expect(session.error).toMatch(/servicio/i);
   });
 
   it('cerrar borra la sesión y el almacenamiento', async () => {
     const session = new Session();
-    await session.open('1047382991', 'jefe@archivo.edu.co');
+    await session.open('1047382991');
     session.close();
     expect(session.state).toBe('anonymous');
     expect(session.cedula).toBeNull();
@@ -166,20 +160,20 @@ describe('transiciones', () => {
 describe('el perfil', () => {
   it('el administrador administra', async () => {
     const session = new Session();
-    await session.open('1047382991', 'jefe@archivo.edu.co');
+    await session.open('1047382991');
     expect(session.esAdministrador).toBe(true);
   });
 
   it('y descarga las planillas', async () => {
     const session = new Session();
-    await session.open('1047382991', 'jefe@archivo.edu.co');
+    await session.open('1047382991');
     expect(session.descargaPlanillas).toBe(true);
   });
 
   it('el técnico no descarga las planillas', async () => {
     entrar.mockResolvedValue(TECNICA);
     const session = new Session();
-    await session.open('52814663', 'tecnica@archivo.edu.co');
+    await session.open('52814663');
     expect(session.perfil).toBe('tecnico');
     expect(session.descargaPlanillas).toBe(false);
   });
@@ -187,14 +181,14 @@ describe('el perfil', () => {
   it('ni administra', async () => {
     entrar.mockResolvedValue(TECNICA);
     const session = new Session();
-    await session.open('52814663', 'tecnica@archivo.edu.co');
+    await session.open('52814663');
     expect(session.esAdministrador).toBe(false);
   });
 
   it('el de calidad tampoco descarga', async () => {
     entrar.mockResolvedValue({ ...TECNICA, perfil: 'calidad', perfil_label: 'Calidad' });
     const session = new Session();
-    await session.open('39158204', 'calidad@archivo.edu.co');
+    await session.open('39158204');
     expect(session.descargaPlanillas).toBe(false);
   });
 
@@ -207,13 +201,13 @@ describe('el perfil', () => {
   it('se dice cuando esta entrada fundó el archivo', async () => {
     entrar.mockResolvedValue({ ...JEFE, primer_administrador: true });
     const session = new Session();
-    await session.open('1047382991', 'jefe@archivo.edu.co');
+    await session.open('1047382991');
     expect(session.primerAdministrador).toBe(true);
   });
 
   it('y no se dice cuando no', async () => {
     const session = new Session();
-    await session.open('1047382991', 'jefe@archivo.edu.co');
+    await session.open('1047382991');
     expect(session.primerAdministrador).toBe(false);
   });
 });
@@ -238,7 +232,7 @@ describe('inactividad', () => {
 
   it('reanudar no pide nada: no hay nada que desbloquear', async () => {
     const session = new Session();
-    await session.open('1047382991', 'jefe@archivo.edu.co');
+    await session.open('1047382991');
     session.state = 'idle';
     session.resume();
     expect(session.state).toBe('active');
@@ -247,7 +241,7 @@ describe('inactividad', () => {
 
   it('reanudar desde activa no hace nada', async () => {
     const session = new Session();
-    await session.open('1047382991', 'jefe@archivo.edu.co');
+    await session.open('1047382991');
     session.resume();
     expect(session.state).toBe('active');
   });
@@ -255,7 +249,7 @@ describe('inactividad', () => {
   it('tocar desde inactiva no reanuda sola', async () => {
     // Volver a la máquina no es lo mismo que decir «sigo siendo yo».
     const session = new Session();
-    await session.open('1047382991', 'jefe@archivo.edu.co');
+    await session.open('1047382991');
     session.state = 'idle';
     session.touch();
     expect(session.state).toBe('idle');
@@ -269,7 +263,7 @@ describe('el perfil guardado se vuelve a preguntar', () => {
     guardar(JEFE, Date.now() - 60_000);
     const session = new Session();
     const stop = session.start();
-    await vi.waitFor(() => expect(entrar).toHaveBeenCalledWith(JEFE.cedula, JEFE.correo));
+    await vi.waitFor(() => expect(entrar).toHaveBeenCalledWith(JEFE.cedula));
     stop();
   });
 
@@ -325,7 +319,7 @@ describe('almacenamiento hostil', () => {
     const session = new Session();
     const stop = session.start();
     expect(session.state).toBe('anonymous');
-    expect(await session.open('1047382991', 'jefe@archivo.edu.co')).toBe(true);
+    expect(await session.open('1047382991')).toBe(true);
     expect(session.state).toBe('active');
     stop();
   });

@@ -39,6 +39,9 @@ async def _run(ctx: Contexto, job: Job) -> None:
         # servicio: el operador lo eligió para este documento, y dos documentos
         # de la misma cola pueden querer motores distintos.
         "lectura": job.lectura,
+        "corte": job.corte,
+        # Qué se entrega como un archivo en una caja de correspondencia.
+        "agrupar": job.agrupar,
         # Y qué dijo el operador que es. Va con el trabajo porque decide a qué
         # habilidad entra, que es la decisión más consecuente de todas.
         "tipo": job.tipo,
@@ -51,6 +54,10 @@ async def _run(ctx: Contexto, job: Job) -> None:
     }
     try:
         report = await loop.run_in_executor(ctx.pool, ctx.procesar, payload)
+        # Con el informe viaja de qué carpeta o lote salió, que es lo que el
+        # inventario anota para que el Archivo pueda reunirlos después.
+        if job.origen and isinstance(report, dict):
+            report.setdefault("origen", job.origen)
         ctx.registry.mark_done(job, report)
         try:
             ctx.ledger.record(job.id, report, operator=job.operator, source_bytes=job.bytes)

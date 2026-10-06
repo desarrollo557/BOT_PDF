@@ -180,6 +180,29 @@ class TestEntrar:
 # -----------------------------------------------------------------------------
 
 
+class TestEntrarComoSiar:
+    """El usuario de la casa: «siar», sin contraseña y sin alta previa."""
+
+    def test_entra_como_administrador_sin_alta(self, client):
+        r = client.post("/api/sesion", json={"usuario": "siar"})
+        assert r.status_code == 200
+        assert r.json()["perfil"] == "administrador"
+        assert r.json()["cedula"] == "siar"
+
+    def test_entra_aunque_ya_haya_otros_dados_de_alta(self, client, administrador):
+        assert client.post("/api/sesion", json={"usuario": " SIAR "}).status_code == 200
+
+    def test_otro_usuario_no_entra(self, client):
+        assert client.post("/api/sesion", json={"usuario": "juan"}).status_code == 401
+
+    def test_su_cabecera_le_da_permisos_de_administrador(self, client):
+        assert client.get("/api/usuarios", headers={"X-Cedula": "siar"}).status_code == 200
+
+    def test_el_servicio_lo_anuncia(self, client):
+        """Contra un servicio anterior, la pantalla tiene que poder decir qué falta."""
+        assert "usuario-siar" in client.get("/api/health").json()["features"]
+
+
 class TestDarDeAlta:
     def test_el_administrador_da_de_alta(self, client, administrador):
         respuesta = client.post(

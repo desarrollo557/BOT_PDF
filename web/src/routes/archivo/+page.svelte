@@ -9,6 +9,7 @@
     selectionTotals,
     toggle,
     toggleAll,
+    toggleMany,
     visibleSelection,
     type Filters,
     type Sort
@@ -106,7 +107,8 @@
     resolutions: shown.reduce((sum, entry) => sum + entry.resolutions, 0),
     pages: shown.reduce((sum, entry) => sum + entry.pages, 0),
     bytes: shown.reduce((sum, entry) => sum + entry.bytes, 0),
-    review: shown.reduce((sum, entry) => sum + entry.review, 0)
+    review: shown.reduce((sum, entry) => sum + entry.review, 0),
+    carpetas: new Set(shown.map((entry) => entry.origen?.id).filter(Boolean)).size
   });
 
   const narrowed = $derived(
@@ -142,6 +144,11 @@
 
   function pick(jobId: string) {
     selected = toggle(selected, jobId);
+    bulkOutcome = null;
+  }
+
+  function pickMany(jobIds: string[]) {
+    selected = toggleMany(selected, jobIds);
     bulkOutcome = null;
   }
 
@@ -203,8 +210,9 @@
   <div>
     <h2>Archivo</h2>
     <p>
-      Todo lo que salió del separador. Búsquelo por documento de origen o por número de
-      resolución — es el mismo archivo visto con dos lupas distintas.
+      Todo lo que se ha procesado. Lo que vino de una carpeta local o de un lote aparece
+      reunido bajo el nombre de esa carpeta. Busque por carpeta, por PDF de origen, por
+      operador o por número del documento.
     </p>
   </div>
 
@@ -244,6 +252,7 @@
     {historyTotal}
     {nameOf}
     onpick={pick}
+    onpickmany={pickMany}
     onpickall={pickAll}
     onclearselection={clearSelection}
     onremoveselected={removeSelected}

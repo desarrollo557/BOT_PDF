@@ -14,6 +14,7 @@ aplica se escribe N/A**. Una celda vacía en un inventario documental no dice
 
 from __future__ import annotations
 
+import logging
 from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,9 @@ from ..application.progress import (
     ProgressReporter,
     Stage,
 )
+
+logger = logging.getLogger(__name__)
+
 
 HOJA = "INVENTARIO"
 
@@ -144,7 +148,9 @@ class FuidInventory:
                 )
             )
         except Exception:  # noqa: BLE001 - la telemetría nunca rompe el trabajo
-            pass
+            # Se traga, pero deja rastro: un aviso que falla en silencio hace
+            # que la barra se quede quieta sin que nadie sepa por qué.
+            logger.debug("no se pudo anunciar el avance del FUID", exc_info=True)
 
     # -- cabecera -------------------------------------------------------------
 
@@ -260,6 +266,7 @@ class FuidInventory:
                     )
                 )
                 celda.value = None
+
         return fin, recogidas
 
     @staticmethod

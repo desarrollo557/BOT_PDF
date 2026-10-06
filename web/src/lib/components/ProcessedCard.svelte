@@ -1,7 +1,10 @@
 <script lang="ts">
   import { deleteDocument, renameDocument } from '$lib/api';
+  import ArchivosDelTrabajo from '$lib/components/archivo/ArchivosDelTrabajo.svelte';
+  import { unidades } from '$lib/archive.svelte';
   import { formatBytes } from '$lib/format';
   import { jobStore } from '$lib/jobs.svelte';
+  import type { Origen } from '$lib/types';
 
   /**
    * One processed document, however it is being remembered.
@@ -28,6 +31,19 @@
     error: string | null;
     /** Whether the full report is still on screen, so it can be opened. */
     live: boolean;
+    /**
+     * Si es un acta de consejo. Sólo esas tarjetas llevan el botón del
+     * inventario de actas: las de resoluciones tienen el suyo, con su formato,
+     * en la ficha del documento.
+     */
+    acta?: boolean;
+    /**
+     * La carpeta local o el lote del que salió. Con él, el Archivo lo dibuja
+     * dentro de la tarjeta de su carpeta y no suelto con su propio nombre.
+     */
+    origen?: Origen | null;
+    /** Los tipos documentales que salieron, para nombrar bien sus unidades. */
+    tipos?: string[];
   }
 
   interface Props {
@@ -61,6 +77,9 @@
   let failure = $state<string | null>(null);
   let draft = $state('');
 
+  /** «Actas», «Resoluciones» o «Documentos», según qué papel era. */
+  const unidad = $derived(unidades(entry.tipos ?? [], entry.acta));
+
   const clock = $derived(
     new Date(entry.at).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })
   );
@@ -92,6 +111,9 @@
     }
   }
 
+  /** Si la tarjeta enseña su inventario y los PDF que dejó. */
+  let abierta = $state(false);
+
   async function remove() {
     busy = true;
     failure = null;
@@ -116,6 +138,7 @@
   class:failed={entry.failed}
   class:openable={entry.live && mode === 'idle'}
   class:picking={!!onselect}
+  class:open={abierta}
 >
   <span class="tab" aria-hidden="true"></span>
 
@@ -150,7 +173,7 @@
     <div class="panel">
       <p class="warn">
         Se eliminarán <b>{entry.resolutions}</b>
-        {entry.resolutions === 1 ? 'resolución' : 'resoluciones'} de
+        {unidad.toLowerCase()} de
         <b>{entry.name}</b>: los PDF generados y sus filas del inventario. No se puede
         deshacer.
       </p>
@@ -163,91 +186,126 @@
       {#if failure}<p class="error">{failure}</p>{/if}
     </div>
   {:else}
-    {#if onselect}
-      <!--
-        Fuera del enlace a propósito: dentro, marcar la casilla navegaría al
-        detalle del documento y el operador perdería la selección entera.
-      -->
-      <label class="pick" title="Seleccionar para eliminar en lote">
-        <input
-          type="checkbox"
-          checked={selected ?? false}
-          onclick={(event) => onselect(entry.jobId, event.shiftKey)}
-        />
-        <span class="sr">Seleccionar {entry.name}</span>
-      </label>
-    {/if}
-    <!--
-      Lleva al detalle esté en pantalla o archivado. Antes sólo era un enlace
-      mientras el trabajo seguía en memoria, así que en cuanto se limpiaba el
-      área de trabajo la ficha dejaba de poder abrirse: la tarjeta se veía
-      pinchable y no llevaba a ninguna parte.
-    -->
-    <a class="body" href={`/documento/${entry.jobId}`}>
-      <header>
-        <span class="name" title={entry.name}>{entry.name}</span>
-        <time class="tabular">{clock}</time>
-      </header>
-
-      {#if entry.failed}
-        <p class="error" title={entry.error ?? ''}>{entry.error ?? 'No se pudo procesar'}</p>
-      {:else}
-        <!-- Two numbers, always in the same place, always meaning the same thing. -->
-        <dl class="figures">
-          <div>
-            <dt>Resoluciones</dt>
-            <dd class="tabular">{entry.resolutions}</dd>
-          </div>
-          <div>
-            <dt>Páginas</dt>
-            <dd class="tabular">{entry.pages || '—'}</dd>
-          </div>
-          <div>
-            <dt>Tamaño</dt>
-            <dd class="tabular">{entry.bytes ? formatBytes(entry.bytes) : '—'}</dd>
-          </div>
-        </dl>
-      {/if}
-    </a>
-
-    <footer>
-      {#if entry.operator}
-        <span class="by">{entry.operator}</span>
-      {:else}
-        <span class="by anon">sin operador</span>
-      {/if}
-
-      {#if entry.review}
-        <span class="review" title={`${entry.review} páginas requieren revisión`}>
-          ⚠ {entry.review}
-        </span>
-      {/if}
-
-      <span class="tools">
-        <button onclick={startRename} title="Cambiar el nombre del documento">renombrar</button>
-        <button
-          class="quiet"
-          onclick={() => {
-            failure = null;
-            mode = 'confirming';
-          }}
-          title="Eliminar el documento, sus PDF y su inventario"
-        >
-          eliminar
-        </button>
+    <!-- Cerrada es una tarjeta más de la rejilla. Abierta ocupa la fila y se
+         parte en dos: el documento a la izquierda y lo que dejó a la derecha,
+         en vez de una columna estirada con todo centrado. -->
+    <div class="layout" class:split={abierta}>
+      <div class="summary">
+      {#if onselect}
         <!--
-          Un solo enlace, esté el documento en pantalla o archivado: desde que
-          la ficha se dibuja también desde el inventario, los dos abren. Poner
-          además el rótulo "archivado" metía un elemento de más en un pie que no
-          reparte, y la fila se salía de la tarjeta.
+          Fuera del enlace a propósito: dentro, marcar la casilla navegaría al
+          detalle del documento y el operador perdería la selección entera.
         -->
-        <a class="open" href={`/documento/${entry.jobId}`} title={entry.live ? undefined : 'Archivado: se dibuja desde el inventario'}>
-          ver detalle →
-        </a>
-      </span>
-    </footer>
+        <label class="pick" title="Seleccionar para eliminar en lote">
+          <input
+            type="checkbox"
+            checked={selected ?? false}
+            onclick={(event) => onselect(entry.jobId, event.shiftKey)}
+          />
+          <span class="sr">Seleccionar {entry.name}</span>
+        </label>
+      {/if}
+      <!--
+        Lleva al detalle esté en pantalla o archivado. Antes sólo era un enlace
+        mientras el trabajo seguía en memoria, así que en cuanto se limpiaba el
+        área de trabajo la ficha dejaba de poder abrirse: la tarjeta se veía
+        pinchable y no llevaba a ninguna parte.
+      -->
+      <a class="body" href={`/documento/${entry.jobId}`}>
+        <header>
+          <span class="name" title={entry.name}>{entry.name}</span>
+          <time class="tabular">{clock}</time>
+        </header>
 
-    {#if failure}<p class="error">{failure}</p>{/if}
+        {#if entry.failed}
+          <p class="error" title={entry.error ?? ''}>{entry.error ?? 'No se pudo procesar'}</p>
+        {:else}
+          <!-- Two numbers, always in the same place, always meaning the same thing. -->
+          <dl class="figures">
+            <div>
+              <dt>{unidad}</dt>
+              <dd class="tabular">{entry.resolutions}</dd>
+            </div>
+            <div>
+              <dt>Páginas</dt>
+              <dd class="tabular">{entry.pages || '—'}</dd>
+            </div>
+            <div>
+              <dt>Tamaño</dt>
+              <dd class="tabular">{entry.bytes ? formatBytes(entry.bytes) : '—'}</dd>
+            </div>
+          </dl>
+        {/if}
+      </a>
+
+        {#if !entry.failed}
+          <!-- Fuera del enlace: dentro, pulsarlo abriría el detalle. -->
+          <button
+            class="toggle"
+            aria-expanded={abierta}
+            aria-controls={`archivos-${entry.jobId}`}
+            onclick={() => (abierta = !abierta)}
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3.5 4.5 4.5L6 12.5" /></svg>
+            {#if abierta}
+              Ocultar archivos
+            {:else}
+              {entry.acta ? 'Inventario y PDF divididos' : 'Archivos generados'}
+            {/if}
+          </button>
+        {/if}
+
+      <footer>
+        {#if entry.operator}
+          <span class="by">{entry.operator}</span>
+        {:else}
+          <span class="by anon">sin operador</span>
+        {/if}
+
+        {#if entry.review}
+          <span class="review" title={`${entry.review} páginas requieren revisión`}>
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M8 2.5 14 13H2L8 2.5Z" />
+              <path d="M8 6.5v3M8 11.3v.2" />
+            </svg>
+            {entry.review}
+          </span>
+        {/if}
+
+        <span class="tools">
+          <button onclick={startRename} title="Cambiar el nombre del documento">renombrar</button>
+          <button
+            class="quiet"
+            onclick={() => {
+              failure = null;
+              mode = 'confirming';
+            }}
+            title="Eliminar el documento, sus PDF y su inventario"
+          >
+            eliminar
+          </button>
+          <!--
+            Un solo enlace, esté el documento en pantalla o archivado: desde que
+            la ficha se dibuja también desde el inventario, los dos abren. Poner
+            además el rótulo "archivado" metía un elemento de más en un pie que no
+            reparte, y la fila se salía de la tarjeta.
+          -->
+          <a class="open" href={`/documento/${entry.jobId}`} title={entry.live ? undefined : 'Archivado: se dibuja desde el inventario'}>
+            ver detalle
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3.5 4.5 4.5L6 12.5" /></svg>
+          </a>
+        </span>
+      </footer>
+
+        {#if failure}<p class="error">{failure}</p>{/if}
+      </div>
+
+      {#if abierta && !entry.failed}
+        <section class="detail" id={`archivos-${entry.jobId}`} aria-label={`Archivos de ${entry.name}`}>
+          <ArchivosDelTrabajo jobId={entry.jobId} />
+        </section>
+      {/if}
+    </div>
   {/if}
 </div>
 
@@ -396,6 +454,80 @@
     white-space: nowrap;
   }
 
+  /* Abierta ocupa la fila entera: la lista de PDF de un libro no cabe en una
+     columna de la rejilla. */
+  .card.open {
+    grid-column: 1 / -1;
+    container-type: inline-size;
+  }
+
+  .layout,
+  .summary {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  /* De borde a borde de la tarjeta: sin esto la rejilla se encogía a su
+     contenido y quedaba centrada en la fila, con el resumen flotando. */
+  .layout {
+    width: 100%;
+    align-self: stretch;
+  }
+
+  .detail {
+    min-width: 0;
+    border-top: 1px solid var(--rule);
+    padding-top: 0.85rem;
+  }
+
+  /* Con sitio, el documento a la izquierda y sus archivos a la derecha. */
+  @container (min-width: 46rem) {
+    .layout.split {
+      display: grid;
+      grid-template-columns: minmax(15rem, 19rem) minmax(0, 1fr);
+      align-items: start;
+      gap: 1.5rem;
+    }
+    .layout.split .detail {
+      border-top: 0;
+      border-left: 1px solid var(--rule);
+      padding: 0 0 0 1.5rem;
+    }
+  }
+
+  .toggle {
+    display: inline-flex;
+    align-self: flex-start;
+    align-items: center;
+    gap: 0.25rem;
+    border: 0;
+    background: none;
+    padding: 0;
+    font: inherit;
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .toggle:hover {
+    text-decoration: underline;
+  }
+  .toggle svg {
+    width: 0.85rem;
+    height: 0.85rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform 0.15s ease;
+  }
+  .toggle[aria-expanded='true'] svg {
+    transform: rotate(90deg);
+  }
+
   footer {
     display: flex;
     /* Que reparta antes que desbordar: la tarjeta tiene un ancho fijo en la
@@ -424,13 +556,35 @@
   }
 
   .review {
+    display: inline-flex;
     flex-shrink: 0;
+    align-items: center;
+    gap: 0.2rem;
     border-radius: 999px;
     background: color-mix(in oklab, var(--warning) 16%, transparent);
     padding: 0 0.4rem;
     font-family: var(--font-mono);
     font-size: 0.66rem;
     color: var(--warning);
+  }
+
+  .review svg,
+  .open svg {
+    width: 0.75rem;
+    height: 0.75rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .open {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.1rem;
+    font-size: 0.7rem;
+    text-decoration: none;
   }
 
   .tools {

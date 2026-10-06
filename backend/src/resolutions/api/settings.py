@@ -18,6 +18,24 @@ def _float_opcional(name: str) -> float | None:
         return None
 
 
+def _int_opcional(name: str) -> int | None:
+    """Un entero del entorno, o nada. Un valor ilegible es nada, no cero.
+
+    Nada y cero son cosas distintas aquí: en un tope de páginas, "nada"
+    significa sin tope y cero significa no gastar ni una. Un `RESOLUTIONS_TOPE_
+    PAGINAS_OCR=abc` que se interpretara como cero apagaría el motor de pago en
+    silencio, que es exactamente la clase de degradación callada que esta casa
+    no admite.
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 def _int(name: str, fallback: int) -> int:
     try:
         return int(os.environ[name])
@@ -74,6 +92,21 @@ class Settings:
     #: sale de una medida. Sin él se enseñan páginas y tokens, que sí se miden.
     precio_ocr_por_pagina: float | None = None
 
+    #: Cuántas páginas facturadas como máximo puede gastar **un trabajo**.
+    #:
+    #: ``None`` es sin tope, que es lo que había y sigue siendo lo normal. Se
+    #: pone cuando importa más no pasarse de una cifra que leerlo todo: una caja
+    #: son cientos de páginas y el motor remoto cobra por cada una, de modo que
+    #: sin tope la única señal de que un trabajo se comió el crédito llegaba
+    #: cuando el proveedor contestaba "sin presupuesto" en mitad del libro
+    #: siguiente.
+    #:
+    #: Alcanzarlo no cancela nada: el motor de pago deja de pedirse y lo que
+    #: falte se lee con el local. En un libro de diplomas eso significa que los
+    #: documentos salen igual -- el corte sale de medir tinta y no necesita OCR
+    #: -- sólo que nombrados por su folio o su orden en vez de por su cédula.
+    tope_paginas_ocr: int | None = None
+
     #: Uploads are streamed to disk in chunks and never held in memory, so this
     #: bounds disk use rather than RAM. Four gigabytes covers a full archive box
     #: scanned at 300 dpi; set it higher when the scanner disagrees.
@@ -124,6 +157,7 @@ class Settings:
             gemini_api_key=os.environ.get("GEMINI_API_KEY") or None,
             mistral_api_key=os.environ.get("MISTRAL_API_KEY") or None,
             precio_ocr_por_pagina=_float_opcional("RESOLUTIONS_PRECIO_OCR_POR_PAGINA"),
+            tope_paginas_ocr=_int_opcional("RESOLUTIONS_TOPE_PAGINAS_OCR"),
             max_upload_bytes=_int("RESOLUTIONS_MAX_UPLOAD_BYTES", 4 * 1024 * 1024 * 1024),
             ledger_path=Path(
                 os.environ.get("RESOLUTIONS_LEDGER", DEFAULT_ROOT / "inventory.jsonl")
@@ -157,6 +191,7 @@ class Settings:
             "gemini_api_key": self.gemini_api_key,
             "mistral_api_key": self.mistral_api_key,
             "precio_ocr_por_pagina": self.precio_ocr_por_pagina,
+            "tope_paginas_ocr": self.tope_paginas_ocr,
             "fuid_template": self.fuid_template,
             "fuid_caja": self.fuid_caja,
             "fuid_otro": self.fuid_otro,

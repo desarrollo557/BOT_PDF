@@ -22,7 +22,7 @@ from ..domain.diploma import DiplomaRecord, extract_diploma_warnings
 
 #: Los campos que una persona puede corregir. Deliberadamente cortos: si hiciera
 #: falta corregir la página entera, lo que está mal es la digitalización.
-CAMPOS = ("folio", "registered_folio", "book", "name", "identity_number", "degree",
+CAMPOS = ("folio", "registered_folio", "book", "name", "carrera", "identity_number", "degree",
           "graduation_date")
 
 
