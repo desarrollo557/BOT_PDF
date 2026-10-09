@@ -46,7 +46,32 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     # 1. Decidir los grupos: costura por costura, con la fuente abierta, y
     #    después del corte y no antes preguntarle a cada documento qué es --
     #    ahora tiene bordes, así que la pregunta tiene una sola respuesta.
-    source = PyMuPDFPageSource(taller.source, taller.name)
+    # Si taller.source es un directorio, unir todos los PDFs en él
+    if taller.source.is_dir():
+        from pathlib import Path
+        import tempfile
+        import fitz
+        
+        # Buscar todos los PDFs en el directorio
+        pdf_files = sorted([f for f in taller.source.iterdir() if f.suffix.lower() == '.pdf'])
+        if not pdf_files:
+            raise ValueError(f"El directorio {taller.source} no contiene archivos PDF")
+        
+        # Unir todos los PDFs en uno temporal
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+        
+        merged = fitz.open()
+        for pdf_file in pdf_files:
+            doc = fitz.open(pdf_file)
+            merged.insert_pdf(doc)
+            doc.close()
+        merged.save(tmp_path)
+        merged.close()
+    else:
+        tmp_path = taller.source
+    
+    source = PyMuPDFPageSource(tmp_path, taller.name)
     try:
         page_count = source.page_count
         segmentacion = SegmentDocument(

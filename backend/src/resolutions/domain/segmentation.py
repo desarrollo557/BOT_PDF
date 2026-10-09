@@ -280,6 +280,26 @@ def _decide(
     if right.opening:
         return Verdict.STARTS, f"la cabecera abre: {', '.join(right.opening)}"
 
+    # REGLA NUEVA: Sección abierta sin cerrar (PETICIONES:, HECHOS:, etc.)
+    # Si la página izquierda termina con una sección que no cierra (como PETICIONES:)
+    # y la derecha no abre un nuevo documento, son continuidad.
+    # Esto soluciona el caso UPD2320043 donde páginas 6 y 7 deberían estar unidas.
+    from ..domain.tramites import pagina_con_seccion_abierta
+    if pagina_con_seccion_abierta(left.text):
+        return Verdict.CONTINUES, "la página izquierda termina con sección abierta (PETICIONES:, HECHOS:, etc.)"
+
+    # REGLA NUEVA: Mismo NIC y remitente en páginas consecutivas
+    # Si ambas páginas comparten NIC y remitente, son del mismo documento.
+    from ..domain.tramites import nic_de
+    from ..application.agrupacion import normalizar_nombre, extraer_remitente
+    left_nic = nic_de(left.text)
+    right_nic = nic_de(right.text)
+    left_remitente = normalizar_nombre(extraer_remitente(left.text)) if left.text else None
+    right_remitente = normalizar_nombre(extraer_remitente(right.text)) if right.text else None
+    
+    if left_nic and right_nic and left_nic == right_nic and left_remitente and right_remitente and left_remitente == right_remitente:
+        return Verdict.CONTINUES, f"mismo NIC ({left_nic}) y remitente ({left_remitente[:30]})"
+
     # Prioridad 6: el papel mismo. Un cambio de tamaño de hoja es un cambio de
     # lote de escaneo, y va aquí -- después de la numeración, los identificadores,
     # los anexos y el tipo -- porque un anexo puede venir en otro papel sin dejar
