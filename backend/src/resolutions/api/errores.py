@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import errno
 from collections.abc import Iterable, Mapping
-from pathlib import Path
+from pathlib import PureWindowsPath
 
 #: De dónde viene el parámetro. Es útil para el programa y ruido para quien
 #: lee: «limit» se entiende; «query.limit» no dice nada más.
@@ -118,7 +118,9 @@ _DE_UN_PROVEEDOR = {
 
 def _archivo(error: OSError) -> str:
     # Sólo el nombre: la ruta entera dice dónde vive el servicio a quien no le hace falta.
-    nombre = Path(str(error.filename)).name if error.filename else ""
+    # PureWindowsPath parte por «\» y por «/» en cualquier sistema: con Path, en
+    # Linux, una ruta de Windows salía entera.
+    nombre = PureWindowsPath(str(error.filename)).name if error.filename else ""
     return f" «{nombre}»" if nombre else ""
 
 
