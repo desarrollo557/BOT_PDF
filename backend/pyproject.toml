@@ -31,7 +31,9 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# «.» para que las pruebas compartan ayudantes con «from tests.fakes import …»
+# igual con `pytest` (la CI) que con `python -m pytest`.
+pythonpath = ["src", "."]
 addopts = "-q"
 
 [tool.ruff]
