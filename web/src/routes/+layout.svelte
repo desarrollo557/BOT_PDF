@@ -3,10 +3,14 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { setIdentidad, setOperator } from '$lib/api';
+  import { atraparErroresSueltos } from '$lib/avisos.svelte';
+  import Avisos from '$lib/components/Avisos.svelte';
+  import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import CompletionReport from '$lib/components/CompletionReport.svelte';
   import ConsoleDrawer from '$lib/components/ConsoleDrawer.svelte';
   import StaleServiceBanner from '$lib/components/StaleServiceBanner.svelte';
   import LoginScreen from '$lib/components/LoginScreen.svelte';
+  import Migas from '$lib/components/Migas.svelte';
   import SessionMenu from '$lib/components/SessionMenu.svelte';
   import StatusRail from '$lib/components/StatusRail.svelte';
   import { jobStore } from '$lib/jobs.svelte';
@@ -20,11 +24,14 @@
   // of who is at the console -- work in flight is the service's, not a
   // session's, and must not stop because somebody stepped away.
   onMount(() => {
+    // Antes que nada: si conectar o arrancar la sesión fallan, eso también se ve.
+    const soltar = atraparErroresSueltos();
     const release = jobStore.connect();
     const stop = session.start();
     return () => {
       release();
       stop();
+      soltar();
     };
   });
 
@@ -76,21 +83,8 @@
       match: (path: string) => path.startsWith('/revision'),
       badge: pending || null,
       tone: 'warn'
-    },
-    // La cuarta sólo existe para quien puede usarla. Una pestaña que lleva a un
-    // 403 no informa de nada: enseña una puerta que no abre y deja al operador
-    // preguntándose qué hizo mal.
-    ...(session.esAdministrador
-      ? [
-          {
-            href: '/usuarios',
-            label: 'Usuarios',
-            match: (path: string) => path.startsWith('/usuarios'),
-            badge: null,
-            tone: 'quiet'
-          }
-        ]
-      : [])
+    }
+    // Sin pestaña de Usuarios: se entra siempre como «siar», y con eso basta.
   ]);
 </script>
 
@@ -124,7 +118,7 @@
         <img src="/siar-marca.png" alt="SIAR" width="72" height="38" />
       </span>
 
-      <nav class="tabs">
+      <nav class="tabs segmented">
         {#each TABS as tab (tab.href)}
           <a href={tab.href} class:current={tab.match(here)}>
             {tab.label}
@@ -141,7 +135,10 @@
       </div>
     </header>
 
-    <main>{@render children()}</main>
+    <main>
+      <Migas />
+      {@render children()}
+    </main>
   </div>
 
   {#if reports.showing}
@@ -150,6 +147,11 @@
 
   <ConsoleDrawer {active} />
 {/if}
+
+<!-- Fuera de la sesión también: un error al entrar debe verse, y la pregunta
+     de confirmar la puede hacer cualquier pantalla. -->
+<Avisos />
+<ConfirmDialog />
 
 <style>
   .topbar {
@@ -197,12 +199,12 @@
     line-height: 1.25;
   }
   .titles b {
-    font-size: 0.95rem;
+    font-size: var(--text-lg);
     font-weight: 650;
     letter-spacing: -0.011em;
   }
   .titles small {
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -215,50 +217,33 @@
   .owner img {
     width: auto;
     height: 19px;
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
     /* Transparente en claro; en oscuro, una placa para no teñir la marca. */
     background: var(--logo-plate);
     padding: 3px 6px;
   }
 
-  .tabs {
-    display: flex;
-    gap: 2px;
-    border: 1px solid var(--hairline);
-    border-radius: 9px;
-    background: var(--plane);
-    padding: 3px;
-  }
-  .tabs a {
+  /* Las pestañas son el control segmentado común (`.segmented`): el mismo
+     radio, el mismo relleno y la misma letra que «Por documento / Por PDF
+     generado» o los filtros de Revisión. Aquí sólo se alinean el texto y el
+     contador. */
+  .tabs > a {
     display: flex;
     align-items: center;
     gap: 0.45rem;
-    border-radius: 6px;
-    padding: 0.3rem 0.8rem;
-    font-size: 0.82rem;
-    color: var(--muted);
-    text-decoration: none;
     transition:
       background 0.15s,
       color 0.15s;
   }
-  .tabs a:hover {
-    color: var(--ink-2);
-  }
-  .tabs a.current {
-    background: var(--surface-2);
-    box-shadow: var(--shadow);
-    color: var(--ink);
-  }
 
   .badge {
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     padding: 0 0.35rem;
-    font-family: var(--font-mono);
-    font-size: 0.66rem;
+    font-size: var(--text-2xs);
+    font-weight: 600;
   }
   .badge[data-tone='live'] {
-    background: color-mix(in oklab, var(--good) 16%, transparent);
+    background: var(--good-soft);
     color: var(--good);
   }
   .badge[data-tone='quiet'] {
@@ -266,8 +251,8 @@
     color: var(--accent);
   }
   .badge[data-tone='warn'] {
-    background: color-mix(in oklab, var(--warning) 18%, transparent);
-    color: var(--warning);
+    background: var(--warning-soft);
+    color: var(--warning-ink);
   }
 
   .rail {

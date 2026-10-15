@@ -2,6 +2,8 @@
   import { actasDelInforme } from '$lib/actas';
   import { documentInventoryUrl, downloadUrl } from '$lib/api';
   import GroupsChart from '$lib/components/GroupsChart.svelte';
+  import Descargas from '$lib/components/Descargas.svelte';
+  import Icono from '$lib/components/Icono.svelte';
   import PageRibbon from '$lib/components/PageRibbon.svelte';
   import ResolutionRow from '$lib/components/ResolutionRow.svelte';
   import ProvenanceBar from '$lib/components/ProvenanceBar.svelte';
@@ -72,13 +74,14 @@
   const silence = $derived(progress.silent_seconds ?? 0);
   const quiet = $derived(silence >= SILENCE_THRESHOLD_SECONDS);
 
+  /** El estado del trabajo, con las mismas píldoras que el resto de la aplicación. */
   const BADGE: Record<string, string> = {
-    queued: 'text-muted',
-    running: 'text-accent',
-    paused: 'text-warning',
-    done: 'text-good',
-    failed: 'text-critical',
-    cancelled: 'text-muted'
+    queued: 'pill pill-neutral',
+    running: 'pill',
+    paused: 'pill pill-warn',
+    done: 'pill pill-good',
+    failed: 'pill pill-bad',
+    cancelled: 'pill pill-neutral'
   };
 
   /** Maps a group to the file the assembler actually wrote. */
@@ -88,16 +91,17 @@
 
 </script>
 
-<article class="mb-4 rounded-xl border border-hairline bg-raised shadow-[var(--shadow)] p-5">
+<article class="panel tarjeta">
   <header class="flex items-start justify-between gap-4">
     <div class="min-w-0">
-      <h3 class="truncate text-base font-semibold">{job.filename}</h3>
-      <p class="mt-0.5 text-sm text-muted">
+      <h2 class="nombre">{job.filename}</h2>
+      <p class="resumen">
         {#if report}
-          {report.page_count} páginas → {groups.length} {unit}
+          <span class="tabular">{report.page_count}</span> páginas →
+          <span class="tabular">{groups.length}</span> {unit}
         {:else if live}
           {activity}
-          {#if stageElapsed >= 2}<span class="text-muted"> · {stageElapsed.toFixed(0)} s en este paso</span>{/if}
+          {#if stageElapsed >= 2}<span> · {stageElapsed.toFixed(0)} s en este paso</span>{/if}
           {#if quiet}<span class="quiet"> · sin novedades hace {silence.toFixed(0)} s</span>{/if}
         {:else}
           {STAGE_LABELS[progress.stage] ?? 'En cola'}
@@ -105,11 +109,7 @@
       </p>
     </div>
     <div class="flex shrink-0 flex-col items-end gap-2">
-      <span
-        class="rounded-full border border-hairline px-2.5 py-0.5 text-[0.7rem] tracking-wide uppercase {BADGE[
-          job.state
-        ]}"
-      >
+      <span class={BADGE[job.state] ?? 'pill pill-neutral'}>
         {STATE_LABELS[job.state] ?? job.state}
       </span>
       <RunControls jobId={job.id} runState={job.state} />
@@ -117,30 +117,27 @@
   </header>
 
   {#if job.state === 'cancelled'}
-    <p class="mt-4 text-sm text-ink-2">
+    <p class="texto mt-4">
       Cancelado por el operador tras leer {progress.pages_done} de {progress.page_count} páginas.
       Lo que se alcanzó a escribir está entero.
     </p>
   {/if}
 
   {#if job.state === 'failed'}
-    <p class="mt-4 font-mono text-sm text-critical">{job.error}</p>
+    <p class="inline-error mt-4">{job.error}</p>
   {/if}
 
   {#if live}
     <!-- The live view: one cell per page, painted by the rung that answered it. -->
     <div class="mt-4">
-      <div class="mb-3 h-1.5 overflow-hidden rounded bg-grid">
-        <div
-          class="h-full rounded-r-[4px] bg-accent transition-[width] duration-300"
-          style:width={`${progress.percent}%`}
-        ></div>
+      <div class="barra mb-3">
+        <div class="relleno transition-[width] duration-300" style:width={`${progress.percent}%`}></div>
       </div>
       <PageRibbon ribbon={progress.ribbon} pageCount={progress.page_count} />
     </div>
   {:else if job.state === 'queued'}
-    <div class="mt-4 h-[3px] overflow-hidden rounded bg-grid">
-      <div class="h-full w-1/3 animate-[slide_1.1s_ease-in-out_infinite] bg-accent"></div>
+    <div class="barra fina mt-4">
+      <div class="relleno w-1/3 animate-[slide_1.1s_ease-in-out_infinite]"></div>
     </div>
   {/if}
 
@@ -159,7 +156,7 @@
       <StatTile
         label="Requiere revisión"
         value={review.length}
-        note={review.length ? 'detalle abajo' : 'sin pendientes'}
+        note={review.length ? 'Detalle abajo' : 'Sin pendientes'}
         tone={review.length ? 'warning' : 'good'}
       />
       <StatTile
@@ -185,7 +182,7 @@
         <StatTile
           label="Costó"
           value={`${report.consumo.coste_estimado.toFixed(2)} ${report.consumo.moneda}`}
-          note="según el precio configurado"
+          note="Según el precio configurado"
         />
       {/if}
     </div>
@@ -194,7 +191,7 @@
       <!-- Lo que el worker dice del trabajo en una frase. Sin esto, una caja
            pedida por mes que no tenía ni una fecha salía por documento y nada
            en la pantalla lo contaba. -->
-      <ul class="mt-4 grid gap-1 rounded-lg border border-hairline px-3 py-2 text-sm text-ink-2">
+      <ul class="avisos mt-4">
         {#each report.notices as aviso, i (i)}
           <li>{aviso}</li>
         {/each}
@@ -209,15 +206,15 @@
     </div>
 
     <div class="mt-6 overflow-x-auto">
-      <table class="w-full border-collapse text-sm">
+      <table class="tabla">
         <thead>
-          <tr class="text-[0.7rem] tracking-wide text-muted uppercase">
-            <th class="pb-2 text-left font-medium">{unitOneTitle}</th>
-            <th class="pb-2 text-left font-medium">Tipo y procedencia</th>
-            <th class="pb-2 text-left font-medium">Páginas</th>
-            <th class="pb-2 text-left font-medium">Fecha</th>
-            <th class="pb-2 text-left font-medium">Archivo</th>
-            <th class="pb-2 text-right font-medium">Acciones</th>
+          <tr>
+            <th>{unitOneTitle}</th>
+            <th>Tipo y procedencia</th>
+            <th>Páginas</th>
+            <th>Fecha</th>
+            <th>Archivo</th>
+            <th class="derecha">Acciones</th>
           </tr>
         </thead>
         <tbody>
@@ -234,16 +231,15 @@
     </div>
 
     {#if repairs.length}
-      <section class="mt-5 rounded-lg bg-plane p-3 text-sm">
-        <h4 class="mb-1.5 text-[0.7rem] font-medium tracking-wide text-muted uppercase">
-          Correcciones de OCR aplicadas
-        </h4>
-        <ul class="list-disc pl-5 font-mono text-xs text-ink-2">
+      <section class="nota mt-5">
+        <h3 class="caps mb-1.5">Correcciones de OCR aplicadas</h3>
+        <ul class="lista">
           {#each repairs as repair}
             <li>
-              página {repair.page}: se leyó <b class="text-ink">{repair.observed}</b>, se mantuvo con
-              <b class="text-ink">{repair.applied}</b>
-              ({repair.distance} edición{repair.distance === 1 ? '' : 'es'})
+              Página <span class="tabular">{repair.page}</span>: se leyó
+              <b class="codigo">{repair.observed}</b>, se mantuvo con
+              <b class="codigo">{repair.applied}</b>
+              (<span class="tabular">{repair.distance}</span> edición{repair.distance === 1 ? '' : 'es'})
             </li>
           {/each}
         </ul>
@@ -251,22 +247,23 @@
     {/if}
 
     {#if review.length}
-      <section class="mt-4 rounded-lg border-l-[3px] border-warning bg-plane p-3 text-sm">
-        <h4 class="mb-1.5 text-[0.7rem] font-medium tracking-wide text-muted uppercase">
-          Requiere revisión humana ({review.length})
-        </h4>
-        <ul class="list-disc pl-5 text-ink-2">
+      <section class="nota revision mt-4">
+        <h3 class="caps mb-1.5">
+          Requiere revisión humana (<span class="tabular">{review.length}</span>)
+        </h3>
+        <ul class="lista">
           {#each review as item}
-            <li>página {item.page} — {item.reason}</li>
+            <li>Página <span class="tabular">{item.page}</span> — {item.reason}</li>
           {/each}
         </ul>
         {#if quarantine.length}
           <a
-            class="mt-2 inline-block text-accent hover:underline"
+            class="btn btn-tonal btn-sm mt-2"
             href={downloadUrl(job.id, '_quarantine.pdf')}
             download
           >
-            Descargar páginas en cuarentena
+            <Icono nombre="descargar" />
+            Descargar páginas en cuarentena (PDF)
           </a>
         {/if}
       </section>
@@ -276,80 +273,217 @@
       <!-- Un acta de consejo no deja PDF: deja su fila del inventario. Se
            enseña aquí lo mismo que dirá el Excel, para no tener que abrirlo
            para saber si salió bien. -->
-      <footer class="mt-5 flex flex-col gap-1 border-t border-hairline pt-3 text-sm text-muted">
+      <footer class="pie flex flex-col gap-1">
         {#if actas.length > 1}
           <!-- Un libro: todas sus actas, cada una con sus folios y, si se
                dividió, el PDF en que quedó. -->
-          <span class="text-ink">
+          <span class="fuerte">
             Libro de {actas.length} actas{report?.dividido ? `, dividido en ${actas.filter((item) => item.pdf).length} PDF` : ''}
           </span>
           <ul class="mt-1 flex flex-col gap-1">
             {#each actas as item, indice (indice)}
-              <li class="flex flex-wrap items-baseline gap-x-2">
-                <b class="text-ink">{item.fila.acta}</b>
-                <span>{item.fila.fecha}</span>
+              <li class="flex flex-wrap items-center gap-x-2">
+                <b class="fuerte">{item.fila.acta}</b>
+                <span class="tabular">{item.fila.fecha}</span>
                 <span class="tabular">
                   folios {item.fila.folio_inicial} a {item.fila.folio_final} ({item.fila.folios})
                 </span>
                 {#if item.pdf}
-                  <a class="text-accent hover:underline" href={downloadUrl(job.id, item.pdf)} download>
-                    PDF
+                  <a
+                    class="btn btn-icon"
+                    href={downloadUrl(job.id, item.pdf)}
+                    download
+                    title="Descargar PDF"
+                    aria-label={`Descargar el PDF del acta ${item.fila.acta}`}
+                  >
+                    <Icono nombre="descargar" />
                   </a>
                 {/if}
                 {#if item.fila.observaciones}
-                  <span class="basis-full text-xs text-warning">{item.fila.observaciones}</span>
+                  <span class="observacion basis-full">{item.fila.observaciones}</span>
                 {/if}
               </li>
             {/each}
           </ul>
         {:else}
-          <span class="text-ink">
-            <b>{acta.acta}</b> · {acta.fecha} · folios {acta.folio_inicial} a {acta.folio_final}
-            ({acta.folios})
+          <span class="fuerte">
+            <b>{acta.acta}</b> · <span class="tabular">{acta.fecha}</span> · folios
+            <span class="tabular">{acta.folio_inicial} a {acta.folio_final} ({acta.folios})</span>
           </span>
           {#if acta.observaciones}
-            <span class="text-xs text-warning">{acta.observaciones}</span>
+            <span class="observacion">{acta.observaciones}</span>
           {/if}
         {/if}
         {#if report?.inventario}
-          <a class="text-accent hover:underline" href={documentInventoryUrl(job.id)} download>
-            Excel de esta acta
+          <a class="btn btn-tonal btn-sm mt-1 self-start" href={documentInventoryUrl(job.id)} download>
+            <Icono nombre="descargar" />
+            Descargar inventario del acta (Excel)
           </a>
         {:else if report?.inventario_error}
-          <span class="text-xs text-critical">no se pudo escribir el Excel: {report.inventario_error}</span>
+          <p class="inline-error">No se pudo escribir el Excel: {report.inventario_error}</p>
         {/if}
       </footer>
     {:else if inventory}
-      <footer
-        class="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-hairline pt-3 text-sm text-muted"
-      >
+      <footer class="pie flex flex-wrap items-center justify-between gap-2">
         <span>
-          Inventario: {inventory.generated_files} archivos, {inventory.pages_accounted_for}/{inventory.source_pages}
+          Inventario: <span class="tabular">{inventory.generated_files}</span> archivos,
+          <span class="tabular">{inventory.pages_accounted_for}/{inventory.source_pages}</span>
           páginas contabilizadas
         </span>
-        <span class="flex gap-4">
-          <a
-            class="text-accent hover:underline"
-            href={documentInventoryUrl(job.id)}
-            download
-          >
-            Inventario en Excel
-          </a>
-          <a class="text-accent hover:underline" href={downloadUrl(job.id, 'inventory.json')} download>
-            JSON
-          </a>
-        </span>
       </footer>
+      <div class="mt-3 max-w-[34rem]">
+        <Descargas
+          grupos={[
+            {
+              titulo: 'Inventario',
+              items: [
+                {
+                  id: 'excel',
+                  titulo: report?.indice_electronico ? 'Índice electrónico' : 'Inventario del documento',
+                  detalle: report?.indice_electronico
+                    ? 'Plantilla del cliente, una fila por documento'
+                    : 'Una fila por PDF generado',
+                  formato: 'Excel',
+                  principal: true,
+                  href: documentInventoryUrl(job.id)
+                },
+                {
+                  id: 'json',
+                  titulo: 'Informe del proceso',
+                  detalle: 'El mismo inventario con el detalle técnico de cada corte',
+                  formato: 'JSON',
+                  href: downloadUrl(job.id, 'inventory.json')
+                }
+              ]
+            }
+          ]}
+        />
+      </div>
     {/if}
   {/if}
 </article>
 
 <style>
-  .quiet {
-    color: var(--warning);
+  .tarjeta {
+    margin-bottom: var(--space-4);
   }
 
-  @keyframes slide {
+  .nombre {
+    margin: 0;
+    overflow: hidden;
+    font-size: var(--text-lg);
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .resumen {
+    margin: 0.15rem 0 0;
+    font-size: var(--text-md);
+    color: var(--muted);
+  }
+  .texto {
+    margin-bottom: 0;
+    font-size: var(--text-md);
+    color: var(--ink-2);
+  }
+
+  .quiet {
+    color: var(--warning-ink);
+  }
+
+  /* La barra de avance. */
+  .barra {
+    height: 6px;
+    overflow: hidden;
+    border-radius: var(--radius-pill);
+    background: var(--grid);
+  }
+  .barra.fina {
+    height: 3px;
+  }
+  .relleno {
+    height: 100%;
+    border-radius: var(--radius-pill);
+    background: var(--accent);
+  }
+
+  .avisos {
+    display: grid;
+    gap: var(--space-1);
+    margin-bottom: 0;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    list-style: none;
+    font-size: var(--text-sm);
+    color: var(--ink-2);
+  }
+
+  /* La tabla de lo que se produjo: cabecera en versalitas, como todas. */
+  .tabla {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+  }
+  .tabla th {
+    padding: 0 0.75rem 0.5rem 0;
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    letter-spacing: var(--tracking-caps);
+    text-align: left;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .tabla th.derecha {
+    padding-right: 0;
+    text-align: right;
+  }
+
+  /* Correcciones y pendientes: notas sobre el plano, no tarjetas dentro de la
+     tarjeta. La de revisión lleva el tinte de aviso. */
+  .nota {
+    border-radius: var(--radius-md);
+    background: var(--plane);
+    padding: var(--space-3);
+    font-size: var(--text-sm);
+  }
+  .nota.revision {
+    border-left: 3px solid var(--warning);
+    background: var(--warning-soft);
+  }
+  .nota h3 {
+    margin-top: 0;
+  }
+  .lista {
+    margin: 0;
+    padding-left: 1.25rem;
+    list-style: disc;
+    color: var(--ink-2);
+  }
+  .codigo {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--ink);
+  }
+
+  .pie {
+    margin-top: var(--space-5);
+    border-top: 1px solid var(--hairline);
+    padding-top: var(--space-3);
+    font-size: var(--text-sm);
+    color: var(--muted);
+  }
+  .fuerte {
+    color: var(--ink);
+  }
+  .observacion {
+    font-size: var(--text-xs);
+    color: var(--warning-ink);
+  }
+
+  /* Global: la clase de Tailwind `animate-[slide…]` lo busca por su nombre, y
+     Svelte renombra los keyframes locales. */
+  @keyframes -global-slide {
     from {
       transform: translateX(-100%);
     }

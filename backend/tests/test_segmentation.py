@@ -40,6 +40,7 @@ def huella(
     sheet: tuple[int, int] | None = None,
     announces_attachments: bool = False,
     is_attachment: bool = False,
+    text: str = "",
 ) -> PageFingerprint:
     return PageFingerprint(
         page_number=page_number,
@@ -51,6 +52,7 @@ def huella(
         case_code=case_code,
         closes=closes,
         tail=tail,
+        text=text,
         opening=opening,
         label=label,
         ordinals=ordinals,

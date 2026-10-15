@@ -30,8 +30,8 @@ from enum import StrEnum
 class Perfil(StrEnum):
     """Los tres puestos que el archivo distingue."""
 
-    #: Hace todo, y además es el único que da de alta a los demás. No hay
-    #: registro abierto: alguien tiene que responder por quién entra.
+    #: Hace todo, descarga incluida. Es el perfil de «siar», el único usuario
+    #: con que se entra desde el 2026-10-13.
     ADMINISTRADOR = "administrador"
 
     #: Quien procesa las cajas. Ve el inventario y el FUID en pantalla, y no se
@@ -50,10 +50,6 @@ class Perfil(StrEnum):
         """Lo que se lee en pantalla."""
         return _ETIQUETAS[self]
 
-    @property
-    def administra_usuarios(self) -> bool:
-        """Si puede dar de alta, cambiar y dar de baja a los demás."""
-        return self is Perfil.ADMINISTRADOR
 
     @property
     def descarga_planillas(self) -> bool:

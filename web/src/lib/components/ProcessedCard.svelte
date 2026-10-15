@@ -1,9 +1,11 @@
 <script lang="ts">
   import { deleteDocument, renameDocument } from '$lib/api';
   import ArchivosDelTrabajo from '$lib/components/archivo/ArchivosDelTrabajo.svelte';
+  import Icono from '$lib/components/Icono.svelte';
   import { unidades } from '$lib/archive.svelte';
   import { formatBytes } from '$lib/format';
   import { jobStore } from '$lib/jobs.svelte';
+  import { enlaceAlDocumento } from '$lib/navegacion.svelte';
   import type { Origen } from '$lib/types';
 
   /**
@@ -37,6 +39,8 @@
      * en la ficha del documento.
      */
     acta?: boolean;
+    /** Si es una caja de correspondencia: su inventario es el Índice Electrónico. */
+    indice?: boolean;
     /**
      * La carpeta local o el lote del que salió. Con él, el Archivo lo dibuja
      * dentro de la tarjeta de su carpeta y no suelto con su propio nombre.
@@ -143,11 +147,12 @@
   <span class="tab" aria-hidden="true"></span>
 
   {#if mode === 'renaming'}
-    <div class="panel">
+    <div class="editor">
       <label>
-        <span>Nombre del documento</span>
+        <span class="caps">Nombre del documento</span>
         <!-- svelte-ignore a11y_autofocus -->
         <input
+          class="input input-sm"
           bind:value={draft}
           autofocus
           spellcheck="false"
@@ -159,18 +164,20 @@
       </label>
       <p class="note">
         Cambia el nombre en el inventario y en la pantalla. Los PDF generados
-        conservan el suyo, que sale del número de resolución.
+        conservan el suyo, que sale del número o código de cada uno.
       </p>
       <div class="actions">
-        <button class="primary" onclick={save} disabled={busy || !draft.trim()}>
-          {busy ? 'guardando…' : 'guardar'}
+        <button class="btn btn-primary btn-sm" onclick={save} disabled={busy || !draft.trim()}>
+          {busy ? 'Guardando…' : 'Guardar'}
         </button>
-        <button onclick={() => (mode = 'idle')} disabled={busy}>cancelar</button>
+        <button class="btn btn-ghost btn-sm" onclick={() => (mode = 'idle')} disabled={busy}>
+          Cancelar
+        </button>
       </div>
-      {#if failure}<p class="error">{failure}</p>{/if}
+      {#if failure}<p class="inline-error failure">{failure}</p>{/if}
     </div>
   {:else if mode === 'confirming'}
-    <div class="panel">
+    <div class="editor">
       <p class="warn">
         Se eliminarán <b>{entry.resolutions}</b>
         {unidad.toLowerCase()} de
@@ -178,12 +185,14 @@
         deshacer.
       </p>
       <div class="actions">
-        <button class="danger" onclick={remove} disabled={busy}>
-          {busy ? 'eliminando…' : 'sí, eliminar'}
+        <button class="btn btn-danger btn-sm" onclick={remove} disabled={busy}>
+          {busy ? 'Eliminando…' : 'Sí, eliminar'}
         </button>
-        <button onclick={() => (mode = 'idle')} disabled={busy}>cancelar</button>
+        <button class="btn btn-ghost btn-sm" onclick={() => (mode = 'idle')} disabled={busy}>
+          Cancelar
+        </button>
       </div>
-      {#if failure}<p class="error">{failure}</p>{/if}
+      {#if failure}<p class="inline-error failure">{failure}</p>{/if}
     </div>
   {:else}
     <!-- Cerrada es una tarjeta más de la rejilla. Abierta ocupa la fila y se
@@ -202,7 +211,7 @@
             checked={selected ?? false}
             onclick={(event) => onselect(entry.jobId, event.shiftKey)}
           />
-          <span class="sr">Seleccionar {entry.name}</span>
+          <span class="sr-only">Seleccionar {entry.name}</span>
         </label>
       {/if}
       <!--
@@ -211,14 +220,14 @@
         área de trabajo la ficha dejaba de poder abrirse: la tarjeta se veía
         pinchable y no llevaba a ninguna parte.
       -->
-      <a class="body" href={`/documento/${entry.jobId}`}>
+      <a class="body" href={enlaceAlDocumento(entry.jobId, 'archivo')}>
         <header>
           <span class="name" title={entry.name}>{entry.name}</span>
           <time class="tabular">{clock}</time>
         </header>
 
         {#if entry.failed}
-          <p class="error" title={entry.error ?? ''}>{entry.error ?? 'No se pudo procesar'}</p>
+          <p class="reason" title={entry.error ?? ''}>{entry.error ?? 'No se pudo procesar'}</p>
         {:else}
           <!-- Two numbers, always in the same place, always meaning the same thing. -->
           <dl class="figures">
@@ -246,7 +255,7 @@
             aria-controls={`archivos-${entry.jobId}`}
             onclick={() => (abierta = !abierta)}
           >
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3.5 4.5 4.5L6 12.5" /></svg>
+            <Icono nombre="chevron" />
             {#if abierta}
               Ocultar archivos
             {:else}
@@ -257,13 +266,13 @@
 
       <footer>
         {#if entry.operator}
-          <span class="by">{entry.operator}</span>
+          <span class="pill by">{entry.operator}</span>
         {:else}
-          <span class="by anon">sin operador</span>
+          <span class="by anon">Sin operador</span>
         {/if}
 
         {#if entry.review}
-          <span class="review" title={`${entry.review} páginas requieren revisión`}>
+          <span class="pill pill-warn review tabular" title={`${entry.review} páginas requieren revisión`}>
             <svg viewBox="0 0 16 16" aria-hidden="true">
               <path d="M8 2.5 14 13H2L8 2.5Z" />
               <path d="M8 6.5v3M8 11.3v.2" />
@@ -273,16 +282,22 @@
         {/if}
 
         <span class="tools">
-          <button onclick={startRename} title="Cambiar el nombre del documento">renombrar</button>
           <button
-            class="quiet"
+            class="btn btn-ghost btn-sm"
+            onclick={startRename}
+            title="Cambiar el nombre del documento"
+          >
+            Renombrar
+          </button>
+          <button
+            class="btn btn-ghost btn-sm quiet"
             onclick={() => {
               failure = null;
               mode = 'confirming';
             }}
             title="Eliminar el documento, sus PDF y su inventario"
           >
-            eliminar
+            Eliminar
           </button>
           <!--
             Un solo enlace, esté el documento en pantalla o archivado: desde que
@@ -290,14 +305,18 @@
             además el rótulo "archivado" metía un elemento de más en un pie que no
             reparte, y la fila se salía de la tarjeta.
           -->
-          <a class="open" href={`/documento/${entry.jobId}`} title={entry.live ? undefined : 'Archivado: se dibuja desde el inventario'}>
-            ver detalle
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3.5 4.5 4.5L6 12.5" /></svg>
+          <a
+            class="btn btn-ghost btn-sm open"
+            href={enlaceAlDocumento(entry.jobId, 'archivo')}
+            title={entry.live ? undefined : 'Archivado: se dibuja desde el inventario'}
+          >
+            Ver detalle
+            <Icono nombre="chevron" />
           </a>
         </span>
       </footer>
 
-        {#if failure}<p class="error">{failure}</p>{/if}
+        {#if failure}<p class="inline-error failure">{failure}</p>{/if}
       </div>
 
       {#if abierta && !entry.failed}
@@ -339,25 +358,16 @@
     padding-left: 1.55rem;
   }
 
-  /* Sólo para quien lee la pantalla en voz alta. */
-  .sr {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-
   /* Drawn as a folder: a finished document is something you open, not a row you
-     scroll past. */
+     scroll past. La esquina de 4px es la que casa con la pestaña de arriba; el
+     resto es el radio de tarjeta común, el mismo de la tarjeta de una carpeta. */
   .card {
     position: relative;
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
     border: 1px solid var(--hairline);
-    border-radius: 4px 10px 10px 10px;
+    border-radius: 4px var(--radius-md) var(--radius-md) var(--radius-md);
     background: var(--surface-2);
     padding: 0.8rem 0.9rem;
     box-shadow: var(--shadow);
@@ -371,7 +381,8 @@
   .card.openable:hover {
     border-color: var(--accent);
     transform: translateY(-1px);
-    box-shadow: 0 8px 22px rgb(0 0 0 / 0.12);
+    /* La sombra de siempre, más honda: el velo común rebajado a un cuarto. */
+    box-shadow: var(--shadow-hover);
   }
 
   /* The clickable part of the card. The tools live outside it, because a button
@@ -392,7 +403,7 @@
     height: 8px;
     border: 1px solid var(--hairline);
     border-bottom: 0;
-    border-radius: 4px 6px 0 0;
+    border-radius: 4px var(--radius-sm) 0 0;
     background: var(--surface-2);
   }
   .card.failed,
@@ -408,7 +419,7 @@
   .name {
     overflow: hidden;
     flex: 1;
-    font-size: 0.86rem;
+    font-size: var(--text-md);
     font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -416,10 +427,12 @@
   time {
     flex-shrink: 0;
     font-family: var(--font-mono);
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     color: var(--axis);
   }
 
+  /* Las mismas cifras que la tarjeta de una carpeta, con la misma escala: una
+     carpeta y un PDF suelto se comparan de un vistazo. */
   .figures {
     display: flex;
     gap: 1.25rem;
@@ -431,27 +444,31 @@
     gap: 1px;
   }
   .figures dt {
-    font-size: 0.58rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.055em;
+    letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
     color: var(--muted);
   }
   .figures dd {
     margin: 0;
     font-family: var(--font-mono);
-    font-size: 0.95rem;
+    font-size: var(--text-lg);
     color: var(--ink);
   }
 
-  .error {
+  /* Por qué falló, en un renglón: el texto entero va en el `title`. */
+  .reason {
     margin: 0;
     overflow: hidden;
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     color: var(--critical);
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* El hueco lo pone el `gap` de la tarjeta. */
+  .failure {
+    margin: 0;
   }
 
   /* Abierta ocupa la fila entera: la lista de PDF de un libro no cabe en una
@@ -497,6 +514,7 @@
     }
   }
 
+  /* Plegar y desplegar queda como texto: no es una acción sobre el documento. */
   .toggle {
     display: inline-flex;
     align-self: flex-start;
@@ -506,7 +524,7 @@
     background: none;
     padding: 0;
     font: inherit;
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     font-weight: 600;
     color: var(--accent);
     cursor: pointer;
@@ -514,17 +532,10 @@
   .toggle:hover {
     text-decoration: underline;
   }
-  .toggle svg {
-    width: 0.85rem;
-    height: 0.85rem;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.6;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+  .toggle :global(.icono) {
     transition: transform 0.15s ease;
   }
-  .toggle[aria-expanded='true'] svg {
+  .toggle[aria-expanded='true'] :global(.icono) {
     transform: rotate(90deg);
   }
 
@@ -541,35 +552,18 @@
   .by {
     overflow: hidden;
     max-width: 11rem;
-    border-radius: 999px;
-    background: var(--accent-soft);
-    padding: 0 0.45rem;
-    font-size: 0.66rem;
-    color: var(--accent);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .by.anon {
-    background: transparent;
-    padding: 0;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   .review {
-    display: inline-flex;
     flex-shrink: 0;
-    align-items: center;
-    gap: 0.2rem;
-    border-radius: 999px;
-    background: color-mix(in oklab, var(--warning) 16%, transparent);
-    padding: 0 0.4rem;
-    font-family: var(--font-mono);
-    font-size: 0.66rem;
-    color: var(--warning);
   }
-
-  .review svg,
-  .open svg {
+  .review svg {
     width: 0.75rem;
     height: 0.75rem;
     fill: none;
@@ -579,34 +573,25 @@
     stroke-linejoin: round;
   }
 
-  .open {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.1rem;
-    font-size: 0.7rem;
-    text-decoration: none;
-  }
-
+  /* Tres botones pequeños en una tarjeta de 16.5rem: con el relleno lateral de
+     siempre no caben y el pie se salía por el borde, así que aquí se estrecha
+     y, si aun así no caben, reparten en dos renglones. */
   .tools {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.6rem;
+    justify-content: flex-end;
+    gap: 0.15rem;
     margin-left: auto;
-    flex-shrink: 0;
   }
-  .tools button {
-    border: 0;
-    background: none;
-    padding: 0;
-    font: inherit;
-    font-size: 0.7rem;
-    color: var(--muted);
-    cursor: pointer;
+  .tools .btn {
+    padding-inline: 0.4rem;
   }
-  .tools button:hover {
-    color: var(--ink);
-  }
-  .tools button.quiet:hover {
+  /* Eliminar desde el pie sólo abre la confirmación: va callado, como sus
+     vecinos, y avisa en rojo al pasar por encima. El botón de peligro queda
+     para el «Sí, eliminar». */
+  .tools .quiet:hover:not(:disabled) {
+    background: var(--critical-soft);
     color: var(--critical);
   }
 
@@ -615,46 +600,27 @@
     color: var(--accent);
   }
 
-  /* The editor and the confirmation take the whole card: one thing at a time. */
-  .panel {
+  /* The editor and the confirmation take the whole card: one thing at a time.
+     No se llama `.panel`: esa es la superficie global de una sección. */
+  .editor {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
   }
-  .panel label {
+  .editor label {
     display: flex;
     flex-direction: column;
     gap: 0.2rem;
   }
-  .panel label span {
-    font-size: 0.58rem;
-    font-weight: 600;
-    letter-spacing: 0.055em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-  .panel input {
-    border: 1px solid var(--hairline);
-    border-radius: 7px;
-    background: var(--plane);
-    padding: 0.35rem 0.55rem;
-    font: inherit;
-    font-size: 0.85rem;
-    color: inherit;
-    outline: none;
-  }
-  .panel input:focus {
-    border-color: var(--accent);
-  }
   .note {
     margin: 0;
-    font-size: 0.68rem;
+    font-size: var(--text-xs);
     line-height: 1.45;
     color: var(--muted);
   }
   .warn {
     margin: 0;
-    font-size: 0.78rem;
+    font-size: var(--text-sm);
     line-height: 1.45;
     color: var(--ink-2);
   }
@@ -664,32 +630,7 @@
 
   .actions {
     display: flex;
+    flex-wrap: wrap;
     gap: 0.4rem;
-  }
-  .actions button {
-    border: 1px solid var(--hairline);
-    border-radius: 7px;
-    background: transparent;
-    padding: 0.25rem 0.7rem;
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .actions button.primary {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-  .actions button.danger {
-    border-color: var(--critical);
-    color: var(--critical);
-  }
-  .actions button.danger:hover {
-    background: var(--critical);
-    color: #fff;
-  }
-  .actions button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 </style>

@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ...application.consumo import Consumo
 from ...application.control import RunControl
@@ -70,6 +71,9 @@ class Taller:
     #: construya, para que el informe pueda decir cuánto costó el documento y
     #: no cuánto costó cada llamada por separado.
     consumo: Consumo = field(default_factory=Consumo)
+    #: El tope común de llamadas a la IA de todo el servicio: un semáforo del
+    #: Manager que comparten los procesos del pool. ``None`` fuera del servicio.
+    turnos_de_ia: Any = None
 
     @classmethod
     def desde(cls, payload: dict) -> Taller:
@@ -89,6 +93,7 @@ class Taller:
             agrupar_choice=payload.get("agrupar"),
             delivered_to=payload.get("destination"),
             operator=payload.get("operator"),
+            turnos_de_ia=payload.get("turnos_de_ia"),
             # El despachador lo crea antes de elegir ruta y lo deja en el
             # payload, para poder adjuntarlo al informe cuando la ruta vuelva.
             consumo=(
@@ -100,6 +105,7 @@ class Taller:
                 )
             ),
         )
+
 
     def ocr(self):
         """El motor de lectura de este trabajo, que es el mismo para todas.
@@ -130,11 +136,15 @@ class Taller:
         from ...adapters.ocr_cascada import OcrEnCascada
 
         return OcrEnCascada(
-            local=local, remoto=MistralOcr(api_key=llave, consumo=self.consumo)
+            local=local, remoto=MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
         )
 
     def vision(self):
-        """El modelo de visión para el último peldaño de la cascada, o nadie."""
+        """El modelo de visión para el último peldaño de la cascada, o nadie.
+
+        Con «Solo OCR», nadie: es una IA de pago, y esa elección existe para
+        no gastar en lo que no se pidió.
+        """
         from ...adapters.claude_vision import (
             ClaudeVisionConfig,
             ClaudeVisionOracle,
@@ -142,7 +152,7 @@ class Taller:
         )
 
         api_key = self.settings.get("anthropic_api_key")
-        if not api_key:
+        if not api_key or not self._con_ia():
             return NullVisionOracle()
         from anthropic import Anthropic
 
@@ -168,6 +178,17 @@ class Taller:
         )
 
     def oraculo_de_bordes(self):
+        """Quién juzga las costuras que la estructura no decidió.
+
+        Con «Solo OCR», nadie: las costuras dudosas se unen y van a revisión
+        (ante la duda se une). Lo decidió el operador: «cuando sea solo OCR,
+        sea solo OCR». Antes el oráculo en «auto» consultaba al modelo que
+        tuviera llave aunque se hubiera elegido no gastar.
+        """
+        if not self._con_ia():
+            from ...adapters.boundary_prompt import NullBoundaryOracle
+
+            return NullBoundaryOracle()
         return _boundary_oracle(self.settings, self.oracle_choice, consumo=self.consumo)
 
     def con_ia(self) -> bool:
@@ -223,7 +244,7 @@ class Taller:
 
         from ...adapters.mistral_ocr import MistralOcr
 
-        motor = MistralOcr(api_key=llave, consumo=self.consumo)
+        motor = MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
         return clase(
             leer=lambda imagen: motor.read(imagen).text,
             # La mitad de los lectores de página: un mosaico son diez caras, y
@@ -250,7 +271,7 @@ class Taller:
         )
 
         api_key = self.settings.get("mistral_api_key")
-        if not api_key:
+        if not api_key or not self._con_ia():
             return None
         return MistralSummaryAdapter(
             api_key=api_key,
@@ -274,7 +295,7 @@ class Taller:
 
         from ...adapters.mistral_resumen import MistralResumidor
 
-        return MistralResumidor(api_key=llave, consumo=self.consumo)
+        return MistralResumidor(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
 
     def lector_de_folios(self):
         """Quien lee el folio manuscrito de un acta, si se pidió la IA.
@@ -292,8 +313,25 @@ class Taller:
         from ...adapters.esquinas_del_folio import LectorDeFolios
         from ...adapters.mistral_ocr import MistralOcr
 
-        motor = MistralOcr(api_key=llave, consumo=self.consumo)
+        motor = MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
         return LectorDeFolios(leer=lambda imagen: motor.read(imagen).text)
+
+    def lector_de_pago(self):
+        """Quien relee con la IA una hoja entera, si se pidió la IA.
+
+        Lo usan las actas de grado para lo que Tesseract no supo leer del
+        graduado: se paga sólo por esas hojas. Con «Solo OCR», o sin llave, no
+        hay lector y el acta se queda con lo que leyó el de casa.
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_ocr import MistralOcr
+
+        return MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
 
     def motivo_sin_resumidor(self) -> str:
         """Por qué este trabajo no tiene resumidor, dicho para la columna de notas."""

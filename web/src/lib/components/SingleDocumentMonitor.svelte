@@ -3,7 +3,8 @@
   import { onMount } from 'svelte';
   import PageRibbon from '$lib/components/PageRibbon.svelte';
   import RunStats from '$lib/components/RunStats.svelte';
-  import ThroughputChart from '$lib/components/ThroughputChart.svelte';
+  import PanelDeRendimiento from '$lib/components/PanelDeRendimiento.svelte';
+  import { marcadasEnCinta } from '$lib/rendimiento';
   import { SILENCE_THRESHOLD_SECONDS, stageActivity } from '$lib/rungs';
   import { unitFor } from '$lib/format';
   import type { Job } from '$lib/types';
@@ -82,7 +83,7 @@
   {/if}
 
   {#if running && silence >= SILENCE_THRESHOLD_SECONDS}
-    <p class="silence">sin novedades desde hace {Math.round(silence)} s</p>
+    <p class="silence">Sin novedades desde hace {Math.round(silence)} s</p>
   {/if}
 
   <!-- A meter, not a chart: one ratio against a known total. -->
@@ -113,7 +114,18 @@
     consumo={progress.consumo ?? job.report?.consumo ?? null}
   />
 
-  <ThroughputChart rate={progress.pages_per_second} live={running} />
+  <PanelDeRendimiento
+    paginasHechas={progress.pages_done}
+    paginasTotal={progress.page_count}
+    velocidad={progress.pages_per_second}
+    segundos={elapsedSeconds}
+    etapas={running ? [progress.stage] : []}
+    procedencias={[progress.by_provenance]}
+    revision={marcadasEnCinta(progress.ribbon)}
+    fallidas={progress.failed_pages}
+    consumo={progress.consumo ?? job.report?.consumo ?? null}
+    vivo={running}
+  />
 
   {#if progress.page_count}
     <PageRibbon ribbon={progress.ribbon} pageCount={progress.page_count} />
@@ -126,7 +138,7 @@
     flex-direction: column;
     gap: 1rem;
     border: 1px solid var(--hairline);
-    border-radius: 14px;
+    border-radius: var(--radius-lg);
     background: var(--surface-2);
     padding: 1.1rem 1.2rem;
     box-shadow: var(--shadow);
@@ -143,7 +155,7 @@
   h3 {
     overflow: hidden;
     margin: 0;
-    font-size: 0.95rem;
+    font-size: var(--text-lg);
     font-weight: 650;
     letter-spacing: -0.01em;
     text-overflow: ellipsis;
@@ -154,8 +166,7 @@
     align-items: baseline;
     gap: 0.65rem;
     margin: 0;
-    font-family: var(--font-mono);
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     color: var(--ink-2);
   }
   .stage-detail span {
@@ -168,17 +179,22 @@
     flex-shrink: 0;
     color: var(--muted);
   }
+  /* La cifra en monoespaciada, para que no baile al avanzar; el texto de la
+     etapa, en la letra de siempre. */
+  .stage-detail b {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
   .silence {
     margin: 0;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   .stage {
     margin-left: auto;
     flex-shrink: 0;
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -198,7 +214,7 @@
   .meter {
     height: 8px;
     overflow: hidden;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--grid);
   }
   .fill {

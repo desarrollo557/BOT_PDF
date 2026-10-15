@@ -35,13 +35,16 @@ export function describirArchivo(nombre: string): {
   fecha: string | null;
 } {
   const base = nombre.replace(/\.pdf$/i, '');
-  const conOrden = /^(\d{1,3})_(.+)$/.exec(base);
+  // El orden va seguido de «_» o, en una caja de correspondencia, de «-» y el
+  // RE del trámite: «01-RE3110202202887-02-12-2020_DERECHO-DE-PETICION».
+  const conOrden = /^(\d{1,3})[-_](.+)$/.exec(base);
   const orden = conOrden ? conOrden[1] : null;
   let resto = conOrden ? conOrden[2] : base;
-  const conFecha = /-(\d{2}-\d{2}-\d{4})$/.exec(resto);
+  const conFecha = /-(\d{2}-\d{2}-\d{4})(?=_|$)/.exec(resto);
   const fecha = conFecha ? conFecha[1] : null;
-  if (conFecha) resto = resto.slice(0, conFecha.index);
+  if (conFecha) resto = resto.slice(0, conFecha.index) + resto.slice(conFecha.index + conFecha[0].length);
   const titulo = resto
+    .replace(/_/g, ' · ')
     .replace(/-/g, ' ')
     .replace(/\bNO (\d)/, 'No. $1')
     .trim();

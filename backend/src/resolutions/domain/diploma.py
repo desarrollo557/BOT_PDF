@@ -20,8 +20,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from .folio_manuscrito import MarcaDeFolio
 from .carreras import carrera_normalizada
+from .folio_manuscrito import MarcaDeFolio
 from .text_distance import damerau_levenshtein
 
 #: Las marcas combinantes que una descomposición NFD separa de su letra: la
@@ -812,15 +812,6 @@ class DiplomaRecord:
             and not _DAMAGE_IN_NAME.search(nombre)
         )
 
-    @property
-    def tiene_identidad(self) -> bool:
-        """Si este registro se puede nombrar, archivar y volver a encontrar.
-
-        Con la cédula del graduado o con su folio basta: son los dos datos por
-        los que alguien busca un diploma. Lo demás -- el título, la fecha, el
-        número de libro -- describe el documento, pero no lo identifica.
-        """
-        return bool(self.identity_creible or self.trusted_folio)
 
     @property
     def debe_releerse(self) -> bool:
@@ -1094,31 +1085,6 @@ def nombre_suelto(lines: Sequence[TextLine]) -> str | None:
     return _first_name_among(list(lines))
 
 
-def nombres_sueltos(lines: Sequence[TextLine]) -> list[str]:
-    """Todos los renglones de estos que pueden ser una persona, en su orden.
-
-    Es `nombre_suelto` aplicado a un papel donde hay varios: el mosaico apila
-    las franjas de diez caras distintas, de modo que lo que vuelve del OCR son
-    diez nombres separados por las leyendas impresas del formulario.
-
-    Devuelve **todos** y en el orden en que estaban, porque quien llama compara
-    esa cuenta con la de franjas que mandó: si no coinciden, no reparte nada. Un
-    nombre puesto en la página de al lado es peor que un nombre que falta --
-    el archivo saldría con el nombre de otro graduado y nadie tendría motivo
-    para dudarlo.
-    """
-    encontrados: list[str] = []
-    for linea in lines:
-        candidato = linea.text.strip(" _-.:")
-        if len(candidato) < _MIN_NAME_LENGTH:
-            continue
-        if _FOLIO.search(_strip(candidato).upper()) or _is_furniture(candidato):
-            continue
-        if _NAME.match(_strip(candidato).upper()):
-            encontrados.append(candidato)
-    return encontrados
-
-
 def extract_diploma(lines: Sequence[TextLine], page_number: int) -> DiplomaRecord:
     """Read the registration printed on one page."""
     flat = _strip("\n".join(line.text for line in lines))
@@ -1257,8 +1223,6 @@ def _resolve_doubts(primary: DiplomaRecord, fallback: DiplomaRecord) -> DiplomaR
         folio_manuscrito=primary.folio_manuscrito,
         warnings=[],
     )
-
-
 
 
 def pertenece_al_anterior(
@@ -1487,25 +1451,6 @@ def _pertenece_por_persona(record: DiplomaRecord, padre: DiplomaRecord) -> bool:
     otra_cedula = record.identity_number != padre.identity_number
     otro_nombre = not mismo_graduado(record.name, padre.name)
     return not (otra_cedula and otro_nombre)
-
-
-def identidad_de(record: DiplomaRecord) -> tuple[str, str] | None:
-    """Con qué se identifica este registro, y de qué clase es ese dato.
-
-    La cédula primero, porque es única: dos homónimos existen y dos cédulas
-    iguales son la misma persona. El nombre cuando no hay cédula, que es el caso
-    de los libros antiguos -- la fórmula de los años setenta es "en atención a
-    que el Señor [nombre]" y no imprime ninguna cédula en ninguna parte.
-
-    Devuelve también **de qué clase** es, porque una cédula y un nombre no se
-    comparan entre sí: son dos formas distintas de señalar a la misma persona y
-    no hay manera de saber si señalan a la misma.
-    """
-    if record.identity_creible and record.identity_number:
-        return ("cedula", record.identity_number)
-    if record.name:
-        return ("nombre", record.name)
-    return None
 
 
 def _pertenece_por_encabezado(record: DiplomaRecord, padre: DiplomaRecord) -> bool:

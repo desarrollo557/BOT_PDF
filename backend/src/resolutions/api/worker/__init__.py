@@ -25,7 +25,7 @@ from pathlib import Path
 from ...application.progress import Stage
 from .correspondencia import _segment_job
 from .inventario import _acta_consejo_job, _inventory_file_job, _inventory_job
-from .planillas import FUID_SUFFIX, _escribir_fuid, _escribir_planilla
+from .planillas import FUID_SUFFIX, _escribir_fuid, _escribir_indice, _escribir_planilla
 from .registros import _record_split_job
 from .resoluciones import _split_job
 from .taller import Taller, _anunciar, _boundary_oracle, _control, _reportero, _ubicacion
@@ -39,6 +39,7 @@ __all__ = [
     "_boundary_oracle",
     "_control",
     "_escribir_fuid",
+    "_escribir_indice",
     "_escribir_planilla",
     "_inventory_file_job",
     "_inventory_job",
@@ -67,6 +68,10 @@ def process_document_job(payload: dict) -> dict:
     carpeta de doscientos archivos y saber qué costó producirla.
     """
     from ...application.consumo import Consumo
+
+    # Un trabajo cancelado mientras esperaba turno en el pool no empieza: la
+    # orden llegó antes que él.
+    _control(payload).check()
 
     ajustes = payload.get("settings") or {}
     consumo = Consumo(
@@ -106,6 +111,15 @@ def _despachar(payload: dict) -> dict:
     # es su fila del inventario. Pedirle que la divida no tiene respuesta
     # distinta, así que se hace lo único que tiene sentido y se dice.
     if TipoPedido.parse(payload.get("tipo")) is TipoPedido.ACTA_CONSEJO:
+        from ...domain.doctype import DocumentType as _Tipo
+
+        # Antes de creerle, una mirada gratis al patrón del contenido: en una
+        # carpeta con actas de consejo y actas de grado mezcladas, declarar
+        # «actas de consejo» mandaba las de grado a una habilidad que no es la
+        # suya.
+        otro = _el_patron_lo_contradice(payload, _Tipo.ACTA_CONSEJO)
+        if otro is not None:
+            return _a_su_habilidad(payload, task, otro, declarado=_Tipo.ACTA_CONSEJO)
         if task.writes_documents:
             _anunciar(
                 payload,
@@ -113,6 +127,11 @@ def _despachar(payload: dict) -> dict:
                 detail="un acta de consejo no se parte: se inventaría entera",
             )
         return _acta_consejo_job(payload)
+
+    # Las actas de grado declaradas van a su habilidad con cualquier acción,
+    # como las de consejo: inventariar, o dividir e inventariar.
+    if TipoPedido.parse(payload.get("tipo")) is TipoPedido.ACTA:
+        return _actas_de_grado(payload)
 
     # Inventariar el archivo entero no necesita reconocer nada antes: la unidad
     # documental es el PDF, y qué es se lee de su propio encabezado al pasar por
@@ -122,6 +141,13 @@ def _despachar(payload: dict) -> dict:
         return _inventory_file_job(payload)
 
     if not task.writes_documents:
+        # Sin tipo declarado, una mirada gratis al patrón antes del inventario:
+        # un acta de grado reconocida allí iba al borrador roto de `acta_split`.
+        if TipoPedido.parse(payload.get("tipo")) is TipoPedido.AUTO:
+            from ...domain.doctype import DocumentType as _Tipo
+
+            if _lo_que_parece(payload) is _Tipo.ACTA:
+                return _actas_de_grado(payload)
         return _inventory_job(payload)
 
     from ...domain.doctype import DocumentType
@@ -175,6 +201,9 @@ def _despachar(payload: dict) -> dict:
     # archivo entero, y quien tiene el libro delante sabe lo que es antes de
     # subirlo.
     if declarado is DocumentType.DIPLOMA:
+        otro = _el_patron_lo_contradice(payload, DocumentType.DIPLOMA)
+        if otro is not None:
+            return _a_su_habilidad(payload, task, otro, declarado=DocumentType.DIPLOMA)
         _anunciar(
             payload,
             Stage.IDENTIFYING,
@@ -193,6 +222,10 @@ def _despachar(payload: dict) -> dict:
     )
 
     reconocido = _recognise(payload)
+    if reconocido is DocumentType.ACTA:
+        # Un acta de grado reconocida no se parte como un legajo de
+        # resoluciones, que es adonde caía: va a su habilidad.
+        return _actas_de_grado(payload)
     # Unas actas de consejo no se parten nunca: cada PDF se inventaría entero,
     # una fila con su acta, su fecha, sus folios y su resumen. Sin este desvío,
     # una carpeta de actas cargada con «No estoy seguro» acababa separada por
@@ -285,7 +318,7 @@ def _recognise(payload: dict):
         eleccion = Orquestador(
             HeaderAndPageOcr(language=settings["ocr_language"]),
             primera_mirada=primera_mirada,
-        ).elegir(source)
+        ).elegir(source, nombre=str(payload.get("filename") or ""))
     except Exception:  # noqa: BLE001 - no reconocerlo no es motivo para fallar
         # `None` y no un tipo: una avería no es un veredicto. Quien enruta la
         # trata como el camino de siempre y quien avisa se calla, que es lo que
@@ -307,6 +340,140 @@ def _recognise(payload: dict):
                 detail=f"el orquestador eligió {eleccion.motivo}",
             )
     return eleccion.tipo
+
+
+def _actas_de_grado(payload: dict) -> dict:
+    """Un acta de grado, con su habilidad: el inventario de actas sin resumen.
+
+    Es el trabajo de las actas de consejo con el perfil de grado -- su
+    encabezado, su fecha, sus folios, y un PDF por acta si se pidió dividir --,
+    y el mismo Excel sin la columna del resumen.
+    """
+    _anunciar(payload, Stage.IDENTIFYING, detail="actas de grado: una fila por acta")
+    return _acta_consejo_job(payload, grado=True)
+
+
+def _lo_que_parece(payload: dict):
+    """El tipo que dice el patrón del PDF, sobre su capa de texto; ``None`` si falla."""
+    from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...application.sugerencia import sugerir
+
+    try:
+        source = PyMuPDFPageSource(Path(payload["source"]), payload.get("filename"))
+        try:
+            return sugerir(source, str(payload.get("filename") or "")).tipo
+        finally:
+            source.close()
+    except Exception:  # noqa: BLE001 - sin mirar, sigue el camino de siempre
+        logger.debug("no se pudo mirar el patrón de %s", payload.get("filename"), exc_info=True)
+        return None
+
+
+#: Cuántas veces más páginas de su núcleo necesita otro tipo para contradecir
+#: lo que declaró el operador cuando lo declarado también aparece.
+VECES_PARA_CONTRADECIR = 3
+
+
+def _el_patron_lo_contradice(payload: dict, declarado):
+    """El tipo que dice el contenido, si dice claramente que no es el declarado.
+
+    Sólo sobre la capa de texto -- veinticuatro páginas ya extraídas, sin leer
+    una imagen --, así que cuesta milisegundos y no gasta nada. Sólo contradice
+    cuando el declarado no tiene una sola página de su núcleo y otro tipo lo
+    tiene en varias: ante la duda manda lo que dijo el operador, que tiene el
+    papel delante. Un escaneo sin capa de texto no contradice nunca.
+    """
+    from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...application.orquestador import muestrear
+    from ...domain.patrones import (
+        PAGINAS_DEL_NUCLEO,
+        PAGINAS_PARA_VETAR,
+        paginas_con_nucleo,
+    )
+
+    try:
+        source = PyMuPDFPageSource(Path(payload["source"]), payload.get("filename"))
+        try:
+            textos = [texto for _n, texto in muestrear(source, None, paginas=PAGINAS_DEL_NUCLEO)]
+        finally:
+            source.close()
+    except Exception:  # noqa: BLE001 - sin mirar, manda lo declarado
+        logger.debug("no se pudo mirar el patrón de %s", payload.get("filename"), exc_info=True)
+        return None
+    nucleo = paginas_con_nucleo(textos)
+    if not nucleo:
+        # Sin un solo núcleo -- un manuscrito sin capa de texto -- queda el
+        # nombre: «ACTAS DE GRADO 1988-2012» no es un acta de consejo aunque se
+        # haya declarado la carpeta entera como tal.
+        from ...domain.patrones import pista_del_nombre
+
+        pista = pista_del_nombre(str(payload.get("filename") or ""))
+        return pista if pista is not None and pista is not declarado else None
+    # Lo declarado manda salvo que otro tipo lo arrolle: el triple de páginas
+    # con su núcleo. Un libro de actas de grado de 1981 tiene tres constancias
+    # con forma de acta de sesión entre veinticuatro páginas de grado, y eso no
+    # lo convierte en un acta de consejo.
+    propio = nucleo[declarado]
+    rivales = [
+        (veces, str(tipo), tipo)
+        for tipo, veces in nucleo.items()
+        if tipo is not declarado
+        and veces >= PAGINAS_PARA_VETAR
+        and veces >= VECES_PARA_CONTRADECIR * propio
+    ]
+    return max(rivales)[2] if rivales else None
+
+
+def _a_su_habilidad(payload: dict, task, tipo, *, declarado) -> dict:
+    """Manda un documento a la habilidad de lo que es, y lo dice.
+
+    Se avisa en la consola y en el informe del documento: cambiar lo que pidió
+    el operador sin decirlo es la forma más rápida de que deje de fiarse.
+    """
+    from ...application.task import TaskKind
+    from ...application.tipo_pedido import TipoPedido
+    from ...domain.doctype import DocumentType
+
+    pedido = next(
+        (opcion for opcion in TipoPedido if opcion.document_type is tipo), TipoPedido.AUTO
+    )
+    aviso = (
+        f"se declaró «{declarado.label}», pero el contenido es de {tipo.label}: "
+        f"va a la habilidad de {tipo.label}"
+    )
+    payload = {**payload, "tipo": str(pedido)}
+
+    if tipo is DocumentType.ACTA:
+        # Las actas de grado, a su habilidad: el inventario de actas sin resumen.
+
+        def runner(datos):
+            return _actas_de_grado(datos)
+    elif tipo in (DocumentType.DIPLOMA, DocumentType.MATRICULA):
+        def runner(datos):
+            return _record_split_job(
+                datos, task if task.writes_documents else TaskKind.SPLIT, tipo=tipo
+            )
+    elif tipo is DocumentType.ACTA_CONSEJO:
+        runner = _acta_consejo_job
+    elif task.writes_documents:
+        def runner(datos):
+            return _split_job(datos, task)
+    else:
+        runner = _inventory_job
+
+    logger.info("%s: %s", payload.get("filename"), aviso)
+    _anunciar(payload, Stage.IDENTIFYING, detail=aviso)
+    report = runner(payload)
+    if isinstance(report, dict):
+        report.setdefault("notices", []).append(aviso)
+        report["reconocimiento"] = {
+            "tipo": str(tipo),
+            "etiqueta": tipo.label,
+            "decidido_por": "patron",
+            "motivo": aviso,
+            "declarado": str(declarado),
+        }
+    return report
 
 
 def _aviso_de_ruta(payload: dict, recognised: object) -> list[str]:

@@ -96,7 +96,3 @@ def _completa(a: str, b: str) -> int:
 
     return previous[len(b)]
 
-
-def within(a: str, b: str, max_distance: int) -> bool:
-    """True when ``a`` and ``b`` differ by at most ``max_distance`` edits."""
-    return damerau_levenshtein(a, b, ceiling=max_distance) <= max_distance

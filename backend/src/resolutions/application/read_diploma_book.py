@@ -12,8 +12,6 @@ from __future__ import annotations
 import inspect
 import logging
 import time
-from collections.abc import Callable
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, field, replace
 
 from ..domain.diploma import (
@@ -36,9 +34,8 @@ from ..domain.folio_manuscrito import (
     marca_de_folio,
     marcas_en_ritmo,
 )
-from ..adapters.mosaico_de_fechas import MosaicoDeFechas
 from ..domain.page import Provenance
-from .control import NullRunControl, RunControl
+from .control import NullRunControl, RunControl, alguno_listo, completados, hilos
 from .diagnostico import explicar
 from .ports import Band, OcrEngine
 from .progress import NullProgressReporter, ProgressEvent, ProgressReporter, Stage
@@ -1071,7 +1068,7 @@ class ReadDiplomaBook:
         ]
         # MuPDF se usa sólo aquí, en el hilo principal. Las imágenes ya listas
         # sí se pueden pasar a varios Tesseract sin compartir el documento PDF.
-        with ThreadPoolExecutor(max_workers=min(4, self._workers)) as pool:
+        with hilos(min(4, self._workers)) as pool:
             futuros = {}
             for indice, record in enumerate(candidatos, start=1):
                 self._control.check()
@@ -1090,7 +1087,7 @@ class ReadDiplomaBook:
                             total=len(candidatos),
                         )
                     )
-            for indice, futuro in enumerate(as_completed(futuros), start=1):
+            for indice, futuro in enumerate(completados(futuros, self._control), start=1):
                 record = futuros[futuro]
                 cedula = futuro.result()
                 if cedula:
@@ -1574,7 +1571,7 @@ class ReadDiplomaBook:
             nonlocal hechas, ventana, ultimo_rechazo, rechazos_vistos
             terminadas: list = []
             while vuelo and (todo or len(vuelo) >= ventana):
-                listos, _ = wait(list(vuelo), return_when=FIRST_COMPLETED)
+                listos = alguno_listo(vuelo, self._control)
                 for futuro in listos:
                     clave = vuelo.pop(futuro)
                     contestado = futuro.result()
@@ -1617,7 +1614,7 @@ class ReadDiplomaBook:
                 )
 
         vuelo: dict = {}
-        with ThreadPoolExecutor(max_workers=self._workers) as pool:
+        with hilos(self._workers) as pool:
             for clave in claves:
                 # Entre una unidad y la siguiente no hay nada a medio leer: es
                 # donde parar es seguro y reanudar significa continuar.
@@ -1859,17 +1856,6 @@ class ReadDiplomaBook:
             self._progress.emit(event)
         except Exception:  # noqa: BLE001 - telemetry never breaks the work
             logger.debug("el informe de progreso falló, se continúa", exc_info=True)
-
-
-def make_progress_hook(on_page: Callable[[int, int], None]) -> ProgressReporter:
-    """Adapt a plain callback to the reporter the use case expects."""
-
-    class _Hook:
-        def emit(self, event: ProgressEvent) -> None:
-            if event.stage is Stage.PAGE and event.page_number:
-                on_page(event.page_number, event.page_count or 0)
-
-    return _Hook()
 
 
 def _protegido(leer, carga, clave, fallo):

@@ -362,9 +362,9 @@ CUERPO = (
 HOJAS = [
     ("RESPUESTA A RECLAMACION", "Página 1 de 2", "fechado el 03/05/2023"),
     ("", "Página 2 de 2", ""),
-    ("FACTURA DE VENTA", "Página 1 de 1", "fechado el 07/06/2023"),
+    ("NOTIFICACION POR AVISO", "Página 1 de 1", "fechado el 07/06/2023"),
     ("RESPUESTA A RECLAMACION", "Página 1 de 1", "fechado el 28/05/2023"),
-    ("FACTURA DE VENTA", "Página 1 de 1", ""),
+    ("NOTIFICACION POR AVISO", "Página 1 de 1", ""),
 ]
 
 
@@ -414,21 +414,23 @@ class TestLaCajaDePuntaAPunta:
         informe = procesar(pdf, tmp_path)
 
         assert informe["outputs"] == [
-            "caja/01_DOCUMENTO.pdf",
-            "caja/02_FACTURA.pdf",
-            "caja/03_FACTURA.pdf",
-            "caja/04_FACTURA.pdf",
+            "caja/01_RESPUESTA-A-RECLAMACION.pdf",
+            "caja/02_NOTIFICACION-POR-AVISO.pdf",
+            "caja/03_RESPUESTA-A-RECLAMACION.pdf",
+            "caja/04_NOTIFICACION-POR-AVISO.pdf",
         ]
         assert informe["agrupar"] == "documento"
         assert informe["notices"] == []
-        assert "pages_dated_by_ocr" not in informe["stats"]
+        # Las hojas se leen siempre -- es de donde sale el título --, pero la
+        # que trae capa de texto no pasa por la OCR.
+        assert informe["stats"]["pages_dated_by_ocr"] == 0
 
     def test_por_mes_sale_un_archivo_por_mes(self, pdf, tmp_path):
         informe = procesar(pdf, tmp_path, agrupar="mes")
 
         assert informe["outputs"] == [
             "caja/2023-05_DOCUMENTO.pdf",
-            "caja/2023-06_FACTURA.pdf",
+            "caja/2023-06_NOTIFICACION-POR-AVISO.pdf",
         ]
         assert [grupo["pages"] for grupo in informe["groups"]] == [[1, 2, 4, 5], [3]]
         assert informe["agrupar"] == "mes"
@@ -463,7 +465,7 @@ class TestLaCajaDePuntaAPunta:
         ]
         assert filas == [
             ("caja/2023-05_DOCUMENTO.pdf", "2023-05-28"),
-            ("caja/2023-06_FACTURA.pdf", "2023-06-07"),
+            ("caja/2023-06_NOTIFICACION-POR-AVISO.pdf", "2023-06-07"),
         ]
 
     def test_sin_ninguna_fecha_se_entrega_y_se_declara_por_documento(self, tmp_path):

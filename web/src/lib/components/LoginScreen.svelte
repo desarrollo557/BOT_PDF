@@ -52,17 +52,18 @@
           trabajo. Continúe, o vuelva a ingresar.
         </p>
         <div class="actions">
-          <button class="primary" onclick={() => session.resume()}>
+          <button class="btn btn-primary" onclick={() => session.resume()}>
             Continuar como {session.name}
           </button>
-          <button class="ghost" onclick={() => session.close()}>Salir</button>
+          <button class="btn btn-ghost" onclick={() => session.close()}>Salir</button>
         </div>
       </div>
     {:else}
       <form onsubmit={submit}>
         <label>
-          <span>Usuario</span>
+          <span class="caps">Usuario</span>
           <input
+            class="input"
             bind:value={usuario}
             placeholder="siar"
             autocomplete="username"
@@ -75,10 +76,10 @@
         </label>
 
         {#if session.error}
-          <p class="bad rejected">{session.error}</p>
+          <p class="inline-error rejected">{session.error}</p>
         {/if}
 
-        <button class="primary wide" type="submit" disabled={!valid || session.entrando}>
+        <button class="btn btn-primary btn-block wide" type="submit" disabled={!valid || session.entrando}>
           {session.entrando ? 'Ingresando…' : 'Ingresar'}
         </button>
       </form>
@@ -99,7 +100,7 @@
   .card {
     width: min(28rem, 100%);
     border: 1px solid var(--hairline);
-    border-radius: 16px;
+    border-radius: var(--radius-xl);
     background: var(--surface-2);
     padding: 1.75rem;
     box-shadow: var(--shadow);
@@ -114,7 +115,7 @@
   .owner img {
     width: 148px;
     height: auto;
-    border-radius: 8px;
+    border-radius: var(--radius);
     /* Transparente en claro; en oscuro, una placa para no teñir la marca. */
     background: var(--logo-plate);
     padding: 6px 10px;
@@ -123,7 +124,7 @@
   .owner-note {
     margin: 1.1rem 0 0;
     text-align: center;
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     letter-spacing: 0.02em;
     color: var(--muted);
   }
@@ -158,13 +159,13 @@
   }
   h1 {
     margin: 0;
-    font-size: 1.05rem;
+    font-size: var(--text-lg);
     font-weight: 650;
     letter-spacing: -0.015em;
   }
   header p {
     margin: 0.1rem 0 0;
-    font-size: 0.76rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -179,88 +180,18 @@
     flex-direction: column;
     gap: 0.3rem;
   }
-  label span {
-    font-size: 0.62rem;
-    font-weight: 600;
-    letter-spacing: 0.055em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-  label i {
-    font-style: normal;
-    font-weight: 400;
-    text-transform: none;
-    letter-spacing: 0;
-  }
-  input {
-    border: 1px solid var(--hairline);
-    border-radius: 9px;
-    background: var(--plane);
-    padding: 0.55rem 0.75rem;
-    font: inherit;
-    font-size: 0.92rem;
-    color: inherit;
-    outline: none;
-    transition: border-color 0.15s;
-  }
-  input:focus {
-    border-color: var(--accent);
-  }
-  input[aria-invalid='true'] {
-    border-color: var(--critical);
-  }
+  /* El campo y los botones son los comunes (`.input`, `.btn`); aquí sólo lo
+     que esta tarjeta tiene de propio. */
   .bad {
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     color: var(--critical);
   }
   .rejected {
     margin: 0;
-    border: 1px solid var(--critical);
-    border-radius: 9px;
-    padding: 0.55rem 0.75rem;
     line-height: 1.5;
-    background: color-mix(in oklab, var(--critical) 10%, transparent);
-  }
-
-  .primary {
-    border: 1px solid var(--accent);
-    border-radius: 9px;
-    background: var(--accent-soft);
-    padding: 0.55rem 1rem;
-    font: inherit;
-    font-size: 0.88rem;
-    font-weight: 600;
-    color: var(--accent);
-    cursor: pointer;
-    transition:
-      background 0.15s,
-      opacity 0.15s;
-  }
-  .primary:hover:not(:disabled) {
-    background: color-mix(in oklab, var(--accent) 20%, transparent);
-  }
-  .primary:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
   }
   .wide {
     margin-top: 0.2rem;
-    width: 100%;
-  }
-
-  .ghost {
-    border: 1px solid var(--hairline);
-    border-radius: 9px;
-    background: transparent;
-    padding: 0.55rem 1rem;
-    font: inherit;
-    font-size: 0.85rem;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .ghost:hover {
-    border-color: var(--accent);
-    color: var(--accent);
   }
 
   .resume {
@@ -268,11 +199,11 @@
   }
   .lead {
     margin: 0;
-    font-size: 0.95rem;
+    font-size: var(--text-lg);
   }
   .muted {
     margin: 0.35rem 0 0;
-    font-size: 0.82rem;
+    font-size: var(--text-sm);
     line-height: 1.5;
     color: var(--muted);
   }

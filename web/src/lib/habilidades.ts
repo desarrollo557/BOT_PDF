@@ -43,7 +43,7 @@ export interface Corte {
  * es qué se entrega después -- cada documento por separado, o todos los de un
  * mismo mes juntos --, y por eso viaja aparte del corte de los diplomas.
  */
-export type AgruparChoice = 'documento' | 'mes';
+export type AgruparChoice = 'documento' | 'mes' | 'tramite';
 
 export interface Agrupar {
   id: AgruparChoice;
@@ -225,11 +225,24 @@ export const HABILIDADES: Habilidad[] = [
       pregunta: '¿Qué va en cada archivo?',
       opciones: [
         {
+          // La primera y la que viene elegida: estas cajas se dividen e
+          // inventarían por trámite, como lo dictó el operador.
+          id: 'tramite',
+          label: 'Por trámite: un archivo por número RE',
+          agrupa:
+            'Cada sello de radicación y cada carta con la etiqueta de envío de LECTA abren su propio PDF; la respuesta o la notificación que citan el mismo número RE van con su escrito. Un RE nuevo corta. La cédula y la factura van siempre con la hoja anterior, y lo que el escrito enumera en «ANEXOS» va con él.',
+          cuesta:
+            'Las páginas escaneadas se leen con OCR para encontrarles el número RE y la fecha. Con «Solo OCR» no cuesta nada. Si ninguna página trae un RE legible, la caja sale un archivo por documento.',
+          nombra: 'Por su puesto, su RE y su fecha: 01-RE3110202138312-02-09-2021_RECLAMO.pdf',
+          entrega: 'Deja un PDF por trámite.',
+          requiere: 'agrupar-por-tramite'
+        },
+        {
           id: 'documento',
           label: 'Un archivo por documento',
           agrupa:
-            'Como hasta ahora: cada documento que sale del corte es un PDF, numerado por su puesto en la caja.',
-          cuesta: 'Es lo de siempre.'
+            'Cada documento que sale del corte es un PDF, numerado por su puesto en la caja. La cédula y la factura van siempre dentro del documento anterior.',
+          cuesta: 'No lee con OCR: usa la capa de texto del PDF.'
         },
         {
           id: 'mes',
@@ -282,21 +295,33 @@ export const HABILIDADES: Habilidad[] = [
     id: 'actas-grado',
     titulo: 'Actas de grado',
     papel:
-      'Actas individuales de ceremonia de graduación. Cada PDF es un acta de un graduado con su número, fecha, folio y datos.',
-    corta: 'No se corta nada: cada PDF es un acta y sale una fila del inventario.',
+      'Libros de actas de grado: una hoja por graduado, con el número del acta, su nombre, su título y su cédula.',
+    corta:
+      'Si lo pides, un PDF por graduado: cada hoja que abre un acta es un graduado, con su reverso. El listado de graduandos, la resolución y la portada de cada ceremonia salen en su propio PDF. Sin IA.',
     nombra:
-      'Conserva su nombre. La fila lleva: número de acta, fecha de la ceremonia, folio inicial y final, total de folios.',
-    nombraConIa:
-      'Además: folio inicial y final escritos a mano (esquina), y un resumen del acta generado por IA.',
+      'El inventario es el FUID oficial (FO-GD-008): una fila por graduado con «ACTA DE GRADO No. … - NOMBRE - TÍTULO», la cédula como consecutivo, la fecha, la caja y la carpeta. Lo que no se pudo leer va en NOTAS.',
+    nombraConIa: 'Y lo que el OCR de casa no supo leer del graduado —nombre, cédula, número—, leído por la IA.',
     aportaIa:
-      'El folio manuscrito de la esquina (primera y última hoja): una página facturada por acta. Y el resumen del acta, que la IA escribe a partir del texto que ya sacó el OCR, nunca de la imagen: se paga por ese texto, no por página.',
+      'Relee con la IA sólo las hojas a las que, después de Tesseract, les falta el nombre, la cédula o el número: una página facturada por cada una. El folio de la esquina no se lee: el FUID sólo pide cuántos folios.',
     tipo: 'acta',
-    task: 'inventory',
+    task: null,
+    acciones: [
+      {
+        id: 'inventory_file',
+        label: 'Solo inventariar',
+        hint: 'Una fila por graduado en el FUID. El PDF queda entero.'
+      },
+      {
+        id: 'both',
+        label: 'Dividir e inventariar',
+        hint: 'Un PDF por graduado, la ceremonia aparte, y el FUID.'
+      }
+    ],
     requiereTipo: 'acta',
     pideLectura: {
       id: 'mistral',
       porque:
-        'El folio manuscrito de la esquina y el resumen necesitan IA. Con «Solo OCR» el acta se inventaría igual —número, fecha y total de folios—, pero sin el folio inicial/final ni el resumen.'
+        'En los libros antiguos el texto del escáner sale roto: con «OCR + IA» se relee lo que falte del graduado. Con «Solo OCR» la fila sale igual y dice en NOTAS qué no se pudo leer.'
     }
   },
   {
@@ -368,6 +393,25 @@ export function motivoSinAgrupar(opcion: Agrupar, health: Health | null): string
  * en vez de desaparecer: que exista y no se pueda pedir es información, y
  * esconderla deja al operador buscando algo que vio ayer.
  */
+/**
+ * La habilidad que atiende un tipo de documento reconocido, si hay una.
+ *
+ * La matrícula no tiene tarjeta propia: la reconoce y la parte «No estoy
+ * seguro». Lo que no tiene habilidad no se sugiere cambiar.
+ */
+const HABILIDAD_DEL_TIPO: Record<string, string> = {
+  diploma: 'diplomas',
+  resolucion: 'resoluciones',
+  'acta-consejo': 'actas',
+  acta: 'actas-grado',
+  matricula: 'auto'
+};
+
+export function habilidadDelTipo(tipo: string): Habilidad | null {
+  const id = HABILIDAD_DEL_TIPO[tipo];
+  return id ? (HABILIDADES.find((habilidad) => habilidad.id === id) ?? null) : null;
+}
+
 export function motivoNoDisponible(habilidad: Habilidad, health: Health | null): string | null {
   if (!habilidad.requiereTipo) return null;
   const declarados = health?.document_types;

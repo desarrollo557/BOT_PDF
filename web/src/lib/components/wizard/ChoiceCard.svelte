@@ -60,7 +60,12 @@
     <span class="head">
       <span class="title">{title}</span>
       {#if badge}
-        <span class="badge" data-tone={badgeTone}>{badge}</span>
+        <span
+          class="pill badge"
+          class:pill-warn={badgeTone === 'warning'}
+          class:pill-good={badgeTone === 'good'}
+          data-tone={badgeTone}>{badge}</span
+        >
       {/if}
     </span>
     {#if description}
@@ -86,12 +91,12 @@
     display: flex;
     min-width: 0;
     align-items: flex-start;
-    gap: var(--wz-space-3, 12px);
+    gap: var(--space-3);
     border: 1px solid var(--hairline);
-    border-radius: var(--wz-radius-lg, 12px);
+    border-radius: var(--radius-lg);
     background: var(--surface-2);
-    padding: var(--wz-space-3, 12px) var(--wz-space-4, 16px);
-    padding-right: calc(var(--wz-space-4, 16px) + 20px);
+    padding: var(--space-3) var(--space-4);
+    padding-right: calc(var(--space-4) + 20px);
     font: inherit;
     text-align: left;
     color: var(--ink-2);
@@ -103,8 +108,8 @@
   }
 
   .card.compact {
-    padding: var(--wz-space-2, 8px) var(--wz-space-3, 12px);
-    padding-right: calc(var(--wz-space-4, 16px) + 20px);
+    padding: var(--space-2) var(--space-3);
+    padding-right: calc(var(--space-4) + 20px);
   }
 
   .card:hover:not(:disabled) {
@@ -142,7 +147,7 @@
     height: 32px;
     flex-shrink: 0;
     place-items: center;
-    border-radius: var(--wz-radius, 8px);
+    border-radius: var(--radius);
     background: var(--plane);
     color: var(--ink-2);
   }
@@ -161,18 +166,18 @@
     display: flex;
     min-width: 0;
     flex-direction: column;
-    gap: var(--wz-space-1, 4px);
+    gap: var(--space-1);
   }
 
   .head {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--wz-space-2, 8px);
+    gap: var(--space-2);
   }
 
   .title {
-    font-size: var(--wz-text-base, 0.9375rem);
+    font-size: var(--text-lg);
     font-weight: 600;
     line-height: 1.35;
     color: var(--ink);
@@ -180,7 +185,7 @@
 
   .description {
     display: block;
-    font-size: var(--wz-text-sm, 0.8125rem);
+    font-size: var(--text-sm);
     line-height: 1.5;
     color: var(--ink-2);
   }
@@ -189,38 +194,24 @@
     text-transform: uppercase;
   }
 
+  /* La etiqueta es la `.pill` común; el tono neutro, que no es estado sino
+     dato («Gratis», «Por página»), va en el gris del plano. */
   .badge {
-    border-radius: 999px;
-    padding: 2px var(--wz-space-2, 8px);
-    font-size: 0.6875rem;
-    font-weight: 600;
     line-height: 1.5;
     white-space: nowrap;
+  }
+
+  .badge[data-tone='neutral'] {
     background: var(--plane);
     color: var(--ink-2);
-  }
-
-  .badge[data-tone='accent'] {
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-
-  .badge[data-tone='warning'] {
-    background: color-mix(in oklab, var(--warning) 16%, transparent);
-    color: color-mix(in oklab, var(--warning) 55%, var(--ink));
-  }
-
-  .badge[data-tone='good'] {
-    background: color-mix(in oklab, var(--good) 13%, transparent);
-    color: color-mix(in oklab, var(--good) 70%, var(--ink));
   }
 
   .reason {
     display: flex;
     align-items: flex-start;
-    gap: var(--wz-space-1, 4px);
-    margin-top: var(--wz-space-1, 4px);
-    font-size: var(--wz-text-xs, 0.75rem);
+    gap: var(--space-1);
+    margin-top: var(--space-1);
+    font-size: var(--text-xs);
     line-height: 1.45;
     color: var(--ink-2);
   }
@@ -241,8 +232,8 @@
      selected card from a hovered one at a glance. */
   .indicator {
     position: absolute;
-    top: var(--wz-space-3, 12px);
-    right: var(--wz-space-4, 16px);
+    top: var(--space-3);
+    right: var(--space-4);
     width: 16px;
     height: 16px;
     border: 1.5px solid var(--axis);
@@ -254,7 +245,7 @@
   }
 
   .card.compact .indicator {
-    top: var(--wz-space-2, 8px);
+    top: var(--space-2);
   }
 
   .card.selected .indicator {

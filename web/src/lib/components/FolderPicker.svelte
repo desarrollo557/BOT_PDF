@@ -1,5 +1,6 @@
 <script lang="ts">
   import { browseFolders, PickerUnavailable, pickFolderNatively } from '$lib/api';
+  import Icono from '$lib/components/Icono.svelte';
   import type { FolderEntry } from '$lib/types';
 
   interface Props {
@@ -107,10 +108,12 @@
   <div class="sheet" role="dialog" aria-modal="true" aria-label={title}>
     <header>
       <div class="who">
-        <span class="badge">Carpeta</span>
+        <span class="pill pill-warn badge">Carpeta</span>
         <h2>{title}</h2>
       </div>
-      <button class="close" onclick={onclose} aria-label="Cerrar">✕</button>
+      <button class="btn btn-icon" onclick={onclose} aria-label="Cerrar">
+        <Icono nombre="cerrar" />
+      </button>
     </header>
 
     <nav class="crumbs" aria-label="Ruta actual">
@@ -150,11 +153,11 @@
 
       <div class="list">
         {#if error}
-          <p class="error">{error}</p>
+          <p class="inline-error">{error}</p>
         {:else if loading}
           <p class="muted">Leyendo…</p>
         {:else if !path}
-          <p class="muted">Elija una unidad o un acceso de la izquierda.</p>
+          <p class="empty-state">Elija una unidad o un acceso de la izquierda.</p>
         {:else}
           {#if parent}
             <button class="row up" onclick={() => go(parent)}>
@@ -174,7 +177,7 @@
             </button>
           {/each}
           {#if !folders.length}
-            <p class="muted">Esta carpeta no tiene subcarpetas. Puede usarla tal cual.</p>
+            <p class="empty-state">Esta carpeta no tiene subcarpetas. Puede usarla tal cual.</p>
           {/if}
         {/if}
       </div>
@@ -184,6 +187,7 @@
       <span class="rail-label">Se usará</span>
       <!-- Escribir la ruta sigue estando: es más rápido cuando ya se sabe. -->
       <input
+        class="input input-sm mono"
         bind:value={manual}
         placeholder="…o escriba la ruta completa"
         spellcheck="false"
@@ -195,11 +199,11 @@
     </div>
 
     <footer>
-      <button class="ghost" onclick={windows} disabled={native}>
+      <button class="btn btn-ghost windows" onclick={windows} disabled={native}>
         {native ? 'Ventana de Windows abierta…' : 'Usar el explorador de Windows'}
       </button>
-      <button class="ghost" onclick={onclose}>Cancelar</button>
-      <button class="primary" disabled={!chosen} onclick={() => onpick(chosen)}>
+      <button class="btn" onclick={onclose}>Cancelar</button>
+      <button class="btn btn-primary" disabled={!chosen} onclick={() => onpick(chosen)}>
         Usar esta carpeta
       </button>
     </footer>
@@ -213,7 +217,7 @@
     z-index: 90;
     display: grid;
     place-items: center;
-    background: rgb(0 0 0 / 0.45);
+    background: var(--scrim);
     padding: 1.5rem;
     backdrop-filter: blur(3px);
     animation: fade 0.16s ease-out;
@@ -226,9 +230,9 @@
     flex-direction: column;
     overflow: hidden;
     border: 1px solid var(--hairline);
-    border-radius: 16px;
+    border-radius: var(--radius-xl);
     background: var(--surface-2);
-    box-shadow: 0 24px 70px rgb(0 0 0 / 0.35);
+    box-shadow: var(--shadow-lg);
     animation: rise 0.18s ease-out;
   }
 
@@ -247,33 +251,15 @@
   }
   .badge {
     align-self: flex-start;
-    border: 1px solid color-mix(in oklab, var(--s4) 45%, var(--hairline));
-    border-radius: 999px;
-    padding: 0.1rem 0.6rem;
-    font-family: var(--font-mono);
-    font-size: 0.64rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--s4);
   }
   header h2 {
     overflow: hidden;
     margin: 0;
-    font-size: 1.05rem;
+    font-size: var(--text-lg);
     font-weight: 650;
     letter-spacing: -0.015em;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .close {
-    border: 0;
-    background: none;
-    font-size: 0.9rem;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .close:hover {
-    color: var(--ink);
   }
 
   .crumbs {
@@ -288,12 +274,12 @@
   }
   .crumb {
     border: 0;
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
     background: none;
     padding: 0.15rem 0.4rem;
     font: inherit;
     font-family: var(--font-mono);
-    font-size: 0.76rem;
+    font-size: var(--text-xs);
     color: var(--ink-2);
     cursor: pointer;
   }
@@ -308,7 +294,7 @@
     fill: var(--s4);
   }
   .sep {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--axis);
   }
 
@@ -329,9 +315,9 @@
   }
   .rail-label {
     padding: 0 0.4rem 0.3rem;
-    font-size: 0.6rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.055em;
+    letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
     color: var(--muted);
   }
@@ -340,11 +326,11 @@
     align-items: center;
     gap: 0.5rem;
     border: 0;
-    border-radius: 7px;
+    border-radius: var(--radius-sm);
     background: none;
     padding: 0.35rem 0.45rem;
     font: inherit;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     color: var(--ink-2);
     text-align: left;
     cursor: pointer;
@@ -368,11 +354,11 @@
     align-items: center;
     gap: 0.6rem;
     border: 0;
-    border-radius: 7px;
+    border-radius: var(--radius-sm);
     background: none;
     padding: 0.4rem 0.6rem;
     font: inherit;
-    font-size: 0.85rem;
+    font-size: var(--text-md);
     color: inherit;
     text-align: left;
     cursor: pointer;
@@ -393,7 +379,7 @@
     display: grid;
     width: 17px;
     place-items: center;
-    font-size: 0.9rem;
+    font-size: var(--text-md);
     color: var(--muted);
   }
   .up .name {
@@ -407,20 +393,18 @@
   }
   .enter {
     flex-shrink: 0;
-    font-size: 0.85rem;
+    font-size: var(--text-md);
     color: transparent;
   }
 
-  .muted,
-  .error {
+  .muted {
     margin: 0.75rem 0.6rem;
-    font-size: 0.82rem;
+    font-size: var(--text-sm);
     color: var(--muted);
   }
-  .error {
-    border-left: 2px solid var(--critical);
-    padding-left: 0.6rem;
-    color: var(--critical);
+  .list .inline-error,
+  .list .empty-state {
+    margin: 0.75rem 0.6rem;
   }
 
   .chosen {
@@ -437,18 +421,6 @@
   .chosen input {
     flex: 1;
     min-width: 8rem;
-    border: 1px solid var(--hairline);
-    border-radius: 8px;
-    background: var(--surface-2);
-    padding: 0.4rem 0.6rem;
-    font-family: var(--font-mono);
-    font-size: 0.76rem;
-    color: inherit;
-    outline: none;
-  }
-  .chosen input:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--ring);
   }
 
   footer {
@@ -458,42 +430,13 @@
     border-top: 1px solid var(--hairline);
     padding: 0.75rem 1.25rem;
   }
-  .ghost,
-  .primary {
+  /* Los botones son los globales; el de Windows se aparta a la izquierda,
+     lejos de la acción principal. */
+  footer .btn {
     flex-shrink: 0;
-    border: 1px solid var(--hairline);
-    border-radius: 8px;
-    background: transparent;
-    padding: 0.4rem 0.8rem;
-    font: inherit;
-    font-size: 0.82rem;
-    color: var(--muted);
-    cursor: pointer;
-    transition:
-      border-color 0.15s,
-      color 0.15s;
   }
-  .ghost:first-child {
+  .windows {
     margin-right: auto;
-  }
-  .ghost:hover:not(:disabled) {
-    border-color: var(--axis);
-    color: var(--ink-2);
-  }
-  .ghost:disabled {
-    cursor: progress;
-    opacity: 0.6;
-  }
-  .primary {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-  .primary:hover:not(:disabled) {
-    background: var(--accent-soft);
-  }
-  .primary:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
   }
 
   @keyframes fade {

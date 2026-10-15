@@ -16,6 +16,10 @@ pymupdf = pytest.importorskip("pymupdf")
 pytest.importorskip("openpyxl")
 
 from resolutions.adapters.excel_inventory import SUFFIX  # noqa: E402
+from resolutions.adapters.indice_electronico import (  # noqa: E402
+    NOMBRE_DEL_INDICE,
+    PRIMERA_FILA,
+)
 from resolutions.api.settings import Settings  # noqa: E402
 from resolutions.api.worker import process_document_job  # noqa: E402
 from resolutions.application.task import TaskKind  # noqa: E402
@@ -69,61 +73,55 @@ def procesada(caja, tmp_path):
 
 
 class TestLaPlanillaSeEscribeSola:
-    def test_queda_una_planilla_en_el_trabajo(self, procesada):
+    """En una caja de correspondencia la planilla es el Índice Electrónico del
+    cliente: sustituye a la de las otras rutas, y se escribe igual de sola."""
+
+    def test_queda_el_indice_en_el_trabajo_y_no_la_planilla(self, procesada):
         _, salida = procesada
-        assert list(salida.rglob(f"*{SUFFIX}"))
+        assert list(salida.rglob(NOMBRE_DEL_INDICE))
+        # Uno solo por caja: el archivo no recibe dos Excel discrepando.
+        assert not list(salida.rglob(f"*{SUFFIX}"))
 
     def test_junto_a_los_pdf_que_describe(self, procesada):
         """En la carpeta de la caja, no en la raíz del trabajo: quien abre el
         disco encuentra el listado al lado de los archivos que lista."""
         _, salida = procesada
-        hoja = next(iter(salida.rglob(f"*{SUFFIX}")))
+        hoja = next(iter(salida.rglob(NOMBRE_DEL_INDICE)))
         assert hoja.parent.name == "UPD2365925"
         assert list(hoja.parent.glob("*.pdf"))
 
-    def test_se_llama_como_el_documento_de_origen(self, procesada):
-        _, salida = procesada
-        hoja = next(iter(salida.rglob(f"*{SUFFIX}")))
-        assert hoja.name.startswith("UPD2365925")
+    def test_el_informe_dice_como_se_llama(self, procesada):
+        informe, _ = procesada
+        assert informe["indice_electronico"] == NOMBRE_DEL_INDICE
 
     def test_y_lista_lo_que_de_verdad_salio(self, procesada):
+        """Una fila por archivo, en el orden de la caja, y Observaciones vacía."""
         import openpyxl
 
         informe, salida = procesada
-        hoja = next(iter(salida.rglob(f"*{SUFFIX}")))
-        libro = openpyxl.load_workbook(hoja)
-        texto = "\n".join(
-            str(celda.value)
-            for fila in libro["Resoluciones"].iter_rows()
-            for celda in fila
-            if celda.value is not None
-        )
-        for item in informe["inventory"]["items"]:
-            assert item["file_name"].rsplit("/", 1)[-1] in texto
+        hoja = openpyxl.load_workbook(next(iter(salida.rglob(NOMBRE_DEL_INDICE)))).active
+        archivos = [item["file_name"].rsplit("/", 1)[-1] for item in informe["inventory"]["items"]]
+        filas = range(PRIMERA_FILA, PRIMERA_FILA + len(archivos))
+        assert [hoja[f"G{fila}"].value for fila in filas] == [None] * len(archivos)
+        assert [hoja[f"D{fila}"].value for fila in filas] == list(range(1, len(archivos) + 1))
+        # Y quien la procesó, como responsable.
+        assert hoja[f"H{PRIMERA_FILA}"].value == "Eduver Andrés"
 
-    def test_el_tipo_documental_esta_en_la_planilla(self, procesada):
+    def test_el_tipo_documental_es_el_nombre_del_documento(self, procesada):
         import openpyxl
 
         _, salida = procesada
-        hoja = next(iter(salida.rglob(f"*{SUFFIX}")))
-        libro = openpyxl.load_workbook(hoja)
-        texto = "\n".join(
-            str(celda.value)
-            for fila in libro["Resoluciones"].iter_rows()
-            for celda in fila
-            if celda.value is not None
-        )
-        assert "NOTIFICACION POR AVISO" in texto
+        hoja = openpyxl.load_workbook(next(iter(salida.rglob(NOMBRE_DEL_INDICE)))).active
+        assert hoja[f"A{PRIMERA_FILA}"].value == "NOTIFICACION POR AVISO"
 
-    def test_un_fallo_de_la_planilla_no_se_lleva_el_trabajo(self, caja, tmp_path, monkeypatch):
+    def test_un_fallo_del_indice_no_se_lleva_el_trabajo(self, caja, tmp_path, monkeypatch):
         """Los PDF ya están escritos cuando esto corre."""
-        from resolutions.adapters import excel_inventory
+        from resolutions.adapters import indice_electronico
 
-        class Rota:
-            def write(self, *_a, **_k):
-                raise OSError("el disco dijo que no")
+        def roto(*_a, **_k):
+            raise OSError("el disco dijo que no")
 
-        monkeypatch.setattr(excel_inventory, "ExcelInventory", Rota)
+        monkeypatch.setattr(indice_electronico, "escribir_indice", roto)
         informe = process_document_job(
             {
                 "job_id": "otro",
@@ -134,6 +132,7 @@ class TestLaPlanillaSeEscribeSola:
             }
         )
         assert informe["outputs"]
+        assert "el disco dijo que no" in informe["indice_electronico_error"]
 
 
 class TestSeBajaDeUnClic:

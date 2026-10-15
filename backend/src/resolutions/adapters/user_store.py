@@ -5,7 +5,7 @@ cualquier cosa, sobrevive a que el programa se caiga a mitad de una escritura y
 no obliga a instalar una base para dar de alta a seis personas.
 
 Donde sí se aparta del libro mayor es en cómo escribe. Aquél sólo añade —un
-trabajo terminado no se corrige— y éste tiene que poder sustituir y borrar, así
+trabajo terminado no se corrige— y éste tiene que poder sustituir una alta, así
 que reescribe el archivo entero cada vez. Sobre una lista que en este edificio
 cabe en una pantalla eso son microsegundos, y a cambio no hay que reconstruir el
 estado leyendo un historial de altas y bajas para saber quién está dado de alta
@@ -110,14 +110,6 @@ class FileUserStore:
             actuales = [u for u in self._read() if u.cedula != usuario.cedula]
             self._write(actuales + [usuario])
 
-    def delete(self, cedula: str) -> bool:
-        with self._lock:
-            actuales = self._read()
-            quedan = [u for u in actuales if u.cedula != cedula]
-            if len(quedan) == len(actuales):
-                return False
-            self._write(quedan)
-            return True
 
     def _write(self, usuarios: list[Usuario]) -> None:
         """Reescribe el archivo entero, de un golpe.

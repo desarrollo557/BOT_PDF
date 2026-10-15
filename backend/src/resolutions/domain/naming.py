@@ -58,6 +58,16 @@ MIN_DOCUMENT_STEM = 8
 MAX_FOLDER_NAME = 60
 
 
+def _sin_extension(nombre: str) -> str:
+    """El nombre sin su extensión, si la tiene.
+
+    Sólo un punto seguido de unas pocas letras al final es una extensión: «15.
+    ODONTOLOGIA 3284 - 3290» no tiene ninguna, y cortarla por el punto dejaba
+    el Excel de esa carpeta en «ACTAS 15__inventario.xlsx».
+    """
+    return re.sub(r"\.[A-Za-z0-9]{1,5}$", "", nombre)
+
+
 def code_fragment(code: ResolutionCode) -> str:
     return slugify(code.value, max_length=CODE_SLUG_LENGTH) or "sin-codigo"
 
@@ -87,7 +97,7 @@ def document_folder(document: str, fallback: str = "documento") -> str:
     escáner y puede traer cualquier cosa. Un nombre imposible aquí no es un
     archivo mal nombrado: es toda la entrega que no se llega a escribir.
     """
-    stem = document.rsplit(".", 1)[0] if "." in document else document
+    stem = _sin_extension(document)
     limpio = re.sub(r'[\\/:*?"<>|]+', " ", stem)
     limpio = re.sub(r"\s+", " ", limpio).strip(" .")
     if not limpio:
@@ -113,8 +123,7 @@ def sheet_filename(
     y lo que lo encuentra el endpoint de descarga -- y lo que se recorta es el
     nombre del documento, hasta desaparecer si hace falta.
     """
-    stem = document.rsplit(".", 1)[0] if "." in document else document
-    stem = stem.strip() or fallback
+    stem = _sin_extension(document).strip() or fallback
 
     room = WINDOWS_PATH_LIMIT - directory_length - len(suffix) - 1
     if room < MIN_DOCUMENT_STEM:
@@ -190,7 +199,7 @@ def output_filename(
                 quien = slugify(quien, max_length=sobra)
             if len(etiqueta) > room:
                 etiqueta = etiqueta[:room].rstrip("-")
-        piezas = [fragment, *(([quien] if quien else [])), etiqueta]
+        piezas = [fragment, *([quien] if quien else []), etiqueta]
         if mayusculas:
             piezas = [pieza.upper() for pieza in piezas]
         return PREFIX_SEPARATOR.join(piezas) + extension

@@ -7,15 +7,19 @@ exactamente lo que se descarga.
 
 from __future__ import annotations
 
+import io
 import logging
 import tempfile
+import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from ...adapters.indice_electronico import NOMBRE_DEL_INDICE
 from ...domain.anchor import strip_accents
 from ..contexto import Contexto, Ctx
+from ..indices import indice_del_trabajo, libro_de_indices
 from .salidas import XLSX_MEDIA
 from .trabajos import _discard_outputs
 
@@ -81,8 +85,15 @@ async def documents(
         encontrados = {row.get("job_id") for row in _filtrar(ctx.ledger.rows(), q)}
         rows = [row for row in rows if row.get("job_id") in encontrados]
 
+    pagina = rows[offset : offset + limit]
+    for row in pagina:
+        # Si es una caja de correspondencia: su inventario es el Índice
+        # Electrónico del cliente, y la pantalla ofrece ese y no otro. Se mira
+        # en el disco y no en el libro mayor para que valga también con lo
+        # procesado antes de que el libro lo anotara.
+        row["indice"] = indice_del_trabajo(ctx.settings.output_dir, str(row.get("job_id") or "")) is not None
     return {
-        "documents": rows[offset : offset + limit],
+        "documents": pagina,
         "total": len(rows),
         "offset": offset,
         "limit": limit,
@@ -261,6 +272,52 @@ async def inventory_xlsx(ctx: Ctx, q: str | None = Query(None, max_length=MAX_BU
     """
     rows = _filtrar(ctx.ledger.rows(), q)
 
+    # Las cajas de correspondencia salen en la plantilla del cliente, una hoja
+    # por caja, y nunca en la planilla genérica: así lo pidió el operador.
+    # Las demás filas, si las hay, van en la planilla de siempre, y las dos
+    # viajan juntas en un .zip.
+    trabajos = list(dict.fromkeys(str(row.get("job_id") or "") for row in rows))
+    con_indice = {j for j in trabajos if indice_del_trabajo(ctx.settings.output_dir, j)}
+    if con_indice:
+        rows = [row for row in rows if row.get("job_id") not in con_indice]
+        with tempfile.TemporaryDirectory() as folder:
+            indice = libro_de_indices(
+                ctx.settings.output_dir, [j for j in trabajos if j in con_indice], Path(folder)
+            )
+            if indice is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail="No se pudieron leer los Índices Electrónicos de esas cajas",
+                )
+            contenido = indice.read_bytes()
+            if not rows:
+                return Response(
+                    content=contenido,
+                    media_type=XLSX_MEDIA,
+                    headers={"Content-Disposition": f'attachment; filename="{NOMBRE_DEL_INDICE}"'},
+                )
+            generica = _planilla_generica(rows, q, Path(folder))
+            paquete = io.BytesIO()
+            with zipfile.ZipFile(paquete, "w", zipfile.ZIP_DEFLATED) as zipf:
+                zipf.writestr(NOMBRE_DEL_INDICE, contenido)
+                zipf.writestr("inventario.xlsx", generica)
+        return Response(
+            content=paquete.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="inventario.zip"'},
+        )
+
+    with tempfile.TemporaryDirectory() as folder:
+        content = _planilla_generica(rows, q, Path(folder))
+    return Response(
+        content=content,
+        media_type=XLSX_MEDIA,
+        headers={"Content-Disposition": 'attachment; filename="inventario.xlsx"'},
+    )
+
+
+def _planilla_generica(rows: list[dict], q: str | None, folder: Path) -> bytes:
+    """La planilla de siempre, para lo que no es una caja de correspondencia."""
     try:
         from ...adapters.excel_inventory import ExcelRunInventory
     except ImportError:
@@ -269,21 +326,13 @@ async def inventory_xlsx(ctx: Ctx, q: str | None = Query(None, max_length=MAX_BU
             detail="El inventario en Excel necesita openpyxl instalado en el servicio",
         ) from None
 
-    # El adaptador escribe en disco; se le da una carpeta que se borra sola.
-    with tempfile.TemporaryDirectory() as folder:
-        written = ExcelRunInventory().write(
-            rows,
-            Path(folder),
-            source=f"Inventario completo{f' — filtro: {q}' if q else ''}",
-            delivered_to="cada resolución en la carpeta de su documento",
-        )
-        content = written.read_bytes()
-
-    return Response(
-        content=content,
-        media_type=XLSX_MEDIA,
-        headers={"Content-Disposition": 'attachment; filename="inventario.xlsx"'},
+    written = ExcelRunInventory().write(
+        rows,
+        folder,
+        source=f"Inventario completo{f' — filtro: {q}' if q else ''}",
+        delivered_to="cada resolución en la carpeta de su documento",
     )
+    return written.read_bytes()
 
 @router.get("/api/inventory.csv")
 async def inventory_csv(ctx: Ctx, q: str | None = Query(None, max_length=MAX_BUSQUEDA)) -> Response:

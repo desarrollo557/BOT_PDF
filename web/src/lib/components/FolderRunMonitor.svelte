@@ -1,10 +1,20 @@
 <script lang="ts">
   import { onMount } from 'svelte';
 
-  import { descargarPlanilla, folderInventarioUrl } from '$lib/api';
+  import {
+    descargarPlanilla,
+    folderInventarioUrl,
+    origenInventarioUrl,
+    origenProcesosUrl
+  } from '$lib/api';
+  import Descargas, { type GrupoDeDescargas } from '$lib/components/Descargas.svelte';
+  import { confirmar } from '$lib/confirmar.svelte';
   import FolderTree from '$lib/components/FolderTree.svelte';
+  import Icono from '$lib/components/Icono.svelte';
   import PageRibbon from '$lib/components/PageRibbon.svelte';
   import RunStats from '$lib/components/RunStats.svelte';
+  import PanelDeRendimiento from '$lib/components/PanelDeRendimiento.svelte';
+  import { marcadasEnCinta, sumarConsumos } from '$lib/rendimiento';
   import { jobStore } from '$lib/jobs.svelte';
   import { unitFor } from '$lib/format';
   import { STAGE_LABELS } from '$lib/rungs';
@@ -59,12 +69,36 @@
     return Math.max(0, ((Number.isNaN(to) ? now : to) - from) / 1000);
   });
 
-  /** The document the runner has open right now, if it is still on screen. */
-  const job = $derived(run.current_job_id ? jobStore.get(run.current_job_id) : undefined);
+  /**
+   * Los documentos que la carpeta tiene abiertos ahora, varios a la vez. Un
+   * servicio anterior sólo dice el actual, y entonces la lista es ése.
+   */
+  const abiertos = $derived(
+    (run.en_curso ??
+      (run.current && run.current_job_id
+        ? [{ job_id: run.current_job_id, nombre: run.current }]
+        : [])
+    ).map((item) => ({ ...item, job: jobStore.get(item.job_id) }))
+  );
+  const job = $derived(abiertos[0]?.job);
+
+  /**
+   * Los documentos de la carpeta que siguen en pantalla, para sumar de dónde
+   * salió cada página, cuántas quedaron por revisar y lo gastado con la IA.
+   */
+  const trabajos = $derived.by(() => {
+    const ids = new Set(run.job_ids);
+    return jobStore.jobs.filter((trabajo) => ids.has(trabajo.id));
+  });
 
   /** Páginas del documento abierto ahora mismo, sobre el total ya contado. */
-  const pagesDone = $derived(run.pages_total + (job?.progress.pages_done ?? 0));
-  const rate = $derived(job?.progress.pages_per_second ?? 0);
+  const pagesDone = $derived(
+    run.pages_total + abiertos.reduce((suma, item) => suma + (item.job?.progress.pages_done ?? 0), 0)
+  );
+  /** La velocidad de la carpeta es la suma de la de todos los que lee a la vez. */
+  const rate = $derived(
+    abiertos.reduce((suma, item) => suma + (item.job?.progress.pages_per_second ?? 0), 0)
+  );
   const unitLabel = $derived(unitFor(job?.report?.stats, run.resolutions));
 
   function clock(at: string): string {
@@ -74,6 +108,16 @@
   }
 
   async function stop() {
+    const seguro = await confirmar({
+      titulo: '¿Detener el procesamiento de esta carpeta?',
+      mensaje:
+        'Se cancela el documento que se está procesando y los que faltan no se empiezan. ' +
+        'Lo que ya se entregó se queda en la carpeta de destino.',
+      aceptar: 'Detener',
+      volver: 'Seguir procesando',
+      peligro: true
+    });
+    if (!seguro) return;
     stopping = true;
     error = null;
     try {
@@ -85,7 +129,6 @@
     }
   }
 
-  let bajando = $state(false);
 
   /**
    * Cuántas actas van ya en el inventario de la carpeta. Lo dice el servicio,
@@ -93,22 +136,62 @@
    * entonces no hay inventario de actas que enseñar.
    */
   const actasDelInventario = $derived(run.inventario_filas ?? 0);
+  const validacion = $derived(run.inventario_validacion ?? null);
 
   /**
    * Bajar el Excel con todas las actas de la carpeta. Por `fetch`, para que un
    * fallo se diga aquí con palabras en vez de abrir una página de error.
    */
-  async function bajarInventario() {
-    bajando = true;
-    error = null;
-    try {
-      await descargarPlanilla(folderInventarioUrl(run.id), run.inventario ?? 'inventario.xlsx');
-    } catch (problem) {
-      error = (problem as Error).message;
-    } finally {
-      bajando = false;
-    }
-  }
+  /**
+   * Los inventarios generales de la carpeta, en la raíz del destino: el de la
+   * habilidad -- el de actas, o el Índice Electrónico de las cajas de
+   * correspondencia con una hoja por PDF -- y el general del bot, una fila por
+   * PDF procesado. Se ofrecen en cuanto termina el primer PDF.
+   */
+  const descargas = $derived<GrupoDeDescargas[]>(
+    run.processed + run.failed > 0
+      ? [
+          {
+            titulo: 'Inventarios generales de la carpeta',
+            items: [
+              ...(run.inventario
+                ? [
+                    {
+                      id: 'actas',
+                      titulo: 'Inventario de actas',
+                      detalle: 'Una fila por acta de toda la carpeta',
+                      formato: 'Excel' as const,
+                      principal: true,
+                      bajar: () =>
+                        descargarPlanilla(folderInventarioUrl(run.id), run.inventario ?? 'inventario.xlsx')
+                    }
+                  ]
+                : run.task === 'segment' && run.processed > 0
+                  ? [
+                      {
+                        id: 'indice',
+                        titulo: 'Índice electrónico',
+                        detalle: 'Plantilla del cliente, una hoja por PDF procesado',
+                        formato: 'Excel' as const,
+                        principal: true,
+                        bajar: () =>
+                          descargarPlanilla(origenInventarioUrl(run.id), '00.INDICE ELECTRONICO.xlsx')
+                      }
+                    ]
+                  : []),
+              {
+                id: 'procesos',
+                titulo: 'Inventario de procesos',
+                detalle: 'Lo que hizo el bot con cada PDF: habilidad, lectura, resultado y revisión',
+                formato: 'Excel' as const,
+                bajar: () =>
+                  descargarPlanilla(origenProcesosUrl(run.id), '00.INVENTARIO GENERAL DE PROCESOS.xlsx')
+              }
+            ]
+          }
+        ]
+      : []
+  );
 
   /**
    * Quitar la tarjeta de la pantalla.
@@ -118,6 +201,13 @@
    * porque quitar una viva dejaría el trabajo corriendo sin nadie que informara.
    */
   async function forget() {
+    const seguro = await confirmar({
+      titulo: '¿Quitar esta carpeta de la pantalla?',
+      mensaje:
+        'Sólo se quita la tarjeta: lo entregado sigue en la carpeta de destino y en el archivo.',
+      aceptar: 'Quitar'
+    });
+    if (!seguro) return;
     forgetting = true;
     error = null;
     try {
@@ -141,24 +231,26 @@
       </small>
     </div>
     {#if active}
-      <button onclick={stop} disabled={stopping}>{stopping ? 'deteniendo…' : 'detener'}</button>
+      <button class="btn btn-sm btn-danger accion" onclick={stop} disabled={stopping}>
+        {stopping ? 'Deteniendo…' : 'Detener'}
+      </button>
     {:else}
       <button
-        class="quitar"
+        class="btn btn-sm btn-ghost accion"
         onclick={forget}
         disabled={forgetting}
         title="Quitar de la pantalla. Lo entregado se queda donde está."
       >
-        {forgetting ? 'quitando…' : 'quitar'}
+        {forgetting ? 'Quitando…' : 'Quitar'}
       </button>
     {/if}
   </header>
 
   {#if run.error}
-    <p class="error">{run.error}</p>
+    <p class="inline-error">{run.error}</p>
   {/if}
   {#if error}
-    <p class="error">{error}</p>
+    <p class="inline-error">{error}</p>
   {/if}
 
   <!-- El inventario general de la carpeta: un Excel con una fila por PDF, que
@@ -177,16 +269,33 @@
             por PDF · quedó en la carpeta de destino como
             <code title={run.inventario_ruta ?? run.inventario}>{run.inventario}</code>
           </small>
+          {#if validacion && validacion.filas}
+            <!-- El control de calidad antes de entregar: qué tan completo va. -->
+            <small class="validacion" data-pendientes={validacion.pendientes ? 'si' : 'no'}>
+              Validación: {validacion.completas} de {validacion.filas} filas completas
+              {#if validacion.razonadas}· {validacion.razonadas} completadas razonando con las actas vecinas{/if}
+              {#if validacion.pendientes}
+                · {validacion.pendientes} con datos que el papel no trae o no deja leer
+                ({Object.entries(validacion.por_dato)
+                  .map(([dato, cuantas]) => `${dato}: ${cuantas}`)
+                  .join(', ')}) — cada una lo explica en observaciones
+              {/if}
+              {#if validacion.nombres_dudosos}
+                · {validacion.nombres_dudosos}
+                {validacion.nombres_dudosos === 1 ? 'nombre dudoso' : 'nombres dudosos'} para revisar en el
+                papel
+              {/if}
+            </small>
+          {/if}
         </div>
-        <button class="bajar" onclick={bajarInventario} disabled={bajando}>
-          {bajando
-            ? 'descargando…'
-            : `Descargar inventario general (${actasDelInventario} ${actasDelInventario === 1 ? 'acta' : 'actas'})`}
-        </button>
       {:else}
-        <p class="error">No se pudo escribir el inventario de actas: {run.inventario_error}</p>
+        <p class="inline-error">No se pudo escribir el inventario de actas: {run.inventario_error}</p>
       {/if}
     </div>
+  {/if}
+
+  {#if descargas.length}
+    <div class="descargas"><Descargas grupos={descargas} /></div>
   {/if}
 
   <RunStats
@@ -203,31 +312,59 @@
     settled={!active}
   />
 
-  <!-- Which file it is on. Sequential by design, so there is exactly one.
-       Una carpeta cerrada no está consumiendo nada, así que este bloque
+  <PanelDeRendimiento
+    paginasHechas={pagesDone}
+    paginasTotal={0}
+    velocidad={rate}
+    segundos={elapsedSeconds}
+    etapas={active ? abiertos.map((item) => item.job?.progress.stage) : []}
+    procedencias={trabajos.map((trabajo) => trabajo.progress.by_provenance)}
+    revision={trabajos.reduce((suma, trabajo) => suma + marcadasEnCinta(trabajo.progress.ribbon), 0)}
+    fallidas={trabajos.reduce((suma, trabajo) => suma + trabajo.progress.failed_pages, 0)}
+    documentos={{
+      hechos: run.processed,
+      fallidos: run.failed,
+      enCola: enCola,
+      total: run.watch ? null : run.discovered
+    }}
+    consumo={sumarConsumos(trabajos.map((trabajo) => trabajo.progress.consumo ?? trabajo.report?.consumo))}
+    vivo={active}
+  />
+
+  <!-- Los que se leen ahora, varios a la vez: cada uno con su etapa y su
+       avance. Una carpeta cerrada no está consumiendo nada, así que este bloque
        desaparece en vez de anunciar "ningún archivo abierto" para siempre. -->
   {#if active}
     <div class="column">
-      <span class="section-label">Consumiendo ahora</span>
-      {#if run.current}
-        <article class="current">
-          <div class="line">
-            <span class="dot" aria-hidden="true"></span>
-            <span class="file" title={run.current}>{run.current}</span>
-            {#if job}
-              <span class="stage">{STAGE_LABELS[job.progress.stage] ?? job.progress.stage}</span>
-              <span class="pages tabular">
-                {job.progress.pages_done}/{job.progress.page_count || '?'}
-              </span>
-            {/if}
-          </div>
-          {#if job?.progress.page_count}
-            <div class="bar">
-              <div class="fill" style:width={`${job.progress.percent}%`}></div>
+      <span class="section-label">
+        Consumiendo ahora{abiertos.length > 1 ? ` (${abiertos.length} a la vez)` : ''}
+      </span>
+      {#if abiertos.length}
+        {#each abiertos as item (item.job_id)}
+          <article class="current">
+            <div class="line">
+              <span class="dot" aria-hidden="true"></span>
+              <span class="file" title={item.nombre}>{item.nombre}</span>
+              {#if item.job}
+                <span class="stage">
+                  {STAGE_LABELS[item.job.progress.stage] ?? item.job.progress.stage}
+                </span>
+                <span class="pages tabular">
+                  {item.job.progress.pages_done}/{item.job.progress.page_count || '?'}
+                </span>
+              {/if}
             </div>
-            <PageRibbon ribbon={job.progress.ribbon} pageCount={job.progress.page_count} />
-          {/if}
-        </article>
+            {#if item.job?.progress.page_count}
+              <div class="bar">
+                <div class="fill" style:width={`${item.job.progress.percent}%`}></div>
+              </div>
+              <PageRibbon
+                ribbon={item.job.progress.ribbon}
+                pageCount={item.job.progress.page_count}
+              />
+            {/if}
+          </article>
+        {/each}
       {:else}
         <p class="idle">
           {run.state === 'watching'
@@ -272,12 +409,20 @@
 </section>
 
 <style>
+  .validacion {
+    display: block;
+    margin-top: 0.25rem;
+    color: var(--good);
+  }
+  .validacion[data-pendientes='si'] {
+    color: var(--ink-2);
+  }
   .run {
     display: flex;
     flex-direction: column;
     gap: 0.9rem;
     border: 1px solid color-mix(in oklab, var(--s4) 32%, var(--hairline));
-    border-radius: 14px;
+    border-radius: var(--radius-lg);
     background: var(--surface-2);
     padding: 1.1rem 1.2rem;
     box-shadow: var(--shadow);
@@ -326,7 +471,7 @@
     flex-direction: column;
   }
   .titles b {
-    font-size: 0.9rem;
+    font-size: var(--text-lg);
     font-weight: 650;
   }
   .paths {
@@ -335,7 +480,7 @@
     align-items: center;
     gap: 0.4rem;
     font-family: var(--font-mono);
-    font-size: 0.68rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
   .paths span {
@@ -348,46 +493,22 @@
     color: var(--s4);
   }
 
-  .head button {
+  /* Pegado a la derecha del encabezado; el aspecto es el de `.btn`. Detener
+     interrumpe un trabajo y va en rojo; quitar sólo despeja la pantalla y no
+     tiene por qué alarmar. */
+  .head .accion {
     margin-left: auto;
     flex-shrink: 0;
-    border: 1px solid var(--hairline);
-    border-radius: 7px;
-    background: transparent;
-    padding: 0.2rem 0.6rem;
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    color: var(--muted);
-    cursor: pointer;
   }
-  .head button:hover:not(:disabled) {
-    border-color: var(--critical);
-    color: var(--critical);
-  }
-  /* Detener interrumpe un trabajo; quitar sólo despeja la pantalla. La primera
-     se pinta como lo que es y la segunda no tiene por qué alarmar. */
-  .head button.quitar:hover:not(:disabled) {
-    border-color: var(--axis);
-    color: var(--ink);
-  }
-  .head button:disabled {
-    cursor: default;
-    opacity: 0.55;
+
+  .run > .inline-error,
+  .inventario .inline-error {
+    margin: 0;
   }
 
   .section-label.pendiente {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
-
-  .error {
-    margin: 0;
-    border-left: 2px solid var(--critical);
-    padding-left: 0.6rem;
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    color: var(--critical);
-  }
-
 
   .column {
     border-top: 1px solid var(--rule);
@@ -400,7 +521,7 @@
     align-items: center;
     gap: 0.8rem 1.2rem;
     border: 1px solid color-mix(in oklab, var(--s4) 45%, var(--hairline));
-    border-radius: 12px;
+    border-radius: var(--radius-md);
     background: color-mix(in oklab, var(--s4) 9%, var(--surface-2));
     padding: 0.85rem 1rem;
   }
@@ -412,43 +533,26 @@
     gap: 0.2rem;
   }
   .inventario .texto b {
-    font-size: 0.92rem;
+    font-size: var(--text-lg);
     font-weight: 650;
   }
   .inventario .texto small {
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
   .inventario code {
     font-family: var(--font-mono);
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     overflow-wrap: anywhere;
   }
-  .inventario .bajar {
-    flex-shrink: 0;
-    border: 0;
-    border-radius: 9px;
-    background: var(--s4);
-    padding: 0.6rem 1.05rem;
-    font-size: 0.82rem;
-    font-weight: 650;
-    color: #fff;
-    cursor: pointer;
-    box-shadow: var(--shadow);
-  }
-  .inventario .bajar:hover:not(:disabled) {
-    filter: brightness(1.08);
-  }
-  .inventario .bajar:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
+  /* La descarga es la tonal común: el relleno ámbar con letra blanca que
+     tenía antes no se leía. */
   .section-label {
     display: block;
     margin-bottom: 0.45rem;
-    font-size: 0.62rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.055em;
+    letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
     color: var(--muted);
   }
@@ -457,7 +561,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     background: var(--plane);
     padding: 0.6rem 0.7rem;
   }
@@ -476,40 +580,40 @@
   }
   .file {
     overflow: hidden;
-    font-size: 0.82rem;
+    font-size: var(--text-sm);
     font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .stage {
     flex-shrink: 0;
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--ink-2);
   }
   .pages {
     margin-left: auto;
     flex-shrink: 0;
     font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   .bar {
     height: 3px;
     overflow: hidden;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--grid);
   }
   .fill {
     height: 100%;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--s4);
     transition: width 0.3s ease-out;
   }
 
   .idle {
     margin: 0;
-    font-size: 0.78rem;
+    font-size: var(--text-sm);
     color: var(--muted);
   }
 
@@ -525,10 +629,10 @@
     max-width: 14rem;
     overflow: hidden;
     border: 1px solid var(--hairline);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     background: var(--surface-1);
     padding: 0.12rem 0.45rem;
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     color: var(--muted);
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -537,4 +641,8 @@
     border-style: dashed;
   }
 
+  .descargas {
+    margin: 0.85rem 0;
+    max-width: 34rem;
+  }
 </style>

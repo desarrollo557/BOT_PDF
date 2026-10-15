@@ -1,5 +1,6 @@
 <script lang="ts">
   import { descargarPlanilla, documentFuidUrl, fuidTabla } from '$lib/api';
+  import Icono from '$lib/components/Icono.svelte';
   import type { FuidTabla } from '$lib/types';
 
   /**
@@ -136,12 +137,12 @@
 
 <svelte:window onkeydown={abierto ? porTeclado : undefined} />
 
-<button class="ver" onclick={abrir}>
+<button class="btn" onclick={abrir}>
   <svg viewBox="0 0 16 16" aria-hidden="true">
     <rect x="2.5" y="2" width="11" height="12" rx="1.5" />
     <path d="M5 6h6M5 8.5h6M5 11h3.5" />
   </svg>
-  ver el FUID
+  Ver el FUID
 </button>
 
 {#if abierto}
@@ -160,34 +161,32 @@
         <b>Formato Único de Inventario Documental</b>
         {#if nombre}<small>{nombre}</small>{/if}
       </div>
-      <button class="cerrar" onclick={cerrar} aria-label="Cerrar">
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M4 4l8 8M12 4l-8 8" />
-        </svg>
+      <button class="btn btn-icon cerrar" onclick={cerrar} aria-label="Cerrar">
+        <Icono nombre="cerrar" />
       </button>
     </header>
 
     {#if cargando}
       <p class="quiet">Leyendo la planilla…</p>
     {:else if error}
-      <p class="bad" role="alert">{error}</p>
+      <p class="inline-error bad" role="alert">{error}</p>
     {:else if planilla}
       <dl class="cabecera">
         {#if planilla.oficina_productora}
           <div>
-            <dt>Oficina productora</dt>
+            <dt class="caps">Oficina productora</dt>
             <dd>{sinRotulo(planilla.oficina_productora)}</dd>
           </div>
         {/if}
         {#if planilla.objeto}
           <div class="ancho">
-            <dt>Objeto</dt>
+            <dt class="caps">Objeto</dt>
             <dd>{sinRotulo(planilla.objeto)}</dd>
           </div>
         {/if}
         <div class="cuenta">
-          <dt>Registros</dt>
-          <dd><span class="pastilla tabular">{planilla.total}</span></dd>
+          <dt class="caps">Registros</dt>
+          <dd><span class="pill tabular">{planilla.total}</span></dd>
         </div>
       </dl>
 
@@ -247,12 +246,9 @@
 
       <footer>
         {#if planilla.descargable}
-          <a class="bajar" href={documentFuidUrl(jobId)} onclick={bajar}>
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M8 2.5v7m0 0 3-3m-3 3-3-3" />
-              <path d="M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" />
-            </svg>
-            descargar el Excel
+          <a class="btn btn-tonal" href={documentFuidUrl(jobId)} onclick={bajar}>
+            <Icono nombre="descargar" />
+            Descargar FUID (Excel)
           </a>
         {:else}
           <!-- Dicho, y no sólo escondido: un botón que desaparece sin
@@ -268,43 +264,14 @@
 {/if}
 
 <style>
-  .ver {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    border: 1px solid var(--hairline);
-    border-radius: 6px;
-    background: transparent;
-    padding: 0.35rem 0.7rem;
-    font: inherit;
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    color: var(--ink-2);
-    cursor: pointer;
-    transition:
-      border-color 0.15s,
-      color 0.15s,
-      background 0.15s;
-  }
-  .ver svg {
-    width: 13px;
-    height: 13px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.4;
-    stroke-linecap: round;
-  }
-  .ver:hover {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-
+  /* El botón que lo abre es un `.btn` cualquiera; el dibujo de la hoja lo
+     pinta la propia clase. El diálogo, como todos: velo común, radio grande y
+     la sombra de lo que flota sobre la página. */
   .scrim {
     position: fixed;
     inset: 0;
     z-index: 60;
-    background: color-mix(in oklab, var(--ink) 42%, transparent);
+    background: var(--scrim);
     backdrop-filter: blur(2px);
   }
   .sheet {
@@ -319,9 +286,9 @@
     translate: -50% -50%;
     overflow: hidden;
     border: 1px solid var(--hairline);
-    border-radius: 14px;
+    border-radius: var(--radius-xl);
     background: var(--surface-2);
-    box-shadow: var(--shadow);
+    box-shadow: var(--shadow-lg);
   }
 
   /* La banda del formato. En el papel el encabezado va sobre fondo y con el
@@ -343,18 +310,18 @@
     display: inline-block;
     margin-bottom: 0.3rem;
     border: 1px solid color-mix(in oklab, var(--accent) 35%, transparent);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     background: var(--accent-soft);
     padding: 0.08rem 0.4rem;
     font-family: var(--font-mono);
-    font-size: 0.64rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     letter-spacing: 0.04em;
     color: var(--accent);
   }
   .titulo b {
     display: block;
-    font-size: 0.95rem;
+    font-size: var(--text-lg);
     font-weight: 650;
     letter-spacing: -0.01em;
   }
@@ -362,36 +329,12 @@
     display: block;
     margin-top: 0.15rem;
     font-family: var(--font-mono);
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     color: var(--muted);
     overflow-wrap: anywhere;
   }
   .cerrar {
     flex-shrink: 0;
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--muted);
-    cursor: pointer;
-    transition:
-      border-color 0.15s,
-      color 0.15s;
-  }
-  .cerrar svg {
-    width: 13px;
-    height: 13px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.6;
-    stroke-linecap: round;
-  }
-  .cerrar:hover {
-    border-color: var(--hairline);
-    color: var(--ink);
   }
 
   .cabecera {
@@ -412,29 +355,12 @@
   .cabecera .cuenta {
     margin-left: auto;
   }
-  dt {
-    font-size: 0.6rem;
-    font-weight: 600;
-    letter-spacing: 0.055em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
   dd {
     margin: 0.15rem 0 0;
-    font-size: 0.84rem;
+    font-size: var(--text-md);
     line-height: 1.4;
     color: var(--ink-2);
   }
-  .pastilla {
-    display: inline-block;
-    border-radius: 999px;
-    background: var(--accent-soft);
-    padding: 0.1rem 0.55rem;
-    font-size: 0.82rem;
-    font-weight: 650;
-    color: var(--accent);
-  }
-
   .tabla {
     flex: 1;
     min-height: 0;
@@ -446,7 +372,7 @@
     border-spacing: 0;
     width: max-content;
     min-width: 100%;
-    font-size: 0.78rem;
+    font-size: var(--text-sm);
   }
 
   /* -- la cabecera, a dos niveles y fija ---------------------------------- */
@@ -457,14 +383,16 @@
     background: var(--plane);
     padding: 0.4rem 0.6rem;
     text-align: left;
-    font-size: 0.66rem;
-    font-weight: 650;
+    /* Las cabeceras de tabla de toda la aplicación: versalitas pequeñas. */
+    font-size: var(--text-2xs);
+    font-weight: 600;
     line-height: 1.25;
-    letter-spacing: 0.01em;
+    letter-spacing: var(--tracking-caps);
+    text-transform: uppercase;
     /* Dieciséis columnas: sin un tope, el nombre largo de una las estira todas
        y la cabecera se come media pantalla. */
     max-width: 11rem;
-    color: var(--ink-2);
+    color: var(--muted);
     vertical-align: bottom;
   }
   .grupos th {
@@ -480,16 +408,10 @@
   .grupos th.agrupada {
     border-bottom: 1px solid var(--rule);
     text-align: center;
-    font-size: 0.6rem;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
     color: var(--accent);
   }
   .sub th {
     top: var(--alto-grupos, 1.65rem);
-    font-size: 0.64rem;
-    font-weight: 600;
-    color: var(--muted);
   }
   /* Un encabezado de cifras se alinea con sus cifras. Desalineados, la columna
      se lee como dos columnas estrechas en vez de como una. */
@@ -562,7 +484,7 @@
      pero no es un dato: apagarlo deja encendido exactamente lo que hay que
      comprobar, que es para lo que se abre esta vista. */
   .vacia {
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: color-mix(in oklab, var(--muted) 70%, transparent);
   }
 
@@ -575,39 +497,9 @@
     background: var(--plane);
     padding: 0.7rem 1.1rem;
   }
-  .bajar {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    border: 1px solid var(--accent);
-    border-radius: 6px;
-    background: var(--accent-soft);
-    padding: 0.38rem 0.8rem;
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--accent);
-    text-decoration: none;
-    transition:
-      background 0.15s,
-      color 0.15s;
-  }
-  .bajar svg {
-    width: 13px;
-    height: 13px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.5;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-  .bajar:hover {
-    background: var(--accent);
-    color: var(--surface-2);
-  }
   .nota {
     margin: 0;
-    font-size: 0.78rem;
+    font-size: var(--text-sm);
     line-height: 1.5;
     color: var(--muted);
     text-align: right;
@@ -616,17 +508,12 @@
   .quiet {
     margin: 0;
     padding: 2rem 1.1rem;
-    font-size: 0.84rem;
+    font-size: var(--text-md);
     color: var(--muted);
   }
+  /* El fallo es `.inline-error`; aquí sólo se le da aire dentro de la hoja. */
   .bad {
     margin: 1.1rem;
-    border: 1px solid var(--critical);
-    border-radius: 9px;
-    background: color-mix(in oklab, var(--critical) 8%, transparent);
-    padding: 0.7rem 0.85rem;
-    font-size: 0.84rem;
     line-height: 1.5;
-    color: var(--critical);
   }
 </style>

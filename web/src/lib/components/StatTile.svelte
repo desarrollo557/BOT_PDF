@@ -12,7 +12,7 @@
 <!-- Tone is carried by the value's ink, and the note always spells the meaning
      out in words, so nothing here depends on colour alone. -->
 <div class="tile" data-tone={tone}>
-  <span class="label">{label}</span>
+  <span class="caps">{label}</span>
   <span class="value tabular">{value}</span>
   {#if note}<span class="note">{note}</span>{/if}
 </div>
@@ -34,16 +34,8 @@
     border-left-color: color-mix(in oklab, var(--warning) 65%, transparent);
   }
 
-  .label {
-    font-size: 0.66rem;
-    font-weight: 600;
-    letter-spacing: 0.055em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-
   .value {
-    font-size: 1.6rem;
+    font-size: var(--text-stat);
     font-weight: 550;
     line-height: 1.15;
     letter-spacing: -0.02em;
@@ -52,11 +44,11 @@
     color: var(--good);
   }
   [data-tone='warning'] .value {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .note {
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     color: var(--ink-2);
   }
 </style>

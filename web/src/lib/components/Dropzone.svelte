@@ -64,7 +64,7 @@
   {#if variant === 'batch'}
     <strong>Suelte el lote completo aquí</strong>
     <span class="hint">
-      cincuenta o quinientos documentos, sin límite de tamaño &mdash; se procesan en paralelo y
+      Cincuenta o quinientos documentos, sin límite de tamaño &mdash; se procesan en paralelo y
       verá cuál se está leyendo en cada momento
     </span>
   {:else}
@@ -103,7 +103,7 @@
     gap: 0.3rem;
     overflow: hidden;
     border: 1px dashed var(--axis);
-    border-radius: 14px;
+    border-radius: var(--radius-lg);
     background: var(--surface-1);
     padding: 2.4rem 1.5rem;
     text-align: center;
@@ -185,20 +185,20 @@
   }
 
   strong {
-    font-size: 0.95rem;
+    font-size: var(--text-lg);
     font-weight: 600;
   }
 
   .hint {
     max-width: 46ch;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     line-height: 1.45;
     color: var(--muted);
   }
 
   .rejected {
     margin-top: 0.35rem;
-    font-size: 0.8rem;
-    color: var(--warning);
+    font-size: var(--text-sm);
+    color: var(--warning-ink);
   }
 </style>

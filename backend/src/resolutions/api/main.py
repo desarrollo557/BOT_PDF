@@ -14,6 +14,7 @@ import multiprocessing
 import time
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -30,10 +31,11 @@ from ..adapters.user_store import FileUserStore
 from ..application.usuarios import Usuarios
 from .contexto import Contexto
 from .ejecucion import _run
-from .errores import explicar_validacion
+from .errores import explicar_validacion, fallo_conocido
 from .folders import FolderRunner
 from .janitor import IdleJanitor
 from .jobs import JobRegistry
+from .planificador import Planificador
 from .registro_en_consola import configurar, configurar_worker
 from .routers import (
     archivo,
@@ -42,6 +44,7 @@ from .routers import (
     fuid,
     lotes,
     mantenimiento,
+    reconocer,
     salidas,
     salud,
     trabajos,
@@ -117,7 +120,17 @@ async def lifespan(app: FastAPI):
     ctx.settings.ensure_directories()
     # El mismo `_run` para la corrida de carpeta que para la subida: un solo
     # camino para un documento, llegue como llegue.
-    ctx.folders = FolderRunner(ctx.registry, ctx.settings, lambda job: _run(ctx, job))
+    ctx.planificador = Planificador(
+        documentos_de_carpeta=ctx.settings.folder_documents,
+        hilos_por_documento=ctx.settings.page_workers,
+        procesos=ctx.settings.document_workers,
+    )
+    ctx.folders = FolderRunner(
+        ctx.registry,
+        ctx.settings,
+        lambda job: _run(ctx, job),
+        planificador=ctx.planificador,
+    )
 
     # One process per document. Sized at cores-1 so the event loop always has a
     # core left to accept uploads while the pool is saturated.
@@ -133,13 +146,20 @@ async def lifespan(app: FastAPI):
     # Lo que el worker consulta entre página y página para saber si sigue. Vive
     # en el Manager y no en este proceso porque quien lo lee está en otro.
     ctx.controls = ctx.manager.dict()
+    ctx.turnos_de_ia = ctx.manager.BoundedSemaphore(ctx.settings.ia_a_la_vez)
     ctx.fuid_jobs = {}
     app.state.tasks = [
         asyncio.create_task(_drain_progress(ctx)),
         asyncio.create_task(_publish_progress(ctx)),
         asyncio.create_task(ctx.janitor.run()),
     ]
-    logger.info("worker pool started with %s processes", ctx.settings.document_workers)
+    logger.info(
+        "worker pool started with %s processes; %s documentos de carpeta a la vez; "
+        "%s llamadas a la IA a la vez",
+        ctx.settings.document_workers,
+        ctx.settings.folder_documents,
+        ctx.settings.ia_a_la_vez,
+    )
 
     try:
         yield
@@ -205,13 +225,21 @@ async def _fallo_interno(request: Request, error: Exception) -> JSONResponse:
     excepción lleva rutas del disco y nombres internos que no le sirven a quien
     está delante de la pantalla y sí a quien no debería verlos.
     """
-    logger.exception("fallo sin atender en %s %s", request.method, request.url.path)
+    # Un código corto en la respuesta y en el registro: con él se encuentra el
+    # traceback exacto entre miles de líneas sin pedirle a nadie la hora.
+    referencia = uuid4().hex[:8]
+    logger.exception(
+        "fallo sin atender [%s] en %s %s", referencia, request.method, request.url.path
+    )
+    # Lo que se sabe explicar -- un Excel abierto, el disco lleno -- se dice con
+    # qué hacer; lo demás, sin interioridades.
+    explicacion = fallo_conocido(error) or f"El servicio falló al atender {request.url.path}."
     return JSONResponse(
         status_code=500,
         content={
             "detail": (
-                f"El servicio falló al atender {request.url.path}. "
-                "Revise el registro del backend."
+                f"{explicacion} Referencia del error: {referencia} "
+                "(búsquela en el registro del backend)."
             )
         },
     )
@@ -228,6 +256,7 @@ for router in (
     mantenimiento.router,
     eventos.router,
     usuarios.router,
+    reconocer.router,
 ):
     app.include_router(router)
 

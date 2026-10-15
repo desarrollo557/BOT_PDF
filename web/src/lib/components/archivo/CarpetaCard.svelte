@@ -8,10 +8,18 @@
    * 2012.pdf». Aquí la carpeta lleva el nombre de la carpeta raíz, sus cifras
    * sumadas, su inventario general y sus PDF dentro, plegados.
    */
-  import { deleteDocuments, descargarPlanilla, origenInventarioUrl } from '$lib/api';
+  import {
+    deleteDocuments,
+    descargarPlanilla,
+    origenInventarioUrl,
+    origenProcesosUrl
+  } from '$lib/api';
   import { unidades, type Grupo } from '$lib/archive.svelte';
+  import Descargas, { type GrupoDeDescargas } from '$lib/components/Descargas.svelte';
+  import Icono from '$lib/components/Icono.svelte';
   import { formatBytes } from '$lib/format';
   import { jobStore } from '$lib/jobs.svelte';
+  import { enlaceAlDocumento } from '$lib/navegacion.svelte';
   import ArchivosDelTrabajo from './ArchivosDelTrabajo.svelte';
 
   interface Props {
@@ -39,24 +47,52 @@
   let desplegado = $state<string | null>(null);
   let confirmando = $state(false);
   let ocupada = $state(false);
-  let bajando = $state(false);
   let fallo = $state<string | null>(null);
 
-  /** El Excel general: una fila por acta de todos los PDF de la carpeta. */
-  async function bajarInventario() {
-    bajando = true;
-    fallo = null;
-    try {
-      await descargarPlanilla(
-        origenInventarioUrl(grupo.origen.id),
-        `ACTAS ${grupo.origen.nombre}__inventario.xlsx`
-      );
-    } catch (problema) {
-      fallo = (problema as Error).message;
-    } finally {
-      bajando = false;
+  /**
+   * Lo que se baja de la carpeta o el lote: sus dos inventarios generales. El
+   * de la habilidad -- de cajas de correspondencia, el Índice Electrónico del
+   * cliente con una hoja por PDF; de actas, una fila por acta -- y el general
+   * del bot, una fila por cada PDF procesado.
+   */
+  const descargas = $derived<GrupoDeDescargas[]>([
+    {
+      titulo: 'Inventarios generales',
+      items: [
+        ...(grupo.indice || (grupo.acta && esCarpeta)
+          ? [
+              {
+                id: 'habilidad',
+                titulo: grupo.indice ? 'Índice electrónico' : 'Inventario de actas',
+                detalle: grupo.indice
+                  ? 'Plantilla del cliente, una hoja por PDF procesado'
+                  : 'Una fila por acta de toda la carpeta',
+                formato: 'Excel' as const,
+                principal: true,
+                bajar: () =>
+                  descargarPlanilla(
+                    origenInventarioUrl(grupo.origen.id),
+                    grupo.indice
+                      ? '00.INDICE ELECTRONICO.xlsx'
+                      : `ACTAS ${grupo.origen.nombre}__inventario.xlsx`
+                  )
+              }
+            ]
+          : []),
+        {
+          id: 'procesos',
+          titulo: 'Inventario de procesos',
+          detalle: 'Lo que hizo el bot con cada PDF: habilidad, lectura, resultado y revisión',
+          formato: 'Excel' as const,
+          bajar: () =>
+            descargarPlanilla(
+              origenProcesosUrl(grupo.origen.id),
+              '00.INVENTARIO GENERAL DE PROCESOS.xlsx'
+            )
+        }
+      ]
     }
-  }
+  ]);
 
   async function eliminar() {
     ocupada = true;
@@ -86,7 +122,7 @@
         indeterminate={marcados > 0 && marcados < ids.length}
         onclick={() => onselectmany(ids)}
       />
-      <span class="sr">Seleccionar la carpeta {grupo.origen.nombre}</span>
+      <span class="sr-only">Seleccionar la carpeta {grupo.origen.nombre}</span>
     </label>
   {/if}
 
@@ -132,30 +168,22 @@
   {#if grupo.review || grupo.failed}
     <p class="flags">
       {#if grupo.review}
-        <span class="flag warn">{grupo.review} {grupo.review === 1 ? 'página' : 'páginas'} por revisar</span>
+        <span class="pill pill-warn">{grupo.review} {grupo.review === 1 ? 'página' : 'páginas'} por revisar</span>
       {/if}
       {#if grupo.failed}
-        <span class="flag bad">{grupo.failed} {grupo.failed === 1 ? 'PDF falló' : 'PDF fallaron'}</span>
+        <span class="pill pill-bad">{grupo.failed} {grupo.failed === 1 ? 'PDF falló' : 'PDF fallaron'}</span>
       {/if}
     </p>
   {/if}
 
-  {#if grupo.acta && esCarpeta}
-    <button class="bajar" onclick={bajarInventario} disabled={bajando}>
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M8 2.5v7m0 0 3-3m-3 3-3-3" />
-        <path d="M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" />
-      </svg>
-      {bajando ? 'Descargando…' : 'Descargar inventario general (Excel)'}
-    </button>
-  {/if}
+  <Descargas grupos={descargas} />
 
   <button
     class="toggle"
     aria-expanded={abierta}
     onclick={() => (abierta = !abierta)}
   >
-    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3.5 4.5 4.5L6 12.5" /></svg>
+    <Icono nombre="chevron" />
     {abierta ? 'Ocultar' : 'Ver'} los {grupo.entries.length} PDF
   </button>
 
@@ -164,20 +192,20 @@
       {#each grupo.entries as entry (entry.key)}
         <li class:failed={entry.failed} class:shown={desplegado === entry.jobId}>
           <div class="file-row">
-            <a href={`/documento/${entry.jobId}`} title={entry.name}>
+            <a href={enlaceAlDocumento(entry.jobId, 'archivo', grupo.origen.nombre)} title={entry.name}>
               <span class="file">{entry.name}</span>
               <span class="file-meta tabular">
                 {#if entry.failed}
-                  falló
+                  Falló
                 {:else}
-                  {entry.resolutions} · {entry.pages || '—'} pág
+                  {entry.resolutions} PDF · {entry.pages || '—'} pág.
                   {#if entry.review}<b>· {entry.review} rev.</b>{/if}
                 {/if}
               </span>
             </a>
             {#if !entry.failed}
               <button
-                class="file-toggle"
+                class="btn btn-sm file-toggle"
                 aria-expanded={desplegado === entry.jobId}
                 aria-label={`Inventario y PDF de ${entry.name}`}
                 onclick={() => (desplegado = desplegado === entry.jobId ? null : entry.jobId)}
@@ -199,36 +227,42 @@
   <footer>
     {#if confirmando}
       <span class="confirm">
-        Se eliminarán los {grupo.entries.length} PDF de esta {esCarpeta ? 'carpeta' : 'lote'} del
+        Se eliminarán los {grupo.entries.length} PDF de {esCarpeta ? 'esta carpeta' : 'este lote'} del
         archivo, con lo que produjeron. Lo entregado en el destino no se toca.
       </span>
       <span class="tools">
-        <button class="danger" onclick={eliminar} disabled={ocupada}>
-          {ocupada ? 'eliminando…' : 'sí, eliminar'}
+        <button class="btn btn-danger btn-sm" onclick={eliminar} disabled={ocupada}>
+          {ocupada ? 'Eliminando…' : 'Sí, eliminar'}
         </button>
-        <button onclick={() => (confirmando = false)} disabled={ocupada}>cancelar</button>
+        <button class="btn btn-ghost btn-sm" onclick={() => (confirmando = false)} disabled={ocupada}>
+          Cancelar
+        </button>
       </span>
     {:else}
       <span class="tools">
-        <button class="quiet" onclick={() => ((fallo = null), (confirmando = true))}>
-          eliminar {esCarpeta ? 'carpeta' : 'lote'}
+        <button
+          class="btn btn-ghost btn-sm quiet"
+          onclick={() => ((fallo = null), (confirmando = true))}
+        >
+          Eliminar {esCarpeta ? 'carpeta' : 'lote'}
         </button>
       </span>
     {/if}
   </footer>
 
-  {#if fallo}<p class="error">{fallo}</p>{/if}
+  {#if fallo}<p class="inline-error error">{fallo}</p>{/if}
 </article>
 
 <style>
+  /* La misma tarjeta que la de un PDF suelto -- radio, hairline, sombra --: lo
+     que la distingue es el ícono de carpeta y su rótulo, no un borde de color. */
   .card {
     position: relative;
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
     border: 1px solid var(--hairline);
-    border-left: 3px solid var(--accent);
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     background: var(--surface-2);
     padding: 0.8rem 0.9rem;
     box-shadow: var(--shadow);
@@ -260,15 +294,6 @@
     padding-left: 1.55rem;
   }
 
-  .sr {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-
   header {
     display: flex;
     align-items: flex-start;
@@ -280,7 +305,7 @@
     height: 2rem;
     flex-shrink: 0;
     place-items: center;
-    border-radius: 8px;
+    border-radius: var(--radius);
     background: var(--accent-soft);
     color: var(--accent);
   }
@@ -302,7 +327,7 @@
   }
   .name {
     overflow: hidden;
-    font-size: 0.92rem;
+    font-size: var(--text-lg);
     font-weight: 650;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -311,11 +336,11 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.25rem 0.5rem;
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
   .kind {
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--plane);
     padding: 0 0.45rem;
     font-weight: 600;
@@ -324,10 +349,11 @@
   time {
     flex-shrink: 0;
     font-family: var(--font-mono);
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     color: var(--axis);
   }
 
+  /* Las mismas cifras que la tarjeta de un PDF suelto, con la misma escala. */
   .figures {
     display: flex;
     gap: 1.25rem;
@@ -339,16 +365,16 @@
     gap: 1px;
   }
   .figures dt {
-    font-size: 0.58rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.055em;
+    letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
     color: var(--muted);
   }
   .figures dd {
     margin: 0;
     font-family: var(--font-mono);
-    font-size: 0.95rem;
+    font-size: var(--text-lg);
     color: var(--ink);
   }
 
@@ -358,61 +384,8 @@
     gap: 0.35rem;
     margin: 0;
   }
-  .flag {
-    border-radius: 999px;
-    padding: 0 0.45rem;
-    font-size: 0.68rem;
-    font-weight: 600;
-  }
-  .flag.warn {
-    background: color-mix(in oklab, var(--warning) 16%, transparent);
-    color: var(--warning);
-  }
-  .flag.bad {
-    background: color-mix(in oklab, var(--critical) 14%, transparent);
-    color: var(--critical);
-  }
 
-  .bajar {
-    display: flex;
-    width: 100%;
-    align-items: center;
-    justify-content: center;
-    gap: 0.4rem;
-    border: 1px solid color-mix(in oklab, var(--accent) 55%, var(--hairline));
-    border-radius: 8px;
-    background: color-mix(in oklab, var(--accent) 8%, transparent);
-    padding: 0.45rem 0.6rem;
-    font: inherit;
-    font-size: 0.76rem;
-    font-weight: 600;
-    color: var(--accent);
-    cursor: pointer;
-  }
-  .card.open .bajar {
-    align-self: flex-start;
-    width: auto;
-    padding-inline: 1rem;
-  }
-  .bajar:hover:not(:disabled) {
-    background: color-mix(in oklab, var(--accent) 16%, transparent);
-  }
-  .bajar:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-
-  .bajar svg,
-  .toggle svg {
-    width: 0.9rem;
-    height: 0.9rem;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.6;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
+  /* Plegar y desplegar queda como texto: no es una acción sobre la carpeta. */
   .toggle {
     display: inline-flex;
     align-self: flex-start;
@@ -422,7 +395,7 @@
     background: none;
     padding: 0;
     font: inherit;
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     font-weight: 600;
     color: var(--ink-2);
     cursor: pointer;
@@ -430,10 +403,10 @@
   .toggle:hover {
     color: var(--accent);
   }
-  .toggle svg {
+  .toggle :global(.icono) {
     transition: transform 0.15s ease;
   }
-  .toggle[aria-expanded='true'] svg {
+  .toggle[aria-expanded='true'] :global(.icono) {
     transform: rotate(90deg);
   }
 
@@ -459,19 +432,13 @@
   }
   .file-toggle {
     flex-shrink: 0;
-    border: 1px solid var(--rule);
-    border-radius: 7px;
-    background: none;
-    padding: 0 0.55rem;
-    font: inherit;
-    font-size: 0.68rem;
-    font-weight: 600;
-    color: var(--accent);
-    cursor: pointer;
+    min-height: 0;
   }
-  .file-toggle:hover,
+  /* Desplegado, el botón queda marcado: dice de qué PDF son los archivos de
+     debajo. */
   .file-toggle[aria-expanded='true'] {
     border-color: var(--accent);
+    color: var(--accent);
   }
   .file-panel {
     margin: 4px 0 6px;
@@ -484,7 +451,7 @@
     justify-content: space-between;
     gap: 0.6rem;
     border: 1px solid var(--rule);
-    border-radius: 7px;
+    border-radius: var(--radius-sm);
     padding: 0.35rem 0.55rem;
     color: inherit;
     text-decoration: none;
@@ -495,18 +462,18 @@
   .file {
     overflow: hidden;
     min-width: 0;
-    font-size: 0.76rem;
+    font-size: var(--text-xs);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .file-meta {
     flex-shrink: 0;
     font-family: var(--font-mono);
-    font-size: 0.66rem;
+    font-size: var(--text-2xs);
     color: var(--muted);
   }
   .file-meta b {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
   .files li.failed .file-meta {
     color: var(--critical);
@@ -522,40 +489,27 @@
   }
   .confirm {
     flex: 1 1 14rem;
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     line-height: 1.45;
     color: var(--ink-2);
   }
   .tools {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.6rem;
+    justify-content: flex-end;
+    gap: 0.3rem;
     margin-left: auto;
   }
-  .tools button {
-    border: 0;
-    background: none;
-    padding: 0;
-    font: inherit;
-    font-size: 0.7rem;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .tools button:hover {
-    color: var(--ink);
-  }
-  .tools button.quiet:hover,
-  .tools button.danger {
+  /* Eliminar desde el pie sólo abre la confirmación: va callado y avisa en
+     rojo al pasar por encima. El botón de peligro queda para el «Sí, eliminar». */
+  .tools .quiet:hover:not(:disabled) {
+    background: var(--critical-soft);
     color: var(--critical);
-  }
-  .tools button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 
+  /* El hueco lo pone el `gap` de la tarjeta. */
   .error {
     margin: 0;
-    font-size: 0.72rem;
-    color: var(--critical);
   }
 </style>

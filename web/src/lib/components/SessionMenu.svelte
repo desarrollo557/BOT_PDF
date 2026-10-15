@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icono from '$lib/components/Icono.svelte';
   import { formatDuration } from '$lib/format';
   import { jobStore } from '$lib/jobs.svelte';
   import { session } from '$lib/session.svelte';
@@ -68,23 +69,26 @@
             <small>{session.operator.perfilLabel}</small>
           {/if}
         </div>
+        <button class="btn btn-icon cerrar" onclick={() => (open = false)} aria-label="Cerrar">
+          <Icono nombre="cerrar" />
+        </button>
       </header>
 
       <dl>
         <div>
-          <dt>En sesión</dt>
+          <dt class="caps">En sesión</dt>
           <dd class="tabular">{formatDuration(session.elapsedSeconds)}</dd>
         </div>
         <div>
-          <dt>Perfil</dt>
+          <dt class="caps">Perfil</dt>
           <dd>{session.operator?.perfilLabel ?? '—'}</dd>
         </div>
         <div>
-          <dt>Cédula</dt>
+          <dt class="caps">Cédula</dt>
           <dd class="tabular">{session.cedula ?? '—'}</dd>
         </div>
         <div>
-          <dt>Desde</dt>
+          <dt class="caps">Desde</dt>
           <dd class="tabular">
             {session.operator
               ? new Date(session.operator.startedAt).toLocaleTimeString('es', {
@@ -121,19 +125,19 @@
             </label>
           {/if}
 
-          {#if error}<p class="bad">{error}</p>{/if}
+          {#if error}<p class="inline-error m-0">{error}</p>{/if}
 
           <div class="actions">
-            <button class="danger" onclick={close} disabled={busy}>
-              {busy ? 'cerrando…' : 'Sí, cerrar sesión'}
+            <button class="btn btn-danger" onclick={close} disabled={busy}>
+              {busy ? 'Cerrando…' : 'Sí, cerrar sesión'}
             </button>
-            <button class="ghost" onclick={() => (confirming = false)} disabled={busy}>
+            <button class="btn btn-ghost" onclick={() => (confirming = false)} disabled={busy}>
               Cancelar
             </button>
           </div>
         </div>
       {:else}
-        <button class="ghost wide" onclick={() => (confirming = true)}>Cerrar sesión</button>
+        <button class="btn btn-block" onclick={() => (confirming = true)}>Cerrar sesión</button>
       {/if}
     </div>
   {/if}
@@ -149,11 +153,11 @@
     align-items: center;
     gap: 0.45rem;
     border: 1px solid var(--hairline);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--surface-2);
     padding: 0.2rem 0.55rem 0.2rem 0.2rem;
     font: inherit;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     color: var(--ink-2);
     cursor: pointer;
     transition: border-color 0.15s;
@@ -169,15 +173,14 @@
     place-items: center;
     border-radius: 50%;
     background: var(--accent-soft);
-    font-family: var(--font-mono);
-    font-size: 0.64rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     color: var(--accent);
   }
   .avatar.big {
     width: 34px;
     height: 34px;
-    font-size: 0.85rem;
+    font-size: var(--text-md);
   }
 
   .who {
@@ -190,10 +193,13 @@
     color: var(--muted);
   }
 
+  /* El velo común de los diálogos: el menú se lee como algo puesto encima
+     de la pantalla, y un clic fuera lo cierra. */
   .scrim {
     position: fixed;
     inset: 0;
     z-index: 60;
+    background: var(--scrim);
   }
 
   .sheet {
@@ -203,10 +209,10 @@
     z-index: 61;
     width: 19rem;
     border: 1px solid var(--hairline);
-    border-radius: 12px;
+    border-radius: var(--radius-xl);
     background: var(--surface-2);
     padding: 0.9rem;
-    box-shadow: 0 18px 48px rgb(0 0 0 / 0.28);
+    box-shadow: var(--shadow-lg);
   }
 
   .sheet header {
@@ -218,12 +224,16 @@
   }
   .sheet header b {
     display: block;
-    font-size: 0.9rem;
+    font-size: var(--text-md);
     font-weight: 650;
   }
   .sheet header small {
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     color: var(--muted);
+  }
+  .sheet header .cerrar {
+    flex-shrink: 0;
+    margin-left: auto;
   }
 
   dl {
@@ -231,24 +241,16 @@
     gap: 1.5rem;
     margin: 0.8rem 0;
   }
-  dt {
-    font-size: 0.62rem;
-    font-weight: 600;
-    letter-spacing: 0.055em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
   dd {
     margin: 0.1rem 0 0;
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
+    font-size: var(--text-md);
   }
 
   .note {
     margin: 0 0 0.85rem;
     border-left: 2px solid var(--rule);
     padding-left: 0.6rem;
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     line-height: 1.5;
     color: var(--muted);
   }
@@ -262,21 +264,16 @@
     margin: 0;
     border-left: 2px solid var(--warning);
     padding-left: 0.6rem;
-    font-size: 0.78rem;
+    font-size: var(--text-sm);
     line-height: 1.45;
     color: var(--ink-2);
-  }
-  .bad {
-    margin: 0;
-    font-size: 0.78rem;
-    color: var(--critical);
   }
 
   .check {
     display: flex;
     align-items: flex-start;
     gap: 0.5rem;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     cursor: pointer;
   }
   .check input {
@@ -285,47 +282,12 @@
   }
   .check small {
     display: block;
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   .actions {
     display: flex;
     gap: 0.45rem;
-  }
-
-  .ghost,
-  .danger {
-    border: 1px solid var(--hairline);
-    border-radius: 8px;
-    background: transparent;
-    padding: 0.4rem 0.8rem;
-    font: inherit;
-    font-size: 0.82rem;
-    color: var(--muted);
-    cursor: pointer;
-    transition:
-      color 0.15s,
-      border-color 0.15s,
-      background 0.15s;
-  }
-  .ghost:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-  .ghost.wide {
-    width: 100%;
-  }
-  .danger {
-    border-color: var(--critical);
-    color: var(--critical);
-  }
-  .danger:hover {
-    background: var(--critical);
-    color: #fff;
-  }
-  button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 </style>

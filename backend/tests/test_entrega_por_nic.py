@@ -1,12 +1,9 @@
-"""La carpeta de destino se llama con el NIC del expediente.
+"""La carpeta de destino se llama como el PDF de origen, no con el NIC.
 
-Lo pidió el operador para las corridas sobre carpeta local: un PDF de origen
-corresponde en el destino a una carpeta nueva, nombrada con el número de cuenta
-del suscriptor, y allí van todos los documentos que salieron de él.
-
-Tiene sentido y es lo que el archivo busca: el NIC lo llevan todas las hojas de
-la caja, identifica al cliente y es lo que alguien va a teclear dentro de tres
-años. El nombre del PDF de origen es el que le puso el escáner.
+Se llamó con el NIC del expediente cuando lo traía, y el operador lo corrigió
+el 2026-10-13: el destino salía mezclado -- unas carpetas «UPD…», otras
+«1012408» -- y la caja se busca por su UPD, que es también el nombre del
+expediente en su Índice Electrónico. El NIC se sigue leyendo y va al informe.
 """
 
 from __future__ import annotations
@@ -70,11 +67,11 @@ class TestDondeCaenLosDocumentosDeUnaCaja:
         trabajo.report = report
         return trabajo
 
-    def test_la_carpeta_se_llama_con_el_nic(self, tmp_path):
+    def test_la_carpeta_se_llama_como_el_pdf_aunque_haya_nic(self, tmp_path):
         run = self._run(tmp_path)
         origen = run.source / "108C000094" / "UPD2365925.pdf"
         carpeta = FolderRunner._output_dir(run, origen, self._job({"nic": "5825181"}))
-        assert carpeta == run.destination / "108C000094" / "5825181"
+        assert carpeta == run.destination / "108C000094" / "UPD2365925"
 
     def test_sin_nic_se_cae_al_nombre_del_origen(self, tmp_path):
         """Que es lo que había antes y siempre existe."""
@@ -95,7 +92,7 @@ class TestDondeCaenLosDocumentosDeUnaCaja:
         run = self._run(tmp_path)
         origen = run.source / "caja 12" / "sub" / "UPD2365925.pdf"
         carpeta = FolderRunner._output_dir(run, origen, self._job({"nic": "5825181"}))
-        assert carpeta == run.destination / "caja 12" / "sub" / "5825181"
+        assert carpeta == run.destination / "caja 12" / "sub" / "UPD2365925"
 
     def test_sin_informe_todavia_no_revienta(self, tmp_path):
         run = self._run(tmp_path)

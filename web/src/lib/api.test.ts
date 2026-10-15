@@ -5,8 +5,8 @@
  * metida en un `Error` la pantalla decía «[object Object]». Esto fija que un
  * fallo siempre se convierte en una frase, venga como venga.
  */
-import { describe, expect, it } from 'vitest';
-import { mensajeDe } from './api';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ApiError, listJobs, mensajeDe, SinConexion } from './api';
 
 describe('mensajeDe', () => {
   it('usa la frase del servicio cuando la hay', () => {
@@ -51,5 +51,23 @@ describe('mensajeDe', () => {
     expect(mensajeDe(500, null)).toBe('Error 500');
     expect(mensajeDe(502, { detail: '' })).toBe('Error 502');
     expect(mensajeDe(422, { detail: [] })).toBe('Error 422');
+  });
+});
+
+describe('un servicio que no contesta', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('se dice en palabras, no como «Failed to fetch»', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    const fallo = await listJobs().catch((error) => error);
+    expect(fallo).toBeInstanceOf(SinConexion);
+    expect(fallo).toBeInstanceOf(ApiError);
+    expect(fallo.message).toMatch(/servicio/);
+  });
+
+  it('una petición abortada a propósito no se disfraza de caída', async () => {
+    const abortada = new DOMException('cancelada', 'AbortError');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abortada));
+    await expect(listJobs()).rejects.toBe(abortada);
   });
 });

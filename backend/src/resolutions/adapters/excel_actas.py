@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -106,6 +107,14 @@ _FECHA_EN_CIFRAS = re.compile(r"(\d{1,2})-(\d{1,2})-(\d{4})")
 _FECHA_LARGA = re.compile(r"(\d{1,2})\s+de\s+([a-záéíóúñ]+)\s+de\s+(\d{4})", re.IGNORECASE)
 
 
+#: Las columnas y el título de la escritura en curso. Un inventario de actas
+#: de grado es el de consejo sin la columna del resumen, y se elige al llamar;
+#: por contexto y no por argumento a cada función de la hoja, que son muchas, y
+#: por contexto y no global porque dos corridas pueden escribir a la vez.
+_columnas: ContextVar[tuple[tuple[str, str, int], ...]] = ContextVar("columnas", default=COLUMNAS)
+_titulo_activo: ContextVar[str] = ContextVar("titulo", default="INVENTARIO DE ACTAS DE CONSEJO")
+
+
 def escribir_inventario_de_actas(
     filas: Sequence[Mapping[str, object] | object],
     destino: Path,
@@ -113,6 +122,26 @@ def escribir_inventario_de_actas(
     carpeta: str | None = None,
     generado: datetime | None = None,
     nota: str | None = None,
+    titulo: str = "INVENTARIO DE ACTAS DE CONSEJO",
+    con_resumen: bool = True,
+) -> Path:
+    """Escribe el inventario y devuelve dónde quedó; sin resumen, para las actas de grado."""
+    columnas = COLUMNAS if con_resumen else tuple(c for c in COLUMNAS if c[1] != "resumen")
+    fichas = (_columnas.set(columnas), _titulo_activo.set(titulo))
+    try:
+        return _escribir(filas, destino, carpeta=carpeta, generado=generado, nota=nota)
+    finally:
+        _columnas.reset(fichas[0])
+        _titulo_activo.reset(fichas[1])
+
+
+def _escribir(
+    filas: Sequence[Mapping[str, object] | object],
+    destino: Path,
+    *,
+    carpeta: str | None,
+    generado: datetime | None,
+    nota: str | None,
 ) -> Path:
     """Escribe el inventario en ``destino`` y devuelve dónde quedó.
 
@@ -132,10 +161,10 @@ def escribir_inventario_de_actas(
     hoja = libro.active
     hoja.title = "Inventario de actas"
     hoja.sheet_view.showGridLines = False
-    libro.properties.title = "Inventario de actas de consejo"
+    libro.properties.title = _titulo_activo.get().capitalize()
     libro.properties.creator = PROGRAMA
 
-    for columna, (_titulo, _clave, ancho) in enumerate(COLUMNAS, start=1):
+    for columna, (_titulo, _clave, ancho) in enumerate(_columnas.get(), start=1):
         hoja.column_dimensions[get_column_letter(columna)].width = ancho
 
     _banda_del_titulo(hoja, carpeta, datos, nota)
@@ -181,7 +210,7 @@ def _banda_del_titulo(hoja, carpeta: str | None, datos: list[dict], nota: str | 
     for fila, texto, fuente, alto in (
         (
             FILA_DEL_TITULO,
-            "INVENTARIO DE ACTAS DE CONSEJO",
+            _titulo_activo.get(),
             Font(name=_FUENTE, size=18, bold=True, color="FFFFFF"),
             34,
         ),
@@ -197,10 +226,10 @@ def _banda_del_titulo(hoja, carpeta: str | None, datos: list[dict], nota: str | 
         celda.value = texto
         celda.font = fuente
         celda.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-        _rellenar(hoja, fila, 1, len(COLUMNAS), _MARINO)
+        _rellenar(hoja, fila, 1, len(_columnas.get()), _MARINO)
         hoja.row_dimensions[fila].height = alto
 
-    _rellenar(hoja, FILA_DE_LA_LINEA, 1, len(COLUMNAS), _DORADO)
+    _rellenar(hoja, FILA_DE_LA_LINEA, 1, len(_columnas.get()), _DORADO)
     hoja.row_dimensions[FILA_DE_LA_LINEA].height = 4
     hoja.row_dimensions[FILA_DE_LA_LINEA + 1].height = 10
 
@@ -287,7 +316,7 @@ def _fecha_de(texto: str) -> date | None:
 
 
 def _encabezados(hoja) -> None:
-    for columna, (titulo, _clave, _ancho) in enumerate(COLUMNAS, start=1):
+    for columna, (titulo, _clave, _ancho) in enumerate(_columnas.get(), start=1):
         celda = hoja.cell(row=FILA_DE_ENCABEZADOS, column=columna, value=titulo)
         celda.font = Font(name=_FUENTE, size=10, bold=True, color="FFFFFF")
         celda.fill = PatternFill("solid", fgColor=_MARINO)
@@ -303,7 +332,7 @@ def _encabezados(hoja) -> None:
 
 def _fila(hoja, numero: int, datos: dict) -> None:
     renglones = 1
-    for columna, (_titulo, clave, ancho) in enumerate(COLUMNAS, start=1):
+    for columna, (_titulo, clave, ancho) in enumerate(_columnas.get(), start=1):
         valor = datos.get(clave, "")
         celda = hoja.cell(row=numero, column=columna, value=valor)
         centrada = clave in _CENTRADAS
@@ -334,12 +363,13 @@ def _nota_al_pie(hoja, fila: int) -> None:
     """De dónde sale cada dato, dicho una vez debajo de la tabla."""
     hoja.merge_cells(f"A{fila}:{_ultima_columna()}{fila}")
     celda = hoja[f"A{fila}"]
+    con_resumen = any(clave == "resumen" for _nombre, clave, _ancho in _columnas.get())
     celda.value = (
         "El acta y la fecha se leen del encabezado impreso del acta. El folio inicial y el "
         "final son los números escritos a mano en la esquina superior derecha de la primera y "
-        "la última hoja foliada, y el número de folios cuenta las hojas entre los dos. El "
-        "resumen abarca el documento completo. N/A indica un dato que no se pudo leer; la "
-        "columna Observaciones explica por qué."
+        "la última hoja foliada, y el número de folios cuenta las hojas entre los dos. "
+        + ("El resumen abarca el documento completo. " if con_resumen else "")
+        + "N/A indica un dato que no se pudo leer; la columna Observaciones explica por qué."
     )
     celda.font = Font(name=_FUENTE, size=9, italic=True, color=_GRIS)
     celda.alignment = Alignment(wrap_text=True, vertical="top")
@@ -369,7 +399,7 @@ def _para_imprimir(hoja) -> None:
 
 
 def _ultima_columna() -> str:
-    return get_column_letter(len(COLUMNAS))
+    return get_column_letter(len(_columnas.get()))
 
 
 def _rellenar(hoja, fila: int, desde: int, hasta: int, color: str) -> None:

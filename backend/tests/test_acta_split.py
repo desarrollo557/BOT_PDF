@@ -3,25 +3,27 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import Mock, MagicMock, patch
 
-from resolutions.application.acta_split import (
-    ActaSplit,
-    ActaData,
-    ACTA_NUMERO_RE,
-    FECHA_ACTA_RE,
-    MESES,
-    FRASE_PROHIBIDA,
-)
-# Import ActaData for type hints in tests
-ActaDataForTest = ActaData
-from resolutions.application.acta_fuid import filas_de_actas
 from resolutions.adapters.mistral_summary import (
-    MistralSummaryAdapter,
-    SYSTEM_PROMPT,
     FRASE_PROHIBIDA as FRASE_PROHIBIDA_ADAPTER,
 )
+from resolutions.adapters.mistral_summary import (
+    SYSTEM_PROMPT,
+    MistralSummaryAdapter,
+)
+from resolutions.application.acta_fuid import filas_de_actas
+from resolutions.application.acta_split import (
+    ACTA_NUMERO_RE,
+    FECHA_ACTA_RE,
+    FRASE_PROHIBIDA,
+    MESES,
+    ActaData,
+    ActaSplit,
+)
 from resolutions.application.fuid import FuidRow
+
+# ActaData, con otro nombre para las anotaciones de las pruebas.
+ActaDataForTest = ActaData
 
 
 class TestActaNumeroRegex:

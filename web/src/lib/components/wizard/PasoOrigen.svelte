@@ -24,6 +24,8 @@
     tipo: TipoPedido;
     corte: CorteChoice;
     agrupar: AgruparChoice;
+    /** La territorial de una caja de correspondencia, para su Índice Electrónico. */
+    territorial?: string;
     disabled?: boolean;
     onfiles: (
       files: File[],
@@ -36,6 +38,10 @@
       agrupar: AgruparChoice
     ) => void;
     blocked: string | null;
+    /** La habilidad elegida, para que la carpeta diga si lo que trae coincide. */
+    habilidadId?: string;
+    /** Cambiar a la habilidad que sugiere lo reconocido en la carpeta. */
+    onusarHabilidad?: (id: string) => void;
     blockedLectura: string | null;
     numero?: number;
   }
@@ -49,11 +55,14 @@
     tipo,
     corte,
     agrupar,
+    territorial = '',
     disabled = false,
     onfiles,
     blocked,
     blockedLectura,
-    numero = 2
+    numero = 2,
+    habilidadId = 'auto',
+    onusarHabilidad
   }: Props = $props();
 
   const SINGLE_LIMIT = 5;
@@ -92,9 +101,9 @@
     {/each}
   </div>
 
-  <div class="panel" role="tabpanel">
+  <div class="origen" role="tabpanel">
     {#if mode === 'folder'}
-      <FolderPanel {task} {oracle} {lectura} {tipo} {corte} {agrupar} />
+      <FolderPanel {task} {oracle} {lectura} {tipo} {corte} {agrupar} {territorial} {habilidadId} {onusarHabilidad} />
     {:else}
       <Dropzone
         onfiles={recibirArchivos}
@@ -117,10 +126,12 @@
   .modes {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
-    gap: var(--wz-space-2, 8px);
+    gap: var(--space-2);
   }
 
-  .panel {
+  /* No se llama `.panel`: ésa es ya la superficie común de app.css, y el
+     contenido de la pestaña quedaba metido en una caja con sombra. */
+  .origen {
     min-width: 0;
   }
 </style>

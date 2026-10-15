@@ -19,14 +19,13 @@ apiladas caben en una imagen = una página facturada por cada diez fechas.
 
 from __future__ import annotations
 
-import copy
 import logging
 import re
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from ..application.ports import Band
-from ..domain.diploma import fecha_en_letras, lines_from_text
+from ..domain.diploma import fecha_en_letras
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +168,7 @@ class MosaicoDeFechas:
             return None
         try:
             cajas = leer(pagina)
-        except Exception:
+        except Exception:  # noqa: BLE001 - sin cajas, se busca la fecha sin la leyenda
             return None
         for caja in cajas:
             texto = _plano(caja.text or "")
@@ -190,7 +189,7 @@ class MosaicoDeFechas:
                 recortes.append(
                     (pagina, pymupdf.Pixmap(source.render(pagina, bandas[pagina], self._dpi)))
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - una página que no se recorta no tumba el mosaico
                 logger.debug("no se pudo recortar la fecha de la página %s", pagina)
         if not recortes:
             return None

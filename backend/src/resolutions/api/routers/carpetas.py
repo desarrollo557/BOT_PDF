@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import FileResponse
 
+from ...adapters.excel_inventory import NOMBRE_DEL_INVENTARIO_DE_PROCESOS
+from ...adapters.indice_electronico import NOMBRE_DEL_INDICE
 from ...application.task import TaskKind
 from .. import native_picker
 from ..contexto import Ctx
 from ..folders import FolderError, SourceDisposition, clean_path
+from ..indices import carpeta_del_lote, libro_de_indices
 from .salidas import XLSX_MEDIA
 from .trabajos import (
     _agrupar_choice,
@@ -20,6 +24,7 @@ from .trabajos import (
     _lectura_choice,
     _operator,
     _oracle_choice,
+    _territorial,
     _tipo_choice,
 )
 
@@ -75,6 +80,7 @@ async def start_folder_run(
             lectura=str(lectura_choice),
             corte=str(corte_choice),
             agrupar=str(agrupar_choice),
+            territorial=_territorial(payload.get("territorial")),
             tipo=str(tipo_choice),
         )
     except FolderError as error:
@@ -115,6 +121,39 @@ async def folder_run_inventario(ctx: Ctx, run_id: str) -> FileResponse:
     return FileResponse(hoja, media_type=XLSX_MEDIA, filename=hoja.name)
 
 
+def _carpeta_de_los_generales(ctx, origen_id: str) -> Path | None:
+    """Dónde están los inventarios generales de un lote o una carpeta."""
+    if re.fullmatch(r"[0-9a-f]{32}", origen_id) and carpeta_del_lote(
+        ctx.settings.output_dir, origen_id
+    ).is_dir():
+        return carpeta_del_lote(ctx.settings.output_dir, origen_id)
+    run = ctx.folders.get(origen_id)
+    if run is not None:
+        return Path(run.destination)
+    ruta = next(
+        (
+            row.get("origen_procesos")
+            for row in ctx.ledger.rows()
+            if row.get("origen_id") == origen_id and row.get("origen_procesos")
+        ),
+        None,
+    )
+    return Path(ruta).parent if ruta else None
+
+
+@router.get("/api/origenes/{origen_id}/procesos.xlsx")
+async def origen_procesos(ctx: Ctx, origen_id: str) -> FileResponse:
+    """El inventario general del bot de un lote o una carpeta: una fila por PDF procesado."""
+    carpeta = _carpeta_de_los_generales(ctx, origen_id)
+    hoja = carpeta / NOMBRE_DEL_INVENTARIO_DE_PROCESOS if carpeta else None
+    if hoja is None or not hoja.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="Este lote o carpeta todavía no tiene inventario de procesos: se escribe al terminar cada PDF.",
+        )
+    return FileResponse(hoja, media_type=XLSX_MEDIA, filename=hoja.name)
+
+
 @router.get("/api/origenes/{origen_id}/inventario.xlsx")
 async def origen_inventario(ctx: Ctx, origen_id: str) -> FileResponse:
     """El inventario general de una carpeta, también cuando ya no está en pantalla.
@@ -125,6 +164,32 @@ async def origen_inventario(ctx: Ctx, origen_id: str) -> FileResponse:
     cuando la corrida ya no está. Si alguien lo movió o lo borró del destino,
     se dice dónde se le esperaba.
     """
+    # Un lote de cajas de correspondencia: su inventario general es el libro
+    # con el Índice Electrónico de cada caja, una hoja por PDF procesado. Se
+    # escribe al terminar cada caja; si el lote es de antes, se arma ahora con
+    # las cajas que el libro mayor recuerda.
+    lote = carpeta_del_lote(ctx.settings.output_dir, origen_id)
+    libro = lote / NOMBRE_DEL_INDICE
+    es_un_lote = re.fullmatch(r"[0-9a-f]{32}", origen_id) is not None
+    if es_un_lote and not libro.is_file():
+        trabajos = [
+            str(row.get("job_id"))
+            for row in ctx.ledger.rows()
+            if row.get("origen_id") == origen_id and row.get("origen_tipo") == "lote"
+        ]
+        if trabajos:
+            await asyncio.to_thread(libro_de_indices, ctx.settings.output_dir, trabajos, lote)
+    if es_un_lote and libro.is_file():
+        return FileResponse(libro, media_type=XLSX_MEDIA, filename=NOMBRE_DEL_INDICE)
+    # Una carpeta de cajas de correspondencia: su Índice Electrónico general,
+    # una hoja por PDF, en la raíz del destino.
+    # El identificador de una corrida de carpeta tiene la misma forma que el de
+    # un lote: lo que decide es dónde están sus generales.
+    if carpeta := _carpeta_de_los_generales(ctx, origen_id):
+        indice = carpeta / NOMBRE_DEL_INDICE
+        if indice.is_file():
+            return FileResponse(indice, media_type=XLSX_MEDIA, filename=NOMBRE_DEL_INDICE)
+
     run = ctx.folders.get(origen_id)
     if run is not None and run.inventario and Path(run.inventario).is_file():
         hoja = Path(run.inventario)

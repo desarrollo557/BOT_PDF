@@ -105,3 +105,90 @@ class FlagRunControl:
             return RunState(str(raw))
         except ValueError:
             return RunState.RUNNING
+
+
+# -- esperar sin dejar de escuchar --------------------------------------------
+#
+# Preguntar entre página y página no basta cuando lo que se espera es otro
+# hilo: una lectura de la IA tarda lo que tarde el proveedor -- a veces medio
+# minuto --, y mientras el hilo principal está en ``futuro.result()`` nadie
+# atiende la orden. Y al cancelar dentro de ``with ThreadPoolExecutor``, la
+# salida del bloque esperaba a todo lo encolado: las cuarenta páginas que
+# faltaban se leían -- y las de pago se pagaban -- antes de parar.
+#
+# Lo que sigue arregla las dos cosas: se espera a ratos cortos preguntando
+# entre uno y otro, y al salir por una cancelación se descarta la cola. Lo que
+# ya estaba en vuelo termina solo en su hilo y su resultado no se usa.
+
+#: Cada cuánto se pregunta mientras se espera a otro hilo.
+ESPERA_ENTRE_CONSULTAS = 0.2
+
+
+def aguardar(futuro, control: RunControl) -> None:
+    """Espera a que el futuro termine, atendiendo la cancelación mientras tanto."""
+    from concurrent.futures import wait
+
+    while not futuro.done():
+        control.check()
+        wait([futuro], timeout=ESPERA_ENTRE_CONSULTAS)
+    control.check()
+
+
+def completados(futuros, control: RunControl):
+    """Como ``as_completed``, pero preguntando al control mientras espera."""
+    from concurrent.futures import FIRST_COMPLETED, wait
+
+    pendientes = set(futuros)
+    while pendientes:
+        control.check()
+        listos, pendientes = wait(
+            pendientes, timeout=ESPERA_ENTRE_CONSULTAS, return_when=FIRST_COMPLETED
+        )
+        yield from listos
+
+
+def alguno_listo(futuros, control: RunControl) -> set:
+    """Como ``wait(..., FIRST_COMPLETED)``, pero preguntando al control mientras espera."""
+    from concurrent.futures import FIRST_COMPLETED, wait
+
+    while True:
+        control.check()
+        listos, _ = wait(
+            list(futuros), timeout=ESPERA_ENTRE_CONSULTAS, return_when=FIRST_COMPLETED
+        )
+        if listos:
+            return listos
+
+
+def mapear(pool, funcion, elementos, control: RunControl) -> list:
+    """Como ``list(pool.map(...))``, pero preguntando al control mientras espera."""
+    futuros = [pool.submit(funcion, elemento) for elemento in elementos]
+    resultados = []
+    for futuro in futuros:
+        aguardar(futuro, control)
+        resultados.append(futuro.result())
+    return resultados
+
+
+class hilos:  # noqa: N801 - se usa como ``with hilos(8) as pool``
+    """Un ``ThreadPoolExecutor`` que, si se sale por una excepción, no espera la cola.
+
+    Al terminar bien espera a todos, como el de siempre. Al salir por una
+    cancelación -- o por cualquier error -- descarta lo encolado y no espera lo
+    que está en vuelo: el trabajo para ya, no cuando acaben las páginas que
+    faltaban.
+    """
+
+    def __init__(self, max_workers: int) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        self._pool = ThreadPoolExecutor(max_workers=max_workers)
+
+    def __enter__(self):
+        return self._pool
+
+    def __exit__(self, tipo, _valor, _traza) -> None:
+        if tipo is None:
+            self._pool.shutdown(wait=True)
+        else:
+            self._pool.shutdown(wait=False, cancel_futures=True)

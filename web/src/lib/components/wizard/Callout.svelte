@@ -31,13 +31,13 @@
   .callout {
     display: flex;
     align-items: flex-start;
-    gap: var(--wz-space-2, 8px);
+    gap: var(--space-2);
     border: 1px solid var(--hairline);
     border-left: 3px solid var(--accent);
-    border-radius: var(--wz-radius, 8px);
+    border-radius: var(--radius);
     background: var(--surface-1);
-    padding: var(--wz-space-3, 12px) var(--wz-space-4, 16px);
-    font-size: var(--wz-text-sm, 0.8125rem);
+    padding: var(--space-3) var(--space-4);
+    font-size: var(--text-sm);
     line-height: 1.5;
     color: var(--ink-2);
   }
@@ -77,7 +77,7 @@
     min-width: 0;
     flex-wrap: wrap;
     align-items: baseline;
-    gap: var(--wz-space-1, 4px) var(--wz-space-3, 12px);
+    gap: var(--space-1) var(--space-3);
   }
 
   .text :global(button) {

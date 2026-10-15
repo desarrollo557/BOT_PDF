@@ -25,6 +25,7 @@ from ..application.usuarios import Usuarios
 from .folders import FolderRunner
 from .janitor import IdleJanitor
 from .jobs import JobRegistry
+from .planificador import Planificador
 from .settings import Settings
 
 
@@ -55,6 +56,11 @@ class Contexto:
     #: Órdenes de pausa, reanudación y cancelación por trabajo, compartidas
     #: con los workers a través del Manager.
     controls: Any = None
+    #: Quién reparte ranuras, hilos y llamadas a la IA entre lo que corre a la vez.
+    planificador: Planificador | None = None
+    #: El tope común de llamadas a la IA, en el Manager para que lo vean todos
+    #: los procesos del pool.
+    turnos_de_ia: Any = None
     #: Qué documentos están levantando su FUID, y con qué error terminó cada
     #: uno: `None` mientras trabaja, la frase cuando falló.
     fuid_jobs: dict[str, str | None] = field(default_factory=dict)

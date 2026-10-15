@@ -20,6 +20,8 @@
     fetchArchivos,
     type ArchivosDelTrabajo
   } from '$lib/api';
+  import Descargas, { type GrupoDeDescargas } from '$lib/components/Descargas.svelte';
+  import Icono from '$lib/components/Icono.svelte';
   import { formatBytes } from '$lib/format';
 
   interface Props {
@@ -31,7 +33,6 @@
   let datos = $state<ArchivosDelTrabajo | null>(null);
   let cargando = $state(true);
   let fallo = $state<string | null>(null);
-  let bajando = $state(false);
 
   $effect(() => {
     const id = jobId;
@@ -55,17 +56,47 @@
   const peso = $derived(filas.reduce((total, archivo) => total + archivo.bytes, 0));
   const conFecha = $derived(filas.some((archivo) => archivo.fecha));
 
-  async function bajarExcel(nombre: string) {
-    bajando = true;
-    fallo = null;
-    try {
-      await descargarPlanilla(documentInventoryUrl(jobId), nombre);
-    } catch (problema) {
-      fallo = (problema as Error).message;
-    } finally {
-      bajando = false;
+  /**
+   * Lo que se baja de este PDF: el inventario de su habilidad -- el Índice
+   * Electrónico de una caja de correspondencia, la planilla de las demás -- y
+   * sus PDF juntos.
+   */
+  const descargas = $derived<GrupoDeDescargas[]>([
+    {
+      titulo: 'Inventario',
+      items: datos?.inventario
+        ? [
+            {
+              id: 'inventario',
+              titulo: datos.inventario.startsWith('00.INDICE')
+                ? 'Índice electrónico'
+                : 'Inventario del documento',
+              detalle: datos.inventario.startsWith('00.INDICE')
+                ? 'Plantilla del cliente, una fila por documento'
+                : 'Una fila por PDF generado',
+              formato: 'Excel' as const,
+              principal: true,
+              bajar: () => descargarPlanilla(documentInventoryUrl(jobId), datos!.inventario!)
+            }
+          ]
+        : []
+    },
+    {
+      titulo: 'Archivos',
+      items:
+        filas.length > 1
+          ? [
+              {
+                id: 'zip',
+                titulo: 'Todos los PDF',
+                detalle: `${filas.length} archivos${peso ? `, ${formatBytes(peso)}` : ''}`,
+                formato: 'ZIP' as const,
+                href: archivosZipUrl(jobId)
+              }
+            ]
+          : []
     }
-  }
+  ]);
 </script>
 
 <div class="archivos" aria-live="polite" aria-busy={cargando}>
@@ -73,9 +104,9 @@
     <div class="esqueleto" aria-hidden="true">
       {#each [0, 1, 2, 3] as fila (fila)}<span></span>{/each}
     </div>
-    <p class="sr">Buscando los archivos…</p>
+    <p class="sr-only">Buscando los archivos…</p>
   {:else if fallo && !datos}
-    <p class="error" role="alert">{fallo}</p>
+    <p class="inline-error error" role="alert">{fallo}</p>
   {:else if datos}
     <header>
       <div class="cuenta">
@@ -83,39 +114,22 @@
         <span>{filas.length === 1 ? 'PDF generado' : 'PDF generados'}</span>
         {#if peso}<span class="peso-total tabular">· {formatBytes(peso)}</span>{/if}
       </div>
-      <div class="acciones">
-        {#if datos.inventario}
-          <button class="boton" onclick={() => bajarExcel(datos!.inventario!)} disabled={bajando}>
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" />
-              <path d="M2.5 6.5h11M6.5 6.5v7" />
-            </svg>
-            {bajando ? 'Descargando…' : 'Inventario (Excel)'}
-          </button>
-        {/if}
-        {#if filas.length > 1}
-          <a class="boton principal" href={archivosZipUrl(jobId)} download>
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M8 2.5v7m0 0 3-3m-3 3-3-3" />
-              <path d="M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" />
-            </svg>
-            Descargar todo (ZIP)
-          </a>
-        {/if}
-      </div>
     </header>
+    <div class="descargas">
+      <Descargas grupos={descargas} />
+    </div>
 
     {#if filas.length}
       <div class="tabla">
         <table>
-          <caption class="sr">PDF generados por este documento</caption>
+          <caption class="sr-only">PDF generados por este documento</caption>
           <thead>
             <tr>
               <th scope="col" class="n">N°</th>
               <th scope="col">Documento</th>
               {#if conFecha}<th scope="col">Fecha</th>{/if}
               <th scope="col" class="num">Tamaño</th>
-              <th scope="col" class="accion"><span class="sr">Descargar</span></th>
+              <th scope="col" class="accion"><span class="sr-only">Descargar</span></th>
             </tr>
           </thead>
           <tbody>
@@ -130,15 +144,13 @@
                 <td class="num tabular">{formatBytes(archivo.bytes)}</td>
                 <td class="accion">
                   <a
+                    class="btn btn-icon"
                     href={downloadUrl(jobId, archivo.ruta)}
                     download
                     aria-label={`Descargar ${archivo.titulo}`}
                     title="Descargar PDF"
                   >
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M8 2.5v7m0 0 3-3m-3 3-3-3" />
-                      <path d="M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" />
-                    </svg>
+                    <Icono nombre="descargar" />
                   </a>
                 </td>
               </tr>
@@ -147,10 +159,10 @@
         </table>
       </div>
     {:else}
-      <p class="vacio">Este documento no se dividió: sólo dejó el inventario.</p>
+      <p class="empty-state vacio">Este documento no se dividió: sólo dejó el inventario.</p>
     {/if}
 
-    {#if fallo}<p class="error" role="alert">{fallo}</p>{/if}
+    {#if fallo}<p class="inline-error error" role="alert">{fallo}</p>{/if}
   {/if}
 </div>
 
@@ -173,77 +185,34 @@
     display: flex;
     align-items: baseline;
     gap: 0.35rem;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     color: var(--ink-2);
   }
   .cuenta strong {
-    font-size: 1.05rem;
+    font-size: var(--text-lg);
     font-weight: 650;
     color: var(--ink);
   }
   .peso-total {
     font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
-  .acciones {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-
-  .boton {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    border: 1px solid var(--hairline);
-    border-radius: 8px;
-    background: var(--surface-2);
-    padding: 0.4rem 0.8rem;
-    font: inherit;
-    font-size: 0.76rem;
-    font-weight: 600;
-    color: var(--ink-2);
-    text-decoration: none;
-    cursor: pointer;
-    transition:
-      border-color 0.15s,
-      color 0.15s,
-      background-color 0.15s;
-  }
-  .boton:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-  .boton.principal {
-    border-color: var(--accent);
-    background: var(--accent);
-    color: var(--surface-2);
-  }
-  .boton.principal:hover {
-    background: color-mix(in oklab, var(--accent) 85%, white);
-    color: var(--surface-2);
-  }
-  .boton:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-  .boton:focus-visible,
-  .accion a:focus-visible {
-    outline: 2px solid var(--ring);
-    outline-offset: 2px;
+  .descargas {
+    margin-bottom: 0.75rem;
+    max-width: 34rem;
   }
 
   .tabla {
     max-height: 26rem;
     overflow: auto;
     border: 1px solid var(--rule);
-    border-radius: 10px;
+    border-radius: var(--radius-md);
   }
   table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
   }
   thead th {
     position: sticky;
@@ -252,9 +221,9 @@
     border-bottom: 1px solid var(--rule);
     background: var(--plane);
     padding: 0.45rem 0.7rem;
-    font-size: 0.62rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.055em;
+    letter-spacing: var(--tracking-caps);
     text-align: left;
     text-transform: uppercase;
     color: var(--muted);
@@ -287,7 +256,7 @@
     overflow: hidden;
     max-width: 32rem;
     font-family: var(--font-mono);
-    font-size: 0.66rem;
+    font-size: var(--text-2xs);
     color: var(--muted);
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -295,14 +264,14 @@
   .fecha {
     white-space: nowrap;
     font-family: var(--font-mono);
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     color: var(--ink-2);
   }
   td.num {
     text-align: right;
     white-space: nowrap;
     font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
   th.num {
@@ -312,28 +281,6 @@
     width: 2.75rem;
     text-align: center;
   }
-  .accion a {
-    display: inline-grid;
-    width: 1.9rem;
-    height: 1.9rem;
-    place-items: center;
-    border-radius: 7px;
-    color: var(--accent);
-  }
-  .accion a:hover {
-    background: var(--accent-soft);
-  }
-
-  svg {
-    width: 0.9rem;
-    height: 0.9rem;
-    flex-shrink: 0;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.6;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
 
   .esqueleto {
     display: flex;
@@ -342,7 +289,7 @@
   }
   .esqueleto span {
     height: 1.9rem;
-    border-radius: 7px;
+    border-radius: var(--radius-sm);
     background: var(--plane);
     animation: pulso 1.2s ease-in-out infinite;
   }
@@ -357,26 +304,14 @@
     }
   }
 
+  /* La caja punteada global, a escala de una tarjeta. */
   .vacio {
     margin: 0;
-    border: 1px dashed var(--hairline);
-    border-radius: 10px;
     padding: 1rem;
-    font-size: 0.78rem;
-    text-align: center;
-    color: var(--muted);
+    font-size: var(--text-sm);
   }
+  /* El hueco lo pone el `gap` de la columna. */
   .error {
     margin: 0;
-    font-size: 0.74rem;
-    color: var(--critical);
-  }
-  .sr {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
   }
 </style>

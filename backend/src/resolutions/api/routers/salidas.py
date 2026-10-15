@@ -169,6 +169,17 @@ XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 #: aquí duplicado porque abrir `excel_inventory` exige openpyxl, y el servicio
 #: tiene que arrancar igual sin él; una prueba comprueba que los dos coincidan.
 SHEET_SUFFIX = "__inventario.xlsx"
+#: Y el Índice Electrónico, que es el inventario de una caja de correspondencia
+#: y no lleva sufijo: se llama como la plantilla del cliente. También duplicado
+#: por lo mismo, y también comprobado por una prueba.
+INDICE = "00.INDICE ELECTRONICO.xlsx"
+
+
+def _hojas_de(directory: Path) -> list[Path]:
+    """El inventario en Excel que dejó un trabajo: su planilla o su índice."""
+    if not directory.is_dir():
+        return []
+    return sorted([*directory.rglob(f"*{SHEET_SUFFIX}"), *directory.rglob(INDICE)])
 
 _MEDIA_TYPES = {
     ".pdf": "application/pdf",
@@ -191,7 +202,7 @@ async def job_inventory(ctx: Ctx, job_id: str) -> FileResponse:
     # sólo en la raíz del trabajo, la descarga contestaba 404 justo en la ruta
     # que más la necesita, porque sus archivos se llaman por un número de orden
     # y sin el listado no dicen nada.
-    sheets = sorted(directory.rglob(f"*{SHEET_SUFFIX}")) if directory.is_dir() else []
+    sheets = _hojas_de(directory)
     if not sheets:
         raise HTTPException(
             status_code=404,
@@ -221,7 +232,7 @@ async def archivos(ctx: Ctx, job_id: str) -> dict[str, object]:
         (ruta for ruta in directory.rglob("*.pdf") if ruta.is_file()),
         key=lambda ruta: _orden_natural(ruta.relative_to(directory).as_posix()),
     )
-    hojas = sorted(directory.rglob(f"*{SHEET_SUFFIX}"))
+    hojas = _hojas_de(directory)
     return {
         "archivos": [
             {

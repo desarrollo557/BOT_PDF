@@ -43,10 +43,6 @@ class MistralSummaryConfig:
     temperatura: float = 0.1
 
 
-class MistralSummaryError(RuntimeError):
-    """Error al pedir resumen a Mistral."""
-
-
 class MistralSummaryAdapter:
     """Genera resúmenes de actas de grado usando Mistral chat completions."""
 

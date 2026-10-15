@@ -35,6 +35,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from io import BytesIO
 
@@ -104,9 +105,14 @@ class MistralOcr:
         api_key: str | None = None,
         config: MistralOcrConfig | None = None,
         consumo: Consumo | None = None,
+        turnos: AbstractContextManager | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get("MISTRAL_API_KEY", "")
         self._config = config or MistralOcrConfig()
+        #: El tope común de llamadas a la vez de todo el servicio, si lo hay. Se
+        #: toma sólo mientras la petición está en el aire: esperar un reintento
+        #: con el turno tomado se lo quitaría a otro documento para nada.
+        self._turnos = turnos
         #: Dónde se anota lo que este motor le cuesta al trabajo. Lo comparte
         #: con los demás adaptadores del mismo trabajo; sin él se lee igual y
         #: no se cuenta nada.
@@ -269,9 +275,12 @@ class MistralOcr:
                 },
             )
             try:
-                with urllib.request.urlopen(
-                    peticion, timeout=self._config.timeout_seconds
-                ) as conexion:
+                with (
+                    self._turnos or nullcontext(),
+                    urllib.request.urlopen(
+                        peticion, timeout=self._config.timeout_seconds
+                    ) as conexion,
+                ):
                     return json.load(conexion)
             except urllib.error.HTTPError as error:
                 if error.code in _SE_REINTENTA and intento < self._config.reintentos:

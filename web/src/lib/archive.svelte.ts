@@ -31,6 +31,8 @@ const DAY = 86_400_000;
 
 /** Cómo anota el servicio un acta de consejo en el inventario. */
 export const TIPO_ACTA = 'ACTA DE CONSEJO';
+/** Las clases de actas que llevan su propio Excel: consejo y grado. */
+export const TIPOS_DE_ACTA = [TIPO_ACTA, 'ACTA DE GRADO'];
 
 function stamp(value: string | null | undefined): number {
   if (!value) return 0;
@@ -55,6 +57,7 @@ export function fromJob(job: Job): Entry {
     error: job.error,
     live: true,
     acta: Boolean(job.report?.inventario_actas?.length),
+    indice: Boolean(job.report?.indice_electronico),
     origen: job.origen ?? null,
     tipos: [
       ...new Set(
@@ -82,7 +85,8 @@ export function fromHistory(entry: ProcessedDocument): Entry {
     failed: false,
     error: null,
     live: false,
-    acta: (entry.types ?? []).includes(TIPO_ACTA),
+    acta: (entry.types ?? []).some((tipo) => TIPOS_DE_ACTA.includes(tipo)),
+    indice: Boolean(entry.indice),
     origen: entry.origen_id
       ? {
           id: entry.origen_id,
@@ -197,6 +201,8 @@ export interface Grupo {
   failed: number;
   /** Si trae actas de consejo, que son las que dejan un Excel general. */
   acta: boolean;
+  /** Si trae cajas de correspondencia: su Excel general es el Índice Electrónico, una hoja por caja. */
+  indice: boolean;
   operators: string[];
   tipos: string[];
 }
@@ -222,6 +228,7 @@ function grupoDe(origen: Origen, entries: Entry[]): Grupo {
     review: entries.reduce((sum, entry) => sum + entry.review, 0),
     failed: entries.filter((entry) => entry.failed).length,
     acta: entries.some((entry) => entry.acta),
+    indice: entries.some((entry) => entry.indice),
     operators: unicos(
       entries.map((entry) => entry.operator).filter((name): name is string => !!name)
     ),

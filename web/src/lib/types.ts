@@ -179,6 +179,8 @@ export interface Report {
   inventario?: string;
   inventario_error?: string;
   inventario_actas?: FilaDeActa[];
+  /** El Índice Electrónico que dejó una caja de correspondencia, si lo dejó. */
+  indice_electronico?: string;
   /** Si el libro de actas se dividió en un PDF por sesión. */
   dividido?: boolean;
   /** Las sesiones del libro, con sus páginas y las piezas que traen. */
@@ -421,6 +423,12 @@ export interface FolderRun {
   queued?: number;
   current: string | null;
   current_job_id: string | null;
+  /**
+   * Todos los que se procesan ahora, en el orden en que se tomaron: la carpeta
+   * lleva varios a la vez. Ausente en un servicio anterior, que sólo daba
+   * `current`.
+   */
+  en_curso?: { job_id: string; nombre: string }[];
   /** Every document the run created, in the order it took them. */
   job_ids: string[];
   discovered: number;
@@ -443,6 +451,20 @@ export interface FolderRun {
   inventario_filas?: number;
   /** Por qué no se pudo escribir, si falló. */
   inventario_error?: string | null;
+  /**
+   * El control de calidad del inventario antes de entregarlo: filas completas,
+   * completadas razonando con las vecinas y con algún dato que el papel no
+   * trae o no deja leer, por dato. Ausente en un servicio anterior.
+   */
+  inventario_validacion?: {
+    filas: number;
+    completas: number;
+    razonadas: number;
+    pendientes: number;
+    por_dato: Record<string, number>;
+    /** Nombres que las lecturas de la hoja no confirmaron del todo. */
+    nombres_dudosos?: number;
+  } | null;
 }
 
 /** One source document ever processed, folded back out of the ledger. */
@@ -465,6 +487,8 @@ export interface ProcessedDocument {
   origen?: string | null;
   origen_tipo?: string | null;
   origen_inventario?: string | null;
+  /** Si es una caja de correspondencia con su Índice Electrónico en disco. */
+  indice?: boolean;
 }
 
 /**

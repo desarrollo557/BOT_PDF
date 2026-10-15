@@ -61,7 +61,21 @@ class Settings:
 
     #: Threads inside a worker, fanning pages out across the OCR engine. Native
     #: code releases the GIL, so this scales without another process boundary.
+    #: Es el tope de un documento solo: con varios a la vez el planificador
+    #: reparte los hilos de la máquina entre ellos (ver `planificador.py`).
     page_workers: int = 8
+
+    #: Cuántos documentos de carpeta se procesan a la vez, sumando todas las
+    #: carpetas en marcha. Uno los ponía en fila y dejaba parados los demás
+    #: procesos del pool: una carpeta de 103 PDF tardó 41 minutos con diez de
+    #: once procesos sin trabajo. Por defecto, uno por cada cuatro hilos de la
+    #: máquina -- tres en una de doce --, que deja hilos de OCR a cada uno.
+    folder_documents: int = 0
+
+    #: Cuántas llamadas a la IA de pago a la vez, sumando todos los documentos.
+    #: Con varios documentos en paralelo cada uno pide las suyas, y el
+    #: proveedor contesta 429 si se le pisa: este tope común marca el paso.
+    ia_a_la_vez: int = 8
 
     #: Documents in flight before the API pushes back. Not a limit on how much
     #: can be processed -- the pool drains it steadily -- only on how much may be
@@ -142,6 +156,18 @@ class Settings:
     fuid_codigo_trd: str = "N/A"
     fuid_oficina: str | None = None
 
+    def __post_init__(self) -> None:
+        # Cero es «lo que aguante la máquina»: uno por cada cuatro hilos, sin
+        # pasar de los procesos del pool, que son quienes de verdad los leen.
+        if self.folder_documents <= 0:
+            por_defecto = max(1, min(self.document_workers, (os.cpu_count() or 4) // 4))
+            object.__setattr__(self, "folder_documents", por_defecto)
+        else:
+            object.__setattr__(
+                self, "folder_documents", min(self.folder_documents, self.document_workers)
+            )
+        object.__setattr__(self, "ia_a_la_vez", max(1, self.ia_a_la_vez))
+
     @classmethod
     def from_env(cls) -> Settings:
         return cls(
@@ -149,6 +175,8 @@ class Settings:
             output_dir=Path(os.environ.get("RESOLUTIONS_OUTPUT_DIR", DEFAULT_ROOT / "outputs")),
             document_workers=_int("RESOLUTIONS_DOCUMENT_WORKERS", max(1, (os.cpu_count() or 4) - 1)),
             page_workers=_int("RESOLUTIONS_PAGE_WORKERS", 8),
+            folder_documents=_int("RESOLUTIONS_FOLDER_DOCUMENTS", 0),
+            ia_a_la_vez=_int("RESOLUTIONS_IA_A_LA_VEZ", 8),
             queue_limit=_int("RESOLUTIONS_QUEUE_LIMIT", 10_000),
             ocr_language=os.environ.get("RESOLUTIONS_OCR_LANG", "spa"),
             mosaic_size=_int("RESOLUTIONS_MOSAIC_SIZE", 12),

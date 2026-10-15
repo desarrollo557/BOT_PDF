@@ -863,6 +863,27 @@ class TestElExcelDeLaCarpeta:
         suya = load_workbook(run.destination / "2012" / "UPD2" / "ACTAS UPD2__inventario.xlsx").active
         assert _fila_de(suya, FILA_DE_ENCABEZADOS + 1)["Acta"] == "ACTA B"
 
+    def test_las_de_grado_y_las_de_consejo_no_se_pisan(self, corrida):
+        """Aunque la primera acta de la caja sea de grado, cada clase tiene su Excel."""
+        from openpyxl import load_workbook
+
+        runner, run = corrida
+        run.inventario_filas = [{**_fila("ACTA DE GRADO No. 1"), "carpeta": "2012", "tipo": "ACTA DE GRADO"}]
+        runner._escribir_inventario_de_actas(run)
+        run.inventario_filas.append({**_fila("ACTA ORDINARIA No. 002"), "carpeta": "2012"})
+        runner._escribir_inventario_de_actas(run)
+
+        grado = run.destination / "2012" / "ACTAS DE GRADO 2012__inventario.xlsx"
+        consejo = run.destination / "2012" / "ACTAS 2012__inventario.xlsx"
+        assert sorted(p.name for p in run.destination.rglob("*.xlsx")) == sorted([grado.name, consejo.name])
+        # El de grado es el FUID oficial, una fila por graduado.
+        fuid = load_workbook(grado).active
+        assert fuid["P1"].value == "CÓDIGO: FO-GD-008"
+        assert fuid["C14"].value.startswith("ACTA DE GRADO No. 1")
+        assert load_workbook(consejo).active["A1"].value == "INVENTARIO DE ACTAS DE CONSEJO"
+        # La pantalla baja el de consejo cuando lo hay.
+        assert Path(run.inventario) == consejo
+
     def test_sin_actas_no_hay_excel(self, corrida):
         runner, run = corrida
 
@@ -1046,6 +1067,44 @@ class TestLosLibros:
 
         assert len(actas_del_pdf(libro).tramos) == 1
 
+    def test_el_membrete_de_un_anexo_con_el_organo_ilegible_no_abre_un_acta(self):
+        # Como UPD3859787: el acta 3 del Consejo Académico anexada, y cuatro hojas
+        # después su membrete con el órgano destrozado por el OCR.
+        libro = [
+            _hoja_de_libro("ACTA No. 3\nCONSEJO ACADEMICO\nSESION ORDINARIA\nFECHA\n30 de abril de 2015"),
+            _hoja_de_libro("Se trató el calendario."),
+            _hoja_de_libro("Acta No. 03 de 2015\nNOnSftlO ArarlAmlm\nSESION ORDINARIA\nFECHA\n30 de abril de 2015"),
+            _hoja_de_libro(
+                "ACTA DE CONSEJO DE FACULTAD\nSESION ORDINARIA\nACTA N°007\nFECHA: 10 de junio de 2015\n"
+                "Lugar: Oficina de Decanatura\nHora de Inicio: 8:00a.m."
+            ),
+            _hoja_de_libro(
+                "ACTA DE CONSEJO DE FACULTAD\nSESION EXTRAORDINARIA\nACTA N° 008\nFECHA: 22 DE JUNIO DE 2015\n"
+                "Lugar: Oficina de Decanatura\nHora de Inicio: 9:00 a.m."
+            ),
+        ]
+
+        reparto = actas_del_pdf(libro)
+
+        assert [t.desde for t in reparto.tramos] == [4, 5]
+
+    def test_una_hoja_que_cita_varias_actas_no_deja_tramos_vacios(self):
+        # Como la página 51 de UPD3859797: un índice con las actas 7, 9 y 1.
+        indice = "\n".join(
+            f"ACTA ORDINARIA No. 00{n}\nFECHA: {n} de agosto de 2017\nLUGAR: Decanatura" for n in (7, 9, 1)
+        )
+        libro = [
+            _hoja_de_libro("ACTA ORDINARIA No. 020\nFECHA: 18 de septiembre de 2017\nLUGAR: Decanatura"),
+            _hoja_de_libro("Se trató el presupuesto."),
+            _hoja_de_libro(indice),
+            _hoja_de_libro("Se aprobaron las notas."),
+        ]
+
+        tramos = actas_del_pdf(libro).tramos
+
+        assert all(t.desde <= t.hasta for t in tramos)
+        assert [t.desde for t in tramos] == sorted({t.desde for t in tramos})
+
 
 class FolioPorActa:
     """Un lector de esquinas que contesta lo de cada acta, en orden."""
@@ -1170,3 +1229,82 @@ class TestLasPaginasLeidasNoVanARevision:
         progreso = self._cinta(eventos)
         assert progreso.marks.count("x") == 1
         assert progreso.review == {1: "falló el OCR de la página"}
+
+
+class TestLosAnexosConActaPropia:
+    """Un PDF de una sesión no se parte por el acta de otra dependencia que trae anexa."""
+
+    SESION = _hoja_de_libro(
+        "ACTA ORDINARIA No. 022\nCONSEJO DE FACULTAD\nFECHA: lunes 16 de diciembre de 2013\nLUGAR: Decanatura"
+    )
+    # Como la página 29 de UPD3859782: el formulario de la División de Calidad.
+    REUNION = (
+        "UNIVERSIDAD DE CARTAGENA CODIGO:FO-GQ-018\nDIVISION DE CALIDAD Y MEJORAMIENTO INSTITUCIONAL\n"
+        "ACTA DE REUNIONES\nACTA N° 01\nFECHA: noviembre 21 de 2013\nLUGAR: Sala de Juntas\nHORA DE INICIO: 10:30"
+    )
+
+    def test_el_nombre_dice_que_acta_es(self):
+        from resolutions.domain.acta_consejo import acta_del_nombre
+
+        assert acta_del_nombre("1ACTA N°22 16 DE DICIEMBRE 2013.pdf") == (22, date(2013, 12, 16))
+        assert acta_del_nombre("1SESION ORDINARIA N° 018 MARTES 09 DE SEPTIEMBRE 2014.pdf") == (
+            18, date(2014, 9, 9),
+        )
+        assert acta_del_nombre("2N° 002-02 DE FEBRERO DE 2012.pdf") == (2, date(2012, 2, 2))
+        # Un libro no declara un acta.
+        assert acta_del_nombre("1ACTAS DE CONSEJO N° 01 AL 12 2015-2016.pdf") is None
+
+    def test_el_acta_anexa_anterior_se_queda_en_su_sesion(self):
+        outcome = InventariarActa().execute(
+            Fuente([self.SESION, "Se trató el presupuesto.", self.REUNION, "Asistentes"]),
+            document_name="1ACTA N°22 16 DE DICIEMBRE 2013.pdf",
+        )
+        assert [(f.pagina_inicial, f.pagina_final) for f in outcome.filas] == [(1, 4)]
+
+    def test_un_libro_sigue_dividiendose(self):
+        siguiente = _hoja_de_libro(
+            "ACTA EXTRAORDINARIA No. 003\nCONSEJO DE FACULTAD\nFECHA: 10 de marzo de 2012\nLUGAR: Decanatura"
+        )
+        primera = self.SESION.replace("022", "002").replace("lunes 16 de diciembre de 2013", "2 de febrero de 2012")
+        outcome = InventariarActa().execute(
+            Fuente([primera, siguiente]), document_name="2N° 002-02 DE FEBRERO DE 2012.pdf"
+        )
+        assert len(outcome.filas) == 2
+
+
+class TestLosEncabezadosYLaSerieDelLibro:
+    def test_el_numero_con_las_comillas_del_ocr(self):
+        for linea in ("ACTA N” 019", "ACTA N» 023", "ACTAN° 002", 'ACTA N" 01'):
+            texto = f"ACTA DE CONSEJO DE FACULTAD\nSESION EXTRAORDINARIA\n{linea}\nFECHA: 17 de septiembre de 2014\nLugar: x"
+            assert leer_acta([texto]).numero is not None, linea
+
+    def test_los_numeros_que_dice_el_nombre(self):
+        from resolutions.domain.acta_consejo import numeros_del_nombre
+
+        assert numeros_del_nombre("SESION ... 2015- ACTAS 7 Y 8.pdf") == {7, 8}
+        assert numeros_del_nombre("1ACTAS DE CONSEJO N°13 AL 21 2016.pdf") == set(range(13, 22))
+        assert numeros_del_nombre("UPD3859798-ACTAS DE CONSEJO N° 2-3-4-10-11-13 20.pdf") == {2, 3, 4, 10, 11, 13}
+        # Un rango de folios no dice nada de las actas.
+        assert numeros_del_nombre("1ACTAS DE CONSEJO DE FACULTAD 2011 N°1 AL 449.pdf") is None
+
+    def _sesion(self, numero, fecha):
+        return _hoja_de_libro(f"ACTA ORDINARIA No. {numero}\nCONSEJO DE FACULTAD\nFECHA: {fecha}\nLUGAR: Decanatura")
+
+    def test_un_anexo_fuera_de_la_serie_se_queda_en_su_sesion(self):
+        libro = [
+            self._sesion("016", "8 de julio de 2016"),
+            self._sesion("017", "1 de agosto de 2016"),
+            self._sesion("002", "7 de julio de 2016"),  # el acta de una reunión anexa
+            self._sesion("018", "10 de agosto de 2016"),
+        ]
+        assert [(t.desde, t.hasta) for t in actas_del_pdf(libro).tramos] == [(1, 1), (2, 3), (4, 4)]
+
+    def test_un_libro_de_la_ultima_sesion_a_la_primera_no_pierde_ninguna(self):
+        libro = [
+            self._sesion("09", "13 de diciembre de 2001"),
+            self._sesion("08", "27 de noviembre de 2001"),
+            self._sesion("07", "28 de septiembre de 2001"),
+            self._sesion("06", "5 de diciembre de 2000"),
+            self._sesion("05", "15 de noviembre de 2000"),
+        ]
+        assert len(actas_del_pdf(libro).tramos) == 5

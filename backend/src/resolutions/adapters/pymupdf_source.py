@@ -8,6 +8,7 @@ from PIL import Image
 
 from ..application.ports import Band, LineBox
 from ..domain.diploma import TextLine
+from ..domain.formulario import Trozo
 from .mupdf_messages import drenar
 
 #: PDF user space is 72 dpi. Every render scales from there.
@@ -57,6 +58,49 @@ _INK_FULL_COLUMN = 0.50
 _INK_HALO = 20
 
 
+class PdfQueNoSeAbre(ValueError):
+    """Un PDF que no se puede leer, con el motivo dicho para el operador.
+
+    Sin esto el trabajo fallaba con lo que dijera MuPDF -- «FileDataError:
+    Failed to open file» --, y un PDF con contraseña se abría sin texto y se
+    inventariaba como una hoja en blanco, sin decir por qué.
+    """
+
+    #: El mensaje ya está escrito para quien opera: se enseña tal cual, sin el
+    #: nombre de la clase delante.
+    para_el_operador = True
+
+
+def _abrir(path: Path, nombre: str):
+    try:
+        if path.stat().st_size == 0:
+            raise PdfQueNoSeAbre(f"«{nombre}» está vacío (0 bytes): el escaneo no se guardó entero")
+        documento = pymupdf.open(path)
+    except PdfQueNoSeAbre:
+        raise
+    except FileNotFoundError:
+        raise PdfQueNoSeAbre(
+            f"«{nombre}» ya no está en su sitio: se movió o se borró antes de leerlo"
+        ) from None
+    except PermissionError:
+        raise PdfQueNoSeAbre(
+            f"«{nombre}» no se deja leer: otro programa lo tiene abierto o no hay permiso"
+        ) from None
+    except Exception as error:  # noqa: BLE001 - MuPDF tiene sus propias excepciones
+        raise PdfQueNoSeAbre(
+            f"«{nombre}» está dañado y no se puede abrir como PDF ({type(error).__name__})"
+        ) from error
+    if documento.needs_pass:
+        documento.close()
+        raise PdfQueNoSeAbre(
+            f"«{nombre}» está protegido con contraseña: hay que quitársela y volver a cargarlo"
+        )
+    if documento.page_count == 0:
+        documento.close()
+        raise PdfQueNoSeAbre(f"«{nombre}» no tiene ninguna página")
+    return documento
+
+
 class PyMuPDFPageSource:
     """A PDF opened once, read page by page.
 
@@ -71,7 +115,7 @@ class PyMuPDFPageSource:
         #: con un nombre generado, y un aviso que dice "6ea93142663d.pdf" no le
         #: sirve a nadie para saber qué documento venía defectuoso.
         self._nombre = nombre or path.name
-        self._document = pymupdf.open(path)
+        self._document = _abrir(path, self._nombre)
         #: La capa de texto ya extraída, por número de página.
         self._textos: dict[int, str] = {}
         #: Los renglones de cada página con su geometría, en las dos formas en
@@ -138,6 +182,26 @@ class PyMuPDFPageSource:
         exactamente lo que esto viene a evitar.
         """
         return list(self._renglones_de(page_number)[1])
+
+    def size_of(self, page_number: int) -> tuple[float, float]:
+        """El ancho y el alto de la página, en puntos: para pasar cajas a fracciones."""
+        rect = self._document[page_number - 1].rect
+        return rect.width, rect.height
+
+    def trozos_of(self, page_number: int) -> list[Trozo]:
+        """Los trozos de texto de la página con su caja y su letra.
+
+        Es lo que deja leer un formulario relleno a máquina en su orden: lo
+        rellenado va en otra letra y un poco por encima de su renglón, y sólo la
+        caja dice a qué renglón pertenece (ver ``domain.formulario``).
+        """
+        page = self._document[page_number - 1]
+        return [
+            Trozo(span["text"], *span["bbox"], f"{span['font']}|{span['flags'] & 16}")
+            for block in page.get_text("dict")["blocks"]
+            for line in block.get("lines", ())
+            for span in line["spans"]
+        ]
 
     def lines_of(self, page_number: int) -> list[TextLine]:
         """The page's lines with enough geometry to know what sits above what.

@@ -290,12 +290,11 @@ def _decide(
 
     # REGLA NUEVA: Mismo NIC y remitente en páginas consecutivas
     # Si ambas páginas comparten NIC y remitente, son del mismo documento.
-    from ..domain.tramites import nic_de
-    from ..application.agrupacion import normalizar_nombre, extraer_remitente
+    from .tramites import extraer_remitente, nic_de, normalizar_remitente
     left_nic = nic_de(left.text)
     right_nic = nic_de(right.text)
-    left_remitente = normalizar_nombre(extraer_remitente(left.text)) if left.text else None
-    right_remitente = normalizar_nombre(extraer_remitente(right.text)) if right.text else None
+    left_remitente = normalizar_remitente(extraer_remitente(left.text)) if left.text else None
+    right_remitente = normalizar_remitente(extraer_remitente(right.text)) if right.text else None
     
     if left_nic and right_nic and left_nic == right_nic and left_remitente and right_remitente and left_remitente == right_remitente:
         return Verdict.CONTINUES, f"mismo NIC ({left_nic}) y remitente ({left_remitente[:30]})"

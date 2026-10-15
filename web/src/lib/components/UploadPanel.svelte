@@ -1,7 +1,7 @@
 <script lang="ts">
   import { fly } from 'svelte/transition';
 
-  import { fetchHealth, type Health } from '$lib/api';
+  import { fetchHealth, reconocerArchivo, type Health, type Sugerencia } from '$lib/api';
   import UploadSummary from '$lib/components/UploadSummary.svelte';
   import Callout from '$lib/components/wizard/Callout.svelte';
   import PasoAgrupar from '$lib/components/wizard/PasoAgrupar.svelte';
@@ -11,6 +11,7 @@
   import PasoOrigen from '$lib/components/wizard/PasoOrigen.svelte';
   import PasoResultado from '$lib/components/wizard/PasoResultado.svelte';
   import PasoTipoDocumento from '$lib/components/wizard/PasoTipoDocumento.svelte';
+  import SugerenciaDeTipo from '$lib/components/wizard/SugerenciaDeTipo.svelte';
   import {
     HABILIDADES,
     RESULTADOS,
@@ -33,7 +34,8 @@
       lectura: LecturaChoice,
       tipo: TipoPedido,
       corte: CorteChoice,
-      agrupar: AgruparChoice
+      agrupar: AgruparChoice,
+      territorial: string
     ) => void;
     disabled?: boolean;
   }
@@ -54,6 +56,8 @@
   let lectura = $state<LecturaChoice>('local');
   let corte = $state<CorteChoice>('pagina');
   let agrupar = $state<AgruparChoice>('documento');
+  /** La territorial de una caja de correspondencia, para su Índice Electrónico. */
+  let territorial = $state('');
   let health = $state<Health | null>(null);
   /** Files dropped and waiting for "Confirmar y subir". */
   let pendientes = $state<File[]>([]);
@@ -84,6 +88,13 @@
       : 'documento'
   );
   const opcionDeAgrupar = $derived(agrupaciones.find((opcion) => opcion.id === agruparElegido));
+  /* Una caja de correspondencia sale con su Índice Electrónico, y su encabezado
+     pide la territorial: el papel no la trae, así que sin ella no se sigue. */
+  const faltaTerritorial = $derived(
+    habilidad.agrupar && !territorial.trim()
+      ? 'Escriba la territorial de la caja (ej.: CESAR): va en el Índice Electrónico.'
+      : null
+  );
 
   /** Lo que se puede pedir de vuelta con esta habilidad. */
   const acciones = $derived(habilidad.acciones ?? RESULTADOS);
@@ -114,6 +125,8 @@
         ? 'Deja el inventario. No escribe ningún PDF.'
         : task === 'both' && habilidad.tipo === 'acta-consejo'
           ? 'Deja un PDF por sesión y el inventario.'
+          : task === 'both' && habilidad.tipo === 'acta'
+            ? 'Deja un PDF por graduado y el FUID.'
           : task === 'both'
             ? 'Deja un PDF por documento y el inventario.'
           : 'Deja un PDF por documento.')
@@ -141,11 +154,18 @@
 
   const pasos = $derived<StepId[]>([
     'tipo',
-    ...(habilidad.pideLectura ? (['lectura'] as const) : []),
+    // Todas las habilidades preguntan cómo se lee el papel, también «No estoy
+    // seguro»: antes sólo lo preguntaban las que recomiendan IA, y las demás
+    // corrían con «Solo OCR» sin que nadie lo eligiera -- una carpeta de actas
+    // de grado entera salió sin folios por eso.
+    'lectura',
     ...(eligeResultado ? (['resultado'] as const) : []),
     ...(habilidad.cortes ? (['corte'] as const) : []),
     ...(habilidad.agrupar ? (['agrupar'] as const) : []),
-    ...(task === 'segment' ? (['oracle'] as const) : []),
+    // El modelo de las costuras dudosas es una IA de pago: sólo se pregunta
+    // con «OCR + IA». Con «Solo OCR» no se consulta ningún modelo y lo dudoso
+    // va a revisión.
+    ...(task === 'segment' && lectura !== 'local' ? (['oracle'] as const) : []),
     'origen'
   ]);
 
@@ -162,7 +182,9 @@
         ? blockedLectura
         : pasoId === 'oracle'
           ? blocked
-          : null
+          : pasoId === 'agrupar'
+            ? faltaTerritorial
+            : null
   );
 
   const reduceMotion =
@@ -192,15 +214,19 @@
       notice = blockedLectura;
       return;
     }
+    if (faltaTerritorial) {
+      notice = faltaTerritorial;
+      return;
+    }
     if (mode === 'batch') {
-      onfiles(files, true, task, oracle, lectura, tipo, corteElegido, agruparElegido);
+      onfiles(files, true, task, oracle, lectura, tipo, corteElegido, agruparElegido, territorial);
       return;
     }
     if (files.length > SINGLE_LIMIT) {
       notice = `La carga individual admite ${SINGLE_LIMIT} documentos. Cambie a carga por lote para subir los ${files.length}.`;
       return;
     }
-    onfiles(files, false, task, oracle, lectura, tipo, corteElegido, agruparElegido);
+    onfiles(files, false, task, oracle, lectura, tipo, corteElegido, agruparElegido, territorial);
   }
 
   /**
@@ -219,11 +245,57 @@
       notice = blockedLectura;
       return;
     }
+    if (faltaTerritorial) {
+      notice = faltaTerritorial;
+      return;
+    }
     if (mode !== 'batch' && files.length > SINGLE_LIMIT) {
       notice = `La carga individual admite ${SINGLE_LIMIT} documentos. Cambie a carga por lote para subir los ${files.length}.`;
       return;
     }
     pendientes = files;
+    void reconocerPendientes(files);
+  }
+
+  /* -- qué parecen los archivos ---------------------------------------------
+     Al soltarlos, el bot mira su capa de texto y su nombre -- no gasta nada --
+     y dice qué parecen. Sólo los primeros: con cinco se sabe de qué va un lote
+     sin que la pantalla espere a cien. */
+  const A_RECONOCER = 5;
+  let sugerencias = $state<(Sugerencia & { nombre: string })[]>([]);
+  let reconociendo = $state(false);
+  let errorDeReconocer = $state<string | null>(null);
+  let pedidoDeReconocer: AbortController | null = null;
+
+  async function reconocerPendientes(files: File[]) {
+    pedidoDeReconocer?.abort();
+    sugerencias = [];
+    errorDeReconocer = null;
+    if (!files.length || !health?.features?.includes('reconocer')) return;
+    const pedido = new AbortController();
+    pedidoDeReconocer = pedido;
+    reconociendo = true;
+    try {
+      const vistas: (Sugerencia & { nombre: string })[] = [];
+      for (const file of files.slice(0, A_RECONOCER)) {
+        vistas.push({ ...(await reconocerArchivo(file, pedido.signal)), nombre: file.name });
+        if (pedido.signal.aborted) return;
+        sugerencias = [...vistas];
+      }
+    } catch (problema) {
+      if (!pedido.signal.aborted) errorDeReconocer = (problema as Error).message;
+    } finally {
+      if (pedidoDeReconocer === pedido) reconociendo = false;
+    }
+  }
+
+  /** Cambiar a la habilidad sugerida sin perder los archivos ya elegidos. */
+  function usarSugerencia(id: string) {
+    const guardados = pendientes;
+    const vistas = sugerencias;
+    elegirHabilidad(id);
+    pendientes = guardados;
+    sugerencias = vistas;
   }
 
   function elegirHabilidad(id: string) {
@@ -258,6 +330,12 @@
   function elegirAgrupar(a: AgruparChoice) {
     agrupar = a;
     notice = null;
+    // Sin territorial no se avanza: el paso se queda abierto con su campo.
+    if (faltaTerritorial) {
+      notice = faltaTerritorial;
+      document.getElementById('territorial-de-la-caja')?.focus();
+      return;
+    }
     siguiente();
   }
 
@@ -269,6 +347,8 @@
 
   function elegirLectura(l: LecturaChoice) {
     lectura = l;
+    // «Solo OCR» es sólo OCR: el modelo elegido antes no viaja.
+    if (l === 'local') oracle = 'auto';
     notice = null;
     siguiente();
   }
@@ -277,6 +357,8 @@
     mode = m;
     notice = null;
     pendientes = [];
+    sugerencias = [];
+    pedidoDeReconocer?.abort();
   }
 
   function confirmarSubida(files: File[] = pendientes) {
@@ -367,6 +449,12 @@
             {health}
             pregunta={habilidad.agrupar?.pregunta}
             numero={pasoActual}
+            {territorial}
+            onTerritorial={(valor) => {
+              territorial = valor;
+              notice = null;
+            }}
+            onListo={siguiente}
           />
         {:else if pasoId === 'oracle'}
           <PasoOracle {oracle} onElegir={elegirOracle} {oracles} {blocked} numero={pasoActual} />
@@ -381,12 +469,26 @@
               {tipo}
               corte={corteElegido}
               agrupar={agruparElegido}
+              {territorial}
               {disabled}
               onfiles={prepararArchivos}
               {blocked}
               {blockedLectura}
               numero={pasoActual}
+              {habilidadId}
+              onusarHabilidad={usarSugerencia}
             />
+            {#if mode !== 'folder' && (reconociendo || sugerencias.length || errorDeReconocer)}
+              <div class="sugerencia">
+                <SugerenciaDeTipo
+                  {habilidadId}
+                  archivos={sugerencias}
+                  cargando={reconociendo && !sugerencias.length}
+                  error={errorDeReconocer}
+                  onusar={usarSugerencia}
+                />
+              </div>
+            {/if}
             <aside>
               <UploadSummary
                 files={pendientes}
@@ -402,7 +504,10 @@
                 busy={disabled}
                 onback={volverAlInicio}
                 onconfirm={() => confirmarSubida()}
-                onclear={() => (pendientes = [])}
+                onclear={() => {
+                  pendientes = [];
+                  sugerencias = [];
+                }}
               />
             </aside>
           </div>
@@ -415,7 +520,7 @@
     {/if}
 
     <footer class="nav">
-      <button type="button" class="secondary" onclick={anterior} disabled={pasoActual === 1}>
+      <button type="button" class="btn" onclick={anterior} disabled={pasoActual === 1}>
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5" /></svg>
         Anterior
       </button>
@@ -425,7 +530,7 @@
       {#if !esUltimo}
         <button
           type="button"
-          class="primary"
+          class="btn btn-primary"
           onclick={siguiente}
           disabled={disabled || !!bloqueoDelPaso}
           title={bloqueoDelPaso ?? undefined}
@@ -441,31 +546,17 @@
 </section>
 
 <style>
-  /* Spacing, radius and type scale for every step: an 8px grid with a 4px
-     half-step, so no component carries magic numbers of its own. Child
-     components read these through inheritance. */
+  /* El asistente usa la escala común de app.css (--space-*, --radius-*,
+     --text-*): antes traía la suya, casi igual pero no del todo, y cada paso
+     se veía un punto distinto del resto de la aplicación. */
   .wizard {
-    --wz-space-1: 4px;
-    --wz-space-2: 8px;
-    --wz-space-3: 12px;
-    --wz-space-4: 16px;
-    --wz-space-5: 20px;
-    --wz-space-6: 24px;
-    --wz-space-8: 32px;
-    --wz-radius: 8px;
-    --wz-radius-lg: 12px;
-    --wz-text-xs: 0.75rem;
-    --wz-text-sm: 0.8125rem;
-    --wz-text-base: 0.9375rem;
-    --wz-text-lg: 1.125rem;
-
     display: flex;
     flex-direction: column;
-    gap: var(--wz-space-4);
+    gap: var(--space-4);
     width: 100%;
     max-width: 68rem;
     margin: 0 auto;
-    font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    font-family: inherit;
     color: var(--ink);
   }
 
@@ -508,10 +599,10 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: var(--wz-space-2);
+    gap: var(--space-2);
     border: 0;
     background: none;
-    padding: 0 var(--wz-space-1);
+    padding: 0 var(--space-1);
     font: inherit;
     cursor: pointer;
   }
@@ -536,7 +627,7 @@
     border: 1.5px solid var(--axis);
     border-radius: 50%;
     background: var(--surface-2);
-    font-size: var(--wz-text-sm);
+    font-size: var(--text-sm);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     color: var(--muted);
@@ -559,7 +650,7 @@
   .done .dot {
     border-color: var(--accent);
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
   }
 
   .current .dot {
@@ -569,7 +660,7 @@
   }
 
   .label {
-    font-size: var(--wz-text-xs);
+    font-size: var(--text-xs);
     font-weight: 500;
     white-space: nowrap;
     color: var(--muted);
@@ -597,11 +688,11 @@
   .card {
     display: flex;
     flex-direction: column;
-    gap: var(--wz-space-5);
+    gap: var(--space-5);
     border: 1px solid var(--hairline);
-    border-radius: var(--wz-radius-lg);
+    border-radius: var(--radius-lg);
     background: var(--surface-2);
-    padding: var(--wz-space-6) var(--wz-space-6) 0;
+    padding: var(--space-6) var(--space-6) 0;
     box-shadow: var(--shadow);
   }
 
@@ -615,11 +706,17 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     align-items: start;
-    gap: var(--wz-space-6);
+    gap: var(--space-6);
   }
 
   .final > :global(*) {
     min-width: 0;
+  }
+
+  /* Lo que el bot reconoce, de lado a lado: es lo primero que hay que leer
+     antes de confirmar la subida. */
+  .sugerencia {
+    grid-column: 1 / -1;
   }
 
   @container wizard (min-width: 56rem) {
@@ -629,7 +726,7 @@
 
     .final aside {
       position: sticky;
-      top: var(--wz-space-4);
+      top: var(--space-4);
     }
   }
 
@@ -645,16 +742,16 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--wz-space-3);
-    margin-inline: calc(var(--wz-space-6) * -1);
+    gap: var(--space-3);
+    margin-inline: calc(var(--space-6) * -1);
     border-top: 1px solid var(--rule);
-    border-radius: 0 0 var(--wz-radius-lg) var(--wz-radius-lg);
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
     background: var(--surface-2);
-    padding: var(--wz-space-3) var(--wz-space-6);
+    padding: var(--space-3) var(--space-6);
   }
 
   .counter {
-    font-size: var(--wz-text-xs);
+    font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
     color: var(--muted);
   }
@@ -663,80 +760,31 @@
     width: 7.5rem;
   }
 
-  .nav button {
-    display: inline-flex;
+  /* Los botones son los globales (`.btn`, `.btn-primary`); aquí sólo el ancho
+     mínimo, para que «Anterior» y «Siguiente» no bailen al cambiar de paso. */
+  .nav .btn {
     min-width: 7.5rem;
-    align-items: center;
-    justify-content: center;
-    gap: var(--wz-space-2);
-    border-radius: var(--wz-radius);
-    padding: var(--wz-space-2) var(--wz-space-4);
-    font: inherit;
-    font-size: var(--wz-text-sm);
-    font-weight: 600;
-    cursor: pointer;
-    transition:
-      background-color 0.15s ease,
-      border-color 0.15s ease,
-      color 0.15s ease;
   }
 
-  .nav button svg {
-    width: 14px;
-    height: 14px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.8;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
-  .nav button:focus-visible {
-    outline: 2px solid var(--ring);
-    outline-offset: 2px;
-  }
-
-  .secondary {
-    border: 1px solid var(--hairline);
-    background: var(--surface-2);
-    color: var(--ink-2);
-  }
-
-  .secondary:hover:not(:disabled) {
-    border-color: var(--axis);
-    color: var(--ink);
-  }
-
-  .primary {
-    border: 1px solid var(--accent);
-    background: var(--accent);
-    color: #fff;
-  }
-
-  .primary:hover:not(:disabled) {
-    background: color-mix(in oklab, var(--accent) 88%, #000);
-  }
-
-  /* Disabled says so with more than a lighter shade: no fill, dashed edge,
-     and the reason as a tooltip on "Siguiente". */
-  .nav button:disabled {
+  /* Deshabilitado se dice con algo más que un tono más claro: sin relleno,
+     borde punteado, y el motivo como tooltip de «Siguiente». */
+  .nav .btn:disabled {
     border-style: dashed;
     border-color: var(--axis);
     background: transparent;
     color: var(--muted);
-    cursor: not-allowed;
   }
 
   /* -- small screens ------------------------------------------------------- */
 
   @container wizard (max-width: 36rem) {
     .card {
-      padding: var(--wz-space-4) var(--wz-space-4) 0;
+      padding: var(--space-4) var(--space-4) 0;
     }
 
     .nav {
-      margin-inline: calc(var(--wz-space-4) * -1);
-      padding-inline: var(--wz-space-4);
+      margin-inline: calc(var(--space-4) * -1);
+      padding-inline: var(--space-4);
     }
 
     /* Only the current step keeps its name; the others stay as dots. */
@@ -748,7 +796,7 @@
       display: none;
     }
 
-    .nav button {
+    .nav .btn {
       min-width: 0;
       flex: 1;
     }

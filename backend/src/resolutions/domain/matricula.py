@@ -61,11 +61,6 @@ COLUMNAS = (
     CAPTION_PERIODO,
 )
 
-#: Encabezados que dicen qué clase de hoja es. Una carátula abre expediente; una
-#: hoja de registro de estudios continúa el que venga abierto.
-CAPTION_REGISTRO_DE_ESTUDIOS = "REGISTRO DE ESTUDIOS"
-CAPTION_MATRICULA = "MATRICULA ACADEMICA"
-
 
 def _sin_tildes(texto: str) -> str:
     descompuesto = unicodedata.normalize("NFD", texto)

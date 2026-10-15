@@ -31,10 +31,6 @@ from fastapi import Depends, Header, HTTPException
 from ..domain.usuario import Usuario
 from .contexto import Ctx
 
-#: Por dónde viaja la cédula de quien está sentado delante. Sin acentos ni
-#: espacios, así que no hace falta codificarla como el nombre del operador.
-CABECERA = "X-Cedula"
-
 
 def quien_manda(
     ctx: Ctx,
@@ -65,17 +61,6 @@ def exigir_identificado(quien: Usuario | None) -> Usuario:
             ),
         )
     return quien
-
-
-def exigir_administrador(quien: Usuario | None) -> Usuario:
-    """Quien lo pide, si es administrador."""
-    usuario = exigir_identificado(quien)
-    if not usuario.perfil.administra_usuarios:
-        raise HTTPException(
-            status_code=403,
-            detail="Sólo el administrador puede administrar usuarios",
-        )
-    return usuario
 
 
 def exigir_descarga_de_planillas(quien: Usuario | None) -> Usuario:

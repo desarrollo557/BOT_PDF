@@ -60,6 +60,8 @@ def _origen_de(report: dict) -> dict[str, str]:
     }
     if origen.get("inventario"):
         columnas["origen_inventario"] = str(origen["inventario"])
+    if origen.get("procesos"):
+        columnas["origen_procesos"] = str(origen["procesos"])
     return columnas
 
 
@@ -127,6 +129,7 @@ class InventoryReads:
                     "origen": row.get("origen"),
                     "origen_tipo": row.get("origen_tipo"),
                     "origen_inventario": row.get("origen_inventario"),
+                    "origen_procesos": row.get("origen_procesos"),
                 }
             tipo = row.get("type")
             if tipo and tipo not in entry["types"] and len(entry["types"]) < 8:

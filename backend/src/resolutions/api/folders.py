@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import threading
+import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -10,7 +13,10 @@ from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
 
+from ..adapters.excel_inventory import NOMBRE_DEL_INVENTARIO_DE_PROCESOS
+from .errores import explicar_fallo
 from .jobs import Job, JobRegistry, JobState
+from .planificador import Planificador
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -22,6 +28,13 @@ DELIVERY_WINDOW = 60
 #: How often a watching run looks for new files. Long enough that an idle folder
 #: costs one directory listing a few times a minute.
 WATCH_INTERVAL = 5.0
+
+#: Cada cuánto, como mucho, se reescribe el Excel general mientras la carpeta
+#: corre. Con 2.600 filas cuesta doce segundos, y reescribirlo tras cada PDF
+#: sumaba seis minutos a una corrida de 41. El de la subcarpeta del PDF que
+#: acaba de terminar sí se escribe siempre, y al terminar, detener o vaciarse
+#: una carpeta vigilada se escriben todos.
+INVENTARIO_GENERAL_CADA = 45.0
 
 
 class RunState(StrEnum):
@@ -108,6 +121,9 @@ class FolderRun:
     #: para la corrida entera y se copia a cada archivo que entre, igual que el
     #: corte.
     agrupar: str = "documento"
+    #: La territorial de las cajas de correspondencia de esta carpeta, para el
+    #: encabezado de su Índice Electrónico. Se copia a cada archivo que entre.
+    territorial: str | None = None
     #: Y qué clase de documento trae esta carpeta, cuando el operador lo sabe.
     #: Una carpeta suele ser homogénea -- una estantería de libros de diplomas
     #: --, así que declararlo una vez vale para todos sus archivos.
@@ -123,8 +139,9 @@ class FolderRun:
     #: document on its next pass whenever the originals are left in place.
     seen: set[str] = field(default_factory=set)
     queue: list[str] = field(default_factory=list)
-    current: str | None = None
-    current_job_id: str | None = None
+    #: Los que se están procesando ahora, por su trabajo y su ruta. Varios a la
+    #: vez: la carpeta toma tantos como ranuras le deje el planificador.
+    en_curso: dict[str, str] = field(default_factory=dict)
     #: Every document this run created, in the order it took them. The screen
     #: needs it to report on the run as a whole once it settles.
     job_ids: list[str] = field(default_factory=list)
@@ -139,8 +156,14 @@ class FolderRun:
     inventario_filas: list[dict] = field(default_factory=list)
     #: Dónde quedó ese Excel, cuando ya se escribió.
     inventario: str | None = None
+    #: El Excel general de cada clase de acta -- consejo, grado --, para que
+    #: cada una vuelva a escribir el suyo y nunca el de la otra.
+    inventarios_generales: dict[str, str] = field(default_factory=dict)
     #: Por qué no se pudo escribir, si falló.
     inventario_error: str | None = None
+    #: El control de calidad del último inventario escrito: filas completas,
+    #: completadas razonando y con algún dato que el papel no deja leer.
+    inventario_validacion: dict | None = None
     #: Cuántas filas llevaba la última vez que se escribió, para no reescribirlo
     #: mientras una carpeta vigilada espera sin novedades.
     inventario_escritas: int = 0
@@ -157,6 +180,26 @@ class FolderRun:
     delivered: int = 0
     resolutions: int = 0
     deliveries: list[Delivery] = field(default_factory=list)
+    #: Cuándo se escribió por última vez el Excel general (reloj monótono).
+    inventario_general_en: float = 0.0
+    #: Cuándo se escribió por última vez el Índice Electrónico general de la
+    #: carpeta, que lee el de cada caja y no se rehace con cada PDF.
+    generales_en: float = 0.0
+    #: Entregar y escribir los Excel, de uno en uno. Con varios documentos a la
+    #: vez, dos entregas simultáneas se pisarían el nombre libre de un archivo
+    #: (`unique_path`) y las filas del inventario. Es de hilos y no de asyncio
+    #: porque la entrega corre en un hilo, y uno que ya arrancó no se detiene
+    #: aunque se cancele quien lo esperaba.
+    cerrojo: threading.RLock = field(default_factory=threading.RLock, repr=False)
+
+    @property
+    def current(self) -> str | None:
+        """El primero de los que están en curso, para quien sólo enseña uno."""
+        return next(iter(self.en_curso.values()), None)
+
+    @property
+    def current_job_id(self) -> str | None:
+        return next(iter(self.en_curso), None)
 
     @property
     def active(self) -> bool:
@@ -181,6 +224,7 @@ class FolderRun:
             "lectura": self.lectura,
             "corte": self.corte,
             "agrupar": self.agrupar,
+            "territorial": self.territorial,
             "tipo": self.tipo,
             "operator": self.operator,
             "state": str(self.state),
@@ -192,6 +236,10 @@ class FolderRun:
             "queued": len(self.queue),
             "current": self.current,
             "current_job_id": self.current_job_id,
+            # Todos los que corren ahora, en el orden en que se tomaron.
+            "en_curso": [
+                {"job_id": job_id, "nombre": nombre} for job_id, nombre in self.en_curso.items()
+            ],
             "job_ids": list(self.job_ids),
             "discovered": self.discovered,
             "processed": self.processed,
@@ -206,6 +254,7 @@ class FolderRun:
             "inventario_ruta": self.inventario,
             "inventario_filas": len(self.inventario_filas),
             "inventario_error": self.inventario_error,
+            "inventario_validacion": self.inventario_validacion,
             # Newest first: the live view reads from the top.
             "deliveries": [item.as_dict() for item in reversed(self.deliveries)],
         }
@@ -292,13 +341,18 @@ def unique_path(directory: Path, name: str) -> Path:
 
 
 class FolderRunner:
-    """Drains a local folder one document at a time.
+    """Drains a local folder, several documents at a time.
 
-    Sequential on purpose. The pool exists for a fifty-file drop where the
-    operator wants throughput; a watched folder is a background service, and
-    taking one document at a time keeps the machine responsive for whatever the
-    operator is doing in the foreground -- and makes "which file is it on" a
-    question with exactly one answer.
+    Iba de uno en uno, y una carpeta de 103 PDF tardó 41 minutos con diez de
+    los once procesos del pool sin nada que hacer y la red esperando a la IA
+    con la CPU ociosa. Ahora cada carpeta pone tantos trabajadores como
+    ranuras tiene el planificador, y todos sacan de la misma cola en el orden
+    de la carpeta. Las ranuras son del servicio y no de la carpeta: dos
+    carpetas en marcha se las reparten por orden de llegada, en vez de doblar
+    la carga de la máquina.
+
+    Lo que tiene que ir en fila sigue en fila: la entrega al destino y los
+    Excel se hacen de uno en uno bajo el cerrojo de la corrida.
     """
 
     def __init__(
@@ -308,11 +362,17 @@ class FolderRunner:
         run_job: Callable[[Job], Awaitable[None]],
         *,
         watch_interval: float = WATCH_INTERVAL,
+        planificador: Planificador | None = None,
     ) -> None:
         self._registry = registry
         self._settings = settings
         self._run_job = run_job
         self._watch_interval = watch_interval
+        self._planificador = planificador or Planificador(
+            documentos_de_carpeta=settings.folder_documents,
+            hilos_por_documento=settings.page_workers,
+            procesos=settings.document_workers,
+        )
         self._runs: dict[str, FolderRun] = {}
         self._tasks: dict[str, asyncio.Task] = {}
 
@@ -332,6 +392,7 @@ class FolderRunner:
         corte: str = "pagina",
         tipo: str = "auto",
         agrupar: str = "documento",
+        territorial: str | None = None,
     ) -> FolderRun:
         origin, target = validate_folders(source, destination)
 
@@ -351,6 +412,7 @@ class FolderRunner:
             lectura=lectura,
             corte=corte,
             agrupar=agrupar,
+            territorial=territorial,
             tipo=tipo,
         )
         self._runs[run.id] = run
@@ -365,11 +427,14 @@ class FolderRunner:
         task = self._tasks.get(run_id)
         if task is not None:
             task.cancel()
-        # The document in flight is not abandoned: cancellation lands between
-        # documents, so whatever is open finishes and is delivered.
+        # Detener es detener ya: cancelar la tarea le llega al documento en
+        # curso, que recibe la orden de cancelar y la atiende en décimas (ver
+        # `_run`). Antes se lo dejaba terminar, y en un libro de doscientas
+        # páginas eso eran minutos leyendo -- y pagando -- para nadie. Lo ya
+        # inventariado de la carpeta se escribe igual al salir.
         run.state = RunState.STOPPED
         run.finished_at = _now()
-        run.current = None
+        run.en_curso.clear()
         self._write_manifest(run)
         self._publish(run)
         return run
@@ -419,8 +484,7 @@ class FolderRunner:
                     run.state = RunState.PROCESSING
                     run.queue = [str(self._relative(run, path)) for path in pending]
                     self._publish(run)
-                    for path in pending:
-                        await self._consume(run, path)
+                    await self._consumir_en_paralelo(run, pending)
                 elif run.watch:
                     # A watching run never "finishes", so the sheet is refreshed
                     # each time the folder empties: otherwise the destination
@@ -429,7 +493,7 @@ class FolderRunner:
                     await asyncio.to_thread(self._escribir_inventario_de_actas, run)
                     run.state = RunState.WATCHING
                     run.queue = []
-                    run.current = None
+                    run.en_curso.clear()
                     self._publish(run)
                     await asyncio.sleep(self._watch_interval)
                     continue
@@ -443,9 +507,10 @@ class FolderRunner:
             # el botón de descarga en cuanto la ve terminada, y un botón que
             # aparece antes que el archivo es un botón que falla.
             await asyncio.to_thread(self._escribir_inventario_de_actas, run)
+            await asyncio.to_thread(self._escribir_generales, run)
             run.state = RunState.DONE
             run.finished_at = _now()
-            run.current = None
+            run.en_curso.clear()
             run.queue = []
             self._write_manifest(run)
             self._publish(run)
@@ -454,12 +519,13 @@ class FolderRunner:
             # inventariado hasta aquí se deja escrito: detener una carpeta de
             # cien actas a la mitad no tiene por qué perder las cincuenta leídas.
             self._escribir_inventario_de_actas(run)
+            self._escribir_generales(run)
             self._publish(run)
             raise
         except Exception as error:  # noqa: BLE001 - surfaced to the operator
             logger.exception("folder run %s failed", run.id)
             run.state = RunState.FAILED
-            run.error = f"{type(error).__name__}: {error}"
+            run.error = explicar_fallo(error)
             run.finished_at = _now()
             self._publish(run)
 
@@ -511,12 +577,38 @@ class FolderRunner:
         except ValueError:
             return Path(path.name)
 
+    async def _consumir_en_paralelo(self, run: FolderRun, pendientes: list[Path]) -> None:
+        """Los PDF pendientes, repartidos entre varios trabajadores.
+
+        Cada trabajador saca el siguiente de la cola -- en el orden de la
+        carpeta -- y espera una ranura libre del planificador antes de
+        empezarlo. Cancelar la corrida cancela a los trabajadores, y cada uno
+        le pasa la orden a su documento (ver `ejecucion._run`).
+        """
+        cola = deque(pendientes)
+        ranuras = self._planificador.ranuras
+
+        async def trabajador() -> None:
+            while cola:
+                path = cola.popleft()
+                async with ranuras:
+                    if not run.active:
+                        return
+                    await self._consume(run, path)
+
+        cuantos = min(len(cola), self._planificador.documentos_de_carpeta)
+        await asyncio.gather(*(trabajador() for _ in range(cuantos)))
+
     async def _consume(self, run: FolderRun, path: Path) -> None:
+        """Un PDF de la carpeta: procesarlo, entregarlo y contarlo.
+
+        Lo que falle aquí -- la entrega, el disco -- cuenta como un documento
+        fallido y la carpeta sigue: con varios a la vez, dejar que el error
+        subiera tumbaba también a los que estaban leyéndose al lado.
+        """
         run.seen.add(str(path))
         relativa = str(self._relative(run, path))
-        run.current = relativa
         run.queue = [name for name in run.queue if name != relativa]
-        self._publish(run)
 
         try:
             size = path.stat().st_size
@@ -533,6 +625,7 @@ class FolderRunner:
             lectura=run.lectura,
             corte=run.corte,
             agrupar=run.agrupar,
+            territorial=run.territorial,
             tipo=run.tipo,
             # Adónde irá lo que produzca. Se calcula antes de procesarlo, con
             # el nombre del origen, y la entrega lo recalcula después con el
@@ -547,28 +640,85 @@ class FolderRunner:
                 "nombre": run.source.name or str(run.source),
                 "tipo": "carpeta",
                 "inventario": str(self._ruta_del_inventario(run)),
+                # Y el general del bot, en la raíz del destino: con esta ruta
+                # se descarga desde el Archivo aunque la corrida ya no esté.
+                "procesos": str(run.destination / NOMBRE_DEL_INVENTARIO_DE_PROCESOS),
             },
         )
-        run.current_job_id = job.id
+        run.en_curso[job.id] = relativa
         run.job_ids.append(job.id)
         self._registry.publish(job)
         self._publish(run)
 
-        await self._run_job(job)
+        try:
+            await self._run_job(job)
 
-        run.bytes_total += job.bytes
-        run.pages_total += job.progress.page_count
-        if job.state is JobState.DONE:
-            run.processed += 1
-            run.resolutions += len(((job.report or {}).get("groups")) or [])
-            await asyncio.to_thread(self._deliver, run, job, path)
-            self._dispose(run, path)
-        else:
+            run.bytes_total += job.bytes
+            run.pages_total += job.progress.page_count
+            if job.state is JobState.DONE:
+                run.processed += 1
+                run.resolutions += len(((job.report or {}).get("groups")) or [])
+                await asyncio.to_thread(self._deliver, run, job, path)
+                self._dispose(run, path)
+            else:
+                run.failed += 1
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001 - un documento no tumba la carpeta
+            logger.exception("no se pudo terminar %s", relativa)
             run.failed += 1
+            if job.state is not JobState.FAILED:
+                self._registry.mark_failed(job, explicar_fallo(error))
+        finally:
+            run.en_curso.pop(job.id, None)
+            # Los dos inventarios generales de la carpeta, con este PDF ya
+            # contado -- también si falló --. El de procesos cada vez, que es
+            # barato; el índice de la habilidad cada tanto, que lee el de cada
+            # caja, y siempre al terminar.
+            ahora = time.monotonic()
+            self._escribir_generales(run, con_indice=ahora - run.generales_en >= INVENTARIO_GENERAL_CADA)
+            self._publish(run)
 
-        run.current = None
-        run.current_job_id = None
-        self._publish(run)
+    def _escribir_generales(self, run: FolderRun, *, con_indice: bool = True) -> None:
+        """Los dos inventarios generales en la raíz del destino.
+
+        Lo pidió el operador: dentro de la carpeta de cada PDF, el inventario de
+        su habilidad; en la raíz, dos generales -- el de la habilidad (el Índice
+        Electrónico de las cajas de correspondencia, una hoja por PDF) y el del
+        bot, una fila por cada PDF procesado --. Que fallen no deshace nada.
+        """
+        from .indices import inventario_de_procesos, libro_de_indices
+
+        with run.cerrojo:
+            trabajos = [t for job_id in run.job_ids if (t := self._registry.get(job_id)) is not None]
+            try:
+                inventario_de_procesos(
+                    trabajos,
+                    run.destination,
+                    origen=run.source.name or str(run.source),
+                    clase_de_origen="Carpeta",
+                    operador=run.operator,
+                    destino_de=lambda t: self._destino_relativo(run, t),
+                )
+                if con_indice:
+                    run.generales_en = time.monotonic()
+                    con_indice_propio = [
+                        t.id
+                        for t in trabajos
+                        if t.state is JobState.DONE and (t.report or {}).get("indice_electronico")
+                    ]
+                    if con_indice_propio:
+                        libro_de_indices(self._settings.output_dir, con_indice_propio, run.destination)
+            except Exception:  # noqa: BLE001 - la entrega de cada PDF ya está hecha
+                logger.warning("no se pudieron escribir los generales de %s", run.source, exc_info=True)
+
+    @staticmethod
+    def _destino_relativo(run: FolderRun, job: Job) -> str:
+        """Dónde quedó lo de un PDF, desde la raíz del destino: «108C000033/UPD2326299»."""
+        try:
+            return str(FolderRunner._output_dir(run, Path(job.source)).relative_to(run.destination))
+        except ValueError:
+            return str(job.destination or "")
 
     @staticmethod
     def _output_dir(run: FolderRun, origin: Path, job: Job | None = None) -> Path:
@@ -585,19 +735,14 @@ class FolderRunner:
         nueve "(2)", "(3)", "(4)" hasta el tope de mil, y a partir de ahí
         archivos que se pierden sin decirlo.
 
-        El segundo nivel se llama con el **NIC** cuando el expediente lo trae,
-        y así lo pidió el operador. Es el número con que el archivo identifica
-        al suscriptor, lo llevan todas las hojas de la caja y es lo que alguien
-        va a teclear para buscarla dentro de tres años; el nombre del PDF de
-        origen es el que le puso el escáner. Sin NIC legible se cae al nombre
-        del origen, que es lo que había antes y siempre existe.
+        El segundo nivel se llama **como el PDF de origen** -- «UPD2320047» --,
+        siempre. Se llamó con el NIC cuando el expediente lo traía, y el
+        operador lo corrigió el 2026-10-13: el destino salía mezclado -- unas
+        carpetas «UPD…» y otras «1012408» -- y la caja se busca por su UPD, que
+        es también el nombre del expediente en su Índice Electrónico.
         """
         relativa = FolderRunner._relative(run, origin)
-        nic = str((job.report or {}).get("nic") or "").strip() if job else ""
-        # Sólo dígitos: es lo que un NIC es, y así ningún resto de OCR acaba
-        # convertido en un nombre de carpeta imposible.
-        carpeta = nic if nic.isdigit() else relativa.stem
-        return run.destination / relativa.parent / carpeta
+        return run.destination / relativa.parent / relativa.stem
 
     def _deliver(self, run: FolderRun, job: Job, origin: Path) -> None:
         """Copy this document's resolutions into the destination folder.
@@ -613,6 +758,10 @@ class FolderRunner:
         # que no se parte diría que se perdieron todas. Se reescribe en cada
         # acta, que cuesta milisegundos, para que el Excel esté siempre al día
         # aunque la corrida se corte.
+        with run.cerrojo:
+            self._entregar(run, job, origin)
+
+    def _entregar(self, run: FolderRun, job: Job, origin: Path) -> None:
         filas = (job.report or {}).get("inventario_actas") or []
         if filas:
             # La carpeta de cada fila es su ruta desde la raíz elegida: con
@@ -624,7 +773,9 @@ class FolderRunner:
             run.resolutions += len(filas)
             self._record(run, job, origin)
             self._entregar_actas(run, job, origin)
-            self._escribir_inventario_de_actas(run)
+            # El de su subcarpeta siempre; el general, cada tanto (ver
+            # `INVENTARIO_GENERAL_CADA`). Al terminar se escriben todos.
+            self._escribir_inventario_de_actas(run, solo_carpeta=carpeta)
             return
 
         produced = self._settings.output_dir / job.id
@@ -644,10 +795,22 @@ class FolderRunner:
             carpeta = run.destination
 
         self._record(run, job, origin)
-        self._write_sheet(run, job, carpeta)
-        # Y la que quedó junto al trabajo, ahora que se sabe dónde acabaron
-        # los PDF: es la que baja el botón de la pantalla.
-        self._corregir_planilla_del_trabajo(run, job, carpeta)
+        indice = (job.report or {}).get("indice_electronico")
+        if indice:
+            # Una caja de correspondencia lleva su Índice Electrónico en lugar
+            # de la planilla, y viaja tal cual junto a sus PDF: no declara a
+            # dónde se entregó, así que no hay nada que reescribir. Se copia
+            # aparte y no se anota como entrega, que cuenta documentos.
+            try:
+                for hoja in sorted(produced.rglob(indice))[:1]:
+                    shutil.copy2(hoja, unique_path(carpeta, hoja.name))
+            except OSError as error:
+                logger.warning("no se pudo entregar el índice de %s: %s", job.filename, error)
+        else:
+            self._write_sheet(run, job, carpeta)
+            # Y la que quedó junto al trabajo, ahora que se sabe dónde acabaron
+            # los PDF: es la que baja el botón de la pantalla.
+            self._corregir_planilla_del_trabajo(run, job, carpeta)
 
         for source_file in files:
             name = source_file.name
@@ -735,7 +898,14 @@ class FolderRunner:
 
     @staticmethod
     def _record(run: FolderRun, job: Job, origin: Path) -> None:
-        """Add this document's resolutions to the run's manifest."""
+        """Add this document's resolutions to the run's manifest.
+
+        Salvo las cajas de correspondencia: su inventario general es el Índice
+        Electrónico del cliente, y la planilla genérica de entrega repetía lo
+        mismo en otro formato (lo pidió el operador: sólo la plantilla).
+        """
+        if (job.report or {}).get("indice_electronico"):
+            return
         inventory = ((job.report or {}).get("inventory")) or {}
         for item in inventory.get("items") or []:
             run.manifest.append({**item, "source_document": origin.name})
@@ -836,18 +1006,24 @@ class FolderRunner:
         return cls._ruta_de_un_excel(run.destination / cls._raiz(run))
 
     @staticmethod
-    def _ruta_de_un_excel(carpeta: Path) -> Path:
-        """«ACTAS UPD3859772__inventario.xlsx» dentro de la carpeta que inventaría."""
+    def _ruta_de_un_excel(carpeta: Path, prefijo: str = "ACTAS") -> Path:
+        """«ACTAS UPD3859772__inventario.xlsx» dentro de la carpeta que inventaría.
+
+        Con ``prefijo`` «ACTAS DE GRADO» para las actas de grado: una carpeta
+        que trae de las dos clases deja un Excel de cada una.
+        """
         from ..adapters.excel_actas import SUFIJO
         from ..domain.naming import sheet_filename
 
         return carpeta / sheet_filename(
-            f"ACTAS {carpeta.name}".strip(),
+            f"{prefijo} {carpeta.name}".strip(),
             SUFIJO,
             directory_length=len(str(carpeta)),
         )
 
-    def _escribir_inventario_de_actas(self, run: FolderRun) -> None:
+    def _escribir_inventario_de_actas(
+        self, run: FolderRun, solo_carpeta: str | None = None
+    ) -> None:
         """Deja en el espejo del destino el Excel general y el de cada subcarpeta.
 
         El general va en la carpeta raíz -- ``DESTINO\\00C003284\\ACTAS
@@ -864,45 +1040,121 @@ class FolderRunner:
 
         Que falle no deshace nada: las filas siguen en la corrida y cada acta
         conserva su propio Excel junto a su trabajo.
-        """
-        if not run.inventario_filas or len(run.inventario_filas) == run.inventario_escritas:
-            return
-        try:
-            from ..application.acta_consejo import inventario_de_la_carpeta
 
+        ``solo_carpeta`` es la escritura de en medio de la corrida: el Excel de
+        esa subcarpeta, y el general sólo si hace ``INVENTARIO_GENERAL_CADA``
+        que no se escribe. Sin ella se escriben todos, que es lo que se hace al
+        terminar y lo que deja los folios deducidos con todas las filas.
+        """
+        with run.cerrojo:
+            self._escribir_inventarios(run, solo_carpeta)
+
+    def _escribir_inventarios(self, run: FolderRun, solo_carpeta: str | None) -> None:
+        if not run.inventario_filas:
+            return
+        if solo_carpeta is None and len(run.inventario_filas) == run.inventario_escritas:
+            return
+        ahora = time.monotonic()
+        con_general = (
+            solo_carpeta is None or ahora - run.inventario_general_en >= INVENTARIO_GENERAL_CADA
+        )
+        try:
             # En el orden de la carpeta y con los folios que la continuidad de
             # la foliación permite deducir de las actas vecinas.
+            from ..application.acta_consejo import (
+                CONSEJO,
+                GRADO,
+                TIPO_DE_GRADO,
+                inventario_de_la_carpeta,
+                validar_inventario,
+            )
+            from ..domain.acta_grado import ROTULO_DE_CEREMONIA
+
             filas = inventario_de_la_carpeta(run.inventario_filas)
-            general = Path(run.inventario) if run.inventario else self._ruta_del_inventario(run)
-            run.inventario = str(self._escribir_un_excel(run, filas, general))
-
-            por_carpeta: dict[str, list[dict]] = {}
+            run.inventario_validacion = validar_inventario(filas)
+            # Un Excel por clase de acta: las de consejo con su resumen, las de
+            # grado sin él. El de consejo conserva el nombre de siempre.
+            por_clase: dict[str, list[dict]] = {}
             for fila in filas:
-                por_carpeta.setdefault(str(fila.get("carpeta") or ""), []).append(fila)
-            for carpeta, suyas in por_carpeta.items():
-                destino = self._ruta_de_un_excel(run.destination / carpeta)
-                if carpeta and destino != general:
-                    self._escribir_un_excel(run, suyas, destino)
+                clase = str(fila.get("tipo") or CONSEJO.tipo_documental)
+                # Las hojas de una ceremonia de grado van con las actas de
+                # grado: el FUID no les da fila, pero son de esa entrega.
+                if clase == ROTULO_DE_CEREMONIA:
+                    clase = TIPO_DE_GRADO
+                por_clase.setdefault(clase, []).append(fila)
+            for clase, suyas in por_clase.items():
+                grado = clase == TIPO_DE_GRADO
+                perfil = GRADO if grado else CONSEJO
+                prefijo = "ACTAS DE GRADO" if grado else "ACTAS"
+                # El que ya se escribió, por si se escribió con otro nombre
+                # porque el suyo estaba abierto; si no, el de su clase.
+                ya = run.inventarios_generales.get(clase)
+                general = Path(ya) if ya else self._ruta_de_un_excel(
+                    run.destination / self._raiz(run), prefijo
+                )
+                # Una carpeta sin subcarpetas tiene un solo Excel, que es a la
+                # vez el general y el suyo: ése va al día siempre.
+                es_el_suyo = solo_carpeta is not None and (
+                    self._ruta_de_un_excel(run.destination / solo_carpeta, prefijo) == general
+                )
+                if con_general or es_el_suyo:
+                    general = self._escribir_un_excel(run, suyas, general, perfil)
+                    run.inventarios_generales[clase] = str(general)
 
+                por_carpeta: dict[str, list[dict]] = {}
+                for fila in suyas:
+                    por_carpeta.setdefault(str(fila.get("carpeta") or ""), []).append(fila)
+                for carpeta, de_la_carpeta in por_carpeta.items():
+                    if solo_carpeta is not None and carpeta != solo_carpeta:
+                        continue
+                    destino = self._ruta_de_un_excel(run.destination / carpeta, prefijo)
+                    if carpeta and destino != general:
+                        self._escribir_un_excel(run, de_la_carpeta, destino, perfil)
+
+            # El que baja la pantalla: el de consejo si lo hay, si no el de grado.
+            run.inventario = run.inventarios_generales.get(
+                CONSEJO.tipo_documental
+            ) or run.inventarios_generales.get(TIPO_DE_GRADO)
             run.inventario_error = None
-            run.inventario_escritas = len(run.inventario_filas)
+            if con_general:
+                run.inventario_general_en = ahora
+            if solo_carpeta is None:
+                run.inventario_escritas = len(run.inventario_filas)
         except Exception as error:  # noqa: BLE001 - lo leído sigue en la corrida
             logger.warning("no se pudo escribir el inventario de actas", exc_info=True)
-            run.inventario_error = f"{type(error).__name__}: {error}"
+            run.inventario_error = explicar_fallo(error)
 
     @staticmethod
-    def _escribir_un_excel(run: FolderRun, filas: list[dict], destino: Path) -> Path:
+    def _escribir_un_excel(
+        run: FolderRun, filas: list[dict], destino: Path, perfil=None
+    ) -> Path:
         """Escribe un inventario de actas, con otro nombre sólo si el suyo está abierto."""
         from ..adapters.excel_actas import escribir_inventario_de_actas
-        from ..application.acta_consejo import SIN_IA
+        from ..application.acta_consejo import CONSEJO, SIN_IA
 
-        nota = SIN_IA if run.lectura == "local" else None
+        perfil = perfil or CONSEJO
+        if not perfil.con_resumen and not perfil.lee_folio:
+            # Las actas de grado: el FUID oficial, una fila por graduado.
+            from ..adapters.fuid_actas_de_grado import escribir_fuid_de_actas_de_grado
+
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                return escribir_fuid_de_actas_de_grado(filas, destino)
+            except PermissionError:
+                destino = unique_path(destino.parent, destino.name)
+                return escribir_fuid_de_actas_de_grado(filas, destino)
+        opciones = {
+            "carpeta": str(run.source),
+            "nota": SIN_IA if run.lectura == "local" else None,
+            "titulo": perfil.titulo,
+            "con_resumen": perfil.con_resumen,
+        }
         destino.parent.mkdir(parents=True, exist_ok=True)
         try:
-            escribir_inventario_de_actas(filas, destino, carpeta=str(run.source), nota=nota)
+            escribir_inventario_de_actas(filas, destino, **opciones)
         except PermissionError:
             destino = unique_path(destino.parent, destino.name)
-            escribir_inventario_de_actas(filas, destino, carpeta=str(run.source), nota=nota)
+            escribir_inventario_de_actas(filas, destino, **opciones)
         return destino
 
     def _dispose(self, run: FolderRun, path: Path) -> None:

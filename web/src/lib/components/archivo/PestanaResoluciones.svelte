@@ -9,6 +9,8 @@
    */
   import { deleteOutput, downloadUrl, inventoryUrl, renameOutput } from '$lib/api';
   import type { Filters } from '$lib/archive.svelte';
+  import { confirmar } from '$lib/confirmar.svelte';
+  import Icono from '$lib/components/Icono.svelte';
   import StatTile from '$lib/components/StatTile.svelte';
   import type { InventoryPage } from '$lib/types';
 
@@ -79,6 +81,13 @@
   }
 
   async function removeRow(row: { job_id: string; file_name: string }) {
+    const seguro = await confirmar({
+      titulo: '¿Eliminar este documento?',
+      mensaje: `Se borra «${row.file_name}» y su fila del inventario. No se puede deshacer.`,
+      aceptar: 'Eliminar',
+      peligro: true
+    });
+    if (!seguro) return;
     rowBusy = true;
     rowError = null;
     try {
@@ -95,7 +104,7 @@
 
 {#if summary}
   <section class="summary">
-    <StatTile label="Resoluciones" value={summary.resolutions} note="archivos generados" />
+    <StatTile label="PDF generados" value={summary.resolutions} />
     <StatTile label="Números distintos" value={summary.codes} />
     <StatTile label="Documentos de origen" value={summary.documents} />
     <StatTile label="Páginas" value={summary.pages} />
@@ -104,19 +113,24 @@
 
 <section class="filters">
   <input
-    class="search"
+    class="input search"
     type="search"
     placeholder="Buscar por número, tipo, fecha, NIC, documento u operador…"
     bind:value={filters.text}
   />
-  <a class="ghost" href={inventoryUrl(applied)} download>exportar a Excel</a>
+  <!-- De cajas de correspondencia, el servicio entrega el Índice Electrónico
+       del cliente, una hoja por caja; de lo demás, la planilla de siempre. -->
+  <a class="btn btn-tonal" href={inventoryUrl(applied)} download>
+    <Icono nombre="descargar" />
+    Descargar inventario (Excel)
+  </a>
 </section>
 
 {#if loading && !rows.length}
   <p class="muted">Cargando…</p>
 {:else if !rows.length}
   <p class="muted">
-    {applied ? `Nada coincide con «${applied}».` : 'Todavía no se generó ninguna resolución.'}
+    {applied ? `Nada coincide con «${applied}».` : 'Todavía no se generó ningún PDF.'}
   </p>
 {:else}
   {#if resolutions && resolutions.total > rows.length}
@@ -129,13 +143,13 @@
     <table>
       <thead>
         <tr>
-          <th>Resolución</th>
+          <th>N° / código</th>
           <th>Tipo</th>
           <th>Título</th>
           <th>Documento de origen</th>
           <th>Operador</th>
           <th>Páginas</th>
-          <th></th>
+          <th><span class="sr-only">Acciones</span></th>
         </tr>
       </thead>
       <tbody>
@@ -147,7 +161,7 @@
                   <label>
                     <span>Número</span>
                     <input
-                      class="code-input"
+                      class="input input-sm mono code-input"
                       bind:value={draftCode}
                       spellcheck="false"
                       aria-invalid={faltaElCodigo}
@@ -156,23 +170,32 @@
                   <label class="grow">
                     <span>Título</span>
                     <input
+                      class="input input-sm"
                       bind:value={draftTitle}
                       placeholder="obligatorio"
                       aria-invalid={faltaElTitulo}
                     />
                   </label>
                   <button
-                    class="primary"
+                    class="btn btn-primary btn-sm"
                     onclick={() => saveRow(row)}
                     disabled={!puedeGuardarLaFila}
                   >
-                    {rowBusy ? 'guardando…' : 'guardar'}
+                    {rowBusy ? 'Guardando…' : 'Guardar'}
                   </button>
-                  <button class="danger" onclick={() => removeRow(row)} disabled={rowBusy}>
-                    eliminar
+                  <button
+                    class="btn btn-danger btn-sm"
+                    onclick={() => removeRow(row)}
+                    disabled={rowBusy}
+                  >
+                    Eliminar
                   </button>
-                  <button class="ghost" onclick={() => (editing = null)} disabled={rowBusy}>
-                    cancelar
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    onclick={() => (editing = null)}
+                    disabled={rowBusy}
+                  >
+                    Cancelar
                   </button>
                 </div>
                 {#if faltaElCodigo || faltaElTitulo}
@@ -205,8 +228,16 @@
                 {/if}
               </td>
               <td class="tools">
-                <a href={downloadUrl(row.job_id, row.file_name)} download>PDF</a>
-                <button onclick={() => edit(row)}>editar</button>
+                <button class="btn btn-ghost btn-sm" onclick={() => edit(row)}>Editar</button>
+                <a
+                  class="btn btn-icon"
+                  href={downloadUrl(row.job_id, row.file_name)}
+                  download
+                  title="Descargar PDF"
+                  aria-label={`Descargar ${row.file_name}`}
+                >
+                  <Icono nombre="descargar" />
+                </a>
               </td>
             {/if}
           </tr>
@@ -222,7 +253,7 @@
     flex-wrap: wrap;
     gap: 1rem 2.25rem;
     border: 1px solid var(--hairline);
-    border-radius: 14px;
+    border-radius: var(--radius-lg);
     background: var(--surface-2);
     padding: 1rem 1.2rem;
     box-shadow: var(--shadow);
@@ -238,23 +269,12 @@
   .search {
     min-width: 16rem;
     flex: 1;
-    border: 1px solid var(--hairline);
-    border-radius: 9px;
-    background: var(--surface-2);
-    padding: 0.45rem 0.75rem;
-    font: inherit;
-    font-size: 0.85rem;
-    color: inherit;
-    outline: none;
-  }
-  .search:focus {
-    border-color: var(--accent);
   }
 
   .table-wrap {
     overflow-x: auto;
     border: 1px solid var(--hairline);
-    border-radius: 14px;
+    border-radius: var(--radius-lg);
     background: var(--surface-2);
     box-shadow: var(--shadow);
   }
@@ -265,9 +285,9 @@
   }
   thead th {
     padding: 0.7rem 0.75rem;
-    font-size: 0.62rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.055em;
+    letter-spacing: var(--tracking-caps);
     text-align: left;
     text-transform: uppercase;
     color: var(--muted);
@@ -297,27 +317,10 @@
 
   .tools {
     display: flex;
+    align-items: center;
     justify-content: flex-end;
-    gap: 0.8rem;
+    gap: 0.25rem;
     white-space: nowrap;
-  }
-  .tools a {
-    color: var(--accent);
-    text-decoration: none;
-  }
-  .tools a:hover {
-    text-decoration: underline;
-  }
-  .tools button {
-    border: 0;
-    background: none;
-    padding: 0;
-    font: inherit;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .tools button:hover {
-    color: var(--ink);
   }
 
   .editor {
@@ -339,29 +342,14 @@
     flex: 1;
   }
   .fields span {
-    font-size: 0.62rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.055em;
+    letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
     color: var(--muted);
   }
-  .fields input {
-    border: 1px solid var(--hairline);
-    border-radius: 7px;
-    background: var(--surface-2);
-    padding: 0.35rem 0.55rem;
-    font: inherit;
-    font-size: 0.85rem;
-    color: inherit;
-    outline: none;
-  }
-  .fields input:focus {
-    border-color: var(--accent);
-  }
   .code-input {
     width: 9rem;
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
   }
 
   .error.inline {
@@ -380,41 +368,4 @@
     color: var(--muted);
   }
 
-  .ghost,
-  .primary,
-  .danger {
-    border: 1px solid var(--hairline);
-    border-radius: 8px;
-    background: transparent;
-    padding: 0.32rem 0.7rem;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    color: var(--muted);
-    text-decoration: none;
-    cursor: pointer;
-    transition:
-      color 0.15s,
-      border-color 0.15s,
-      background 0.15s;
-  }
-  .ghost:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-  .primary {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-  .danger {
-    border-color: var(--critical);
-    color: var(--critical);
-  }
-  .danger:hover {
-    background: var(--critical);
-    color: #fff;
-  }
-  button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
 </style>

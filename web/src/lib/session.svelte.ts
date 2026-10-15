@@ -18,7 +18,7 @@
  * gana ningún permiso, porque cada petición se vuelve a juzgar allá.
  */
 
-import { ApiError, entrar as entrarEnElServicio } from '$lib/api';
+import { ApiError, SinConexion, entrar as entrarEnElServicio } from '$lib/api';
 
 export type SessionState = 'anonymous' | 'active' | 'idle';
 
@@ -278,7 +278,9 @@ export class Session {
       };
       this.#persist();
     } catch (problema) {
-      if (problema instanceof ApiError) {
+      // Un servicio que se reinicia no es un perfil dado de baja: quien está
+      // trabajando sigue dentro y se vuelve a preguntar la próxima vez.
+      if (problema instanceof ApiError && !(problema instanceof SinConexion)) {
         this.error = problema.message;
         this.close();
       }

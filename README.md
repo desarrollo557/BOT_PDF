@@ -688,8 +688,9 @@ Toda por variable de entorno. Ninguna credencial vive en el repositorio.
   persona contra la imagen, pero hoy su único consumidor es
   `scripts/inventario_diplomas.py`. Mientras no haya endpoint y control en
   pantalla, esa memoria no es una función del producto.
-- **Aprendizaje de ROI.** El puerto `RoiRegistry` está declarado y no lo
-  implementa nadie: la banda del encabezado es una fracción fija de la página.
+- **Aprendizaje de ROI.** No existe: la banda del encabezado es una fracción
+  fija de la página. (El puerto `RoiRegistry` que lo anunciaba se retiró el
+  2026-10-14 porque nadie lo implementaba.)
   Aprender coordenadas por diseño necesita documentos reales contra los cuales
   calibrar, y una banda fija que funciona es mejor que una aprendida que nunca se
   midió.

@@ -254,9 +254,45 @@ def _busca_como_rotulo(
             if len(ventana) < ancho - presupuesto:
                 break
             distancia = damerau_levenshtein(ventana, frase, ceiling=presupuesto)
-            if distancia <= presupuesto:
+            if distancia <= presupuesto and _es_titulo(renglon.texto, inicio, ancho, distancia):
                 return renglon.numero, distancia
     return None
+
+
+#: Cuántas palabras pueden ir delante de un título en su renglón. Las que el
+#: escáner pega del logo -- «AFINID GRUPO EP NOTIFICACION PERSONAL» es un
+#: renglón real -- son tres como mucho; cuatro ya son una frase.
+PALABRAS_ANTES_DEL_TITULO = 3
+#: Las palabras que enlazan un tipo con la prosa que lo nombra: «no son objeto
+#: DE reclamo», «presentar UN derecho de petición». Un título no va detrás de
+#: ninguna.
+_ENLACES = frozenset(
+    {"A", "AL", "CON", "DE", "DEL", "EL", "EN", "LA", "LAS", "LO", "LOS", "MI"}
+    | {"POR", "PARA", "SU", "SUS", "UN", "UNA", "Y", "O", "QUE"}
+)
+
+
+def _es_titulo(texto: str, inicio: int, ancho: int, distancia: int) -> bool:
+    """Si la frase hallada en un renglón corto es su título y no una mención.
+
+    Las tres cosas que la caja UPD2320043 enseñó que no son títulos, y que
+    partían un derecho de petición de cinco hojas en tres documentos:
+
+    * **Media palabra.** «QUEJA» dentro del correo «QUEJASSPD2020@GMAIL.COM»,
+      «PETICION» dentro del subtítulo «PETICIONES:». Exacta, la frase tiene
+      que terminar donde termina una palabra; con erratas se le perdona, que
+      la ventana mide lo que mide la frase y no lo que le falta o sobra.
+    * **La cola de una oración.** «no son objeto de reclamo.» cabe en un
+      renglón corto, pero lleva cuatro palabras delante.
+    * **Una palabra de enlace justo antes**: el «de» de «objeto de reclamo».
+    """
+    fin = inicio + ancho
+    if distancia == 0 and fin < len(texto) and texto[fin].isalnum():
+        return False
+    delante = texto[:inicio].split()
+    if len(delante) > PALABRAS_ANTES_DEL_TITULO:
+        return False
+    return not (delante and delante[-1] in _ENLACES)
 
 def identificar(texto: str, pagina: int = 1) -> Coincidencia | None:
     """El tipo documental que declara una página, si declara alguno.

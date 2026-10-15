@@ -142,3 +142,109 @@ class TestApi:
 
     def test_la_salud_anuncia_la_capacidad(self, client):
         assert "job-control" in client.get("/api/health").json()["features"]
+
+
+class TestEsperarSinDejarDeEscuchar:
+    """La orden se atiende también mientras se espera a otro hilo: una lectura de la IA."""
+
+    @staticmethod
+    def _cancelar_en(estado: dict, segundos: float) -> None:
+        threading.Timer(segundos, lambda: estado.update(s=str(RunState.CANCELLED))).start()
+
+    def test_aguardar_atiende_la_cancelacion_con_el_futuro_pendiente(self):
+        from concurrent.futures import Future
+
+        from resolutions.application.control import aguardar
+
+        estado = {"s": str(RunState.RUNNING)}
+        control = FlagRunControl(lambda: estado["s"])
+        self._cancelar_en(estado, 0.2)
+        inicio = time.monotonic()
+        with pytest.raises(Cancelled):
+            aguardar(Future(), control)  # un futuro que nunca termina
+        assert time.monotonic() - inicio < 1.5
+
+    def test_hilos_no_espera_la_cola_al_cancelar(self):
+        from resolutions.application.control import hilos, mapear
+
+        estado = {"s": str(RunState.RUNNING)}
+        control = FlagRunControl(lambda: estado["s"])
+        soltar = threading.Event()
+        hechas: list[int] = []
+
+        def tarea(n: int) -> int:
+            if n == 0:
+                soltar.wait(5)  # la que está en vuelo: una lectura lenta
+            hechas.append(n)
+            return n
+
+        self._cancelar_en(estado, 0.2)
+        inicio = time.monotonic()
+        with pytest.raises(Cancelled), hilos(1) as pool:
+            mapear(pool, tarea, range(20), control)
+        assert time.monotonic() - inicio < 1.5
+        soltar.set()
+        time.sleep(0.1)
+        # Las diecinueve encoladas no se leyeron: se descartaron.
+        assert hechas == [0]
+
+
+class TestDetenerUnaCarpetaParaElDocumentoEnCurso:
+    def test_la_orden_llega_al_worker_y_se_limpia_al_soltarlo(self, tmp_path):
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        from types import SimpleNamespace
+
+        from resolutions.api.ejecucion import _run
+        from resolutions.api.jobs import Job, JobState
+
+        soltado = threading.Event()
+
+        def worker(payload):
+            # Un worker que pregunta como los de verdad, hasta que le digan.
+            while payload["controls"].get(payload["job_id"]) != str(RunState.CANCELLED):
+                time.sleep(0.02)
+            soltado.set()
+            raise Cancelled("cancelado")
+
+        class Registro:
+            def mark_running(self, job):
+                job.state = JobState.RUNNING
+
+            def mark_cancelled(self, job):
+                job.state = JobState.CANCELLED
+
+            def mark_done(self, job, report):  # pragma: no cover - no debe pasar
+                job.state = JobState.DONE
+
+            mark_failed = mark_done
+
+        ctx = SimpleNamespace(
+            controls={},
+            registry=Registro(),
+            pool=ThreadPoolExecutor(1),
+            procesar=worker,
+            settings=SimpleNamespace(as_worker_payload=lambda: {}),
+            progress_queue=None,
+        )
+        job = Job(id="j1", filename="libro.pdf", source=tmp_path / "libro.pdf", owns_source=False)
+
+        async def escena():
+            tarea = asyncio.create_task(_run(ctx, job))
+            await asyncio.sleep(0.1)
+            tarea.cancel()  # lo que hace detener la carpeta
+            with pytest.raises(asyncio.CancelledError):
+                await tarea
+            # En el acto: cancelado en pantalla y la orden puesta para el worker.
+            assert job.state is JobState.CANCELLED
+            assert ctx.controls["j1"] == str(RunState.CANCELLED)
+            for _ in range(50):
+                if "j1" not in ctx.controls:
+                    break
+                await asyncio.sleep(0.02)
+
+        asyncio.run(escena())
+        ctx.pool.shutdown()
+        assert soltado.is_set()
+        # La orden se quitó sólo cuando el worker soltó el documento.
+        assert "j1" not in ctx.controls

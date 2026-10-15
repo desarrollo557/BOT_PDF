@@ -33,6 +33,3 @@ class PageClassification:
     #: The document's own name, read from the page that declares the code.
     title: str | None = None
 
-    @property
-    def is_classified(self) -> bool:
-        return self.code is not None

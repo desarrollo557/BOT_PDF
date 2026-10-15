@@ -306,6 +306,10 @@ class Job:
     #: documento del corte, o todos los de un mismo mes juntos. Va con el
     #: trabajo por lo mismo que el corte: es una decisión sobre este papel.
     agrupar: str = "documento"
+    #: La territorial de una caja de correspondencia («CESAR»), que el operador
+    #: escribe al cargarla: va al encabezado del Índice Electrónico y no está en
+    #: el papel. Vacía en las demás rutas, que no la usan.
+    territorial: str | None = None
     #: Qué clase de documento declaró el operador estar cargando, o "auto" para
     #: que lo averigüe el sistema. Se guarda con el trabajo porque cambia a qué
     #: habilidad fue, y el informe tiene que poder decir por qué se cortó como
@@ -347,6 +351,7 @@ class Job:
             "lectura": self.lectura,
             "corte": self.corte,
             "agrupar": self.agrupar,
+            "territorial": self.territorial,
             "tipo": self.tipo,
             "origen": self.origen,
             "state": str(self.state),
@@ -456,6 +461,7 @@ class JobRegistry:
         destination: str | None = None,
         agrupar: str = "documento",
         origen: dict | None = None,
+        territorial: str | None = None,
     ) -> Job:
         job = Job(
             id=uuid4().hex,
@@ -470,6 +476,7 @@ class JobRegistry:
             lectura=lectura,
             corte=corte,
             agrupar=agrupar,
+            territorial=territorial,
             tipo=tipo,
             destination=destination,
             origen=origen,

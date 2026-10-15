@@ -130,7 +130,7 @@
       </p>
     </div>
     {#if onback}
-      <button type="button" class="link" onclick={onback}>Ajustar</button>
+      <button type="button" class="btn btn-ghost btn-sm" onclick={onback}>Ajustar</button>
     {/if}
   </header>
 
@@ -149,7 +149,7 @@
       <dt>Acción</dt>
       <dd>
         <strong>
-          {task === 'both' && tipo === 'acta-consejo'
+          {task === 'both' && (tipo === 'acta-consejo' || tipo === 'acta')
             ? 'Dividir e inventariar'
             : (TASK_LABELS[task] ?? task)}
         </strong>
@@ -223,9 +223,9 @@
   {#if totalFiles && onconfirm}
     <footer>
       {#if onclear}
-        <button type="button" class="secondary" onclick={onclear} disabled={busy}>Quitar</button>
+        <button type="button" class="btn" onclick={onclear} disabled={busy}>Quitar</button>
       {/if}
-      <button type="button" class="primary" onclick={onconfirm} disabled={busy}>
+      <button type="button" class="btn btn-primary" onclick={onconfirm} disabled={busy}>
         Confirmar y subir {totalFiles} {totalFiles === 1 ? 'archivo' : 'archivos'}
       </button>
     </footer>
@@ -236,30 +236,30 @@
   .summary {
     display: flex;
     flex-direction: column;
-    gap: var(--wz-space-4, 16px);
+    gap: var(--space-4);
     border: 1px solid var(--hairline);
-    border-radius: var(--wz-radius-lg, 12px);
+    border-radius: var(--radius-lg);
     background: var(--surface-1);
-    padding: var(--wz-space-5, 20px);
+    padding: var(--space-5);
   }
 
   header {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: var(--wz-space-4, 16px);
+    gap: var(--space-4);
   }
 
   h3 {
     margin: 0;
-    font-size: var(--wz-text-base, 0.9375rem);
+    font-size: var(--text-lg);
     font-weight: 650;
     color: var(--ink);
   }
 
   .subtitle {
-    margin: var(--wz-space-1, 4px) 0 0;
-    font-size: var(--wz-text-sm, 0.8125rem);
+    margin: var(--space-1) 0 0;
+    font-size: var(--text-sm);
     color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
@@ -273,13 +273,13 @@
   .row {
     display: grid;
     grid-template-columns: minmax(7rem, 10rem) 1fr;
-    gap: var(--wz-space-3, 12px);
+    gap: var(--space-3);
     border-top: 1px solid var(--rule);
-    padding: var(--wz-space-2, 8px) 0;
+    padding: var(--space-2) 0;
   }
 
   dt {
-    font-size: var(--wz-text-xs, 0.75rem);
+    font-size: var(--text-xs);
     font-weight: 600;
     line-height: 1.6;
     color: var(--muted);
@@ -291,7 +291,7 @@
     flex-direction: column;
     gap: 2px;
     margin: 0;
-    font-size: var(--wz-text-sm, 0.8125rem);
+    font-size: var(--text-sm);
     color: var(--ink);
   }
 
@@ -300,7 +300,7 @@
   }
 
   .hint {
-    font-size: var(--wz-text-xs, 0.75rem);
+    font-size: var(--text-xs);
     line-height: 1.45;
     color: var(--ink-2);
   }
@@ -308,7 +308,7 @@
   .paths span {
     display: flex;
     min-width: 0;
-    gap: var(--wz-space-2, 8px);
+    gap: var(--space-2);
   }
 
   .key {
@@ -321,7 +321,7 @@
     min-width: 0;
     overflow-wrap: anywhere;
     font-family: var(--font-mono);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .files {
@@ -329,7 +329,7 @@
     flex-direction: column;
     margin: 0;
     border: 1px solid var(--hairline);
-    border-radius: var(--wz-radius, 8px);
+    border-radius: var(--radius);
     padding: 0;
     list-style: none;
     background: var(--surface-2);
@@ -338,9 +338,9 @@
   .files li {
     display: flex;
     justify-content: space-between;
-    gap: var(--wz-space-3, 12px);
-    padding: var(--wz-space-2, 8px) var(--wz-space-3, 12px);
-    font-size: var(--wz-text-sm, 0.8125rem);
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-sm);
   }
 
   .files li + li {
@@ -365,69 +365,7 @@
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
-    gap: var(--wz-space-2, 8px);
-  }
-
-  button {
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .link {
-    flex-shrink: 0;
-    border: 0;
-    background: none;
-    padding: 0;
-    font-size: var(--wz-text-sm, 0.8125rem);
-    font-weight: 600;
-    color: var(--accent);
-  }
-
-  .link:hover {
-    text-decoration: underline;
-    text-underline-offset: 2px;
-  }
-
-  .primary,
-  .secondary {
-    border-radius: var(--wz-radius, 8px);
-    padding: var(--wz-space-2, 8px) var(--wz-space-4, 16px);
-    font-size: var(--wz-text-sm, 0.8125rem);
-    font-weight: 600;
-    transition:
-      background-color 0.15s ease,
-      border-color 0.15s ease;
-  }
-
-  .primary {
-    border: 1px solid var(--accent);
-    background: var(--accent);
-    color: #fff;
-  }
-
-  .primary:hover:not(:disabled) {
-    background: color-mix(in oklab, var(--accent) 88%, #000);
-  }
-
-  .secondary {
-    border: 1px solid var(--hairline);
-    background: var(--surface-2);
-    color: var(--ink-2);
-  }
-
-  .secondary:hover:not(:disabled) {
-    border-color: var(--axis);
-    color: var(--ink);
-  }
-
-  button:disabled {
-    cursor: not-allowed;
-    opacity: 0.55;
-  }
-
-  button:focus-visible {
-    outline: 2px solid var(--ring);
-    outline-offset: 2px;
+    gap: var(--space-2);
   }
 
   @media (max-width: 40rem) {

@@ -77,6 +77,6 @@
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
-    gap: var(--wz-space-3, 12px);
+    gap: var(--space-3);
   }
 </style>

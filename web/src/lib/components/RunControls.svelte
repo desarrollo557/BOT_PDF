@@ -67,17 +67,21 @@
           ¿Cancelar este documento?
         {/if}
       </span>
-      <button class="danger" disabled={working} onclick={() => send('cancel')}>
+      <button class="btn btn-sm btn-danger" disabled={working} onclick={() => send('cancel')}>
         Sí, cancelar
       </button>
-      <button disabled={working} onclick={() => (confirming = false)}>Seguir</button>
+      <button class="btn btn-sm" disabled={working} onclick={() => (confirming = false)}>
+        Seguir
+      </button>
     {:else}
       {#if paused}
-        <button class="go" disabled={working} onclick={() => send('resume')}>Reanudar</button>
+        <button class="btn btn-sm btn-tonal" disabled={working} onclick={() => send('resume')}>
+          Reanudar
+        </button>
       {:else}
-        <button disabled={working} onclick={() => send('pause')}>Pausar</button>
+        <button class="btn btn-sm" disabled={working} onclick={() => send('pause')}>Pausar</button>
       {/if}
-      <button class="quiet" disabled={working} onclick={() => (confirming = true)}>
+      <button class="btn btn-sm btn-ghost" disabled={working} onclick={() => (confirming = true)}>
         Cancelar
       </button>
     {/if}
@@ -95,7 +99,7 @@
   {/if}
 
   {#if error}
-    <p class="note error">{error}</p>
+    <p class="inline-error">{error}</p>
   {/if}
 {/if}
 
@@ -104,61 +108,21 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-2);
   }
 
-  button {
-    border: 1px solid var(--hairline);
-    border-radius: 8px;
-    background: var(--surface-2);
-    padding: 0.3rem 0.7rem;
-    font: inherit;
-    font-size: 0.75rem;
-    color: var(--ink-2);
-    cursor: pointer;
-    transition:
-      border-color 0.16s,
-      color 0.16s;
-  }
-  button:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-  button:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-
-  /* Reanudar es la acción que el operador está buscando cuando ve esto, así que
-     se distingue de las demás sin gritar. */
-  .go {
-    border-color: color-mix(in oklab, var(--good) 50%, var(--hairline));
-    color: var(--good);
-  }
-  .quiet {
-    color: var(--muted);
-  }
-  .danger {
-    border-color: var(--critical);
-    color: var(--critical);
-  }
-  .danger:hover:not(:disabled) {
-    border-color: var(--critical);
-    background: var(--critical);
-    color: var(--surface-2);
-  }
+  /* Los botones son los globales en tamaño `btn-sm`. Reanudar va en tonal
+     porque es la acción que el operador busca cuando ve esto, y se distingue
+     sin gritar; cancelar pide confirmación, y sólo la confirmación va en rojo. */
 
   .ask {
-    font-size: 0.78rem;
+    font-size: var(--text-sm);
     color: var(--ink-2);
   }
 
   .note {
     margin: 0.4rem 0 0;
-    font-size: 0.76rem;
+    font-size: var(--text-xs);
     color: var(--muted);
-  }
-  .note.error {
-    color: var(--critical);
   }
 </style>

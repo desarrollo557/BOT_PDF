@@ -1,5 +1,6 @@
 <script lang="ts">
   import { descargarPlanilla, downloadUrl, origenInventarioUrl } from '$lib/api';
+  import Icono from '$lib/components/Icono.svelte';
   import { consoleLog } from '$lib/console.svelte';
   import { formatBytes, formatDuration } from '$lib/format';
   import { jobStore } from '$lib/jobs.svelte';
@@ -253,23 +254,23 @@
   >
     <header>
       <div class="who">
-        <span class="badge" class:clean>
+        <span class="pill badge" class:pill-good={clean} class:pill-warn={!clean}>
           {KIND[completion.kind]}{clean ? '' : ' con pendientes'}
         </span>
         <h2 id="informe-titulo" tabindex="-1" bind:this={heading} title={completion.title}>
           {completion.title}
         </h2>
-        <p id="informe-resumen" class="sr">{resumenHablado}.</p>
+        <p id="informe-resumen" class="sr-only">{resumenHablado}.</p>
       </div>
       <div class="meta">
         {#if completion.operator}
-          <span class="by"><span class="sr">Operador: </span>{completion.operator}</span>
+          <span class="pill"><span class="sr-only">Operador: </span>{completion.operator}</span>
         {/if}
         <time datetime={new Date(completion.finishedAt).toISOString()}>
           {when(completion.finishedAt)}
         </time>
-        <button class="close" onclick={() => void dismiss()} aria-label="Cerrar el informe">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" /></svg>
+        <button class="btn btn-icon" onclick={() => void dismiss()} aria-label="Cerrar">
+          <Icono nombre="cerrar" />
         </button>
       </div>
     </header>
@@ -404,15 +405,12 @@
                   </dl>
                   {#if entrega.inventarioDe}
                     <button
-                      class="bajar"
+                      class="btn btn-tonal"
                       onclick={() =>
                         bajarInventario(entrega.inventarioDe!, entrega.inventario ?? 'inventario.xlsx')}
                       disabled={bajando === entrega.inventarioDe}
                     >
-                      <svg viewBox="0 0 16 16" aria-hidden="true">
-                        <path d="M8 2.5v7m0 0 3-3m-3 3-3-3" />
-                        <path d="M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" />
-                      </svg>
+                      <Icono nombre="descargar" />
                       {bajando === entrega.inventarioDe
                         ? 'Descargando…'
                         : 'Descargar inventario general (Excel)'}
@@ -421,7 +419,7 @@
                 </li>
               {/each}
             </ul>
-            {#if falloDeDescarga}<p class="bad small" role="alert">{falloDeDescarga}</p>{/if}
+            {#if falloDeDescarga}<p class="inline-error" role="alert">{falloDeDescarga}</p>{/if}
           </section>
         {/if}
 
@@ -433,11 +431,13 @@
                 <li>
                   <span class="archivo" title={archivo.ruta}>{archivo.ruta.split('/').pop()}</span>
                   <a
+                    class="btn btn-icon"
                     href={downloadUrl(archivo.jobId, archivo.ruta)}
                     download
                     aria-label={`Descargar ${archivo.ruta.split('/').pop()}`}
+                    title="Descargar (PDF)"
                   >
-                    Descargar
+                    <Icono nombre="descargar" />
                   </a>
                 </li>
               {/each}
@@ -523,7 +523,7 @@
         </ul>
       {:else if tab === 'documentos'}
         <table>
-          <caption class="sr">Documentos procesados, uno por fila</caption>
+          <caption class="sr-only">Documentos procesados, uno por fila</caption>
           <thead>
             <tr>
               <th scope="col">Archivo</th>
@@ -537,7 +537,7 @@
             {#each completion.items as item (item.jobId)}
               <tr class:failed={item.state === 'failed'}>
                 <td title={item.error ?? item.filename}>
-                  {item.filename}{#if item.state === 'failed'}<span class="sr"> (falló: {item.error ?? 'error desconocido'})</span>{/if}
+                  {item.filename}{#if item.state === 'failed'}<span class="sr-only"> (falló: {item.error ?? 'error desconocido'})</span>{/if}
                 </td>
                 <td class="num tabular">{item.pages || '—'}</td>
                 <td class="num tabular">{item.resolutions || '—'}</td>
@@ -549,7 +549,7 @@
         </table>
       {:else if tab === 'resoluciones'}
         <input
-          class="search"
+          class="input input-sm"
           type="search"
           bind:value={filter}
           placeholder="Filtrar por número, título o documento"
@@ -566,7 +566,7 @@
             </li>
           {/each}
           {#if !shown.length}
-            <li class="empty">Nada coincide con la búsqueda.</li>
+            <li class="empty-state">Nada coincide con la búsqueda.</li>
           {/if}
         </ul>
       {/if}
@@ -587,7 +587,7 @@
           Revisar {completion.reviewItems} {completion.reviewItems === 1 ? 'página' : 'páginas'}
         </a>
       {/if}
-      <button onclick={() => void dismiss()}>Cerrar</button>
+      <button class="btn cerrar" onclick={() => void dismiss()}>Cerrar</button>
     </footer>
   </div>
 </div>
@@ -599,7 +599,7 @@
     z-index: 80;
     display: grid;
     place-items: center;
-    background: rgb(0 0 0 / 0.45);
+    background: var(--scrim);
     padding: 1.5rem;
     backdrop-filter: blur(3px);
     animation: fade 0.16s ease-out;
@@ -612,9 +612,9 @@
     flex-direction: column;
     overflow: hidden;
     border: 1px solid var(--hairline);
-    border-radius: 16px;
+    border-radius: var(--radius-xl);
     background: var(--surface-2);
-    box-shadow: 0 24px 70px rgb(0 0 0 / 0.35);
+    box-shadow: var(--shadow-lg);
     animation: rise 0.18s ease-out;
   }
 
@@ -640,75 +640,21 @@
   }
   .badge {
     align-self: flex-start;
-    border: 1px solid color-mix(in oklab, var(--warning) 45%, var(--hairline));
-    border-radius: 999px;
-    padding: 0.1rem 0.6rem;
-    font-family: var(--font-mono);
-    font-size: 0.64rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--warning);
-  }
-  .badge.clean {
-    border-color: color-mix(in oklab, var(--good) 45%, var(--hairline));
-    color: var(--good);
   }
   header h2 {
     overflow: hidden;
     margin: 0;
-    font-size: 1.15rem;
+    font-size: var(--text-xl);
     font-weight: 650;
     letter-spacing: -0.015em;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .by {
-    border-radius: 999px;
-    background: var(--accent-soft);
-    padding: 0.05rem 0.5rem;
-    font-size: 0.72rem;
-    color: var(--accent);
-  }
   header time {
     font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
-  .close {
-    display: grid;
-    width: 2rem;
-    height: 2rem;
-    place-items: center;
-    border: 1px solid transparent;
-    border-radius: 8px;
-    background: none;
-    padding: 0;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .close:hover {
-    border-color: var(--hairline);
-    color: var(--ink);
-  }
-  .close svg {
-    width: 0.9rem;
-    height: 0.9rem;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.8;
-    stroke-linecap: round;
-  }
-
-  /* Visible para quien escucha la pantalla, no para quien la mira. */
-  .sr {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-
   .sheet:focus,
   header h2:focus {
     outline: none;
@@ -725,32 +671,34 @@
     margin: 0;
     padding: 0.35rem 1.25rem 1rem;
   }
+  /* Las cifras con la misma forma que StatTile: rótulo en versalitas, valor
+     grande y una nota debajo, con un filete a la izquierda en vez de una caja. */
   .tiles div {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 0.15rem;
     border-left: 2px solid var(--rule);
-    padding-left: 0.7rem;
+    padding-left: 0.75rem;
   }
   .tiles dt {
-    font-size: 0.62rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.055em;
+    letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
     color: var(--muted);
   }
   .tiles dd {
     margin: 0;
-    font-size: 1.35rem;
+    font-size: var(--text-xl);
     font-weight: 550;
-    line-height: 1.2;
+    line-height: 1.15;
     letter-spacing: -0.02em;
   }
   .tiles dd.warn {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
   .tiles .note {
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     font-weight: 400;
     letter-spacing: 0;
     color: var(--ink-2);
@@ -771,7 +719,7 @@
     background: none;
     padding: 0.5rem 0.7rem;
     font: inherit;
-    font-size: 0.82rem;
+    font-size: var(--text-sm);
     color: var(--muted);
     cursor: pointer;
     transition:
@@ -786,11 +734,11 @@
     color: var(--ink);
   }
   .count {
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--plane);
     padding: 0.02rem 0.4rem;
     font-family: var(--font-mono);
-    font-size: 0.68rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -821,7 +769,7 @@
   }
   .entrega-nombre {
     flex-basis: 100%;
-    font-size: 0.86rem;
+    font-size: var(--text-md);
   }
   .entregas dl {
     display: grid;
@@ -834,46 +782,16 @@
     display: contents;
   }
   .entregas dt {
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
   .entregas dd {
     overflow: hidden;
     margin: 0;
     font-family: var(--font-mono);
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .bajar {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    border: 1px solid color-mix(in oklab, var(--accent) 55%, var(--hairline));
-    border-radius: 8px;
-    background: color-mix(in oklab, var(--accent) 8%, transparent);
-    padding: 0.4rem 0.8rem;
-    font: inherit;
-    font-size: 0.78rem;
-    font-weight: 600;
-    color: var(--accent);
-    cursor: pointer;
-  }
-  .bajar:hover:not(:disabled) {
-    background: color-mix(in oklab, var(--accent) 16%, transparent);
-  }
-  .bajar:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-  .bajar svg {
-    width: 0.9rem;
-    height: 0.9rem;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.6;
-    stroke-linecap: round;
-    stroke-linejoin: round;
   }
   .archivos {
     display: grid;
@@ -885,38 +803,31 @@
   }
   .archivos li {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
     border-bottom: 1px solid var(--rule);
-    padding: 0.3rem 0;
+    padding: 0.15rem 0;
   }
   .archivo {
     overflow: hidden;
     font-family: var(--font-mono);
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .archivos a {
+  /* El botón de icono común, un punto más bajo para no ensanchar la fila. */
+  .archivos .btn {
     flex-shrink: 0;
-    font-size: 0.78rem;
-    color: var(--accent);
-    text-decoration: none;
-  }
-  .archivos a:hover {
-    text-decoration: underline;
-  }
-  .small {
-    margin: 0.4rem 0 0;
-    font-size: 0.76rem;
+    width: 1.75rem;
+    height: 1.75rem;
   }
 
   section h3 {
     margin: 0 0 0.55rem;
-    font-size: 0.62rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.055em;
+    letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
     color: var(--muted);
   }
@@ -937,11 +848,10 @@
     gap: 0.15rem 0.6rem;
     border-left: 2px solid var(--critical);
     padding-left: 0.7rem;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
   }
   .errors span {
-    font-family: var(--font-mono);
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -949,7 +859,7 @@
     display: flex;
     height: 10px;
     overflow: hidden;
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
     /* A surface gap between segments, never a border around them. */
     gap: 2px;
   }
@@ -969,7 +879,7 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    font-size: 0.78rem;
+    font-size: var(--text-sm);
     color: var(--ink-2);
   }
   .swatch {
@@ -984,7 +894,7 @@
   }
   .pct {
     font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -998,7 +908,7 @@
 
   .footnote {
     margin: 0.6rem 0 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -1014,9 +924,9 @@
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    border-radius: 7px;
+    border-radius: var(--radius-sm);
     padding: 0.4rem 0.55rem;
-    font-size: 0.82rem;
+    font-size: var(--text-sm);
   }
   .units li:nth-child(odd) {
     background: var(--plane);
@@ -1024,8 +934,9 @@
   .tag {
     flex-shrink: 0;
     width: 9.5rem;
-    font-size: 0.66rem;
-    letter-spacing: 0.03em;
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
     color: var(--muted);
   }
@@ -1042,13 +953,13 @@
   table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.82rem;
+    font-size: var(--text-sm);
   }
   thead th {
     padding: 0 0.5rem 0.4rem 0;
-    font-size: 0.62rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.055em;
+    letter-spacing: var(--tracking-caps);
     text-align: left;
     text-transform: uppercase;
     color: var(--muted);
@@ -1067,31 +978,17 @@
     flex-shrink: 0;
     text-align: right;
     font-family: var(--font-mono);
-    font-size: 0.76rem;
+    font-size: var(--text-xs);
     color: var(--ink-2);
   }
   thead th.num {
     font-family: inherit;
-    font-size: 0.62rem;
+    font-size: var(--text-2xs);
     text-align: right;
     color: var(--muted);
   }
   tr.failed td {
     color: var(--critical);
-  }
-
-  .search {
-    border: 1px solid var(--hairline);
-    border-radius: 8px;
-    background: var(--plane);
-    padding: 0.4rem 0.65rem;
-    font-family: var(--font-mono);
-    font-size: 0.76rem;
-    color: inherit;
-    outline: none;
-  }
-  .search:focus {
-    border-color: var(--accent);
   }
 
   .codes {
@@ -1106,9 +1003,9 @@
     display: flex;
     align-items: baseline;
     gap: 0.6rem;
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
     padding: 0.22rem 0.4rem;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
   }
   .codes li:nth-child(odd) {
     background: var(--plane);
@@ -1117,7 +1014,7 @@
     flex-shrink: 0;
     width: 6.5rem;
     font-family: var(--font-mono);
-    font-size: 0.76rem;
+    font-size: var(--text-xs);
   }
   .codes .title {
     overflow: hidden;
@@ -1130,7 +1027,7 @@
     overflow: hidden;
     max-width: 14rem;
     flex-shrink: 0;
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1138,18 +1035,21 @@
   .size {
     flex-shrink: 0;
     font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
-  .empty {
-    color: var(--muted);
+  /* El vacío de la búsqueda va en la caja punteada común; la lista pinta las
+     filas impares y ésta no debe heredar ese fondo. */
+  .codes .empty-state {
+    margin-top: 0.5rem;
+    background: none;
   }
 
   /* La explicación empuja los botones a la derecha y se lee antes que ellos. */
   .note {
     flex: 1;
     color: var(--muted);
-    font-size: 0.78rem;
+    font-size: var(--text-sm);
     line-height: 1.35;
   }
 
@@ -1161,7 +1061,7 @@
     padding: 0.85rem 1.25rem;
   }
   footer a {
-    font-size: 0.83rem;
+    font-size: var(--text-sm);
     color: var(--accent);
     text-decoration: none;
   }
@@ -1169,22 +1069,10 @@
     text-decoration: underline;
   }
   footer a.warn {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
-  footer button {
+  footer .cerrar {
     margin-left: auto;
-    border: 1px solid var(--hairline);
-    border-radius: 8px;
-    background: transparent;
-    padding: 0.35rem 0.9rem;
-    font: inherit;
-    font-size: 0.82rem;
-    color: var(--ink-2);
-    cursor: pointer;
-  }
-  footer button:hover {
-    border-color: var(--accent);
-    color: var(--accent);
   }
 
   @keyframes fade {

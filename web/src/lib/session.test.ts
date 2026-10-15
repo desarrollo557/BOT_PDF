@@ -13,10 +13,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const entrar = vi.fn();
 
-vi.mock('$lib/api', () => ({
-  entrar: (usuario: string) => entrar(usuario),
-  ApiError: class ApiError extends Error {}
-}));
+vi.mock('$lib/api', () => {
+  class ApiError extends Error {}
+  return {
+    entrar: (usuario: string) => entrar(usuario),
+    ApiError,
+    SinConexion: class SinConexion extends ApiError {}
+  };
+});
 
 const { ApiError } = await import('$lib/api');
 const { IDLE_AFTER_MS, Session } = await import('./session.svelte');

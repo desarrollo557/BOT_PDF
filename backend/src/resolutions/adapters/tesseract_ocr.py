@@ -8,6 +8,12 @@ sesenta y seis lecturas eran trece segundos de recorrer la carpeta temporal.
 
 Tesseract acepta la imagen por ``stdin`` y devuelve el TSV por ``stdout`` desde
 la versión 3.03, y con eso no hay archivo que escribir, leer ni buscar.
+
+Para muchas imágenes pequeñas hay además una lectura por lotes: arrancar el
+binario cuesta 0,22 s -- es cargar el modelo del español --, y en un libro de
+grados eran 303 arranques, la quinta parte del tiempo de Tesseract. Con una
+lista de archivos el binario arranca una vez y lee varias; cada imagen se lee
+igual que sola, con el mismo modo y el mismo idioma.
 """
 
 from __future__ import annotations
@@ -15,10 +21,11 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from io import BytesIO
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 from ..application.ports import OcrResult
 
@@ -35,6 +42,8 @@ PSM_AUTO = 3
 #: Con el modo de página entera, Tesseract busca columnas y párrafos en una
 #: banda de cuatro centímetros y decide que no hay texto.
 PSM_UNA_LINEA = 7
+#: Texto suelto, en cualquier orden: los números impresos bajo una rejilla.
+PSM_TEXTO_DISPERSO = 11
 
 #: Cómo viaja la imagen al binario. PNG y no PGM crudo, medido sobre la banda
 #: de un encabezado real: pesa doce veces menos y Tesseract la lee un 20 % más
@@ -61,6 +70,15 @@ class TesseractConfig:
     escala: int = 1
     #: Ninguna página puede dejar detenido el lote indefinidamente.
     timeout_seconds: float = 15.0
+    #: Desde qué gris se toma un píxel por tinta, o ``None`` para no tocarlo.
+    #: Los datos rellenados a máquina en gris muy claro -- «cuatro (4) días del
+    #: mes de abril» en UPD3859806 -- se pierden en el fondo; pasados a negro
+    #: puro, Tesseract los lee.
+    umbral: int | None = None
+    #: Tamaño del filtro de mediana que borra las motas después del umbral, o
+    #: ``None``. En un escaneo sucio el umbral vuelve tinta cada mota, y
+    #: Tesseract tarda el doble buscando letras en ellas.
+    mediana: int | None = None
 
 
 class TesseractError(RuntimeError):
@@ -105,8 +123,74 @@ class TesseractOcr:
 
     def read(self, image_png: bytes) -> OcrResult:
         image = self._prepare(image_png)
-        data = en_columnas(self._run(_codificar(image)))
+        return self._resultado(en_columnas(self._run(_codificar(image))))
 
+    def palabras(self, image_png: bytes) -> list[tuple[str, int, int, int, int]]:
+        """Cada palabra leída con su caja, en píxeles: (texto, x, y, ancho, alto).
+
+        La usa quien necesita saber dónde está lo que se leyó, no sólo qué:
+        la rejilla de casillas de la guía de envío se ubica por sus números.
+        Las cajas son de la imagen que se pasó, aunque se haya ampliado.
+
+        Se lee dos veces, la imagen tal cual y la preparada, y se juntan: en la
+        guía de UPD2320047 la preparada perdía casi todos los números de la
+        rejilla y la cruda los traía.
+        """
+        factor = max(1, self._config.escala)
+        lecturas = [
+            (en_columnas(self._run(image_png)), 1),
+            (en_columnas(self._run(_codificar(self._prepare(image_png)))), factor),
+        ]
+        return [
+            (
+                texto.strip(),
+                data["left"][i] // escala,
+                data["top"][i] // escala,
+                data["width"][i] // escala,
+                data["height"][i] // escala,
+            )
+            for data, escala in lecturas
+            for i, texto in enumerate(data["text"])
+            if texto and texto.strip()
+        ]
+
+    def read_varias(self, images_png: list[bytes]) -> list[OcrResult]:
+        """Varias imágenes en un solo arranque del binario, cada una con su resultado."""
+        return [self._resultado(data) for data in self._por_lote(images_png)]
+
+    def read_con_confianza_varias(
+        self, images_png: list[bytes]
+    ) -> list[tuple[str, dict[str, float]]]:
+        """Como ``read_con_confianza``, para varias imágenes en un arranque."""
+        return [self._con_confianza(data) for data in self._por_lote(images_png)]
+
+    def _por_lote(self, images_png: list[bytes]) -> list[dict[str, list]]:
+        """Las columnas del TSV de cada imagen, leídas todas en una llamada.
+
+        Las imágenes van a una carpeta temporal propia -- no a la del sistema,
+        que en la máquina del operador tiene trece mil archivos -- y el binario
+        recibe la lista. Cada fila del TSV dice de qué imagen es (`page_num`).
+        Si el lote falla se lanza el error, y quien lo pidió lee una por una
+        para saber cuál de ellas era la que no se dejaba leer.
+        """
+        if len(images_png) <= 1:
+            return [self._sola(imagen) for imagen in images_png]
+        with tempfile.TemporaryDirectory(prefix="tess_") as carpeta:
+            rutas = []
+            for indice, imagen in enumerate(images_png, start=1):
+                ruta = os.path.join(carpeta, f"{indice:04d}.png")
+                self._prepare(imagen).save(ruta, format=_FORMATO)
+                rutas.append(ruta)
+            lista = os.path.join(carpeta, "lista.txt")
+            with open(lista, "w", encoding="utf-8") as archivo:
+                archivo.write("".join(f"{ruta}\n" for ruta in rutas))
+            tsv = self._run(None, entrada=lista, imagenes=len(rutas))
+        return _partir_por_imagen(en_columnas(tsv), len(images_png))
+
+    def _sola(self, image_png: bytes) -> dict[str, list]:
+        return en_columnas(self._run(_codificar(self._prepare(image_png))))
+
+    def _resultado(self, data: dict[str, list]) -> OcrResult:
         words: list[str] = []
         confidences: list[float] = []
         for text, confidence in zip(data["text"], data["conf"], strict=False):
@@ -128,11 +212,15 @@ class TesseractOcr:
 
         return OcrResult(text=self._reflow(data, words), mean_confidence=mean / 100.0)
 
-    def _run(self, image: bytes) -> str:
-        """Una llamada al binario: la imagen entra por stdin, el TSV sale por stdout."""
+    def _run(self, image: bytes | None, *, entrada: str = "stdin", imagenes: int = 1) -> str:
+        """Una llamada al binario: la imagen entra por stdin, el TSV sale por stdout.
+
+        Con ``entrada`` la lista de archivos de un lote, y entonces el tiempo
+        máximo es el de una imagen por cada una que trae.
+        """
         args = [
             self._command,
-            "stdin",
+            entrada,
             "stdout",
             "-l",
             self._config.language,
@@ -153,17 +241,37 @@ class TesseractOcr:
                 input=image,
                 capture_output=True,
                 check=False,
-                timeout=self._config.timeout_seconds,
+                timeout=self._config.timeout_seconds * imagenes,
                 **extra,
             )
         except subprocess.TimeoutExpired as error:
             raise TesseractError(
-                f"Tesseract superó {self._config.timeout_seconds:g} s"
+                f"Tesseract superó {self._config.timeout_seconds * imagenes:g} s"
             ) from error
         if completed.returncode != 0:
             motivo = completed.stderr.decode("utf-8", "replace").strip()
             raise TesseractError(motivo or f"tesseract terminó con código {completed.returncode}")
         return completed.stdout.decode("utf-8", "replace")
+
+    def read_con_confianza(self, image_png: bytes) -> tuple[str, dict[str, float]]:
+        """El texto por renglones y la confianza de cada palabra, de 0 a 100.
+
+        Para juntar dos lecturas palabra a palabra: una palabra que Tesseract
+        lee con 90 se cree; una con 0 es una mancha o una letra que no supo, y
+        ahí vale más lo que leyó la otra fuente.
+        """
+        image = self._prepare(image_png)
+        return self._con_confianza(en_columnas(self._run(_codificar(image))))
+
+    def _con_confianza(self, data: dict[str, list]) -> tuple[str, dict[str, float]]:
+        palabras = [(t or "").strip() for t in data["text"]]
+        confianza: dict[str, float] = {}
+        for texto, valor in zip(palabras, data["conf"], strict=False):
+            if texto and float(valor) >= 0:
+                clave = texto.upper()
+                confianza[clave] = max(confianza.get(clave, 0.0), float(valor))
+        validas = [p for p, c in zip(palabras, data["conf"], strict=False) if p and float(c) >= 0]
+        return self._reflow(data, validas), confianza
 
     def _prepare(self, image_png: bytes) -> Image.Image:
         image = Image.open(BytesIO(image_png)).convert("L")
@@ -172,7 +280,14 @@ class TesseractOcr:
                 (image.width * self._config.escala, image.height * self._config.escala),
                 Image.LANCZOS,
             )
-        return ImageOps.autocontrast(image) if self._config.autocontrast else image
+        if self._config.autocontrast:
+            image = ImageOps.autocontrast(image)
+        if self._config.umbral is not None:
+            corte = self._config.umbral
+            image = image.point(lambda gris: 0 if gris < corte else 255)
+        if self._config.mediana:
+            image = image.filter(ImageFilter.MedianFilter(self._config.mediana))
+        return image
 
     @staticmethod
     def _reflow(data: dict, words: list[str]) -> str:
@@ -189,6 +304,18 @@ class TesseractOcr:
         return "\n".join(" ".join(tokens) for _, tokens in sorted(lines.items()))
 
 
+def _partir_por_imagen(data: dict[str, list], cuantas: int) -> list[dict[str, list]]:
+    """Las columnas de un TSV de lote, separadas por la imagen de la que es cada fila."""
+    partes: list[dict[str, list]] = [{nombre: [] for nombre in data} for _ in range(cuantas)]
+    for fila, pagina in enumerate(data.get("page_num") or []):
+        if not 1 <= pagina <= cuantas:
+            continue
+        destino = partes[pagina - 1]
+        for nombre, columna in data.items():
+            destino[nombre].append(columna[fila])
+    return partes
+
+
 def _codificar(image: Image.Image) -> bytes:
     buffer = BytesIO()
     image.save(buffer, format=_FORMATO)
@@ -201,11 +328,23 @@ class HeaderAndPageOcr:
     def __init__(self, language: str = "spa") -> None:
         self._band = TesseractOcr(TesseractConfig(language=language, psm=PSM_UNIFORM_BLOCK))
         self._page = TesseractOcr(TesseractConfig(language=language, psm=PSM_AUTO))
-        self._seen_bytes = 0
 
     def read(self, image_png: bytes) -> OcrResult:
         # A header crop is a small image; a full page render is not. The size is
         # a reliable enough signal to pick the segmentation mode without
         # threading extra state through the pipeline.
-        engine = self._band if len(image_png) < 400_000 else self._page
-        return engine.read(image_png)
+        return self._motor(image_png).read(image_png)
+
+    def read_varias(self, images_png: list[bytes]) -> list[OcrResult]:
+        """Varias en un arranque por motor, cada una con el modo que le toca."""
+        resultados: list[OcrResult | None] = [None] * len(images_png)
+        for motor in (self._band, self._page):
+            suyas = [i for i, imagen in enumerate(images_png) if self._motor(imagen) is motor]
+            if suyas:
+                leidas = motor.read_varias([images_png[i] for i in suyas])
+                for indice, leida in zip(suyas, leidas, strict=True):
+                    resultados[indice] = leida
+        return [r or OcrResult(text="", mean_confidence=0.0) for r in resultados]
+
+    def _motor(self, image_png: bytes) -> TesseractOcr:
+        return self._band if len(image_png) < 400_000 else self._page

@@ -21,6 +21,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 
 from ..application.consumo import Consumo, anotar_uso_json
@@ -79,8 +80,11 @@ class MistralResumidor:
         config: MistralResumenConfig | None = None,
         consumo: Consumo | None = None,
         esperar: Callable[[float], None] = time.sleep,
+        turnos: AbstractContextManager | None = None,
     ) -> None:
         self._api_key = api_key
+        #: El tope común de llamadas a la vez del servicio; sólo durante la petición.
+        self._turnos = turnos
         self._config = config or MistralResumenConfig()
         self._consumo = consumo
         self._esperar = esperar
@@ -150,7 +154,10 @@ class MistralResumidor:
                 "Authorization": f"Bearer {self._api_key}",
             },
         )
-        with urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as respuesta:
+        with (
+            self._turnos or nullcontext(),
+            urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as respuesta,
+        ):
             return json.load(respuesta)
 
     def _espera(self, intento: int) -> float:

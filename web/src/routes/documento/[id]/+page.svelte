@@ -11,14 +11,24 @@
     type ArchivedDocument
   } from '$lib/api';
   import { formatBytes } from '$lib/format';
+  import EncabezadoDePagina from '$lib/components/EncabezadoDePagina.svelte';
   import FuidViewer from '$lib/components/FuidViewer.svelte';
+  import Icono from '$lib/components/Icono.svelte';
   import JobCard from '$lib/components/JobCard.svelte';
   import ValidationPanel from '$lib/components/ValidationPanel.svelte';
   import { jobStore } from '$lib/jobs.svelte';
+  import { padreDe, vista } from '$lib/navegacion.svelte';
   import { session } from '$lib/session.svelte';
   import type { InventoryReport } from '$lib/types';
 
   const job = $derived(jobStore.get(page.params.id ?? ''));
+
+  // El nombre que enseñan las migas: el del trabajo si sigue en pantalla, el
+  // del inventario si ya se archivó.
+  $effect(() => {
+    vista.titulo = job?.filename ?? archived?.source_document ?? null;
+    return () => (vista.titulo = null);
+  });
 
   /**
    * El mismo documento, pero recordado por el inventario.
@@ -81,6 +91,13 @@
     if (!stats?.document_type) return null;
     return { label: TIPOS[stats.document_type] ?? stats.document_type, confidence: stats.type_confidence ?? 0 };
   });
+  /**
+   * El título de la ficha. La ficha no tenía encabezado: el nombre del
+   * documento aparecía, según el caso, dentro de una tarjeta o en ninguna
+   * parte, y la página no se parecía a las demás secciones.
+   */
+  const titulo = $derived(job?.filename ?? archived?.source_document ?? 'Documento');
+
   let confirmingDelete = $state(false);
   let renaming = $state(false);
   let draft = $state('');
@@ -111,97 +128,70 @@
     confirmingDelete = false;
     try {
       await jobStore.remove(page.params.id ?? '', purge);
-      await goto('/');
+      // Borrado el documento, se sube al nivel del que colgaba.
+      await goto(padreDe(page.url) ?? '/archivo');
     } catch (problem) {
       error = (problem as Error).message;
     }
   }
 </script>
 
-<nav class="mb-5 flex flex-wrap items-center justify-between gap-3">
-  <a class="font-mono text-sm text-accent hover:underline" href="/">← todos los documentos</a>
-
-  {#if job}
-    {#if renaming}
-      <span class="flex flex-wrap items-center gap-2">
-        <input
-          class="min-w-64 rounded border border-hairline bg-raised px-2 py-1 text-sm outline-none focus:border-accent"
-          bind:value={draft}
-        />
-        <button
-          class="rounded border border-accent px-2.5 py-1 text-xs text-accent disabled:cursor-not-allowed disabled:opacity-45"
-          onclick={rename}
-          disabled={!puedeRenombrar}
-        >
+<!-- «Volver» y dónde se está los pone el layout, con las migas. Aquí va el
+     nombre del documento y lo que se puede hacer con él entero. -->
+<EncabezadoDePagina {titulo}>
+  {#snippet acciones()}
+    {#if job}
+      {#if renaming}
+        <input class="input input-sm min-w-64" bind:value={draft} aria-label="Nuevo nombre" />
+        <button class="btn btn-primary btn-sm" onclick={rename} disabled={!puedeRenombrar}>
           Guardar
         </button>
-        <button
-          class="rounded border border-hairline px-2.5 py-1 text-xs text-muted"
-          onclick={() => (renaming = false)}
-        >
-          Cancelar
-        </button>
-      </span>
-    {:else if confirmingDelete}
-      <span class="flex flex-wrap items-center gap-2 text-sm">
-        <button
-          class="rounded border border-hairline px-2.5 py-1 text-xs"
-          onclick={() => remove(false)}
-        >
-          Quitar de la pantalla
-        </button>
-        <button
-          class="rounded border border-critical px-2.5 py-1 text-xs text-critical hover:bg-critical hover:text-white"
-          onclick={() => remove(true)}
-        >
+        <button class="btn btn-ghost btn-sm" onclick={() => (renaming = false)}>Cancelar</button>
+      {:else if confirmingDelete}
+        <button class="btn btn-sm" onclick={() => remove(false)}>Quitar de la pantalla</button>
+        <button class="btn btn-danger btn-sm" onclick={() => remove(true)}>
           Eliminar también los PDF
         </button>
-        <button
-          class="rounded border border-hairline px-2.5 py-1 text-xs text-muted"
-          onclick={() => (confirmingDelete = false)}
-        >
+        <button class="btn btn-ghost btn-sm" onclick={() => (confirmingDelete = false)}>
           Cancelar
         </button>
-      </span>
-    {:else}
-      <span class="flex gap-2">
+      {:else}
         <button
-          class="rounded border border-hairline px-2.5 py-1 font-mono text-xs text-muted transition-colors hover:border-accent hover:text-accent"
+          class="btn btn-sm"
           onclick={() => {
             draft = job?.filename ?? '';
             renaming = true;
           }}
         >
-          renombrar
+          <Icono nombre="editar" />
+          Renombrar
         </button>
-        <button
-          class="rounded border border-hairline px-2.5 py-1 font-mono text-xs text-muted transition-colors hover:border-critical hover:text-critical"
-          onclick={() => (confirmingDelete = true)}
-        >
-          eliminar
+        <button class="btn btn-danger btn-sm" onclick={() => (confirmingDelete = true)}>
+          <Icono nombre="borrar" />
+          Eliminar
         </button>
-      </span>
+      {/if}
+    {:else if archived}
+      <span class="pill">Archivado</span>
     {/if}
-  {/if}
-</nav>
+  {/snippet}
+</EncabezadoDePagina>
 
 {#if error}
-  <p class="mb-4 text-sm text-critical">{error}</p>
+  <p class="inline-error mb-4">{error}</p>
 {/if}
 
 {#if job}
   {#if job.state === 'done' && (inventory || fuid || fuidError)}
     <!-- Un documento inventariado no deja PDF: lo único que produce es su FUID,
          y sin un sitio desde donde bajarlo la función no está terminada. -->
-    <section
-      class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-hairline bg-raised p-4 shadow-[var(--shadow)]"
-    >
+    <section class="panel seccion flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h2 class="text-sm font-semibold">Inventario del documento</h2>
-        <p class="mt-1 text-sm text-ink-2">
+        <h2 class="titulo-seccion">Inventario del documento</h2>
+        <p class="texto">
           {#if inventory}
             Reconocido como <b>{inventory.document_type_label}</b>. Se registraron
-            <b>{inventory.records}</b>
+            <b class="tabular">{inventory.records}</b>
             {inventory.records === 1 ? 'unidad documental' : 'unidades documentales'}.
             {#if job.task === 'inventory'}
               El PDF de origen quedó entero.
@@ -215,11 +205,11 @@
         <!-- Verlo lo pueden los tres perfiles; bajarlo, sólo el que el servicio
              deje. El botón de descarga vive dentro del visor, que es donde el
              servicio ya contestó quién puede. -->
-        <div class="flex shrink-0 items-center gap-2">
+        <div class="flex shrink-0 flex-wrap items-center gap-2">
           <FuidViewer jobId={job.id} nombre={job.filename} />
           {#if session.descargaPlanillas}
             <a
-              class="rounded border border-accent px-3 py-1.5 font-mono text-xs text-accent transition-colors hover:bg-accent hover:text-raised"
+              class="btn btn-tonal"
               href={documentFuidUrl(job.id)}
               onclick={(evento) => {
                 // Por `fetch`, que lleva la cédula: siguiendo el enlace el
@@ -230,44 +220,40 @@
                 );
               }}
             >
-              descargar el FUID
+              <Icono nombre="descargar" />
+              Descargar FUID (Excel)
             </a>
           {/if}
           {#if errorDeDescarga}
-            <span class="font-mono text-xs text-critical">{errorDeDescarga}</span>
+            <span class="inline-error m-0">{errorDeDescarga}</span>
           {/if}
         </div>
       {:else if fuidError}
-        <span class="font-mono text-xs text-critical">no se pudo escribir el FUID</span>
+        <span class="pill pill-bad">No se pudo escribir el FUID</span>
       {/if}
     </section>
-
   {/if}
 
   {#if !inventory && job.state === 'done' && recognised}
-    <section
-      class="mb-4 rounded-xl border border-hairline bg-raised p-4 shadow-[var(--shadow)]"
-    >
-      <h3 class="text-sm font-semibold">Tipo de documento</h3>
-      <p class="mt-1 text-sm text-ink-2">
+    <section class="panel seccion">
+      <h2 class="titulo-seccion">Tipo de documento</h2>
+      <p class="texto">
         El sistema lo reconoció como <b>{recognised.label}</b> por lo que está impreso en sus
         páginas —no por el nombre del archivo—, con una confianza de
-        <span class="font-mono">{(recognised.confidence * 100).toFixed(1)} %</span>.
+        <span class="tabular">{(recognised.confidence * 100).toFixed(1)} %</span>.
       </p>
     </section>
   {/if}
 
   {#if job.state === 'done' && job.report?.validation}
-    <div class="mb-4">
+    <div class="seccion">
       <ValidationPanel validation={job.report.validation} issues={job.report.issues} />
     </div>
   {/if}
 
   <JobCard {job} />
 {:else if loadingArchived}
-  <div class="rounded-xl border border-hairline bg-raised p-6 text-sm text-muted">
-    Buscándolo en el inventario…
-  </div>
+  <p class="empty-state">Buscándolo en el inventario…</p>
 {:else if archived}
   <!--
     La ficha de un documento que ya salió del área de trabajo. Enseña lo que el
@@ -276,118 +262,108 @@
     proceso y no sobreviven a la limpieza. Callarlo sería enseñar una ficha
     incompleta con aspecto de completa.
   -->
-  <section class="mb-4 rounded-xl border border-hairline bg-raised p-5 shadow-[var(--shadow)]">
-    <header class="flex flex-wrap items-baseline justify-between gap-3">
-      <h2 class="text-base font-semibold">{archived.source_document}</h2>
-      <span class="font-mono text-xs text-muted">archivado</span>
-    </header>
-
-    <dl class="mt-4 flex flex-wrap gap-8">
+  <section class="panel seccion">
+    <!-- Las cifras con el aspecto de las del resto de la aplicación: rótulo en
+         versalitas y valor grande, sin cajas propias. «PDF generados» y no
+         «Resoluciones»: la ficha es la misma para cualquier tipo de documento. -->
+    <dl class="cifras">
       <div>
-        <dt class="text-[0.7rem] tracking-wide text-muted uppercase">Resoluciones</dt>
-        <dd class="tabular text-lg font-semibold">{archived.resolutions}</dd>
+        <dt class="caps">PDF generados</dt>
+        <dd class="valor tabular">{archived.resolutions}</dd>
       </div>
       <div>
-        <dt class="text-[0.7rem] tracking-wide text-muted uppercase">Páginas</dt>
-        <dd class="tabular text-lg font-semibold">{archived.source_pages || archived.pages}</dd>
+        <dt class="caps">Páginas</dt>
+        <dd class="valor tabular">{archived.source_pages || archived.pages}</dd>
       </div>
       <div>
-        <dt class="text-[0.7rem] tracking-wide text-muted uppercase">Tamaño</dt>
-        <dd class="tabular text-lg font-semibold">
+        <dt class="caps">Tamaño</dt>
+        <dd class="valor tabular">
           {archived.bytes ? formatBytes(archived.bytes) : '—'}
         </dd>
       </div>
       <div>
-        <dt class="text-[0.7rem] tracking-wide text-muted uppercase">Requiere revisión</dt>
-        <dd class="tabular text-lg font-semibold" class:text-warning={archived.review}>
+        <dt class="caps">Requiere revisión</dt>
+        <dd class="valor tabular" class:aviso={archived.review}>
           {archived.review}
         </dd>
       </div>
       {#if archived.operator}
         <div>
-          <dt class="text-[0.7rem] tracking-wide text-muted uppercase">Operador</dt>
-          <dd class="text-lg font-semibold">{archived.operator}</dd>
+          <dt class="caps">Operador</dt>
+          <dd class="valor">{archived.operator}</dd>
         </div>
       {/if}
     </dl>
 
-    <p class="mt-4 text-sm text-ink-2">
+    <p class="texto mt-4">
       Esta ficha se dibuja desde el inventario. El reparto por peldaños de lectura y la
       cinta de páginas sólo existen mientras el documento está en el área de trabajo.
     </p>
   </section>
 
   {#if archived.rows.length}
-    <section class="rounded-xl border border-hairline bg-raised p-5 shadow-[var(--shadow)]">
+    <section class="panel">
       <!-- El listado y su descarga en la misma línea. La planilla se escribe
            sola al terminar el documento, junto a los PDF que describe, así que
            aquí no hay nada que generar: sólo bajarla. -->
       <header class="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <h3 class="text-sm font-semibold">
-          Lo que produjo ({archived.rows.length})
-        </h3>
-        <a
-          class="rounded border border-accent px-3 py-1.5 font-mono text-xs text-accent transition-colors hover:bg-accent hover:text-raised"
-          href={documentInventoryUrl(archived.job_id)}
-          download
-        >
-          descargar el inventario (Excel)
+        <h2 class="titulo-seccion">
+          Lo que produjo <span class="tabular">({archived.rows.length})</span>
+        </h2>
+        <a class="btn btn-tonal" href={documentInventoryUrl(archived.job_id)} download>
+          <Icono nombre="descargar" />
+          Descargar inventario (Excel)
         </a>
       </header>
       <div class="overflow-x-auto">
-        <table class="w-full border-collapse text-sm">
+        <table class="tabla">
           <thead>
-            <tr class="text-[0.7rem] tracking-wide text-muted uppercase">
-              <th class="pb-2 text-left font-medium">#</th>
-              <th class="pb-2 text-left font-medium">Páginas</th>
-              <th class="pb-2 text-left font-medium">Tipo documental</th>
-              <th class="pb-2 text-left font-medium">Fecha</th>
-              <th class="pb-2 text-left font-medium">Archivo generado</th>
-              <th class="pb-2 text-right font-medium"></th>
+            <tr>
+              <th>N°</th>
+              <th>Páginas</th>
+              <th>Tipo documental</th>
+              <th>Fecha</th>
+              <th>Archivo generado</th>
+              <th><span class="sr-only">Descargar</span></th>
             </tr>
           </thead>
           <tbody>
             {#each archived.rows as row (row.file_name)}
-              <tr class="border-t border-hairline">
-                <td class="py-1.5 pr-3 font-mono">{row.code}</td>
+              <tr>
+                <td class="mono">{row.code}</td>
                 <!-- Las páginas delante del tipo: es el orden en que se lee
                      esta tabla, "de la 1 a la 8, un derecho de petición", y es
                      también el orden en que están en la caja de origen. -->
-                <td class="tabular py-1.5 pr-3 text-muted">{row.pages}</td>
+                <td class="tabular apagado nowrap">{row.pages}</td>
                 <!-- El tipo y, debajo, lo que declara el documento: su asunto
                      o su referencia. Un archivo por mes junta varias cartas y
                      «DOCUMENTO» solo no dice cuáles; el título sí. La
                      procedencia («páginas 1-2») no se repite: ya está en la
                      columna de al lado. -->
-                <td class="py-1.5 pr-3 text-ink">
+                <td>
                   {row.type ?? '—'}
                   {#if row.title && !/^p[aá]ginas? /i.test(row.title)}
-                    <span class="block text-xs text-muted">{row.title}</span>
+                    <span class="subtitulo">{row.title}</span>
                   {/if}
                 </td>
                 <!-- La fecha más reciente que lleva escrita el documento. Se
                      lee de todas sus páginas, no sólo de la primera: un acta
                      puede llevar la de la visita arriba y la del acuse detrás. -->
-                <td class="tabular py-1.5 pr-3 text-muted">{row.fecha ?? '—'}</td>
+                <td class="tabular apagado nowrap">{row.fecha ?? '—'}</td>
                 <!-- El nombre, escrito y no sólo enlazado. Esta columna llevaba
                      únicamente el icono de descarga, así que la tabla no decía
                      cómo se llama en el disco ninguno de los archivos que
                      acababa de producir: para saberlo había que bajarlos. -->
-                <td class="py-1.5 pr-3 font-mono text-xs break-all text-ink-2">
-                  {row.file_name.split('/').pop()}
-                </td>
-                <td class="py-1.5 text-right">
+                <td class="mono archivo">{row.file_name.split('/').pop()}</td>
+                <td class="acciones">
                   <a
-                    class="icon-link"
+                    class="btn btn-icon"
                     href={downloadUrl(row.job_id, row.file_name)}
                     download
-                    title={`Descargar ${row.file_name}`}
+                    title="Descargar PDF"
                     aria-label={`Descargar ${row.file_name}`}
                   >
-                    <svg viewBox="0 0 16 16" aria-hidden="true">
-                      <path d="M8 2v7m0 0 3-3m-3 3L5 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-                      <path d="M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-                    </svg>
+                    <Icono nombre="descargar" />
                   </a>
                 </td>
               </tr>
@@ -398,39 +374,110 @@
     </section>
   {/if}
 {:else}
-  <div class="rounded-xl border border-hairline bg-raised shadow-[var(--shadow)] p-6">
-    <h2 class="text-base font-semibold">Este documento no está en el inventario</h2>
-    <p class="mt-1.5 text-sm text-ink-2">
-      {archivedError ?? 'No se encontró ni en el área de trabajo ni en el registro.'}
-      Puede haberse eliminado. Lo que sí quedó está en el
-      <a class="text-accent hover:underline" href="/archivo">archivo</a>.
-    </p>
+  <div class="empty-state">
+    <strong>Este documento no está en el inventario</strong>
+    {archivedError ?? 'No se encontró ni en el área de trabajo ni en el registro.'}
+    Puede haberse eliminado. Lo que sí quedó está en el
+    <a class="enlace" href="/archivo">archivo</a>.
   </div>
 {/if}
 
-
 <style>
-  /* Un icono en lugar de la palabra: se reconoce antes y no se lee. El área
-     pinchable sigue siendo la de un botón, que es lo que la hace usable. */
-  .icon-link {
-    display: inline-grid;
-    place-items: center;
-    width: 1.85rem;
-    height: 1.85rem;
-    border-radius: 0.35rem;
+  /* Las secciones de la ficha se apilan con el mismo aire entre ellas. */
+  .seccion {
+    margin-bottom: var(--space-4);
+  }
+
+  .titulo-seccion {
+    margin: 0;
+    font-size: var(--text-md);
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .texto {
+    margin: 0.25rem 0 0;
+    font-size: var(--text-md);
+    line-height: 1.5;
+    color: var(--ink-2);
+  }
+
+  /* Las cifras del documento archivado, con la medida de StatTile: rótulo en
+     versalitas, valor grande. */
+  .cifras {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-4) var(--space-8);
+    margin: 0;
+  }
+  .cifras dt {
+    margin-bottom: 0.15rem;
+  }
+  .valor {
+    margin: 0;
+    font-size: var(--text-xl);
+    font-weight: 550;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+  }
+  .valor.aviso {
+    color: var(--warning-ink);
+  }
+
+  /* La tabla del documento archivado, con la cabecera y la letra de las
+     demás tablas de la aplicación. */
+  .tabla {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+  }
+  .tabla th {
+    padding: 0 0.75rem 0.5rem 0;
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    letter-spacing: var(--tracking-caps);
+    text-align: left;
+    text-transform: uppercase;
     color: var(--muted);
-    transition:
-      color 0.15s,
-      background 0.15s;
+  }
+  .tabla tbody tr {
+    border-top: 1px solid var(--hairline);
+  }
+  .tabla td {
+    padding: 0.4rem 0.75rem 0.4rem 0;
+    vertical-align: baseline;
+    color: var(--ink);
+  }
+  .mono {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
+  }
+  .tabla td.apagado {
+    color: var(--muted);
+  }
+  .nowrap {
+    white-space: nowrap;
+  }
+  .subtitulo {
+    display: block;
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+  .tabla td.archivo {
+    word-break: break-all;
+    color: var(--ink-2);
+  }
+  .tabla td.acciones {
+    padding-right: 0;
+    text-align: right;
   }
 
-  .icon-link:hover {
+  .enlace {
     color: var(--accent);
-    background: var(--plane);
+    text-decoration: none;
   }
-
-  .icon-link svg {
-    width: 1rem;
-    height: 1rem;
+  .enlace:hover {
+    text-decoration: underline;
   }
 </style>

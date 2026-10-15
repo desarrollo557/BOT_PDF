@@ -19,7 +19,7 @@ router = APIRouter()
 #: running across an update answers 404 to every new route and 405 to every new
 #: method -- which reads as a broken request rather than as a stale service.
 #: The screen compares this against what it was built for and says so plainly.
-API_REVISION = 23
+API_REVISION = 24
 
 #: What this revision can do, so the screen can name what is missing rather than
 #: only that something is.
@@ -34,7 +34,6 @@ API_FEATURES = (
     "native-picker",
     "job-delete",
     "output-edit",
-    "batch-edit",
     "document-edit",
     "document-bulk-delete",
     "document-detail",
@@ -58,8 +57,6 @@ API_FEATURES = (
     # lo necesita para saber si hay dónde entrar: contra un servicio sin esto,
     # la pantalla de entrada pediría algo que nadie va a leer.
     "perfiles",
-    # Administrar las altas: quién entra y con qué perfil.
-    "usuarios",
     # El FUID como tabla, para mirarlo sin descargar el Excel. Es lo que hace
     # utilizable el perfil que no descarga: sin esto, restringir la descarga
     # sería quitarle el inventario a quien tiene que revisarlo.
@@ -71,6 +68,9 @@ API_FEATURES = (
     # uno por documento. Un servicio sin esto ignoraría el parámetro en
     # silencio y la caja saldría como siempre, que es peor que un aviso.
     "agrupar-por-mes",
+    # Y con un archivo por trámite: la solicitud, cada reclamación con su
+    # respuesta y su notificación, reconocidas por el radicado y la fecha.
+    "agrupar-por-tramite",
     # Entrar como «siar», sin contraseña. Contra un servicio anterior la
     # pantalla de entrada manda un usuario que el servicio no sabe leer, y el
     # aviso tiene que poder decir qué falta en vez de un error de campos.
@@ -90,6 +90,9 @@ API_FEATURES = (
     # los PDF y el Excel de cada trabajo para bajarlos desde su tarjeta.
     "folios-encadenados",
     "archivos-del-trabajo",
+    # El patrón de cada tipo: sugerir qué es un PDF o una carpeta antes de
+    # procesarla, y desviar a su habilidad lo que no es lo declarado.
+    "reconocer",
 )
 
 @router.get("/api/health")
@@ -100,6 +103,10 @@ async def health(ctx: Ctx) -> dict[str, object]:
         "features": list(API_FEATURES),
         "document_workers": ctx.settings.document_workers,
         "page_workers": ctx.settings.page_workers,
+        # Cuántos documentos de carpeta van a la vez y cuántos corren ahora.
+        "folder_documents": ctx.settings.folder_documents,
+        "documentos_en_curso": ctx.planificador.en_curso if ctx.planificador else 0,
+        "ia_a_la_vez": ctx.settings.ia_a_la_vez,
         "vision": "claude" if ctx.settings.anthropic_api_key else "disabled",
         # De cada modelo, si hay llave para pedirlo. Con esto la pantalla
         # deshabilita lo que no se puede pedir y dice por qué, en vez de

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { page } from '$app/state';
   import { deleteDocuments, fetchInventory, fetchProcessedDocuments } from '$lib/api';
   import {
     apply,
@@ -16,8 +17,10 @@
   } from '$lib/archive.svelte';
   import PestanaDocumentos from '$lib/components/archivo/PestanaDocumentos.svelte';
   import PestanaResoluciones from '$lib/components/archivo/PestanaResoluciones.svelte';
+  import EncabezadoDePagina from '$lib/components/EncabezadoDePagina.svelte';
   import { jobStore } from '$lib/jobs.svelte';
   import type { InventoryPage, ProcessedDocument } from '$lib/types';
+  import type { Snapshot } from './$types';
 
   /**
    * One archive, two grains.
@@ -33,8 +36,29 @@
   type Grain = 'documentos' | 'resoluciones';
   let grain = $state<Grain>('documentos');
 
-  let filters = $state<Filters>({ ...EMPTY_FILTERS });
+  // `?q=` abre el archivo ya buscando: es como «Volver» lleva de un documento
+  // a la carpeta de la que colgaba.
+  let filters = $state<Filters>({ ...EMPTY_FILTERS, text: page.url.searchParams.get('q') ?? '' });
   let sort = $state<Sort>('reciente');
+
+  $effect(() => {
+    const pedido = page.url.searchParams.get('q');
+    if (pedido !== null) filters.text = pedido;
+  });
+
+  /**
+   * Lo que se estaba mirando, guardado al salir hacia un documento: volver por
+   * el historial devuelve la misma pestaña, la misma búsqueda y el mismo orden
+   * en vez de un archivo en blanco.
+   */
+  export const snapshot: Snapshot<{ grain: Grain; filters: Filters; sort: Sort }> = {
+    capture: () => ({ grain, filters: $state.snapshot(filters), sort }),
+    restore: (guardado) => {
+      grain = guardado.grain;
+      filters = guardado.filters;
+      sort = guardado.sort;
+    }
+  };
 
   /** The text actually applied, debounced so typing does not query per key. */
   let applied = $state('');
@@ -206,31 +230,27 @@
   }
 </script>
 
-<header class="head">
-  <div>
-    <h2>Archivo</h2>
-    <p>
-      Todo lo que se ha procesado. Lo que vino de una carpeta local o de un lote aparece
-      reunido bajo el nombre de esa carpeta. Busque por carpeta, por PDF de origen, por
-      operador o por número del documento.
-    </p>
-  </div>
+<EncabezadoDePagina
+  titulo="Archivo"
+  descripcion="Todo lo que se ha procesado. Lo que vino de una carpeta local o de un lote aparece reunido bajo el nombre de esa carpeta. Busque por carpeta, por PDF de origen, por operador o por número del documento."
+>
+  {#snippet acciones()}
+    <div class="segmented" role="tablist" aria-label="Nivel de detalle">
+      {#each [{ id: 'documentos', label: 'Por documento' }, { id: 'resoluciones', label: 'Por PDF generado' }] as tab (tab.id)}
+        <button
+          role="tab"
+          aria-selected={grain === tab.id}
+          class:current={grain === tab.id}
+          onclick={() => (grain = tab.id as Grain)}
+        >
+          {tab.label}
+        </button>
+      {/each}
+    </div>
+  {/snippet}
+</EncabezadoDePagina>
 
-  <div class="grain" role="tablist" aria-label="Nivel de detalle">
-    {#each [{ id: 'documentos', label: 'Por documento' }, { id: 'resoluciones', label: 'Por resolución' }] as tab (tab.id)}
-      <button
-        role="tab"
-        aria-selected={grain === tab.id}
-        class:current={grain === tab.id}
-        onclick={() => (grain = tab.id as Grain)}
-      >
-        {tab.label}
-      </button>
-    {/each}
-  </div>
-</header>
-
-{#if error}<p class="error">{error}</p>{/if}
+{#if error}<p class="inline-error page-error">{error}</p>{/if}
 
 {#if grain === 'documentos'}
   <PestanaDocumentos
@@ -264,60 +284,8 @@
 {/if}
 
 <style>
-  .head {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 1rem;
-    margin-bottom: 1.25rem;
-  }
-  .head h2 {
-    margin: 0;
-    font-size: 1.25rem;
-    font-weight: 650;
-    letter-spacing: -0.015em;
-  }
-  .head p {
-    margin: 0.3rem 0 0;
-    max-width: 64ch;
-    font-size: 0.85rem;
-    line-height: 1.5;
-    color: var(--ink-2);
-  }
-
-  .grain {
-    display: flex;
-    gap: 2px;
-    border: 1px solid var(--hairline);
-    border-radius: 9px;
-    background: var(--plane);
-    padding: 3px;
-  }
-  .grain button {
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    padding: 0.3rem 0.8rem;
-    font: inherit;
-    font-size: 0.82rem;
-    color: var(--muted);
-    cursor: pointer;
-    transition:
-      background 0.15s,
-      color 0.15s;
-  }
-  .grain button.current {
-    background: var(--surface-2);
-    box-shadow: var(--shadow);
-    color: var(--ink);
-  }
-
-  .error {
+  /* El aviso de la página va encima de las pestañas, separado de lo que sigue. */
+  .page-error {
     margin: 0 0 1rem;
-    border-left: 2px solid var(--critical);
-    padding-left: 0.65rem;
-    font-size: 0.85rem;
-    color: var(--critical);
   }
 </style>

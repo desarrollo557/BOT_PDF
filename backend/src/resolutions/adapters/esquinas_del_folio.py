@@ -85,3 +85,138 @@ class LectorDeFolios:
         salida = BytesIO()
         lienzo.save(salida, "PNG")
         return salida.getvalue()
+
+    # -- muchas hojas por página facturada --------------------------------------
+
+    def armar_mosaico_etiquetado(self, source, paginas: Sequence[int]) -> bytes | None:
+        """Las esquinas de muchas hojas en una imagen, cada una con su página al lado.
+
+        Para los libros de grados, donde cada graduado es una hoja: leer su
+        esquina sola costaría una página facturada por graduado. Con diez por
+        imagen cuesta una cada diez, y la etiqueta impresa «P147» al lado de
+        cada esquina dice de qué hoja es cada número, aunque el proveedor se
+        salte una esquina ilegible -- en el mosaico sin etiquetas eso
+        descuadraría todos los números de detrás.
+        """
+        from PIL import ImageDraw
+
+        banda = Band(*BANDA_DEL_FOLIO)
+        fuente = _fuente_de_etiqueta()
+        filas = []
+        for pagina in paginas:
+            try:
+                recorte = Image.open(BytesIO(source.render(pagina, banda, self._dpi))).convert("L")
+            except Exception:  # noqa: BLE001 - esa hoja se queda sin leer
+                logger.warning("no se pudo recortar la esquina de la página %s", pagina)
+                continue
+            fila = Image.new("L", (_ANCHO_DE_ETIQUETA + recorte.width, recorte.height), 255)
+            ImageDraw.Draw(fila).text((10, recorte.height // 3), f"P{pagina}", fill=0, font=fuente)
+            fila.paste(recorte, (_ANCHO_DE_ETIQUETA, 0))
+            filas.append(fila)
+        if not filas:
+            return None
+        ancho = max(fila.width for fila in filas)
+        alto = sum(fila.height for fila in filas) + _SEPARACION * (len(filas) - 1)
+        lienzo = Image.new("L", (ancho, alto), 255)
+        y = 0
+        for fila in filas:
+            lienzo.paste(fila, (0, y))
+            y += fila.height + _SEPARACION
+        salida = BytesIO()
+        lienzo.save(salida, "PNG")
+        return salida.getvalue()
+
+    def leer_mosaico_etiquetado(self, imagen: bytes, paginas: Sequence[int]) -> dict[int, int]:
+        """El folio de cada hoja del mosaico, por su etiqueta. Puede ir en otro hilo."""
+        return folios_etiquetados(self._leer(imagen), paginas)
+
+    # -- cualquier franja, no sólo la esquina ------------------------------------
+
+    def armar_mosaico_de_franjas(self, source, franjas: Sequence[tuple[int, Band]]) -> bytes | None:
+        """Varias franjas -- la del nombre de cada graduado -- en una imagen, con su página al lado.
+
+        Lo mismo que las esquinas: diez por página facturada, y la etiqueta
+        «P147» dice de qué hoja es cada texto aunque el proveedor se salte uno.
+        """
+        from PIL import ImageDraw
+
+        fuente = _fuente_de_etiqueta()
+        filas = []
+        for pagina, banda in franjas:
+            try:
+                recorte = Image.open(BytesIO(source.render(pagina, banda, self._dpi))).convert("L")
+            except Exception:  # noqa: BLE001 - esa hoja se queda sin leer
+                logger.warning("no se pudo recortar la franja de la página %s", pagina)
+                continue
+            fila = Image.new("L", (_ANCHO_DE_ETIQUETA + recorte.width, recorte.height), 255)
+            ImageDraw.Draw(fila).text((10, recorte.height // 3), f"P{pagina}", fill=0, font=fuente)
+            fila.paste(recorte, (_ANCHO_DE_ETIQUETA, 0))
+            filas.append(fila)
+        if not filas:
+            return None
+        ancho = max(fila.width for fila in filas)
+        alto = sum(fila.height for fila in filas) + _SEPARACION * (len(filas) - 1)
+        lienzo = Image.new("L", (ancho, alto), 255)
+        y = 0
+        for fila in filas:
+            lienzo.paste(fila, (0, y))
+            y += fila.height + _SEPARACION
+        salida = BytesIO()
+        lienzo.save(salida, "PNG")
+        return salida.getvalue()
+
+    def leer_textos_etiquetados(self, imagen: bytes, paginas: Sequence[int]) -> dict[int, str]:
+        """El texto de cada franja del mosaico, por su etiqueta. Puede ir en otro hilo."""
+        return textos_etiquetados(self._leer(imagen), paginas)
+
+
+#: Cuánto ancho lleva la etiqueta de la página a la izquierda de cada esquina.
+_ANCHO_DE_ETIQUETA = 260
+
+
+def _fuente_de_etiqueta():
+    """Una letra grande y clara para la etiqueta: el proveedor la lee sin dudar."""
+    from PIL import ImageFont
+
+    for nombre in ("arialbd.ttf", "arial.ttf", "DejaVuSans-Bold.ttf", "DejaVuSans.ttf"):
+        try:
+            return ImageFont.truetype(nombre, 64)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def textos_etiquetados(texto: str, paginas: Sequence[int]) -> dict[int, str]:
+    """De lo que el proveedor leyó en un mosaico, el texto de cada página pedida."""
+    import re
+
+    pedidas = set(paginas)
+    textos: dict[int, str] = {}
+    trozos = re.split(r"\bP\s?(\d{1,4})\b", texto)
+    for indice in range(1, len(trozos) - 1, 2):
+        pagina = int(trozos[indice])
+        if pagina in pedidas and trozos[indice + 1].strip():
+            textos[pagina] = trozos[indice + 1].strip()
+    return textos
+
+
+def folios_etiquetados(texto: str, paginas: Sequence[int]) -> dict[int, int]:
+    """De lo que el proveedor leyó en el mosaico, el folio de cada página pedida.
+
+    Cada esquina va detrás de su etiqueta «P147»; el número que la sigue, hasta
+    la etiqueta siguiente, es el folio de esa hoja: «P147 140/V» es el folio
+    140 (la «V» dice que la hoja siguiente es su vuelto). Una etiqueta sin
+    número detrás es una esquina que no se leyó.
+    """
+    import re
+
+    pedidas = set(paginas)
+    folios: dict[int, int] = {}
+    trozos = re.split(r"\bP\s?(\d{1,4})\b", texto)
+    # re.split con un grupo: [antes, pagina, resto, pagina, resto, ...]
+    for indice in range(1, len(trozos) - 1, 2):
+        pagina = int(trozos[indice])
+        numero = re.search(r"(?<![\d.,])(\d{1,4})(?![\d.,])", trozos[indice + 1])
+        if pagina in pedidas and numero and int(numero.group(1)) > 0:
+            folios[pagina] = int(numero.group(1))
+    return folios

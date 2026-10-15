@@ -411,3 +411,87 @@ def test_la_tarjeta_lista_los_pdf_y_el_excel_del_trabajo(client):
     ]
     assert respuesta["inventario"] == "libro__inventario.xlsx"
     assert client.get("/api/jobs/no-existe/archivos").status_code == 404
+
+
+class TestQueActasSeParten:
+    """Un libro se parte por cada acta del consejo, y por nada más."""
+
+    def test_el_membrete_corrido_con_otro_numero_no_parte_el_acta(self):
+        from resolutions.domain.acta_consejo import actas_del_pdf
+
+        # La segunda hoja del acta 04 lleva el orden del día y la fecha, y un
+        # membrete copiado de otra plantilla: «Acta No. 20-2010». Es una errata,
+        # no un acta nueva.
+        libro = [
+            acta("EXTRAORDINARIA", "05", "Martes 1 de marzo de 2011"),
+            acta("EXTRAORDINARIA", "04", "Martes 15 de febrero de 2011"),
+            MEMBRETE + "Acta No. 20-2010\nConsejo de Facultad\nORDEN DEL DÍA\nFECHA: 15 de febrero\n",
+            acta("EXTRAORDINARIA", "03", "Martes 1 de febrero de 2011"),
+        ]
+
+        assert [(t.desde, t.hasta) for t in actas_del_pdf(libro).tramos] == [(1, 1), (2, 3), (4, 4)]
+
+    def test_el_acta_de_otro_organo_es_un_anexo(self):
+        from resolutions.domain.acta_consejo import actas_del_pdf
+
+        libro = [
+            acta("ORDINARIA", "009", "Lunes 2 de marzo de 2009"),
+            "PROCESO DE REACREDITACIÓN\nACTA No 01\nFECHA: 24 de febrero de 2009\nHORA: 12:30\nLUGAR: Decanatura\n",
+            "REUNIÓN DEPARTAMENTO DE MEDICINA ORAL\nACTA No. 02-2009\nDÍA: 11 de marzo\nLUGAR: Salón D\nHORA: 10:30\n",
+            acta("ORDINARIA", "008", "Lunes 16 de febrero de 2009"),
+        ]
+
+        assert [(t.desde, t.hasta) for t in actas_del_pdf(libro).tramos] == [(1, 3), (4, 4)]
+
+
+class TestLosLibrosViejos:
+    """Los libros de 2000-2006: OCR pobre y el membrete corrido con la fecha."""
+
+    @staticmethod
+    def _apertura(numero, fecha):
+        return (
+            f"CONSEJO DE FACULTAD\nACTA No. {numero}\nFECHA:\nHORA:\nLUGAR:\n{fecha}\n"
+            "08:00 HORAS\nDECANATURA\nASISTENTES: Dr. FRANKLIN BUSTILLO\n"
+        )
+
+    def test_una_hoja_del_acta_anterior_que_cita_la_fecha_no_se_la_lleva_la_siguiente(self):
+        from resolutions.domain.acta_consejo import actas_del_pdf
+
+        libro = [
+            self._apertura("04", "15 DE JUNIO 2001"),
+            "Consejo de Facultad\nActa No. 04-15-06-01\n3\nDa lectura al comunicado con fecha 9 de mayo/01",
+            self._apertura("03", "9 DE MAYO 2001"),
+        ]
+
+        assert [(t.desde, t.hasta) for t in actas_del_pdf(libro).tramos] == [(1, 2), (3, 3)]
+
+    def test_un_numero_leido_con_letras_lo_confirma_el_membrete_de_la_hoja_siguiente(self):
+        from resolutions.domain.acta_consejo import actas_del_pdf, leer_acta
+
+        libro = [
+            self._apertura("09", "13 DE DICIEMBRE DE 2001"),
+            self._apertura("OS", "2/ DE NOViEMBRE DE 2001"),
+            "Consejo de Facultad\nActa No. 08-27-11-01\n2\nde actualizar las cargas académicas",
+        ]
+
+        tramos = actas_del_pdf(libro).tramos
+        assert [(t.desde, t.hasta) for t in tramos] == [(1, 1), (2, 3)]
+        acta = leer_acta(libro[1:])
+        # El número y la fecha, del membrete corrido: «08-27-11-01».
+        assert (acta.numero, acta.fecha.isoformat()) == ("08", "2001-11-27")
+
+    @pytest.mark.parametrize(
+        ("escrito", "esperada"),
+        [
+            ("12 DE SEPTIEMBRE DE 20Ü1", "2001-09-12"),
+            ("15 DE NOVlEyBRE DEL 2000", "2000-11-15"),
+            ("07 DF, DiCIFMBRF DF 2007", "2007-12-07"),
+            ("26 DE JUNIO DE 200-3", "2003-06-26"),
+        ],
+    )
+    def test_las_fechas_que_desfigura_el_ocr(self, escrito, esperada):
+        from resolutions.domain.acta_consejo import leer_acta
+
+        acta = leer_acta([self._apertura("06", escrito)])
+
+        assert acta.fecha.isoformat() == esperada

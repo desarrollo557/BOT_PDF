@@ -40,12 +40,12 @@ const CATALOG: { id: LecturaChoice; label: string; hint: string }[] = [
   {
     id: 'local',
     label: 'Solo OCR',
-    hint: 'gratis. Lee lo impreso y lo mecanografiado. No lee lo escrito a mano'
+    hint: 'gratis: ninguna IA. Lee lo impreso y lo mecanografiado; lo dudoso va a revisión'
   },
   {
     id: 'mistral',
     label: 'OCR + IA',
-    hint: 'se paga por página. Añade lo escrito a mano: cédula, nombre, folio y fecha'
+    hint: 'la IA sólo donde el OCR no alcanza, y se paga por página: lo escrito a mano, las costuras dudosas'
   },
   {
     id: 'mistral-nombres',

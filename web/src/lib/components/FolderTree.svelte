@@ -7,6 +7,7 @@
     downloadUrl,
     makeDocumentFuid
   } from '$lib/api';
+  import Icono from '$lib/components/Icono.svelte';
   import { pageRange } from '$lib/format';
   import { jobStore } from '$lib/jobs.svelte';
   import { session } from '$lib/session.svelte';
@@ -153,12 +154,12 @@
   }
 
   const ESTADOS: Record<string, string> = {
-    queued: 'en cola',
-    running: 'leyendo',
-    paused: 'en pausa',
-    done: 'listo',
-    failed: 'falló',
-    cancelled: 'cancelado'
+    queued: 'En cola',
+    running: 'Leyendo',
+    paused: 'En pausa',
+    done: 'Listo',
+    failed: 'Falló',
+    cancelled: 'Cancelado'
   };
 </script>
 
@@ -214,15 +215,20 @@
                  acta y su fecha, que es lo que el inventario general anota. -->
             {@const actas = job.report.inventario_actas?.length ?? 1}
             <span class="cuenta" title={`${acta.acta} · ${acta.fecha}`}>
-              {actas > 1 ? `libro de ${actas} actas` : `${acta.acta} · ${acta.fecha}`}
+              {actas > 1 ? `Libro de ${actas} actas` : `${acta.acta} · ${acta.fecha}`}
             </span>
             <button
-              class="inventario"
+              class="btn btn-tonal btn-sm"
               onclick={() => inventariar(job)}
               disabled={inventario?.trabajando}
               title="Sólo esta acta. El inventario general de la carpeta, con todas, está arriba."
             >
-              {inventario?.trabajando ? 'bajando…' : actas > 1 ? 'Excel de este libro' : 'Excel de esta acta'}
+              <Icono nombre="descargar" />
+              {inventario?.trabajando
+                ? 'Descargando…'
+                : actas > 1
+                  ? 'Descargar inventario del libro (Excel)'
+                  : 'Descargar inventario del acta (Excel)'}
             </button>
           {:else if job.state === 'done' && job.report}
             <span class="cuenta tabular">
@@ -230,20 +236,26 @@
               {unidades.length === 1 ? 'unidad' : 'unidades'}
             </span>
             <button
-              class="inventario"
+              class="btn btn-tonal btn-sm"
               onclick={() => inventariar(job)}
               disabled={inventario?.trabajando}
               title="Levanta el inventario con la plantilla del tipo de documento que se reconozca, y lo descarga"
             >
-              {inventario?.trabajando ? 'levantando…' : 'Inventario'}
+              <Icono nombre="descargar" />
+              {inventario?.trabajando ? 'Levantando…' : 'Descargar inventario (Excel)'}
             </button>
           {:else}
-            <span class="cuenta estado">{ESTADOS[job.state] ?? job.state}</span>
+            <span
+              class="pill estado"
+              class:pill-bad={job.state === 'failed'}
+              class:pill-warn={job.state === 'paused' || job.state === 'cancelled'}
+              >{ESTADOS[job.state] ?? job.state}</span
+            >
           {/if}
         </div>
 
         {#if inventario?.error}
-          <p class="error">{inventario.error}</p>
+          <p class="inline-error">{inventario.error}</p>
         {:else if inventario?.aviso}
           <p class="aviso">{inventario.aviso}</p>
         {/if}
@@ -298,7 +310,7 @@
     display: flex;
     min-width: 0;
     flex-direction: column;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
   }
 
   .nodo {
@@ -341,7 +353,7 @@
 
   .glifo {
     flex: none;
-    font-size: 0.78rem;
+    font-size: var(--text-sm);
   }
 
   .etiqueta {
@@ -349,7 +361,7 @@
     min-width: 0;
     flex: 1;
     font-family: var(--font-mono);
-    font-size: 0.76rem;
+    font-size: var(--text-xs);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -364,11 +376,19 @@
 
   .cuenta {
     flex: none;
-    font-size: 0.68rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
   .estado {
-    font-family: var(--font-mono);
+    flex: none;
+    padding-block: 0;
+  }
+  /* El botón de cada fila es el `btn-sm` común, apretado a la altura de la
+     línea del árbol para que no la ensanche. */
+  .nodo .btn {
+    flex: none;
+    min-height: 0;
+    padding-block: 1px;
   }
 
   .pliegue {
@@ -395,33 +415,8 @@
   .chevron {
     flex: none;
     width: 0.7rem;
-    font-size: 0.66rem;
+    font-size: var(--text-2xs);
     color: var(--muted);
-  }
-
-  .inventario {
-    flex: none;
-    border: 1px solid color-mix(in oklab, var(--accent) 38%, var(--hairline));
-    border-radius: 7px;
-    background: color-mix(in oklab, var(--accent) 8%, transparent);
-    padding: 1px 0.5rem;
-    font: inherit;
-    font-size: 0.68rem;
-    font-weight: 600;
-    color: var(--ink-2);
-    cursor: pointer;
-    transition:
-      background 0.16s,
-      border-color 0.16s;
-  }
-  .inventario:hover:not(:disabled) {
-    border-color: var(--accent);
-    background: color-mix(in oklab, var(--accent) 16%, transparent);
-    color: var(--ink);
-  }
-  .inventario:disabled {
-    cursor: default;
-    opacity: 0.6;
   }
 
   /* El asunto es la única línea que puede ser larga, y es la que dice qué es
@@ -429,7 +424,7 @@
   .asunto {
     overflow: hidden;
     margin: 0 0 2px 2.1rem;
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--muted);
@@ -442,23 +437,20 @@
     color: var(--ink);
   }
 
-  .error {
+  .pdf > .inline-error {
     margin: 2px 0 4px 1.4rem;
-    border-left: 2px solid var(--critical);
-    padding-left: 0.5rem;
-    font-size: 0.72rem;
-    color: var(--critical);
+    font-size: var(--text-xs);
   }
   .aviso {
     margin: 0.35rem 0 0 1.9rem;
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     line-height: 1.45;
     color: var(--muted);
   }
 
   .nota {
     margin: 0.5rem 0 0;
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 </style>

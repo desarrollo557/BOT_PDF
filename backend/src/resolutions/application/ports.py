@@ -28,10 +28,6 @@ class Band:
         if not (0.0 <= self.x0 < self.x1 <= 1.0 and 0.0 <= self.y0 < self.y1 <= 1.0):
             raise ValueError(f"degenerate band: {self}")
 
-    @property
-    def area(self) -> float:
-        return (self.x1 - self.x0) * (self.y1 - self.y0)
-
 
 #: Where a resolution number lives on virtually every administrative document.
 #: Rendering this instead of the full page is a ~10x cut in OCR pixels and, when
@@ -188,19 +184,6 @@ class BoundaryOracle(Protocol):
         ...
 
 
-@runtime_checkable
-class RoiRegistry(Protocol):
-    """Remembers where the number sits for each layout that has been seen.
-
-    This is the difference between paying the model once per layout and paying it
-    once per page. The same template repeats across tens of thousands of pages.
-    """
-
-    def lookup(self, fingerprint: str) -> Band | None: ...
-
-    def remember(self, fingerprint: str, band: Band) -> None: ...
-
-
 @dataclass(frozen=True, slots=True)
 class AssemblyResult:
     """What was written, and which pages could not be.
@@ -239,8 +222,8 @@ class InventoryStore(Protocol):
 class UserStore(Protocol):
     """Dónde viven las personas dadas de alta y con qué perfil.
 
-    Diminuto a propósito, igual que el resto de los puertos: leer todo, guardar
-    uno, borrar uno. Un almacén de usuarios crece hacia consultas -- por
+    Diminuto a propósito, igual que el resto de los puertos: leer todo y guardar
+    uno. Un almacén de usuarios crece hacia consultas -- por
     perfil, por dominio de correo, por fecha de alta -- y ninguna de ellas hace
     falta sobre una lista que en este edificio cabe en una pantalla, mientras
     que cada una obligaría a implementarla también en la base de datos el día
@@ -253,10 +236,6 @@ class UserStore(Protocol):
 
     def save(self, usuario: Usuario) -> None:
         """Da de alta o sustituye por cédula. Guardar dos veces no duplica."""
-        ...
-
-    def delete(self, cedula: str) -> bool:
-        """Da de baja. Contesta si había algo que dar de baja."""
         ...
 
 

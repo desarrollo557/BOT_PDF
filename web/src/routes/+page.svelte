@@ -1,6 +1,9 @@
 <script lang="ts">
   import { createBatch, uploadDocument, withConcurrency } from '$lib/api';
+  import { confirmar } from '$lib/confirmar.svelte';
   import BatchMonitor from '$lib/components/BatchMonitor.svelte';
+  import ColaDeProcesos, { type Proceso } from '$lib/components/ColaDeProcesos.svelte';
+  import EncabezadoDePagina from '$lib/components/EncabezadoDePagina.svelte';
   import FolderRunMonitor from '$lib/components/FolderRunMonitor.svelte';
   import JobCard from '$lib/components/JobCard.svelte';
   import SingleDocumentMonitor from '$lib/components/SingleDocumentMonitor.svelte';
@@ -86,6 +89,13 @@
   let runsError = $state<string | null>(null);
 
   async function forgetClosedRuns() {
+    const seguro = await confirmar({
+      titulo: `¿Quitar las ${closedRuns.length} carpetas terminadas?`,
+      mensaje:
+        'Sólo se quitan las tarjetas: lo entregado sigue en las carpetas de destino y en el archivo.',
+      aceptar: 'Quitar todas'
+    });
+    if (!seguro) return;
     clearingRuns = true;
     runsError = null;
     try {
@@ -109,6 +119,73 @@
   const conAlgoQueVer = $derived(busy || runs.length > 0);
 
   const inFlightBytes = $derived(inFlight.reduce((sum, job) => sum + (job.bytes ?? 0), 0));
+
+  /**
+   * El flujo de la pantalla tiene dos niveles.
+   *
+   * Sin nada en curso, el asistente de carga ocupa la columna: es lo único que
+   * hay que hacer. Con algo en curso, la columna pasa a ser la cola -- qué
+   * corre, en qué orden, cuánto lleva -- y el asistente se abre sólo cuando se
+   * pide agregar otro proceso. Así no queda a la vista, a medio rellenar, un
+   * formulario que nadie está usando mientras el trabajo corre al lado.
+   */
+  let agregando = $state(false);
+
+  const procesos = $derived.by<Proceso[]>(() => {
+    const lista: Proceso[] = [];
+    for (const run of liveRuns) {
+      const tomados = run.processed + run.failed;
+      lista.push({
+        ancla: `proceso-carpeta-${run.id}`,
+        tipo: 'carpeta',
+        nombre: run.source.split(/[\\/]/).filter(Boolean).at(-1) ?? run.source,
+        estado: run.state === 'watching' ? 'vigilando' : 'procesando',
+        avance: run.discovered ? Math.min(100, (100 * tomados) / run.discovered) : null,
+        detalle:
+          `${tomados} de ${run.discovered} documentos` +
+          (run.en_curso && run.en_curso.length > 1 ? ` · ${run.en_curso.length} a la vez` : '') +
+          (run.failed ? ` · ${run.failed} con fallo` : '')
+      });
+    }
+    for (const [batchId, jobs] of activeBatches) {
+      const cerrados = jobs.filter(
+        (job) => job.state === 'done' || job.state === 'failed' || job.state === 'cancelled'
+      ).length;
+      const corriendo = jobs.some((job) => job.state === 'running');
+      const pausado = jobs.some((job) => job.state === 'paused');
+      lista.push({
+        ancla: `proceso-lote-${batchId}`,
+        tipo: 'lote',
+        nombre: jobStore.batchNames[batchId] ?? `Lote de ${jobs.length} documentos`,
+        estado: corriendo ? 'procesando' : pausado ? 'en pausa' : 'en cola',
+        avance: jobs.length ? (100 * cerrados) / jobs.length : null,
+        detalle: `${cerrados} de ${jobs.length} documentos`
+      });
+    }
+    for (const job of looseInFlight) {
+      lista.push({
+        ancla: `proceso-doc-${job.id}`,
+        tipo: 'documento',
+        nombre: job.filename,
+        estado:
+          job.state === 'running' ? 'procesando' : job.state === 'paused' ? 'en pausa' : 'en cola',
+        avance: job.progress.percent || null,
+        detalle: job.progress.page_count
+          ? `${job.progress.pages_done} de ${job.progress.page_count} páginas`
+          : 'esperando turno'
+      });
+    }
+    return lista;
+  });
+
+  // Lo agregado aparece en la cola y el asistente se pliega solo: el operador
+  // ve enseguida que su proceso entró, en su sitio de la fila.
+  let procesosAntes = 0;
+  $effect(() => {
+    const ahora = procesos.length;
+    if (ahora > procesosAntes) agregando = false;
+    procesosAntes = ahora;
+  });
 
   /**
    * Raise a report when a unit of work settles -- and only then.
@@ -237,11 +314,13 @@
     lectura: LecturaChoice = 'local',
     tipo: TipoPedido = 'auto',
     corte: CorteChoice = 'folio',
-    agrupar: AgruparChoice = 'documento'
+    agrupar: AgruparChoice = 'documento',
+    territorial = ''
   ) {
     errors = [];
     uploaded = 0;
     uploadTotal = files.length;
+    agregando = false;
 
     let batchId: string | undefined;
     if (asBatch) {
@@ -267,7 +346,7 @@
 
     await withConcurrency(files, UPLOAD_CONCURRENCY, async (file) => {
       try {
-        await uploadDocument(file, batchId, task, oracle, lectura, tipo, corte, agrupar);
+        await uploadDocument(file, batchId, task, oracle, lectura, tipo, corte, agrupar, territorial);
         consoleLog.push('UP', `${formatBytes(file.size)} subidos`, 'net', file.name);
       } catch (error) {
         errors = [...errors, `${file.name}: ${(error as Error).message}`];
@@ -285,12 +364,37 @@
      and the count on that tab is what says so. -->
 <div class="workspace-frame">
 <div class="workspace" class:busy={conAlgoQueVer}>
-  <section class="intake">
-    <div class="intake-head">
-      <h2>Cargar documentos</h2>
-    </div>
+  <!-- El encabezado de la pantalla, como en Archivo: ocupa la fila entera de la
+       rejilla, así queda alineado con el asistente cuando está solo y con las
+       dos columnas cuando hay trabajo corriendo. -->
+  <div class="cabecera">
+    <EncabezadoDePagina
+      titulo="Procesar"
+      descripcion="Elija qué va a procesar, cómo se lee y qué se entrega."
+    />
+  </div>
 
-    <UploadPanel onfiles={handle} disabled={uploading} />
+  <section class="intake">
+    {#if busy && !agregando}
+      <ColaDeProcesos {procesos} onagregar={() => (agregando = true)} subiendo={uploading} />
+    {:else}
+      <div class="intake-head">
+        {#if busy}
+          <!-- Un nivel por debajo de la cola: se dice, y se puede volver. -->
+          <nav class="sub-nivel" aria-label="Dónde está">
+            <button type="button" onclick={() => (agregando = false)}>
+              ← Procesos en curso ({procesos.length})
+            </button>
+            <span>› Agregar a la cola</span>
+          </nav>
+          <h2>Agregar otro proceso a la cola</h2>
+        {:else}
+          <h2>Cargar documentos</h2>
+        {/if}
+      </div>
+
+      <UploadPanel onfiles={handle} disabled={uploading} />
+    {/if}
 
     {#if uploading}
       <div class="progress">
@@ -302,7 +406,7 @@
     {/if}
 
     {#each errors as message}
-      <p class="error">{message}</p>
+      <p class="inline-error">{message}</p>
     {/each}
 
     {#if busy && inFlightBytes}
@@ -316,24 +420,28 @@
   {#if conAlgoQueVer}
     <section class="live">
       {#each liveRuns as run (run.id)}
-        <FolderRunMonitor {run} />
+        <div class="ancla" id={`proceso-carpeta-${run.id}`}><FolderRunMonitor {run} /></div>
       {/each}
 
       {#each activeBatches as [batchId, batchJobs] (batchId)}
-        <BatchMonitor
-          name={jobStore.batchNames[batchId] ?? `Lote de ${batchJobs.length} documentos`}
-          jobs={batchJobs}
-          {batchId}
-        />
+        <div class="ancla" id={`proceso-lote-${batchId}`}>
+          <BatchMonitor
+            name={jobStore.batchNames[batchId] ?? `Lote de ${batchJobs.length} documentos`}
+            jobs={batchJobs}
+            {batchId}
+          />
+        </div>
       {/each}
 
       {#if looseInFlight.length === 1}
         <!-- One document alone earns the full panel: with nothing to compare it
              against, the detail is what there is to look at. -->
-        <SingleDocumentMonitor job={looseInFlight[0]} />
+        <div class="ancla" id={`proceso-doc-${looseInFlight[0].id}`}>
+          <SingleDocumentMonitor job={looseInFlight[0]} />
+        </div>
       {:else if looseInFlight.length}
         {#each looseInFlight as job (job.id)}
-          <JobCard {job} />
+          <div class="ancla" id={`proceso-doc-${job.id}`}><JobCard {job} /></div>
         {/each}
       {/if}
 
@@ -341,12 +449,12 @@
         <section class="closed">
           <header>
             <h3>Carpetas terminadas ({closedRuns.length})</h3>
-            <button onclick={forgetClosedRuns} disabled={clearingRuns}>
-              {clearingRuns ? 'quitando…' : 'quitar todas'}
+            <button class="btn btn-sm btn-ghost" onclick={forgetClosedRuns} disabled={clearingRuns}>
+              {clearingRuns ? 'Quitando…' : 'Quitar todas'}
             </button>
           </header>
           {#if runsError}
-            <p class="runs-error">{runsError}</p>
+            <p class="inline-error">{runsError}</p>
           {/if}
           {#each closedRuns as run (run.id)}
             <FolderRunMonitor {run} />
@@ -385,32 +493,16 @@
   }
   .closed h3 {
     margin: 0;
-    font-size: 0.82rem;
+    font-size: var(--text-sm);
     font-weight: 600;
     letter-spacing: -0.01em;
     color: var(--ink-2);
   }
-  .closed header button {
-    border: 1px solid var(--hairline);
-    border-radius: 7px;
-    background: transparent;
-    padding: 0.2rem 0.55rem;
-    font-size: 0.72rem;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .closed header button:hover:not(:disabled) {
-    border-color: var(--axis);
-    color: var(--ink);
-  }
-  .closed header button:disabled {
-    cursor: default;
-    opacity: 0.55;
-  }
-  .runs-error {
+  /* Los fallos van en `.inline-error`; aquí sólo se le quita el margen, que
+     el hueco de la columna ya separa. */
+  .closed .inline-error,
+  .intake > .inline-error {
     margin: 0;
-    font-size: 0.75rem;
-    color: var(--critical);
   }
 
   /* Idle: the intake takes the free width beside the console, so the options
@@ -434,6 +526,13 @@
   .workspace.busy {
     justify-content: stretch;
   }
+  .cabecera {
+    grid-column: 1 / -1;
+  }
+  /* El hueco de la rejilla ya separa el encabezado de lo que sigue. */
+  .cabecera :global(.encabezado) {
+    margin-bottom: 0;
+  }
   @container workspace (min-width: 62rem) {
     .workspace.busy {
       align-items: start;
@@ -451,9 +550,35 @@
     top: 5.75rem;
   }
 
+  /* Lo que salta a un monitor desde la cola queda debajo de la barra fija. */
+  .ancla {
+    scroll-margin-top: 5.5rem;
+  }
+
+  .sub-nivel {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.4rem;
+    font-size: var(--text-sm);
+    color: var(--muted);
+  }
+  .sub-nivel button {
+    border: 0;
+    background: none;
+    padding: 0;
+    font: inherit;
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .sub-nivel button:hover {
+    text-decoration: underline;
+  }
+
   .intake-head h2 {
     margin: 0;
-    font-size: 1.15rem;
+    font-size: var(--text-lg);
     font-weight: 650;
     letter-spacing: -0.015em;
   }
@@ -461,7 +586,7 @@
   .progress .track {
     height: 6px;
     overflow: hidden;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--grid);
   }
   .progress .fill {
@@ -472,22 +597,13 @@
   }
   .progress p {
     margin: 0.45rem 0 0;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     color: var(--muted);
-  }
-
-  .error {
-    margin: 0;
-    border-left: 2px solid var(--critical);
-    padding-left: 0.65rem;
-    font-size: 0.82rem;
-    color: var(--critical);
   }
 
   .weighing {
     margin: 0;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -500,7 +616,7 @@
 
   .closing {
     margin: 0;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     color: var(--muted);
   }
   .closing a {

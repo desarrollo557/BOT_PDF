@@ -7,7 +7,6 @@ from fastapi import APIRouter, HTTPException
 from ...application.control import RunState
 from ..contexto import Ctx
 from ..jobs import IN_FLIGHT, JobState
-from .trabajos import _discard_outputs
 
 router = APIRouter()
 
@@ -28,37 +27,6 @@ async def get_batch(ctx: Ctx, batch_id: str) -> dict[str, object]:
     if batch is None:
         raise HTTPException(status_code=404, detail="El lote no existe")
     return ctx.registry.batch_summary(batch)
-
-@router.patch("/api/batches/{batch_id}")
-async def rename_batch(ctx: Ctx, batch_id: str, payload: dict) -> dict[str, object]:
-    batch = ctx.registry.get_batch(batch_id)
-    if batch is None:
-        raise HTTPException(status_code=404, detail="El lote no existe")
-    name = str(payload.get("name") or "").strip()
-    if not name:
-        raise HTTPException(status_code=422, detail="El nombre no puede quedar vacio")
-    batch.name = name
-    for job_id in batch.job_ids:
-        job = ctx.registry.get(job_id)
-        if job is not None:
-            ctx.registry.publish(job)
-    return ctx.registry.batch_summary(batch)
-
-@router.delete("/api/batches/{batch_id}")
-async def delete_batch(ctx: Ctx, batch_id: str, purge: bool = False) -> dict[str, object]:
-    """Clear a whole batch off the screen. Documents still running are kept."""
-    batch = ctx.registry.get_batch(batch_id)
-    if batch is None:
-        raise HTTPException(status_code=404, detail="El lote no existe")
-
-    removed: list[str] = []
-    for job_id in list(batch.job_ids):
-        if ctx.registry.remove(job_id) is None:
-            continue
-        removed.append(job_id)
-        if purge:
-            _discard_outputs(ctx, job_id)
-    return {"removed": len(removed), "ids": removed, "purged": purge}
 
 @router.post("/api/batches/{batch_id}/{action}")
 async def steer_batch(ctx: Ctx, batch_id: str, action: str) -> dict[str, object]:
@@ -84,7 +52,10 @@ async def steer_batch(ctx: Ctx, batch_id: str, action: str) -> dict[str, object]
         if job is None or job.state not in IN_FLIGHT:
             continue
         ctx.controls[job_id] = str(estados[action])
-        if action == "pause" and job.state is JobState.RUNNING:
+        if action == "cancel":
+            # En el acto, como el de un documento suelto.
+            ctx.registry.mark_cancelled(job)
+        elif action == "pause" and job.state is JobState.RUNNING:
             ctx.registry.mark_paused(job)
         elif action == "resume" and job.state is JobState.PAUSED:
             ctx.registry.mark_resumed(job)

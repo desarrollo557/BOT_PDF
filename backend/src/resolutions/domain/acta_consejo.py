@@ -85,18 +85,31 @@ _DIA = "lunes|martes|miercoles|jueves|viernes|sabado|domingo"
 #: Delante sólo se toleran unos pocos signos, que es lo que el OCR deja de los
 #: bordes. Lo que no abre el renglón no es un encabezado: es una cita.
 _ENCABEZADO = re.compile(
-    r"^[^\w\n]{0,6}ACTA\s+"
+    # «ACTAN° 002»: el OCR pega la N a ACTA.
+    r"^[^\w\n]{0,6}ACTA(?:\s+|(?=N[°º”“»\"']))"
     r"(?:DEL?\s+)?"
     r"(?:(?:LA\s+)?(?:SESION|REUNION)\s+)?"
     r"(?:CONSEJO\s+DE\s+[A-Z]{5,10}\s+)?"
     r"(?:(?P<sesion>ORDINARI[AO]|EXTRA?ORDINARI[AO])\s*[-–.]?\s*)?"
-    r"(?P<rotulo>N(?:RO|UM|O|º|°)?\s*[.:°º,]?|NUMERO|#)?\s*"
-    r"(?P<numero>[0-9OIl]{1,3})(?!\w)",
+    # El «°» del número lo lee el OCR como comillas: «ACTA N” 019», «N» 023».
+    r"(?P<rotulo>N(?:RO|UM|O|º|°|[”“»\"'])?\s*[.:°º,”“»\"']?|NUMERO|#)?\s*"
+    # Las letras que el OCR confunde con cifras: O/I/l, y en mayúscula S, B, G
+    # y Z («ACTA No. OS» era el 08). Un número con letras se confirma después
+    # con el membrete corrido de la hoja siguiente.
+    r"(?P<numero>(?:[0-9OIl]|(?-i:[SBGZ])){1,3})(?!\w)",
     re.IGNORECASE | re.MULTILINE,
 )
 
+#: El año pegado detrás del número: «Acta No. 022-2012», el membrete corrido.
+_CORRIDO = re.compile(r"\s*[-–]\s*(?:19|20)\d\d\b")
+
 #: Lo que el OCR pone en lugar de una cifra dentro del número del acta.
-_CIFRAS_DEL_OCR = str.maketrans("OoIl", "0011")
+_CIFRAS_DEL_OCR = str.maketrans("OoIlSBGZ", "00115862")
+#: Las letras que no son una lectura segura de una cifra: el número que las
+#: lleva se coteja con el membrete corrido de las hojas que siguen.
+_LETRAS_DUDOSAS = set("SBGZ")
+#: Cuántas hojas detrás del encabezado se busca el membrete que lo confirma.
+HOJAS_PARA_CONFIRMAR = 2
 
 #: Los rótulos de la tabla con que abre un acta: «FECHA: / HORA: / LUGAR: /
 #: ASISTENTES: / ORDEN DEL DÍA». Dos en la misma hoja dicen que ahí empieza una
@@ -113,6 +126,12 @@ _ORGANOS = (
     ("CONSEJO ACADEMICO", "consejo academico"),
     ("CONSEJO SUPERIOR", "consejo superior"),
     ("REUNION DE DEPARTAMENTO", "reunion"),
+    ("REUNION DEL DEPARTAMENTO", "reunion"),
+    ("REUNION DEPARTAMENTO", "reunion"),
+    # Las mesas de trabajo de la acreditación levantan sus propias actas, y el
+    # consejo las recibe como anexo: «PROCESO DE REACREDITACIÓN / ACTA No 01».
+    ("REACREDITACION", "comite"),
+    ("AUTOEVALUACION", "comite"),
     ("REUNION DE DOCENTES", "reunion"),
     ("REUNION DE PROFESORES", "reunion"),
     ("CONSEJO DE FACULTAD", "consejo de facultad"),
@@ -168,6 +187,20 @@ class ActaDeConsejo:
     dia_impreso: str | None = None
     #: En qué página se encontró el encabezado.
     pagina: int | None = None
+    #: Cómo se llama el acta: «ACTA» en un consejo, «ACTA DE GRADO» en un libro
+    #: de grados. Es lo que abre su encabezado en el inventario.
+    rotulo: str = "ACTA"
+    #: De un acta de grado, quién se graduó y de qué: lo que lleva su fila del
+    #: FUID. En un acta de consejo no hay graduado y quedan en ``None``.
+    nombre: str | None = None
+    titulo: str | None = None
+    cedula: str | None = None
+    #: Lo que se leyó pero no es seguro, dicho para la columna de notas.
+    dudas: tuple[str, ...] = ()
+    #: Si la hoja es una constancia de la secretaría que copia un acta antigua
+    #: y no el acta misma: no trae cédula ni título, y su fecha es la de
+    #: expedición.
+    constancia: bool = False
 
     @property
     def encabezado(self) -> str | None:
@@ -175,7 +208,7 @@ class ActaDeConsejo:
         if self.numero is None:
             return None
         clase = f" {self.sesion}" if self.sesion else ""
-        return f"ACTA{clase} No. {self.numero}"
+        return f"{self.rotulo}{clase} No. {self.numero}"
 
     @property
     def fecha_larga(self) -> str | None:
@@ -254,18 +287,43 @@ def encabezados_de_acta(paginas: Sequence[str]) -> list[EncabezadoDeActa]:
                 or (not any(c.isdigit() for c in crudo) and not match.group("rotulo"))
             ):
                 continue
+            if _LETRAS_DUDOSAS & set(crudo):
+                cifras = _confirmado_por_el_corrido(paginas, numero_de_pagina, cifras)
             sesion = _sesion(match.group("sesion"))
+            # «Acta No. 20-2010»: el número con el año pegado es el membrete
+            # corrido de las hojas que siguen al encabezado, nunca una apertura.
+            # La segunda hoja de un acta lleva el orden del día y la fecha, y
+            # con eso parecía abrir sesión; si además la secretaría copió la
+            # plantilla de otra acta sin cambiarle el número, partía el acta en
+            # dos por una errata. Un acta se abre con su encabezado completo.
+            corrido = _CORRIDO.match(plano, match.end()) is not None
             encontrados.append(
                 EncabezadoDeActa(
                     pagina=numero_de_pagina,
                     numero=cifras,
                     sesion=sesion,
-                    fuerte=bool(sesion) or apertura,
+                    fuerte=(bool(sesion) or apertura) and not corrido,
                     organo=_organo(mayusculas, match.start(), match.end()),
                     fin=match.end(),
                 )
             )
     return encontrados
+
+
+def _confirmado_por_el_corrido(paginas: Sequence[str], pagina: int, cifras: str) -> str:
+    """El número de un encabezado leído con letras, tal como lo dice su membrete.
+
+    «ACTA No. OS» puede ser el 05 o el 08: la S se parece a las dos. La hoja
+    siguiente lo dice sin dudas en su membrete corrido, «Acta No. 08-27-11-01»,
+    y es ése el que vale. Si ninguna hoja cercana lo confirma, se queda la
+    lectura más probable.
+    """
+    for siguiente in range(pagina, min(pagina + HOJAS_PARA_CONFIRMAR, len(paginas))):
+        cabecera = re.sub(r"\s+", " ", _plano(paginas[siguiente][:CABECERA_DE_APERTURA]).upper())
+        corrido = _CORRIDO_DE_OTRA.search(cabecera)
+        if corrido:
+            return corrido.group(1).zfill(len(cifras))
+    return cifras
 
 
 def _organo(texto: str, inicio: int, fin: int) -> str | None:
@@ -289,13 +347,46 @@ def organo_dominante(encabezados: Sequence[EncabezadoDeActa]) -> str | None:
     como dominantes, y filtrar por «Consejo de Facultad» lo dejaría vacío.
     """
     cuenta = Counter(e.organo for e in encabezados if e.fuerte and e.organo)
-    return cuenta.most_common(1)[0][0] if cuenta else None
+    # Un libro es de un consejo: las reuniones y los comités son sus anexos,
+    # aunque sean más. Una sesión con cuatro actas de reunión anexadas tenía
+    # «reunion» por mayoría, y la sesión del consejo quedaba como anexo.
+    consejos = Counter({organo: n for organo, n in cuenta.items() if organo.startswith("consejo")})
+    elegidos = consejos or cuenta
+    return elegidos.most_common(1)[0][0] if elegidos else None
 
 
 def encabezados_del_libro(encabezados: Sequence[EncabezadoDeActa]) -> list[EncabezadoDeActa]:
-    """Los encabezados que son del órgano del libro: sin los de sus anexos."""
+    """Los encabezados que son del órgano del libro: sin los de sus anexos.
+
+    Y sin el membrete corrido de esos anexos cuando el OCR se comió el nombre
+    del órgano: en UPD3859787 el «ACTA No. 3 CONSEJO ACADÉMICO» de la página 22
+    se reconocía como anexo, pero su «Acta No. 03 de 2015» de la 26 -- con el
+    órgano leído «ÑOnSftlO ArarlAmlm» -- abría un acta del libro que no existe.
+    El mismo número pocas hojas después, sin órgano y sin que el libro haya
+    abierto una suya en medio, es el mismo anexo.
+    """
     dominante = organo_dominante(encabezados)
-    return [e for e in encabezados if e.organo in (None, dominante)]
+    propios: list[EncabezadoDeActa] = []
+    anexo: EncabezadoDeActa | None = None
+    for encabezado in encabezados:
+        if encabezado.organo not in (None, dominante):
+            anexo = encabezado
+            continue
+        if encabezado.organo is not None:
+            anexo = None
+        elif (
+            anexo is not None
+            and encabezado.valor == anexo.valor
+            and encabezado.pagina - anexo.pagina <= HOJAS_DEL_MEMBRETE_DEL_ANEXO
+        ):
+            continue
+        propios.append(encabezado)
+    return propios
+
+
+#: Hasta cuántas hojas después del encabezado de un anexo se toma su número
+#: repetido, sin órgano legible, por su membrete corrido.
+HOJAS_DEL_MEMBRETE_DEL_ANEXO = 15
 
 
 def leer_acta(paginas: Sequence[str], *, hoy: date | None = None) -> ActaDeConsejo:
@@ -310,6 +401,14 @@ def leer_acta(paginas: Sequence[str], *, hoy: date | None = None) -> ActaDeConse
     # que no la dicen suelen ser el membrete corrido de las páginas siguientes
     # («Acta No. 022-2012»). Después el que abre la tabla de la sesión, y entre
     # iguales, el primero.
+    #
+    # Pero sólo entre los de la hoja que abre el acta: cuando un tramo lleva
+    # unidos sus anexos -- la sesión 17 con un correo impreso «ACTA 1 DE
+    # AGOSTO» detrás --, el encabezado del anexo no puede ganarle al de la
+    # sesión por decir «ordinaria».
+    fuertes = [e for e in encontrados if e.fuerte]
+    if fuertes:
+        encontrados = [e for e in encontrados if e.pagina == fuertes[0].pagina]
     elegido = next(
         (e for e in encontrados if e.sesion),
         next((e for e in encontrados if e.fuerte), encontrados[0]),
@@ -326,6 +425,8 @@ def leer_acta(paginas: Sequence[str], *, hoy: date | None = None) -> ActaDeConse
         fecha, dia = _fecha_rotulada(paginas, hoy=hoy)
     if fecha is None:
         fecha, dia = _fecha_en(texto[elegido.fin :], hoy=hoy)
+    if fecha is None:
+        fecha = _fecha_del_corrido(paginas, elegido.valor, hoy=hoy)
 
     return ActaDeConsejo(
         numero=elegido.numero,
@@ -334,6 +435,35 @@ def leer_acta(paginas: Sequence[str], *, hoy: date | None = None) -> ActaDeConse
         dia_impreso=dia,
         pagina=elegido.pagina,
     )
+
+
+#: El membrete corrido de los libros de 2000-2006, que lleva la fecha de la
+#: sesión: «Acta No. 08-27-11-01» es el acta 08 del 27 de noviembre de 2001.
+_CORRIDO_CON_FECHA = re.compile(
+    r"\bACTA\s*\S{0,4}\s*0*(\d{1,3})\s*[-–]\s*(\d{1,2})\s*[-–]\s*(\d{1,2})\s*[-–]\s*(\d{2,4})\b",
+    re.IGNORECASE,
+)
+
+
+def _fecha_del_corrido(
+    paginas: Sequence[str], numero: int, *, hoy: date | None
+) -> date | None:
+    """La fecha que trae el membrete corrido del acta, cuando el encabezado no la deja leer.
+
+    Sólo del membrete de **esta** acta -- el mismo número --: el de un acta
+    vecina citada en el texto daría la fecha de otra sesión.
+    """
+    for texto in paginas:
+        for match in _CORRIDO_CON_FECHA.finditer(_plano(texto)):
+            if int(match.group(1)) != numero:
+                continue
+            dia, mes, anio = int(match.group(2)), int(match.group(3)), int(match.group(4))
+            if anio < 100:
+                anio += 2000 if anio < 50 else 1900
+            fecha = _valida(dia, mes, anio, hoy)
+            if fecha is not None:
+                return fecha
+    return None
 
 
 def _sesion(valor: str | None) -> str | None:
@@ -364,6 +494,56 @@ def _fecha_rotulada(
     return None, None
 
 
+#: Un año con letras donde el OCR no vio cifras: «20Ü1» (que sin tildes queda
+#: «20U1»), «2OO0», «2O11». Sólo cuatro caracteres que empiezan por 19 o 20.
+_ANIO_DEL_OCR = re.compile(r"\b(?:19|2[0OoUuD])[0-9OoUuDIl]{2}\b")
+_CIFRA_DEL_OCR = str.maketrans("OoUuDIl", "0000011")
+
+#: Un mes entre el día y el año, escrito como sea: «15 DE NOVlEyBRE DEL 2000».
+#: «07 DF, DiCIFMBRF DF 2007»: el «de» también sale como «DF».
+_MES_ENTRE_DIA_Y_ANIO = re.compile(
+    r"\b(\d{1,2})\s*,?\s+(?:d[ef][,.]?\s+)?([a-z]{4,11})\s*,?\s*(?:d[ef]l?[,.]?\s+)?((?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
+#: Un año con un guion o un punto colado: «26 DE JUNIO DE 200-3».
+_ANIO_PARTIDO = re.compile(r"\b(19|20)(\d)\s*[-–.]\s*(\d)\b")
+
+#: Cuánto tiene que parecerse una palabra a un mes para leerla como tal.
+PARECIDO_DEL_MES = 0.7
+
+
+def _fechas_sin_ocr(plano: str) -> str:
+    """El texto con los años y los meses que el OCR desfiguró, devueltos a su forma.
+
+    Las actas de 2000-2006 están escaneadas de copias con poco contraste y el
+    OCR deja «12 DE SEPTIEMBRE DE 20Ü1» o «15 DE NOVlEyBRE DEL 2000»: la fecha
+    está, pero no se lee. Se arregla sólo donde no hay duda de qué es -- un año
+    de cuatro caracteres que empieza por 19 o 20, una palabra entre un día y un
+    año que se parece a un mes -- y letra por letra, sin tocar nada más.
+    """
+    import difflib
+
+    texto = _ANIO_DEL_OCR.sub(lambda m: m.group(0).translate(_CIFRA_DEL_OCR), plano)
+
+    texto = _ANIO_PARTIDO.sub(r"\1\2\3", texto)
+
+    def mes(match: re.Match[str]) -> str:
+        dia, palabra, anio = match.groups()
+        if palabra.lower() in MESES:
+            nombre = palabra.lower()
+        else:
+            parecido = difflib.get_close_matches(
+                palabra.lower(), list(MESES), n=1, cutoff=PARECIDO_DEL_MES
+            )
+            if not parecido:
+                return match.group(0)
+            nombre = parecido[0]
+        # Con los «de» en su sitio, que es la forma que reconoce la fecha.
+        return f"{dia} de {nombre} de {anio}"
+
+    return _MES_ENTRE_DIA_Y_ANIO.sub(mes, texto)
+
+
 def _fecha_en(
     texto: str, *, hoy: date | None, al_principio: bool = False
 ) -> tuple[date | None, str | None]:
@@ -372,7 +552,7 @@ def _fecha_en(
     ``al_principio`` exige que la fecha abra el texto, que es lo que pide una
     fecha rotulada: lo que va detrás de «FECHA:» y no cualquiera de más allá.
     """
-    plano = _plano(texto)
+    plano = _fechas_sin_ocr(_plano(texto))
     candidatas: list[tuple[int, date, str | None]] = []
     for match in _FECHA_DIA_MES.finditer(plano):
         dia_semana, dia, mes, anio = match.groups()
@@ -416,6 +596,12 @@ def _valida(dia: int, mes: int, anio: int, hoy: date | None) -> date | None:
 #: asistencia, y alguna carta anexa intercalada --.
 _PORTADA = re.compile(r"\bN\s*[O0]?\s*[.:,]?\s*0*(\d{1,3})\s*[-–]\s*\d{1,2}\b")
 
+#: El membrete corrido de un acta en lo alto de una hoja: «Acta No. 04-15-06-01»,
+#: «Acta No. 022-2012», y lo que el OCR deja de ellos («Acta í^o. 04-15…»). El
+#: número va seguido de un guion y una cifra, que es lo que lo distingue de un
+#: encabezado que abre sesión.
+_CORRIDO_DE_OTRA = re.compile(r"\bACTA\s*\S{0,4}\s*0*(\d{1,3})\s*[-–]\s*\d")
+
 #: Por debajo de cuántos caracteres una hoja es una portada y no una página.
 PORTADA_MAXIMA = 250
 
@@ -431,6 +617,14 @@ class TramoDeActa:
 
     desde: int
     hasta: int
+    #: Si son las hojas de una ceremonia de grado que no son de ningún
+    #: graduado: el listado de graduandos, la resolución que la autoriza, la
+    #: portada. Salen en su propio PDF y no llevan fila en el FUID.
+    ceremonia: bool = False
+    #: Cuántos folios ocupa, cuando se sabe por la forma del libro: el acta de
+    #: un graduado es una hoja, con su reverso. ``None`` en las de consejo, que
+    #: se cuentan por la tinta de la esquina.
+    hojas: int | None = None
 
     @property
     def paginas(self) -> int:
@@ -449,6 +643,131 @@ class ActasDelPdf:
     @property
     def es_libro(self) -> bool:
         return len(self.tramos) > 1
+
+
+#: El acta que declara el nombre del archivo: «1ACTA N°22 16 DE DICIEMBRE 2013»,
+#: «1SESION ORDINARIA N° 018 MARTES 09 DE SEPTIEMBRE 2014», «2N° 002-02 DE
+#: FEBRERO DE 2012».
+_DECLARADA = re.compile(
+    r"(?<![A-Z])N\W{0,3}\s*(?P<numero>\d{1,3})\b.*?(?P<dia>\d{1,2})\s*(?:DE\s+)?(?P<mes>[A-Z]{3,})"
+    r"\s*(?:DE\s+|DEL\s+)?(?P<anio>(?:19|20)\d\d)"
+)
+
+
+#: El número más alto que se cree como número de acta en el nombre de un libro:
+#: «2011 N°1 AL 449» cuenta folios, no actas.
+NUMERO_DE_ACTA_MAXIMO = 60
+
+
+def numeros_del_nombre(nombre: str) -> set[int] | None:
+    """Las actas que el nombre de un libro dice traer, o ``None`` si no lo dice.
+
+    «ACTAS 7 Y 8», «ACTAS DE CONSEJO N°13 AL 21 2016», «N°22 Y 23 2016», «N°
+    2-3-4-10-11-13 20…». Un rango que pasa de las sesiones de un año -- «N°1
+    AL 449» -- son folios, y no dice nada de las actas.
+    """
+    plano = _plano(nombre.rsplit(".", 1)[0]).upper()
+    rango = re.search(r"\b(\d{1,3})\s+AL\s+(\d{1,3})\b", plano)
+    if rango:
+        desde, hasta = int(rango.group(1)), int(rango.group(2))
+        if desde <= hasta <= NUMERO_DE_ACTA_MAXIMO:
+            return set(range(desde, hasta + 1))
+        return None
+    lista = re.search(r"\bACTAS\b.*?\b(\d{1,3}(?:\s*(?:-|,|\bY\b)\s*\d{1,3})+)\b", plano)
+    if lista:
+        numeros = {int(n) for n in re.findall(r"\d{1,3}", lista.group(1))}
+        # Sin un año colado: «2-3-4-10-11-13 20» corta el «2018» del final.
+        numeros = {n for n in numeros if 0 < n <= NUMERO_DE_ACTA_MAXIMO}
+        return numeros if len(numeros) >= 2 else None
+    return None
+
+
+def sin_actas_ajenas_al_nombre(
+    reparto: ActasDelPdf, paginas: Sequence[str], numeros: set[int]
+) -> ActasDelPdf:
+    """Une a la sesión anterior las actas cuyo número no está entre los que el nombre dice.
+
+    «…DEPARTAMENTO ACADEMICO 2015- ACTAS 7 Y 8» trae delante de la sesión 007
+    el «ACTA DE REUNIONES N° 40» de otra dependencia: no es el 7 ni el 8, así
+    que es un anexo. Lo que va antes de la primera acta del nombre pasa a ser de
+    las páginas previas. Si ninguna acta del libro está en el nombre, el nombre
+    no sirve y no se toca nada.
+    """
+    actas = [leer_acta(paginas[t.desde - 1 : t.hasta]) for t in reparto.tramos]
+    propias = [
+        a.numero is not None and a.numero.isdigit() and int(a.numero) in numeros for a in actas
+    ]
+    if not any(propias):
+        return reparto
+    unidos: list[TramoDeActa] = []
+    previas = reparto.previas
+    for tramo, propia in zip(reparto.tramos, propias, strict=True):
+        if propia:
+            unidos.append(tramo)
+        elif unidos:
+            unidos[-1] = TramoDeActa(unidos[-1].desde, tramo.hasta)
+        else:
+            previas = (1, tramo.hasta)
+    return ActasDelPdf(tramos=tuple(unidos), previas=previas)
+
+
+def acta_del_nombre(nombre: str) -> tuple[int, date] | None:
+    """El número y la fecha del acta que dice el nombre del archivo, si dice una.
+
+    Un nombre en plural -- «ACTAS DE CONSEJO N°1 AL 449» -- no declara un acta,
+    y uno sin fecha completa tampoco.
+    """
+    plano = _plano(nombre.rsplit(".", 1)[0]).upper()
+    if re.search(r"\bACTAS\b", plano):
+        return None
+    encontrado = _DECLARADA.search(plano)
+    if not encontrado:
+        return None
+    mes = MESES.get(encontrado.group("mes").lower())
+    if mes is None:
+        return None
+    try:
+        fecha = date(int(encontrado.group("anio")), mes, int(encontrado.group("dia")))
+    except ValueError:
+        return None
+    return int(encontrado.group("numero")), fecha
+
+
+def sin_anexos_anteriores(
+    reparto: ActasDelPdf, paginas: Sequence[str], numero: int, fecha: date
+) -> ActasDelPdf:
+    """Une a su acta las que el PDF trae dentro y son anexos suyos.
+
+    El nombre del archivo dice qué acta es -- «1ACTA N°22 16 DE DICIEMBRE
+    2013» --. Un acta de otro número fechada ese día o antes, que no es una
+    sesión del consejo -- no dice si es ordinaria o extraordinaria, o su
+    cabecera no nombra al consejo --, es un anexo de esa: el «ACTA DE REUNIONES
+    / ACTA N° 01» de la División de Calidad que la sesión 22 trae en la página
+    29, las actas de la vicedecanatura de la sesión 018. Una sesión del consejo
+    anterior sigue siendo suya -- la extraordinaria 001 del 26-01-2012 dentro
+    de «2N° 002-02 DE FEBRERO DE 2012» --, y las posteriores también.
+    """
+    unidos: list[TramoDeActa] = []
+    for tramo in reparto.tramos:
+        if unidos and _es_anexo_de(paginas[tramo.desde - 1 : tramo.hasta], numero, fecha):
+            unidos[-1] = TramoDeActa(unidos[-1].desde, tramo.hasta)
+        else:
+            unidos.append(tramo)
+    return ActasDelPdf(tramos=tuple(unidos), previas=reparto.previas)
+
+
+#: Cuánto de la cabecera de un acta se mira para saber si es del consejo.
+CABECERA_DEL_ACTA = 1500
+
+
+def _es_anexo_de(paginas: Sequence[str], numero: int, fecha: date) -> bool:
+    acta = leer_acta(paginas)
+    if acta.fecha is None or acta.fecha > fecha:
+        return False
+    if acta.numero and acta.numero.isdigit() and int(acta.numero) == numero:
+        return False
+    cabecera = " ".join(_plano(pagina).upper() for pagina in paginas[:2])[:CABECERA_DEL_ACTA]
+    return acta.sesion is None or "CONSEJO" not in cabecera
 
 
 def actas_del_pdf(paginas: Sequence[str], *, hoy: date | None = None) -> ActasDelPdf:
@@ -485,11 +804,81 @@ def actas_del_pdf(paginas: Sequence[str], *, hoy: date | None = None) -> ActasDe
         _apertura(paginas, encabezado, inicios[indice - 1].pagina + 1 if indice else 1, hoy)
         for indice, encabezado in enumerate(inicios)
     ]
+    # Cada acta empieza después de la anterior. Varios encabezados en la misma
+    # hoja -- un índice que cita las actas 3, 4 y 5 -- abrían un tramo cada uno
+    # en esa hoja, y los de en medio salían vacíos: «páginas 51-50», sin número
+    # ni fecha, y un PDF sin páginas al dividir. Ante la duda, unir.
+    crecientes: list[int] = []
+    for desde in comienzos:
+        if not crecientes or desde > crecientes[-1]:
+            crecientes.append(desde)
+    comienzos = crecientes
+    if len(comienzos) <= 1:
+        return ActasDelPdf(
+            tramos=(TramoDeActa(comienzos[0], max(comienzos[0], total)),),
+            previas=(1, comienzos[0] - 1) if comienzos[0] > 1 else None,
+        )
     tramos = tuple(
         TramoDeActa(desde, comienzos[indice + 1] - 1 if indice + 1 < len(comienzos) else total)
         for indice, desde in enumerate(comienzos)
     )
-    return ActasDelPdf(tramos=tramos, previas=(1, comienzos[0] - 1) if comienzos[0] > 1 else None)
+    reparto = ActasDelPdf(tramos=tramos, previas=(1, comienzos[0] - 1) if comienzos[0] > 1 else None)
+    return sin_actas_fuera_de_serie(reparto, paginas, hoy=hoy)
+
+
+#: Cuántas actas por delante se mira si la numeración del libro sigue.
+ACTAS_PARA_SEGUIR_LA_SERIE = 8
+
+
+def sin_actas_fuera_de_serie(
+    reparto: ActasDelPdf, paginas: Sequence[str], *, hoy: date | None = None
+) -> ActasDelPdf:
+    """Une a la sesión anterior las actas que rompen la numeración seguida del libro.
+
+    Un libro numera sus sesiones seguidas -- 13, 14, 15… -- y lo que trae en
+    medio con otro número es un anexo: en «ACTAS DE CONSEJO N°13 AL 21 2016»
+    van entre las sesiones un «ACTA DE COMITE NORMATIVO No. 5», el acta de una
+    reunión de departamento «No. 1» y un correo impreso. Se reconocen porque
+    su número es menor que el de la sesión anterior, son del mismo año, y
+    detrás la numeración sigue donde iba: 17, «1», «02», 18.
+
+    Un libro que empieza la numeración cada año -- de 2007 a 2009, 01 otra
+    vez en enero -- no pierde nada: el número baja, pero cambia el año.
+    """
+    if len(reparto.tramos) < 3:
+        return reparto
+    actas = [leer_acta(paginas[t.desde - 1 : t.hasta], hoy=hoy) for t in reparto.tramos]
+    numeros = [int(a.numero) if a.numero and a.numero.isdigit() else None for a in actas]
+    unidos: list[TramoDeActa] = []
+    ultimo: int | None = None  # el índice de la última sesión que se quedó
+    for indice, tramo in enumerate(reparto.tramos):
+        if ultimo is not None and _fuera_de_serie(indice, ultimo, numeros, actas):
+            unidos[-1] = TramoDeActa(unidos[-1].desde, tramo.hasta)
+            continue
+        unidos.append(tramo)
+        ultimo = indice
+    return ActasDelPdf(tramos=tuple(unidos), previas=reparto.previas)
+
+
+def _fuera_de_serie(
+    indice: int, ultimo: int, numeros: Sequence[int | None], actas: Sequence[ActaDeConsejo]
+) -> bool:
+    numero, anterior = numeros[indice], numeros[ultimo]
+    if numero is None or anterior is None or numero >= anterior:
+        return False
+    fecha, fecha_anterior = actas[indice].fecha, actas[ultimo].fecha
+    if fecha is not None and fecha_anterior is not None and fecha.year != fecha_anterior.year:
+        return False
+    # La numeración sigue donde iba, y en el mismo año: en un libro ordenado de
+    # la última sesión a la primera -- 09, 08… 01 de 2001 y luego 07… de 2000
+    # -- el «07» que viene después es de otro año y no dice nada.
+    for siguiente in range(indice + 1, min(indice + 1 + ACTAS_PARA_SEGUIR_LA_SERIE, len(numeros))):
+        if numeros[siguiente] != anterior + 1:
+            continue
+        otra = actas[siguiente].fecha
+        if otra is None or fecha_anterior is None or otra.year == fecha_anterior.year:
+            return True
+    return False
 
 
 def _apertura(
@@ -515,6 +904,13 @@ def _apertura(
     desde = encabezado.pagina
     for pagina in range(encabezado.pagina - 1, limite - 1, -1):
         cabecera = re.sub(r"\s+", " ", _plano(paginas[pagina - 1][:CABECERA_DE_APERTURA]).upper())
+        # Una hoja con el membrete corrido de otra acta es la continuación de
+        # esa acta, aunque cite la fecha de la siguiente: «Acta No. 04-15-06-01
+        # … con fecha 9 de mayo/01» es el acta 04 hablando de un oficio, no la
+        # citación del acta 03.
+        corrido = _CORRIDO_DE_OTRA.search(cabecera)
+        if corrido and int(corrido.group(1)) != encabezado.valor:
+            break
         if not any(marca in cabecera for marca in marcas):
             break
         desde = pagina
@@ -633,6 +1029,44 @@ def folios_que_cuadran(numeros: Sequence[int], hojas: int) -> tuple[int, int] | 
         return None
     mejores = candidatas[min(candidatas)]
     return next(iter(mejores)) if len(mejores) == 1 else None
+
+
+#: Cuántas actas fechadas a cada lado se miran para saber si una fecha cuadra.
+VECINAS_PARA_FECHAR = 4
+#: Cuántos años se puede apartar una fecha de la de sus vecinas antes de que se
+#: tenga por mal leída.
+ANIOS_DE_DESVIO = 2
+#: Cuántas vecinas fechadas hacen falta para tener una fecha por mal leída.
+VECINAS_MINIMAS = 3
+
+
+def fechas_fuera_de_lugar(fechas: Sequence[date | None]) -> dict[int, tuple[int, int]]:
+    """Las fechas de un libro que no cuadran con las de sus actas vecinas.
+
+    Un libro va en orden: las actas de 2007 a 2009 no traen una del 16-01-2000,
+    ni las de grado de 1981 a 1983 una de 1947. Esas fechas salen de leer otra
+    cosa -- el año de una resolución citada, la cédula, un número roto --, y una
+    fecha mal puesta es peor que ninguna: se ordena y se filtra por ella. Se
+    devuelve, por la posición de cada fecha que no cuadra, el rango de años de
+    sus vecinas.
+    """
+    fechadas = [(indice, fecha) for indice, fecha in enumerate(fechas) if fecha is not None]
+    fuera: dict[int, tuple[int, int]] = {}
+    for posicion, (indice, fecha) in enumerate(fechadas):
+        vecinas = [
+            otra.year
+            for _i, otra in (
+                fechadas[max(0, posicion - VECINAS_PARA_FECHAR) : posicion]
+                + fechadas[posicion + 1 : posicion + 1 + VECINAS_PARA_FECHAR]
+            )
+        ]
+        # Con menos de tres vecinas fechadas no hay de qué fiarse.
+        if len(vecinas) < VECINAS_MINIMAS:
+            continue
+        mediana = sorted(vecinas)[len(vecinas) // 2]
+        if abs(fecha.year - mediana) > ANIOS_DE_DESVIO:
+            fuera[indice] = (min(vecinas), max(vecinas))
+    return fuera
 
 
 def folios_por_continuidad(

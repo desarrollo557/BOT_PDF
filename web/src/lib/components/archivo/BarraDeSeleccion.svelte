@@ -54,7 +54,7 @@
     <span class="count">
       <b class="tabular">{totals.documents}</b>
       {totals.documents === 1 ? 'documento seleccionado' : 'documentos seleccionados'}
-      <span class="muted tabular">· {totals.resolutions} res · {totals.pages} pág</span>
+      <span class="muted tabular">· {totals.resolutions} PDF · {totals.pages} pág.</span>
     </span>
 
     {#if confirming}
@@ -64,16 +64,18 @@
           {totals.documents === 1 ? 'documento' : 'documentos'} con sus PDF y sus filas del
           inventario. No se puede deshacer.
         </span>
-        <button class="danger" onclick={onremove} disabled={busy}>
-          {busy ? 'eliminando…' : 'sí, eliminar'}
+        <button class="btn btn-danger btn-sm" onclick={onremove} disabled={busy}>
+          {busy ? 'Eliminando…' : 'Sí, eliminar'}
         </button>
-        <button class="ghost" onclick={() => (confirming = false)} disabled={busy}>
-          cancelar
+        <button class="btn btn-ghost btn-sm" onclick={() => (confirming = false)} disabled={busy}>
+          Cancelar
         </button>
       </span>
     {:else}
-      <button class="danger" onclick={() => (confirming = true)}>eliminar seleccionados</button>
-      <button class="ghost" onclick={onclear}>quitar selección</button>
+      <button class="btn btn-danger btn-sm" onclick={() => (confirming = true)}>
+        Eliminar seleccionados
+      </button>
+      <button class="btn btn-ghost btn-sm" onclick={onclear}>Quitar selección</button>
     {/if}
   </section>
 {/if}
@@ -96,14 +98,15 @@
         {/each}
       </ul>
     {/if}
-    <button class="ghost" onclick={() => (outcome = null)}>entendido</button>
+    <button class="btn btn-sm" onclick={() => (outcome = null)}>Entendido</button>
   </section>
 {/if}
 
 <style>
   .bulk {
     position: sticky;
-    top: 0;
+    /* Debajo de la barra fija de arriba, no escondida tras ella. */
+    top: 4.5rem;
     z-index: 3;
     display: flex;
     flex-wrap: wrap;
@@ -112,8 +115,8 @@
     margin-bottom: 0.9rem;
     padding: 0.6rem 0.85rem;
     border: 1px solid var(--hairline);
-    border-radius: 0.6rem;
-    background: var(--raised);
+    border-radius: var(--radius-md);
+    background: var(--surface-2);
     box-shadow: var(--shadow);
   }
 
@@ -129,54 +132,22 @@
     margin-bottom: 0.9rem;
     padding: 0.6rem 0.85rem;
     border-left: 3px solid var(--accent);
-    border-radius: 0.4rem;
+    border-radius: var(--radius-sm);
     background: var(--plane);
   }
 
   .outcome .failed {
     margin: 0.4rem 0 0.6rem;
     padding-left: 1.1rem;
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .confirm {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.4rem;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     color: var(--ink-2);
-  }
-
-  .ghost,
-  .danger {
-    border: 1px solid var(--hairline);
-    border-radius: 8px;
-    background: transparent;
-    padding: 0.32rem 0.7rem;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    color: var(--muted);
-    text-decoration: none;
-    cursor: pointer;
-    transition:
-      color 0.15s,
-      border-color 0.15s,
-      background 0.15s;
-  }
-  .ghost:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-  .danger {
-    border-color: var(--critical);
-    color: var(--critical);
-  }
-  .danger:hover {
-    background: var(--critical);
-    color: #fff;
-  }
-  button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 </style>

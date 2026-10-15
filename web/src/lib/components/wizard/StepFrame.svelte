@@ -44,7 +44,7 @@
     display: flex;
     min-width: 0;
     flex-direction: column;
-    gap: var(--wz-space-3, 12px);
+    gap: var(--space-3);
     margin: 0;
     border: 0;
     padding: 0;
@@ -56,21 +56,21 @@
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
-    gap: var(--wz-space-1, 4px) var(--wz-space-3, 12px);
-    margin-bottom: var(--wz-space-2, 8px);
+    gap: var(--space-1) var(--space-3);
+    margin-bottom: var(--space-2);
     padding: 0;
   }
 
   .eyebrow {
-    font-size: var(--wz-text-xs, 0.75rem);
+    font-size: var(--text-xs);
     font-weight: 600;
-    letter-spacing: 0.06em;
+    letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
     color: var(--accent);
   }
 
   .title {
-    font-size: var(--wz-text-lg, 1.125rem);
+    font-size: var(--text-xl);
     font-weight: 650;
     letter-spacing: -0.01em;
     color: var(--ink);
@@ -78,8 +78,8 @@
 
   .description {
     max-width: 44rem;
-    margin: calc(var(--wz-space-1, 4px) * -1) 0 0;
-    font-size: var(--wz-text-sm, 0.875rem);
+    margin: calc(var(--space-1) * -1) 0 0;
+    font-size: var(--text-sm);
     line-height: 1.55;
     color: var(--ink-2);
   }
@@ -88,12 +88,12 @@
     display: flex;
     min-width: 0;
     flex-direction: column;
-    gap: var(--wz-space-3, 12px);
+    gap: var(--space-3);
   }
 
   .note {
     margin: 0;
-    font-size: var(--wz-text-xs, 0.75rem);
+    font-size: var(--text-xs);
     line-height: 1.5;
     color: var(--muted);
   }

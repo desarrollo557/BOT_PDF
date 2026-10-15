@@ -529,6 +529,9 @@ class InventoryDocument:
 _PLANTILLAS = {
     DocumentType.DIPLOMA: "fuid-diplomas.xlsx",
     DocumentType.RESOLUCION: "fuid-fo-gd-008.xlsx",
+    # Las actas de grado: el FO-GD-008, una fila por graduado. Su fila guía
+    # dice «nombre - título», «cédula», «upd»: es el formato de este inventario.
+    DocumentType.ACTA: "fuid-fo-gd-008.xlsx",
 }
 _PLANTILLA_GENERICA = "fuid-fo-gd-008.xlsx"
 

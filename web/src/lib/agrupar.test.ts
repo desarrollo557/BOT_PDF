@@ -20,11 +20,20 @@ function health(features: string[]): Health {
 }
 
 describe('la opción en la caja de correspondencia', () => {
-  it('ofrece un archivo por documento y uno por mes, lo de siempre primero', () => {
+  it('ofrece por trámite, por documento y por mes, y el trámite primero', () => {
+    // Estas cajas se dividen e inventarían por trámite: la primera opción es
+    // la que viene elegida.
     expect(correspondencia.agrupar?.opciones.map((opcion) => opcion.id)).toEqual([
+      'tramite',
       'documento',
       'mes'
     ]);
+  });
+
+  it('por trámite pide un servicio que lo sepa hacer', () => {
+    const porTramite = correspondencia.agrupar?.opciones.find((opcion) => opcion.id === 'tramite');
+    expect(porTramite?.requiere).toBe('agrupar-por-tramite');
+    expect(porTramite?.label).toMatch(/^Por trámite/);
   });
 
   it('se nombra como lo dice el operador: por fecha', () => {
@@ -61,7 +70,7 @@ describe('contra un servicio que no la sabe hacer', () => {
   });
 
   it('lo de siempre no depende de ninguna capacidad', () => {
-    const porDocumento = correspondencia.agrupar!.opciones[0];
+    const porDocumento = correspondencia.agrupar!.opciones.find((opcion) => opcion.id === 'documento')!;
     expect(motivoSinAgrupar(porDocumento, null)).toBeNull();
   });
 });

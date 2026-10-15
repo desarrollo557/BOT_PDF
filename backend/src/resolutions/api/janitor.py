@@ -33,10 +33,18 @@ def _guarda_un_producto(directorio: Path) -> bool:
     """
     # Importado aquí y no arriba porque el paquete del worker arrastra el
     # mundo, y el barrendero arranca con el servicio.
+    from ..adapters.excel_inventory import NOMBRE_DEL_INVENTARIO_DE_PROCESOS
+    from ..adapters.indice_electronico import NOMBRE_DEL_INDICE
     from .worker import FUID_SUFFIX
 
     try:
-        return any(directorio.glob(f"*{FUID_SUFFIX}"))
+        # Y el Índice Electrónico de un lote, que tampoco va al libro mayor: es
+        # la única carpeta de salida que no es de un trabajo.
+        return (
+            any(directorio.glob(f"*{FUID_SUFFIX}"))
+            or (directorio / NOMBRE_DEL_INDICE).is_file()
+            or (directorio / NOMBRE_DEL_INVENTARIO_DE_PROCESOS).is_file()
+        )
     except OSError:  # pragma: no cover - una carpeta ilegible no se toca
         return True
 

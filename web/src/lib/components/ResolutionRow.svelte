@@ -1,5 +1,6 @@
 <script lang="ts">
   import { deleteOutput, downloadUrl, renameOutput } from '$lib/api';
+  import Icono from '$lib/components/Icono.svelte';
   import type { Group } from '$lib/types';
 
   interface Props {
@@ -93,24 +94,31 @@
     <td colspan="6" class="editor">
       <div class="fields">
         <label>
-          <span>Número</span>
+          <span class="caps">Número</span>
           <input
-            class="code"
+            class="input input-sm mono code"
             bind:value={code}
             spellcheck="false"
             aria-invalid={faltaElNumero}
           />
         </label>
         <label class="grow">
-          <span>Título</span>
-          <input bind:value={title} placeholder="obligatorio" aria-invalid={faltaElTitulo} />
+          <span class="caps">Título</span>
+          <input
+            class="input input-sm"
+            bind:value={title}
+            placeholder="obligatorio"
+            aria-invalid={faltaElTitulo}
+          />
         </label>
       </div>
       <div class="actions">
-        <button class="primary" onclick={save} disabled={!puedeGuardar}>
-          {busy ? 'guardando…' : 'guardar'}
+        <button class="btn btn-primary btn-sm" onclick={save} disabled={!puedeGuardar}>
+          {busy ? 'Guardando…' : 'Guardar'}
         </button>
-        <button onclick={() => (mode = 'idle')} disabled={busy}>cancelar</button>
+        <button class="btn btn-ghost btn-sm" onclick={() => (mode = 'idle')} disabled={busy}>
+          Cancelar
+        </button>
       </div>
       {#if faltaElNumero || faltaElTitulo}
         <p class="falta">
@@ -121,7 +129,7 @@
               : 'el título'}. Una corrección se manda entera.
         </p>
       {/if}
-      {#if error}<p class="error">{error}</p>{/if}
+      {#if error}<p class="inline-error">{error}</p>{/if}
     </td>
   {:else if mode === 'confirming'}
     <td colspan="6" class="editor">
@@ -129,10 +137,12 @@
         Se eliminará <b>{fileName}</b> y su registro en el inventario. No se puede deshacer.
       </p>
       <div class="actions">
-        <button class="danger" onclick={remove} disabled={busy}>
-          {busy ? 'eliminando…' : 'sí, eliminar'}
+        <button class="btn btn-danger btn-sm" onclick={remove} disabled={busy}>
+          {busy ? 'Eliminando…' : 'Sí, eliminar'}
         </button>
-        <button onclick={() => (mode = 'idle')} disabled={busy}>cancelar</button>
+        <button class="btn btn-ghost btn-sm" onclick={() => (mode = 'idle')} disabled={busy}>
+          Cancelar
+        </button>
       </div>
     </td>
   {:else}
@@ -159,68 +169,50 @@
     <td class="file-cell">{fileName ? fileName.split('/').pop() : '—'}</td>
     <td class="tools">
       {#if fileName}
+        <!-- Los mismos botones de fila que el archivo: editar en fantasma,
+             eliminar en peligro y la descarga como icono, que se reconoce
+             antes de leerse y deja el ancho para el número y el título. -->
+        <button class="btn btn-ghost btn-sm" onclick={edit} title="Corregir número o título">
+          Editar
+        </button>
+        <button
+          class="btn btn-danger btn-sm"
+          onclick={() => (mode = 'confirming')}
+          title="Eliminar el PDF"
+        >
+          Eliminar
+        </button>
         <a
-          class="icon-link"
+          class="btn btn-icon"
           href={downloadUrl(jobId, fileName)}
           download
-          title={`Descargar ${fileName}`}
+          title="Descargar PDF"
           aria-label={`Descargar ${fileName}`}
         >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M8 2v7m0 0 3-3m-3 3L5 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-            <path d="M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-          </svg>
+          <Icono nombre="descargar" />
         </a>
-        <button onclick={edit} title="Corregir número o título">editar</button>
-        <button class="quiet" onclick={() => (mode = 'confirming')} title="Eliminar el PDF">
-          eliminar
-        </button>
       {:else}
-        <span class="muted">sin archivo</span>
+        <span class="muted">Sin archivo</span>
       {/if}
-      {#if error}<span class="error inline">{error}</span>{/if}
+      {#if error}<span class="error-fila">{error}</span>{/if}
     </td>
   {/if}
 </tr>
 
 <style>
-  /* El icono dice "descargar" sin escribirlo, y deja el ancho de la columna
-     para lo que sí hay que leer: el número y el título de la resolución. */
-  .icon-link {
-    display: inline-grid;
-    place-items: center;
-    width: 1.7rem;
-    height: 1.7rem;
-    border-radius: 0.3rem;
-    color: var(--muted);
-    vertical-align: middle;
-    transition:
-      color 0.15s,
-      background 0.15s;
-  }
-
-  .icon-link:hover {
-    color: var(--accent);
-    background: var(--plane);
-  }
-
-  .icon-link svg {
-    width: 0.95rem;
-    height: 0.95rem;
-  }
-
   .row {
     border-top: 1px solid var(--hairline);
   }
 
   td {
-    padding: 0.5rem 0.75rem 0.5rem 0;
+    padding: 0.4rem 0.75rem 0.4rem 0;
+    font-size: var(--text-sm);
     vertical-align: baseline;
   }
 
   .code-cell {
     font-family: var(--font-mono);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     white-space: nowrap;
   }
   .title-cell {
@@ -232,24 +224,21 @@
   }
   .origin {
     display: block;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
   .date-cell {
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
     color: var(--muted);
     white-space: nowrap;
   }
   .file-cell {
     font-family: var(--font-mono);
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     color: var(--ink-2);
     word-break: break-all;
   }
   .pages-cell {
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
@@ -259,37 +248,16 @@
 
   .tools {
     display: flex;
+    align-items: center;
     justify-content: flex-end;
-    gap: 0.6rem;
+    gap: 0.25rem;
     padding-right: 0;
-    text-align: right;
     white-space: nowrap;
-  }
-  .tools a {
-    color: var(--accent);
-    text-decoration: none;
-  }
-  .tools a:hover {
-    text-decoration: underline;
-  }
-  .tools button {
-    border: 0;
-    background: none;
-    padding: 0;
-    font: inherit;
-    font-size: 0.8rem;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .tools button:hover {
-    color: var(--ink);
-  }
-  .tools button.quiet:hover {
-    color: var(--critical);
   }
 
   .editor {
-    padding: 0.7rem 0;
+    background: var(--plane);
+    padding: 0.7rem 0.75rem;
   }
   .fields {
     display: flex;
@@ -305,30 +273,8 @@
     flex: 1;
     min-width: 14rem;
   }
-  .fields span {
-    font-size: 0.62rem;
-    font-weight: 600;
-    letter-spacing: 0.055em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-  .fields input {
-    border: 1px solid var(--hairline);
-    border-radius: 7px;
-    background: var(--plane);
-    padding: 0.35rem 0.55rem;
-    font: inherit;
-    font-size: 0.85rem;
-    color: inherit;
-    outline: none;
-  }
-  .fields input:focus {
-    border-color: var(--accent);
-  }
-  .fields .code {
+  .code {
     width: 9rem;
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
   }
 
   .actions {
@@ -336,58 +282,27 @@
     gap: 0.4rem;
     margin-top: 0.6rem;
   }
-  .actions button {
-    border: 1px solid var(--hairline);
-    border-radius: 7px;
-    background: transparent;
-    padding: 0.25rem 0.7rem;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .actions button.primary {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-  .actions button.danger {
-    border-color: var(--critical);
-    color: var(--critical);
-  }
-  .actions button.danger:hover {
-    background: var(--critical);
-    color: #fff;
-  }
-  .actions button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
 
   .warn {
     margin: 0;
-    font-size: 0.85rem;
+    font-size: var(--text-md);
     color: var(--ink-2);
+  }
+  .warn b {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
   }
 
   /* Lo que falta no es un error: nadie se ha equivocado, sólo no ha terminado
      de escribir. Apagado, como el resto de las indicaciones. */
   .falta {
     margin: 0.4rem 0 0;
-    font-size: 0.78rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
-  .warn b {
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
-  }
 
-  .error {
-    margin: 0.45rem 0 0;
-    font-size: 0.8rem;
+  .error-fila {
+    font-size: var(--text-xs);
     color: var(--critical);
-  }
-  .error.inline {
-    margin: 0;
-    font-size: 0.72rem;
   }
 </style>

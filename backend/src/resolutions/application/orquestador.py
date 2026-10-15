@@ -43,6 +43,12 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from ..domain.doctype import DocumentType, TypeVerdict, classify_pages
+from ..domain.patrones import (
+    PAGINAS_DEL_NUCLEO,
+    paginas_con_nucleo,
+    pista_del_nombre,
+    reconocer,
+)
 from ..domain.validacion import Validacion, ganadora, validar_todas
 from .ports import HEADER_BAND, Band, OcrEngine, OcrResult, PageSource
 
@@ -126,7 +132,12 @@ class DecididoPor(StrEnum):
     """Cuál de las tres preguntas tuvo respuesta."""
 
     MARCADORES = "marcadores"
+    #: El patrón del tipo: su núcleo vetó a los marcadores o decidió sin ellos.
+    PATRON = "patron"
     HABILIDAD = "habilidad"
+    #: Sólo el nombre del archivo o de su carpeta: el último recurso, que se
+    #: dice así para que alguien lo revise.
+    NOMBRE = "nombre"
     NADIE = "nadie"
 
 
@@ -187,7 +198,7 @@ class Orquestador:
         #: inventario, que es por donde se reconoció siempre.
         self._primera_mirada = primera_mirada
 
-    def elegir(self, source: PageSource) -> Eleccion:
+    def elegir(self, source: PageSource, nombre: str = "") -> Eleccion:
         # Una sola lectura por imagen durante toda la elección. La primera
         # pregunta y la segunda miran la misma muestra, y si la primera se hizo
         # por otro camino no hay forma de pasarle el texto a la segunda; lo que
@@ -202,6 +213,20 @@ class Orquestador:
             veredicto = classify_pages(muestra)
         else:
             veredicto = self._primera_mirada(source, motor)
+
+        # El patrón de cada tipo, sobre la capa de texto: no lee ninguna
+        # imagen, así que no cuesta nada. Corrige a los marcadores cuando lo que
+        # puntuaron eran los anexos, y decide cuando ellos no alcanzan.
+        texto = muestrear(source, None, paginas=PAGINAS_DEL_NUCLEO)
+        patron = reconocer(veredicto, paginas_con_nucleo([t for _n, t in texto]), nombre)
+        if patron.por in ("veto", "nucleo"):
+            logger.info("el patrón eligió %s: %s", patron.tipo.label, patron.motivo)
+            return Eleccion(
+                tipo=patron.tipo,
+                veredicto=veredicto,
+                motivo=patron.motivo,
+                decidido_por=DecididoPor.PATRON,
+            )
         if veredicto.is_identified:
             return Eleccion(
                 tipo=veredicto.document_type,
@@ -227,7 +252,7 @@ class Orquestador:
         # 3. La página entera de lo que sólo se leyó por su encabezado.
         enteras = self._leer_enteras(source, motor, muestra)
         if not enteras:
-            return self._nadie(veredicto, validaciones, motivo, ())
+            return self._nadie(veredicto, validaciones, motivo, (), nombre)
 
         completa = [(numero, enteras.get(numero, texto)) for numero, texto in muestra]
         leidas = tuple(sorted(enteras))
@@ -259,7 +284,7 @@ class Orquestador:
                 decidido_por=DecididoPor.HABILIDAD,
                 segunda_mirada=leidas,
             )
-        return self._nadie(veredicto, validaciones, motivo, leidas)
+        return self._nadie(veredicto, validaciones, motivo, leidas, nombre)
 
     # -- la segunda mirada ---------------------------------------------------
 
@@ -289,9 +314,23 @@ class Orquestador:
         validaciones: dict[DocumentType, Validacion],
         motivo: str,
         leidas: tuple[int, ...],
+        nombre: str = "",
     ) -> Eleccion:
         if leidas:
             motivo = f"{motivo}, ni leyendo enteras las páginas {_lista(leidas)}"
+        pista = pista_del_nombre(nombre)
+        if pista is not None:
+            return Eleccion(
+                tipo=pista,
+                veredicto=veredicto,
+                validaciones=validaciones,
+                motivo=(
+                    f"el contenido no dice qué es ({motivo}); el nombre «{nombre}» dice "
+                    f"{pista.label}. Conviene revisarlo"
+                ),
+                decidido_por=DecididoPor.NOMBRE,
+                segunda_mirada=leidas,
+            )
         return Eleccion(
             tipo=DocumentType.DESCONOCIDO,
             veredicto=veredicto,

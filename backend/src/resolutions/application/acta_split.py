@@ -113,22 +113,21 @@ class ActaSplit:
         self._report(ProgressEvent(stage=Stage.OPENED, page_count=source.page_count))
 
         # 1. Leer TODAS las páginas con OCR cascada (Tesseract + Mistral para esquinas)
-        self._report(ProgressEvent(stage=Stage.READING, done=0, total=source.page_count, detail="leyendo páginas"))
+        self._report(ProgressEvent(stage=Stage.PAGE, done=0, total=source.page_count, detail="leyendo páginas"))
         textos_paginas = self._leer_todas_paginas(source)
 
         # 2. Detectar folios en esquina sup. der. (una pasada ligera por página)
-        self._report(ProgressEvent(stage=Stage.READING, done=0, total=source.page_count, detail="detectando folios"))
+        self._report(ProgressEvent(stage=Stage.PAGE, done=0, total=source.page_count, detail="detectando folios"))
         folios_por_pagina = self._detectar_folios(source)
 
         # 3. Split por "ACTA DE GRADO N°" → límites de cada acta
         actas = self._split_actas(textos_paginas, folios_por_pagina)
 
         # 4. Por cada acta: extraer fecha + pedir resumen a Mistral
-        self._report(ProgressEvent(stage=Stage.CLASSIFYING, done=0, total=len(actas), detail="procesando actas"))
+        self._report(ProgressEvent(stage=Stage.IDENTIFYING, done=0, total=len(actas), detail="procesando actas"))
         actas_procesadas: list[ActaData] = []
         for i, acta in enumerate(actas):
-            if self._control.debe_parar():
-                break
+            self._control.check()
             fecha = self._extraer_fecha(acta.texto_completo)
             resumen = self._pedir_resumen(acta.texto_completo)
             actas_procesadas.append(ActaData(
@@ -139,7 +138,7 @@ class ActaSplit:
                 paginas=acta.paginas,
                 resumen=resumen,
             ))
-            self._report(ProgressEvent(stage=Stage.CLASSIFYING, done=i + 1, total=len(actas), detail=f"acta {acta.numero}"))
+            self._report(ProgressEvent(stage=Stage.IDENTIFYING, done=i + 1, total=len(actas), detail=f"acta {acta.numero}"))
 
         # 5. Validaciones (las filas FUID se construyen en inventory_document)
         issues = self._validar(actas_procesadas, source.page_count)
@@ -157,9 +156,7 @@ class ActaSplit:
         """Lee todas las páginas con el OCR disponible (cascada si hay Mistral)."""
         textos: list[str] = []
         for pagina in range(1, source.page_count + 1):
-            if self._control.debe_parar():
-                textos.append("")
-                continue
+            self._control.check()
             try:
                 # Usar el OCR cascada si está disponible (lee banda + página completa)
                 if hasattr(self._ocr, "read"):
@@ -186,9 +183,7 @@ class ActaSplit:
         lecturas_para_validar: list[tuple[int, str | None]] = []
 
         for pagina in range(1, source.page_count + 1):
-            if self._control.debe_parar():
-                folios[pagina] = "SIN FOLIO"
-                continue
+            self._control.check()
             try:
                 # Renderizar solo la banda del folio (esquina sup. der.)
                 imagen = source.render(pagina, BANDA_DEL_FOLIO, 300)

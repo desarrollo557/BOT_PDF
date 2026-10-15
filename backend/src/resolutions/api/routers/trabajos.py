@@ -40,6 +40,7 @@ async def enqueue(
     tipo: str | None = None,
     corte: str | None = None,
     agrupar: str | None = None,
+    territorial: str | None = None,
     x_operator: str | None = Header(default=None),
 ) -> dict[str, object]:
     if not (file.filename or "").lower().endswith(".pdf"):
@@ -85,6 +86,7 @@ async def enqueue(
         tipo=str(tipo_choice),
         corte=str(corte_choice),
         agrupar=str(agrupar_choice),
+        territorial=_territorial(territorial),
         # El lote con su nombre, para que el Archivo lo muestre como una sola
         # tarjeta con sus documentos dentro.
         origen={"id": lote.id, "nombre": lote.name, "tipo": "lote"} if lote else None,
@@ -101,6 +103,7 @@ async def enqueue(
         "tipo": job.tipo,
         "corte": job.corte,
         "agrupar": job.agrupar,
+        "territorial": job.territorial,
         "bytes": written,
     }
 
@@ -249,8 +252,14 @@ async def resume_job(ctx: Ctx, job_id: str) -> dict[str, object]:
 
 @router.post("/api/jobs/{job_id}/cancel")
 async def cancel_job(ctx: Ctx, job_id: str) -> dict[str, object]:
-    """Abandonar el trabajo. Lo que ya se escribió se conserva y se declara."""
+    """Abandonar el trabajo. Lo que ya se escribió se conserva y se declara.
+
+    Queda cancelado en el acto: la pantalla no espera a que el worker conteste.
+    El worker atiende la orden en décimas -- también mientras espera una
+    lectura de la IA -- y lo que termine después ya no cambia el estado.
+    """
     job = _steer(ctx, job_id, RunState.CANCELLED)
+    ctx.registry.mark_cancelled(job)
     return {"id": job.id, "state": str(job.state), "cancelling": True}
 
 @router.get("/api/jobs")
@@ -310,6 +319,16 @@ def _discard_outputs(ctx: Contexto, job_id: str) -> None:
     shutil.rmtree(directory, ignore_errors=True)
 
 MAX_OPERATOR = 60
+
+def _territorial(raw: object) -> str | None:
+    """La territorial de una caja, como la escribió el operador: «CESAR».
+
+    Es un rótulo del encabezado del Índice Electrónico y nada más, así que se
+    trata como el nombre del operador: recortada, en mayúsculas como la
+    plantilla, con un tope, y vacía si no dice nada.
+    """
+    texto = " ".join(str(raw or "").split()).upper()[:MAX_OPERATOR]
+    return texto or None
 
 def _operator(raw: str | None) -> str | None:
     """Accept a name from the browser, trimmed and bounded.

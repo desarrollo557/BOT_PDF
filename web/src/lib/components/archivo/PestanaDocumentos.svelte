@@ -97,7 +97,7 @@
 
 <!-- Totals for what is actually on screen, so narrowing the filters answers
      "how much is this" without anybody adding up cards. -->
-<section class="summary">
+<section class="panel summary">
   <StatTile
     label={narrowed ? 'PDF filtrados' : 'PDF procesados'}
     value={totals.documents}
@@ -135,10 +135,10 @@
       {#each reports.history as item (item.id)}
         <li>
           <button onclick={() => reports.open(item.id)}>
-            <span class="kind">{item.kind}</span>
+            <span class="pill kind">{item.kind}</span>
             <span class="run-name">{item.title}</span>
             <span class="run-meta tabular">
-              {item.resolutions} res · {item.pages} pág. · {formatBytes(item.bytes)}
+              {item.resolutions} PDF · {item.pages} pág. · {formatBytes(item.bytes)}
             </span>
           </button>
         </li>
@@ -148,13 +148,11 @@
 {/if}
 
 {#if !shown.length}
-  <div class="empty">
-    <p><b>{narrowed ? 'Nada coincide con estos filtros.' : 'Todavía no hay nada procesado.'}</b></p>
-    <p>
-      {narrowed
-        ? 'Pruebe ampliando el período o quitando algún filtro.'
-        : 'Lo que se procese aparecerá aquí, ordenado por fecha.'}
-    </p>
+  <div class="empty-state empty">
+    <strong>{narrowed ? 'Nada coincide con estos filtros.' : 'Todavía no hay nada procesado.'}</strong>
+    {narrowed
+      ? 'Pruebe ampliando el período o quitando algún filtro.'
+      : 'Lo que se procese aparecerá aquí, ordenado por fecha.'}
   </div>
 {/if}
 
@@ -165,8 +163,8 @@
       PDF{#if totals.carpetas}, {totals.carpetas}
         {totals.carpetas === 1 ? 'carpeta o lote' : 'carpetas o lotes'}{/if}
     </span>
-    <button class="ghost" onclick={onpickall}>
-      {allPicked ? 'quitar selección' : `seleccionar los ${shown.length} visibles`}
+    <button class="btn btn-ghost btn-sm" onclick={onpickall}>
+      {allPicked ? 'Quitar selección' : `Seleccionar los ${shown.length} visibles`}
     </button>
   </div>
 {/if}
@@ -185,7 +183,7 @@
     <header class="day-head">
       <h3>{day.label}</h3>
       <span class="day-totals tabular">
-        {day.documents} PDF · {day.resolutions} unidades · {day.pages} pág · {formatBytes(day.bytes)}
+        {day.documents} PDF · {day.resolutions} unidades · {day.pages} pág. · {formatBytes(day.bytes)}
         {#if day.review}<b class="warn">· {day.review} en revisión</b>{/if}
       </span>
     </header>
@@ -221,11 +219,6 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(5.75rem, 1fr));
     gap: 0.75rem;
-    border: 1px solid var(--hairline);
-    border-radius: 14px;
-    background: var(--surface-2);
-    padding: 1rem 1.2rem;
-    box-shadow: var(--shadow);
   }
 
   /* The run reports fold away: useful, but not what this screen is for. */
@@ -233,7 +226,7 @@
     margin: 0.75rem 0 0.25rem;
   }
   .runs summary {
-    font-size: 0.78rem;
+    font-size: var(--text-sm);
     color: var(--muted);
     cursor: pointer;
   }
@@ -251,7 +244,7 @@
     align-items: baseline;
     gap: 0.6rem;
     border: 1px solid var(--hairline);
-    border-radius: 8px;
+    border-radius: var(--radius);
     background: var(--surface-2);
     padding: 0.4rem 0.7rem;
     font: inherit;
@@ -261,27 +254,24 @@
   .runs button:hover {
     border-color: var(--accent);
   }
+  /* El tipo de corrida es un rótulo, no un código: va en versalitas sans. */
   .kind {
     flex-shrink: 0;
-    border-radius: 999px;
-    background: var(--accent-soft);
-    padding: 0.05rem 0.5rem;
-    font-family: var(--font-mono);
-    font-size: 0.62rem;
+    font-size: var(--text-2xs);
+    letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
-    color: var(--accent);
   }
   .run-name {
     overflow: hidden;
     flex: 1;
-    font-size: 0.82rem;
+    font-size: var(--text-sm);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .run-meta {
     flex-shrink: 0;
     font-family: var(--font-mono);
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -300,7 +290,7 @@
   }
   .day-head h3 {
     margin: 0;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     font-weight: 650;
     letter-spacing: -0.005em;
     text-transform: capitalize;
@@ -309,11 +299,11 @@
      makes the operator add up the cards underneath it themselves. */
   .day-totals {
     font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
   .warn {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .cards {
@@ -330,49 +320,18 @@
     justify-content: space-between;
     gap: 0.5rem;
     margin-top: 0.75rem;
-    font-size: 0.76rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   .muted.small {
     margin: 0 0 0.5rem;
-    font-size: 0.76rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   .empty {
     margin-top: 1rem;
-    border: 1px dashed var(--hairline);
-    border-radius: 14px;
-    padding: 3rem 1.5rem;
-    text-align: center;
-    color: var(--muted);
-  }
-  .empty p {
-    margin: 0 auto;
-    max-width: 50ch;
-    font-size: 0.85rem;
     line-height: 1.55;
-  }
-  .empty p + p {
-    margin-top: 0.4rem;
-  }
-
-  .ghost {
-    border: 1px solid var(--hairline);
-    border-radius: 8px;
-    background: transparent;
-    padding: 0.32rem 0.7rem;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    color: var(--muted);
-    cursor: pointer;
-    transition:
-      color 0.15s,
-      border-color 0.15s;
-  }
-  .ghost:hover {
-    border-color: var(--accent);
-    color: var(--accent);
   }
 </style>

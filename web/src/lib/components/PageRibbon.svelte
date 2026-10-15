@@ -63,19 +63,17 @@
 
 <figure class="m-0">
   <figcaption class="mb-1.5 flex items-baseline justify-between gap-3">
-    <span class="text-[0.7rem] font-medium tracking-wide text-muted uppercase">
-      Páginas en vivo
-    </span>
-    <span class="text-xs text-muted">
+    <span class="caps">Páginas en vivo</span>
+    <span class="text-[length:var(--text-xs)] text-muted">
       {#if hovered}
         {hovered.from === hovered.to
           ? `Página ${hovered.from}`
           : `Páginas ${hovered.from}–${hovered.to}`} ·
         {rungForMark(hovered.mark)?.label ?? 'Sin leer todavía'}
       {:else if perCell > 1}
-        cada celda agrupa {perCell} páginas
+        Cada celda agrupa {perCell} páginas
       {:else}
-        una celda por página
+        Una celda por página
       {/if}
     </span>
   </figcaption>
@@ -98,7 +96,7 @@
   </div>
 
   {#if legend.length}
-    <ul class="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+    <ul class="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-[length:var(--text-xs)]">
       {#each legend as rung (rung.key)}
         <li class="flex items-center gap-1.5">
           <span class="size-2 shrink-0 rounded-[2px]" style:background={rung.color}></span>
