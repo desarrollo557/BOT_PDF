@@ -39,6 +39,16 @@ class TipoPedido(StrEnum):
     #: cara -- nombre, cédula y folio -- sin gastar la muestra de reconocimiento.
     DIPLOMA = "diploma"
 
+    #: Actas de grado. Va derecho a la habilidad que inventaría cada acta.
+    ACTA = "acta"
+
+    #: Actas de sesión de un consejo -- de facultad, académico, superior --, una
+    #: por PDF. No se parte nada: cada archivo es un acta y sale una fila del
+    #: inventario con su número, la fecha de la sesión y un resumen. Declarada,
+    #: el despachador la atiende antes de preguntarle nada al papel; sin
+    #: declarar, el reconocedor la distingue por la citación y el orden del día.
+    ACTA_CONSEJO = "acta-consejo"
+
     @property
     def label(self) -> str:
         return _LABELS[self]
@@ -76,6 +86,12 @@ def tipos_declarables() -> list[dict[str, str]]:
 _LABELS = {
     TipoPedido.AUTO: "Detectar automáticamente",
     TipoPedido.DIPLOMA: "Diplomas",
+    TipoPedido.ACTA: "Actas de grado",
+    TipoPedido.ACTA_CONSEJO: "Actas de consejo",
 }
 
-_DOCUMENT_TYPES = {TipoPedido.DIPLOMA: DocumentType.DIPLOMA}
+_DOCUMENT_TYPES = {
+    TipoPedido.DIPLOMA: DocumentType.DIPLOMA,
+    TipoPedido.ACTA: DocumentType.ACTA,
+    TipoPedido.ACTA_CONSEJO: DocumentType.ACTA_CONSEJO,
+}

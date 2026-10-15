@@ -13,8 +13,9 @@ que escriba la dirección a mano —y entonces no es ni siquiera una barrera de
 uso, sólo la apariencia de una.
 
 **Lo que no sostiene:** nada frente a alguien que quiera saltárselo. Para eso
-haría falta una contraseña, y el archivo pidió expresamente entrar con dos
-datos y ninguno más.
+haría falta una contraseña, y el archivo pidió expresamente lo contrario:
+desde la pantalla se entra como «siar», sin contraseña, y la cédula de las
+altas sólo la manda quien opere el servicio por la API.
 
 Una petición sin cédula es una petición de nadie, y a nadie no se le deja
 descargar. Es la única lectura que hace que el permiso signifique algo: si la
@@ -29,10 +30,6 @@ from fastapi import Depends, Header, HTTPException
 
 from ..domain.usuario import Usuario
 from .contexto import Ctx
-
-#: Por dónde viaja la cédula de quien está sentado delante. Sin acentos ni
-#: espacios, así que no hace falta codificarla como el nombre del operador.
-CABECERA = "X-Cedula"
 
 
 def quien_manda(
@@ -59,22 +56,11 @@ def exigir_identificado(quien: Usuario | None) -> Usuario:
         raise HTTPException(
             status_code=401,
             detail=(
-                "Hay que entrar con cédula y correo para hacer esto. "
+                "Hay que entrar (como «siar») para hacer esto. "
                 "Si acaba de entrar, vuelva a hacerlo."
             ),
         )
     return quien
-
-
-def exigir_administrador(quien: Usuario | None) -> Usuario:
-    """Quien lo pide, si es administrador."""
-    usuario = exigir_identificado(quien)
-    if not usuario.perfil.administra_usuarios:
-        raise HTTPException(
-            status_code=403,
-            detail="Sólo el administrador puede administrar usuarios",
-        )
-    return usuario
 
 
 def exigir_descarga_de_planillas(quien: Usuario | None) -> Usuario:

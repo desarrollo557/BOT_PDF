@@ -11,11 +11,13 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, UploadFile
 
+from ...application.agrupacion import Agrupacion
 from ...application.control import RunState
 from ...application.lectura import LecturaChoice
 from ...application.oracle import OracleChoice
 from ...application.task import TaskKind
 from ...application.tipo_pedido import TipoPedido
+from ...domain.diploma import CriterioDeCorte
 from ..contexto import Contexto, Ctx
 from ..ejecucion import _run
 from ..jobs import IN_FLIGHT, Job, JobState
@@ -36,6 +38,9 @@ async def enqueue(
     oracle: str | None = None,
     lectura: str | None = None,
     tipo: str | None = None,
+    corte: str | None = None,
+    agrupar: str | None = None,
+    territorial: str | None = None,
     x_operator: str | None = Header(default=None),
 ) -> dict[str, object]:
     if not (file.filename or "").lower().endswith(".pdf"):
@@ -50,7 +55,11 @@ async def enqueue(
     choice = _oracle_choice(ctx, oracle)
     lectura_choice = _lectura_choice(ctx, lectura)
     tipo_choice = _tipo_choice(tipo)
-    if batch_id and ctx.registry.get_batch(batch_id) is None:
+    _require_identity_reader(tipo_choice, lectura_choice)
+    corte_choice = _corte_choice(corte)
+    agrupar_choice = _agrupar_choice(agrupar)
+    lote = ctx.registry.get_batch(batch_id) if batch_id else None
+    if batch_id and lote is None:
         raise HTTPException(status_code=404, detail="El lote no existe")
     if ctx.registry.pending >= ctx.settings.queue_limit:
         # Push back rather than accumulate. A queue that grows without bound is a
@@ -75,6 +84,12 @@ async def enqueue(
         oracle=str(choice),
         lectura=str(lectura_choice),
         tipo=str(tipo_choice),
+        corte=str(corte_choice),
+        agrupar=str(agrupar_choice),
+        territorial=_territorial(territorial),
+        # El lote con su nombre, para que el Archivo lo muestre como una sola
+        # tarjeta con sus documentos dentro.
+        origen={"id": lote.id, "nombre": lote.name, "tipo": "lote"} if lote else None,
     )
     ctx.registry.publish(job)
     asyncio.create_task(_run(ctx, job))
@@ -86,6 +101,9 @@ async def enqueue(
         "oracle": job.oracle,
         "lectura": job.lectura,
         "tipo": job.tipo,
+        "corte": job.corte,
+        "agrupar": job.agrupar,
+        "territorial": job.territorial,
         "bytes": written,
     }
 
@@ -98,6 +116,34 @@ def _tipo_choice(value: str | None) -> TipoPedido:
     """
     try:
         return TipoPedido.parse(value)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+def _corte_choice(value: str | None) -> CriterioDeCorte:
+    """Con qué señal se pidió cortar el libro, o un 422 si no es ninguna.
+
+    No consume ninguna llave -- cortar por un criterio u otro no cuesta dinero,
+    sólo cambia cuánto hay que leer --, pero sí tiene que ser uno de los dos que
+    el sistema sabe aplicar. Un criterio inventado llegaría al worker y se
+    resolvería como "por folio", y el operador creería haber elegido lo otro:
+    volvería una carpeta cortada por donde no pidió y sin nada que lo dijera.
+    """
+    try:
+        return CriterioDeCorte.parse(value)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+def _agrupar_choice(value: str | None) -> Agrupacion:
+    """Qué se pidió entregar como un archivo, o un 422 si no es nada conocido.
+
+    Igual que el criterio de corte: no cuesta nada, pero una agrupación inventada
+    llegaría al worker y la caja saldría un archivo por documento sin que nada
+    dijera que se había pedido otra cosa.
+    """
+    try:
+        return Agrupacion.parse(value)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -125,6 +171,23 @@ def _lectura_choice(ctx: Contexto, value: str | None) -> LecturaChoice:
             ),
         )
     return choice
+
+
+def _require_identity_reader(tipo: TipoPedido, lectura: LecturaChoice) -> None:
+    """No acepta diplomas sin un lector capaz de leer manuscrito.
+
+    El OCR local puede separar las páginas, pero en los libros antiguos no
+    puede garantizar la cédula ni el nombre. Aceptar esa combinación producía
+    archivos numerados y hacía parecer correcta una entrega incompleta.
+    """
+    if tipo is TipoPedido.DIPLOMA and lectura is LecturaChoice.LOCAL:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Para procesar diplomas con cédula o nombre se necesita "
+                "OCR + IA. Seleccione Mistral OCR antes de iniciar."
+            ),
+        )
 
 
 def _oracle_choice(ctx: Contexto, value: str | None) -> OracleChoice:
@@ -189,8 +252,14 @@ async def resume_job(ctx: Ctx, job_id: str) -> dict[str, object]:
 
 @router.post("/api/jobs/{job_id}/cancel")
 async def cancel_job(ctx: Ctx, job_id: str) -> dict[str, object]:
-    """Abandonar el trabajo. Lo que ya se escribió se conserva y se declara."""
+    """Abandonar el trabajo. Lo que ya se escribió se conserva y se declara.
+
+    Queda cancelado en el acto: la pantalla no espera a que el worker conteste.
+    El worker atiende la orden en décimas -- también mientras espera una
+    lectura de la IA -- y lo que termine después ya no cambia el estado.
+    """
     job = _steer(ctx, job_id, RunState.CANCELLED)
+    ctx.registry.mark_cancelled(job)
     return {"id": job.id, "state": str(job.state), "cancelling": True}
 
 @router.get("/api/jobs")
@@ -250,6 +319,16 @@ def _discard_outputs(ctx: Contexto, job_id: str) -> None:
     shutil.rmtree(directory, ignore_errors=True)
 
 MAX_OPERATOR = 60
+
+def _territorial(raw: object) -> str | None:
+    """La territorial de una caja, como la escribió el operador: «CESAR».
+
+    Es un rótulo del encabezado del Índice Electrónico y nada más, así que se
+    trata como el nombre del operador: recortada, en mayúsculas como la
+    plantilla, con un tope, y vacía si no dice nada.
+    """
+    texto = " ".join(str(raw or "").split()).upper()[:MAX_OPERATOR]
+    return texto or None
 
 def _operator(raw: str | None) -> str | None:
     """Accept a name from the browser, trimmed and bounded.

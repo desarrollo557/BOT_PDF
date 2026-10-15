@@ -1,4 +1,8 @@
-import type { Health } from './api';
+import type { TaskKind } from './types';
+import type { CorteChoice } from './habilidades';
+import type { AgruparChoice } from './habilidades';
+import type { OracleChoice } from './oracles';
+import type { LecturaChoice } from './lectura';
 
 /**
  * Qué clase de documento declara el operador que está cargando.
@@ -21,18 +25,11 @@ export interface TipoOption {
   label: string;
 }
 
-/** Lo que se ofrece cuando el servicio no contestó o es anterior a esta revisión. */
-const SOLO_AUTO: TipoOption[] = [{ id: 'auto', label: 'Detectar automáticamente' }];
-
-/**
- * Los tipos que la pantalla ofrece, tal como los declara el servicio.
- *
- * No están escritos aquí a propósito: los enumera el backend en `/api/health`,
- * de modo que añadir un tipo nuevo sea una línea en un solo archivo y no dos en
- * dos idiomas que alguien tiene que acordarse de mantener iguales.
- */
-export function tipoOptions(health: Health | null): TipoOption[] {
-  const declarados = health?.document_types;
-  if (!declarados || declarados.length === 0) return SOLO_AUTO;
-  return declarados;
-}
+// Re-export types for convenience
+export type {
+  TaskKind,
+  CorteChoice,
+  AgruparChoice,
+  OracleChoice,
+  LecturaChoice,
+};

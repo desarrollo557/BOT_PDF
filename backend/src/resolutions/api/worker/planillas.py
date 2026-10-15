@@ -8,10 +8,12 @@ informe, y aquí se convierten en el papel que acompaña la carpeta.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+import re
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from ...application.progress import Stage
+from ...domain.naming import DOCUMENT_PREFIX
 from .taller import _anunciar, _reportero
 
 logger = logging.getLogger(__name__)
@@ -185,3 +187,125 @@ def _escribir_planilla(report: dict, destination: Path, payload: dict) -> None:
         )
     except Exception:  # noqa: BLE001 - la entrega ya está en el disco
         logger.warning("no se pudo escribir la planilla del inventario", exc_info=True)
+
+
+def _escribir_indice(report: dict, destination: Path, payload: dict) -> None:
+    """Deja el Índice Electrónico del cliente junto a los PDF de una caja.
+
+    Es el inventario de toda caja de correspondencia, en el formato que el
+    archivo de Afinia hacía a mano -- «00.INDICE ELECTRONICO.xlsx» -- y en lugar
+    de la planilla de las otras rutas: una fila por archivo entregado, en el
+    orden en que venían las hojas. Cada columna sale de donde se acordó:
+
+    - el nombre es el tipo documental del catálogo, y en un trámite con su
+      número RE: «RECLAMO RE3110202138312»;
+    - la creación, la fecha que se ve en el documento: la de su sello de
+      radicación, la marcada en su guía de envío, o la de su primera hoja
+      (S.F. si no trae ninguna);
+    - la incorporación al expediente, el día en que el bot lo crea;
+    - las observaciones, vacías: son las del negocio, las escribe el archivo;
+    - el responsable, quien procesa la caja; la territorial, la que escribió.
+
+    El NIC no se escribe: la celda queda vacía y se llena a mano. El nombre
+    del expediente es el de la caja: «UPD2326399».
+
+    Que falle no invalida nada, igual que la planilla: se anota y se sigue.
+    """
+    try:
+        from ...adapters.indice_electronico import FilaDelIndice, escribir_indice
+    except ImportError:
+        return
+    _anunciar(payload, Stage.INVENTORYING, detail="escribiendo el índice electrónico")
+    hoy = date.today()
+    operador = (payload.get("operator") or "").strip()
+    items = ((report.get("inventory") or {}).get("items")) or []
+    filas = [
+        FilaDelIndice(
+            nombre=_nombre_de_la_fila(item, report),
+            # Lo dictó el operador: la creación es la fecha que se ve en el
+            # documento -- la del sello, la marcada en la guía de envío --;
+            # la incorporación al expediente, el día en que el bot lo crea.
+            fecha_creacion=_fecha_de_la_fila(item, report),
+            fecha_incorporacion=hoy,
+            orden=orden,
+            paginas=int(item.get("page_count") or 0),
+            # Vacía: es la columna de las observaciones del negocio, las que
+            # escribe el archivo, no un rastro técnico del bot. El archivo de la
+            # fila, el detalle del trámite y la verificación de anexos van al
+            # informe y a la revisión, no aquí.
+            observaciones="",
+            responsable=operador,
+        )
+        for orden, item in enumerate(items, start=1)
+    ]
+    try:
+        escrito = escribir_indice(
+            destination,
+            filas,
+            territorial=(payload.get("territorial") or "").strip() or None,
+            nombre_del_expediente=report.get("expediente") or None,
+        )
+        report["indice_electronico"] = escrito.name
+    except Exception as error:  # noqa: BLE001 - la entrega ya está en el disco
+        logger.warning("no se pudo escribir el índice electrónico", exc_info=True)
+        report["indice_electronico_error"] = f"{type(error).__name__}: {error}"
+
+
+def _fecha_iso(valor: object) -> date | None:
+    """La fecha del inventario, que viaja en ISO; ``None`` si no hay o no se lee."""
+    try:
+        return date.fromisoformat(str(valor)[:10]) if valor else None
+    except ValueError:
+        return None
+
+
+#: El número de un trámite en el código de su archivo: «01 RE3110202138312
+#: 02-09-2021», «02 P43102019110005», «03 SIN-RADICADO-2022-08-18».
+_RADICADO_DEL_CODIGO = re.compile(r"\b(RE\d{13}|P\d{14}|SIN-RADICADO)", re.IGNORECASE)
+
+
+def _piezas_de(item: dict, report: dict) -> list[dict]:
+    """Los documentos del corte que caen en el archivo de esta fila, en orden."""
+    suyas = set(item.get("page_numbers") or [])
+    return [
+        pieza for pieza in report.get("piezas") or [] if suyas.intersection(pieza.get("pages") or [])
+    ]
+
+
+def _primera_pieza(item: dict, report: dict) -> dict:
+    """El documento con que abre el archivo: el de su primera hoja."""
+    return next(iter(_piezas_de(item, report)), {})
+
+
+def _fecha_de_la_fila(item: dict, report: dict) -> date | None:
+    """La fecha del documento con que abre el archivo; si no trae, la del archivo."""
+    return _fecha_iso(_primera_pieza(item, report).get("fecha")) or _fecha_iso(item.get("fecha"))
+
+
+def _radicado_de_la_fila(item: dict, report: dict) -> str | None:
+    """El RE del trámite; fuera de un trámite, el del documento si lo trae."""
+    if report.get("agrupar") == "tramite":
+        hallado = _RADICADO_DEL_CODIGO.search(str(item.get("code") or ""))
+        if hallado is not None:
+            radicado = hallado.group(1).upper()
+            return "SIN RADICADO" if radicado == "SIN-RADICADO" else radicado
+    radicado = _primera_pieza(item, report).get("radicado")
+    return str(radicado).upper() if radicado else None
+
+
+def _nombre_de_la_fila(item: dict, report: dict) -> str:
+    """Título directo, radicado y fecha: «DERECHO DE PETICION - RE3110202043677 - 02/12/2020».
+
+    Lo pidió el operador mirando la primera imagen de cada documento: el
+    título es lo que el documento dice ser en su primera hoja, no una frase de
+    su petición. Todo en mayúsculas.
+    """
+    titulo = _primera_pieza(item, report).get("titulo") or item.get("type") or DOCUMENT_PREFIX
+    partes = [str(titulo)]
+    radicado = _radicado_de_la_fila(item, report)
+    if radicado:
+        partes.append(radicado)
+    fecha = _fecha_de_la_fila(item, report)
+    if fecha:
+        partes.append(f"{fecha:%d/%m/%Y}")
+    return " - ".join(partes).upper()

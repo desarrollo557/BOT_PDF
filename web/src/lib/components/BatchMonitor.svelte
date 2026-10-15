@@ -1,9 +1,12 @@
 <script lang="ts">
   import RunControls from '$lib/components/RunControls.svelte';
+  import Descargas, { type GrupoDeDescargas } from '$lib/components/Descargas.svelte';
+  import { descargarPlanilla, origenInventarioUrl, origenProcesosUrl } from '$lib/api';
   import { onMount } from 'svelte';
   import PageRibbon from '$lib/components/PageRibbon.svelte';
   import RunStats from '$lib/components/RunStats.svelte';
-  import ThroughputChart from '$lib/components/ThroughputChart.svelte';
+  import PanelDeRendimiento from '$lib/components/PanelDeRendimiento.svelte';
+  import { marcadasEnCinta, sumarConsumos } from '$lib/rendimiento';
   import { formatBytes, formatDuration, unitFor } from '$lib/format';
   import { STAGE_LABELS } from '$lib/rungs';
   import type { Job } from '$lib/types';
@@ -127,6 +130,48 @@
     rate || (elapsedSeconds >= 1 && pagesDone ? pagesDone / elapsedSeconds : 0)
   );
 
+  /**
+   * Los dos inventarios generales del lote, en cuanto termina el primer PDF:
+   * el de la habilidad -- el Índice Electrónico de las cajas de
+   * correspondencia, una hoja por PDF -- y el general del bot, una fila por
+   * PDF procesado. Se rehacen con cada PDF que termina.
+   */
+  const descargas = $derived<GrupoDeDescargas[]>(
+    batchId && done.length + failed.length
+      ? [
+          {
+            titulo: 'Inventarios generales del lote',
+            items: [
+              ...(done.some((job) => job.report?.indice_electronico)
+                ? [
+                    {
+                      id: 'indice',
+                      titulo: 'Índice electrónico',
+                      detalle: 'Plantilla del cliente, una hoja por PDF procesado',
+                      formato: 'Excel' as const,
+                      principal: true,
+                      bajar: () =>
+                        descargarPlanilla(origenInventarioUrl(batchId), '00.INDICE ELECTRONICO.xlsx')
+                    }
+                  ]
+                : []),
+              {
+                id: 'procesos',
+                titulo: 'Inventario de procesos',
+                detalle: 'Lo que hizo el bot con cada PDF: habilidad, lectura, resultado y revisión',
+                formato: 'Excel' as const,
+                bajar: () =>
+                  descargarPlanilla(
+                    origenProcesosUrl(batchId),
+                    '00.INVENTARIO GENERAL DE PROCESOS.xlsx'
+                  )
+              }
+            ]
+          }
+        ]
+      : []
+  );
+
   /** Lo que salió del lote, llamado por su nombre. */
   const unitLabel = $derived(unitFor(done[0]?.report?.stats, resolutions));
 </script>
@@ -169,7 +214,24 @@
   />
 
   <div class="now">
-    <ThroughputChart rate={rate} live={!settled} color="var(--s3)" />
+    <PanelDeRendimiento
+      paginasHechas={pagesDone}
+      paginasTotal={pagesTotal}
+      velocidad={rate}
+      segundos={elapsedSeconds}
+      etapas={running.map((job) => job.progress.stage)}
+      procedencias={jobs.map((job) => job.progress.by_provenance)}
+      revision={jobs.reduce((sum, job) => sum + marcadasEnCinta(job.progress.ribbon), 0)}
+      fallidas={jobs.reduce((sum, job) => sum + job.progress.failed_pages, 0)}
+      documentos={{
+        hechos: done.length,
+        fallidos: failed.length + cancelled.length,
+        enCola: queued.length + paused.length + running.length,
+        total: jobs.length
+      }}
+      consumo={sumarConsumos(jobs.map((job) => job.progress.consumo ?? job.report?.consumo))}
+      vivo={!settled}
+    />
     {#if heaviest && jobs.length > 1}
       <p class="footnote">
         El más pesado del lote es <b>{heaviest.filename}</b> con {formatBytes(heaviest.bytes)},
@@ -177,6 +239,10 @@
       </p>
     {/if}
   </div>
+
+  {#if descargas.length}
+    <div class="descargas"><Descargas grupos={descargas} /></div>
+  {/if}
 
   {#if running.length}
     <!-- The answer to "which file is it on right now". One block per worker,
@@ -230,7 +296,7 @@
     flex-direction: column;
     gap: 0.9rem;
     border: 1px solid color-mix(in oklab, var(--s3) 30%, var(--hairline));
-    border-radius: 14px;
+    border-radius: var(--radius-lg);
     background: var(--surface-2);
     padding: 1.1rem 1.2rem;
     box-shadow: var(--shadow);
@@ -246,14 +312,13 @@
   }
   .head h3 {
     margin: 0;
-    font-size: 0.95rem;
+    font-size: var(--text-lg);
     font-weight: 650;
     letter-spacing: -0.01em;
   }
   .counter {
     margin-left: auto;
-    font-family: var(--font-mono);
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -274,7 +339,7 @@
   .bar {
     height: 6px;
     overflow: hidden;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--grid);
   }
   .bar.thin {
@@ -282,7 +347,7 @@
   }
   .fill {
     height: 100%;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: linear-gradient(
       90deg,
       var(--s3),
@@ -294,7 +359,7 @@
 
   .footnote {
     margin: 0.5rem 0 0;
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
   .footnote b {
@@ -304,9 +369,9 @@
   .section-label {
     display: block;
     margin-bottom: 0.45rem;
-    font-size: 0.62rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.055em;
+    letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
     color: var(--muted);
   }
@@ -320,7 +385,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     background: var(--plane);
     padding: 0.6rem 0.7rem;
   }
@@ -343,21 +408,21 @@
   }
   .file {
     overflow: hidden;
-    font-size: 0.82rem;
+    font-size: var(--text-sm);
     font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .stage {
     flex-shrink: 0;
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--ink-2);
   }
   .pages {
     margin-left: auto;
     flex-shrink: 0;
     font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -379,10 +444,10 @@
     align-items: center;
     gap: 0.4rem;
     border: 1px solid var(--hairline);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     background: var(--surface-1);
     padding: 0.15rem 0.45rem;
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
   .chip-name {
@@ -433,5 +498,9 @@
     .dot {
       animation: none;
     }
+  }
+  .descargas {
+    margin-top: 0.85rem;
+    max-width: 34rem;
   }
 </style>

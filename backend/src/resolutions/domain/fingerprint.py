@@ -341,6 +341,8 @@ class PageFingerprint:
     closes: bool
     #: The last characters of the page, to see whether a sentence was cut.
     tail: str
+    #: The full text of the page, for advanced pattern matching.
+    text: str
 
     # Lo que sigue son señales de segundo orden: nacieron para la caja de
     # correspondencia heterogénea, donde ni la paginación ni el consecutivo
@@ -712,4 +714,5 @@ def fingerprint_page(
         legible=len(flat) >= LEGIBLE_MIN_CHARS and not is_garbled(flat),
         closes=bool(_CLOSING.search(flat[-CLOSING_TAIL_CHARS:])),
         tail=flat[-45:],
+        text=text,
     )

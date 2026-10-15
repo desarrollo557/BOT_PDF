@@ -1,3 +1,4 @@
+import type { AgruparChoice, CorteChoice } from './habilidades';
 import type { LecturaChoice } from './lectura';
 import type { TipoOption, TipoPedido } from './tipos';
 import type { OracleChoice } from './oracles';
@@ -20,6 +21,38 @@ import type {
 const BASE = '/api';
 
 export class ApiError extends Error {}
+
+/**
+ * La petición no llegó al servicio: está apagado, se reinicia o se cayó la red.
+ *
+ * Aparte de un rechazo porque piden cosas distintas: un rechazo se lee y se
+ * corrige; esto se arregla encendiendo el servicio y volviendo a intentar, y
+ * no debe, por ejemplo, cerrar la sesión de quien está trabajando.
+ */
+export class SinConexion extends ApiError {
+  constructor() {
+    super(
+      'No se pudo hablar con el servicio: puede estar apagado o reiniciándose. ' +
+        'Espere unos segundos y vuelva a intentar.'
+    );
+  }
+}
+
+/**
+ * `fetch`, con la caída de la red convertida en un error que se entiende.
+ *
+ * Sin esto, un servicio apagado llega a la pantalla como «Failed to fetch» o
+ * «NetworkError when attempting to fetch resource», según el navegador.
+ */
+async function pedir(input: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (problema) {
+    // Quien abortó la petición lo hizo a propósito; no es una caída.
+    if (problema instanceof DOMException && problema.name === 'AbortError') throw problema;
+    throw new SinConexion();
+  }
+}
 
 /**
  * Who to attribute new work to. Set by the session, read on every intake.
@@ -57,10 +90,6 @@ function attribution(): Record<string, string> {
     ...(operator ? { 'X-Operator': encodeURIComponent(operator) } : {}),
     ...(cedula ? { 'X-Cedula': cedula } : {})
   };
-}
-
-function jsonHeaders(): Record<string, string> {
-  return { 'content-type': 'application/json', ...attribution() };
 }
 
 async function detailOf(response: Response): Promise<string> {
@@ -114,7 +143,7 @@ export function mensajeDe(status: number, payload: unknown): string {
 }
 
 export async function createBatch(name: string): Promise<{ id: string; name: string }> {
-  const response = await fetch(`${BASE}/batches`, {
+  const response = await pedir(`${BASE}/batches`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name })
@@ -136,7 +165,10 @@ export async function uploadDocument(
   task: TaskKind = 'split',
   oracle: OracleChoice = 'auto',
   lectura: LecturaChoice = 'local',
-  tipo: TipoPedido = 'auto'
+  tipo: TipoPedido = 'auto',
+  corte: CorteChoice = 'pagina',
+  agrupar: AgruparChoice = 'documento',
+  territorial = ''
 ): Promise<{ id: string }> {
   const body = new FormData();
   body.append('file', file);
@@ -154,22 +186,33 @@ export async function uploadDocument(
   // Y el tipo declarado, por lo mismo: 'auto' es lo que el servicio hace sin
   // que se lo pidan.
   if (tipo !== 'auto') query.set('tipo', tipo);
+  // Y el criterio con que se parte un libro de diplomas. 'pagina' es lo que el
+  // servicio hace sin que se lo pidan, así que no viaja: mandarlo obligaría a
+  // los servicios anteriores a esta revisión a entender un parámetro que no
+  // conocen, y los haría contestar 422 a un trabajo que sabían hacer.
+  if (corte !== 'pagina') query.set('corte', corte);
+  // Y qué va en cada archivo de una caja de correspondencia. 'documento' es lo
+  // de siempre y no viaja, por lo mismo que el corte.
+  if (agrupar !== 'documento') query.set('agrupar', agrupar);
+  // Y la territorial de una caja de correspondencia, para el encabezado de su
+  // Índice Electrónico. Sólo viaja si se escribió.
+  if (territorial.trim()) query.set('territorial', territorial.trim());
   const suffix = query.toString();
 
   const url = suffix ? `${BASE}/jobs?${suffix}` : `${BASE}/jobs`;
-  const response = await fetch(url, { method: 'POST', body, headers: attribution() });
+  const response = await pedir(url, { method: 'POST', body, headers: attribution() });
   if (!response.ok) throw new ApiError(await detailOf(response));
   return response.json();
 }
 
 export async function listJobs(): Promise<Job[]> {
-  const response = await fetch(`${BASE}/jobs`);
+  const response = await pedir(`${BASE}/jobs`);
   if (!response.ok) return [];
   return (await response.json()).jobs ?? [];
 }
 
 export async function listBatches(): Promise<Batch[]> {
-  const response = await fetch(`${BASE}/batches`);
+  const response = await pedir(`${BASE}/batches`);
   if (!response.ok) return [];
   return (await response.json()).batches ?? [];
 }
@@ -197,6 +240,71 @@ export function streamEvents(handlers: {
     }
   };
   return () => events.close();
+}
+
+/** Qué parece ser un PDF, según su patrón: el tipo, cómo se supo y por qué. */
+export interface Sugerencia {
+  tipo: string;
+  etiqueta: string;
+  /** «marcadores», «veto», «nucleo» o «nombre»; vacío si no se reconoció. */
+  por: string;
+  motivo: string;
+  paginas: number;
+}
+
+/** Lo que hay en una carpeta local, PDF por PDF y contado por tipo. */
+export interface SugerenciaDeCarpeta {
+  ruta: string;
+  total: number;
+  mirados: number;
+  por_tipo: { tipo: string; etiqueta: string; cantidad: number }[];
+  archivos: (Sugerencia & { ruta: string })[];
+}
+
+/** Qué parece un PDF recién soltado. Sólo su capa de texto: no gasta nada. */
+export async function reconocerArchivo(file: File, signal?: AbortSignal): Promise<Sugerencia> {
+  const cuerpo = new FormData();
+  cuerpo.append('file', file);
+  const response = await pedir(`${BASE}/reconocer`, {
+    method: 'POST',
+    body: cuerpo,
+    headers: attribution(),
+    signal
+  });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
+}
+
+/** Qué hay en una carpeta local y sus subcarpetas, antes de procesarla. */
+export async function reconocerCarpeta(
+  ruta: string,
+  signal?: AbortSignal
+): Promise<SugerenciaDeCarpeta> {
+  const response = await pedir(`${BASE}/reconocer-carpeta`, {
+    method: 'POST',
+    body: JSON.stringify({ ruta }),
+    headers: { 'Content-Type': 'application/json', ...attribution() },
+    signal
+  });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
+}
+
+/** Los PDF y el Excel que dejó un trabajo, tal como están en el disco. */
+export interface ArchivosDelTrabajo {
+  archivos: { ruta: string; nombre: string; bytes: number }[];
+  inventario: string | null;
+}
+
+/** Todo lo que dejó un trabajo, sus PDF y su Excel, en un solo ZIP. */
+export function archivosZipUrl(jobId: string): string {
+  return `${BASE}/jobs/${jobId}/archivos.zip`;
+}
+
+export async function fetchArchivos(jobId: string): Promise<ArchivosDelTrabajo> {
+  const response = await pedir(`${BASE}/jobs/${jobId}/archivos`, { headers: attribution() });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
 }
 
 export function downloadUrl(jobId: string, name: string): string {
@@ -231,7 +339,7 @@ export async function withConcurrency<T>(
  * running is left alone, so this is safe to press mid-batch.
  */
 export async function clearScreen(): Promise<{ removed: number }> {
-  const response = await fetch(`${BASE}/jobs`, { method: 'DELETE' });
+  const response = await pedir(`${BASE}/jobs`, { method: 'DELETE' });
   if (!response.ok) throw new ApiError(await detailOf(response));
   return response.json();
 }
@@ -239,7 +347,7 @@ export async function clearScreen(): Promise<{ removed: number }> {
 /** Forget one document. With `purge`, its generated PDFs go too. */
 export async function deleteJob(jobId: string, purge = false): Promise<void> {
   const url = `${BASE}/jobs/${jobId}${purge ? '?purge=true' : ''}`;
-  const response = await fetch(url, { method: 'DELETE' });
+  const response = await pedir(url, { method: 'DELETE' });
   if (!response.ok) throw new ApiError(await detailOf(response));
 }
 
@@ -250,7 +358,7 @@ export async function fetchInventory(
 ): Promise<InventoryPage> {
   const parameters = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (query) parameters.set('q', query);
-  const response = await fetch(`${BASE}/inventory?${parameters}`);
+  const response = await pedir(`${BASE}/inventory?${parameters}`);
   if (!response.ok) throw new ApiError(await detailOf(response));
   return response.json();
 }
@@ -261,7 +369,7 @@ export async function fetchProcessedDocuments(
 ): Promise<{ documents: ProcessedDocument[]; total: number }> {
   const parameters = new URLSearchParams({ limit: String(limit) });
   if (query) parameters.set('q', query);
-  const response = await fetch(`${BASE}/documents?${parameters}`);
+  const response = await pedir(`${BASE}/documents?${parameters}`);
   if (!response.ok) throw new ApiError(await detailOf(response));
   return response.json();
 }
@@ -288,7 +396,7 @@ export async function steerJob(
   jobId: string,
   action: 'pause' | 'resume' | 'cancel'
 ): Promise<{ state: JobState }> {
-  const response = await fetch(`${BASE}/jobs/${jobId}/${action}`, { method: 'POST' });
+  const response = await pedir(`${BASE}/jobs/${jobId}/${action}`, { method: 'POST' });
   if (!response.ok) throw new ApiError(await detailOf(response));
   return response.json();
 }
@@ -298,7 +406,7 @@ export async function steerBatch(
   batchId: string,
   action: 'pause' | 'resume' | 'cancel'
 ): Promise<{ jobs: string[] }> {
-  const response = await fetch(`${BASE}/batches/${batchId}/${action}`, { method: 'POST' });
+  const response = await pedir(`${BASE}/batches/${batchId}/${action}`, { method: 'POST' });
   if (!response.ok) throw new ApiError(await detailOf(response));
   return response.json();
 }
@@ -318,6 +426,68 @@ export function documentFuidUrl(jobId: string): string {
   return `${BASE}/jobs/${jobId}/fuid.xlsx`;
 }
 
+/** El inventario de las actas de una carpeta entera: una fila por PDF. */
+export function folderInventarioUrl(runId: string): string {
+  return `${BASE}/folder-runs/${runId}/inventario.xlsx`;
+}
+
+/**
+ * El Excel general de una carpeta desde el Archivo. Sirve también cuando la
+ * corrida ya no está en pantalla: el servicio lo busca donde quedó entregado.
+ */
+export function origenInventarioUrl(origenId: string): string {
+  return `${BASE}/origenes/${encodeURIComponent(origenId)}/inventario.xlsx`;
+}
+
+/**
+ * El inventario general del bot de un lote o una carpeta: una fila por PDF
+ * procesado -- habilidad, lectura, páginas, documentos, revisión, estado --.
+ * Es el mismo para cualquier habilidad; el de cada habilidad es el otro.
+ */
+export function origenProcesosUrl(origenId: string): string {
+  return `${BASE}/origenes/${encodeURIComponent(origenId)}/procesos.xlsx`;
+}
+
+/**
+ * Baja una planilla que el servicio sólo entrega a quien se identifica.
+ *
+ * No vale un enlace con `href`: el navegador lo sigue sin las cabeceras de esta
+ * pantalla, el servicio no sabe quién lo pide y contesta 401 -- y lo que el
+ * operador veía al pulsar «descargar el Excel» era una página con un error en
+ * vez de su planilla. Así que se pide con `fetch`, que sí lleva la cédula, y lo
+ * que vuelve se guarda como archivo con el nombre que dio el servicio.
+ */
+export async function descargarPlanilla(url: string, nombre = 'inventario.xlsx'): Promise<void> {
+  const response = await pedir(url, { headers: attribution() });
+  if (!response.ok) {
+    throw Object.assign(new ApiError(await detailOf(response)), { status: response.status });
+  }
+  const archivo = nombreDeLaDescarga(response.headers.get('content-disposition')) ?? nombre;
+  const enlace = document.createElement('a');
+  enlace.href = URL.createObjectURL(await response.blob());
+  enlace.download = archivo;
+  document.body.appendChild(enlace);
+  enlace.click();
+  enlace.remove();
+  // Después de que el navegador haya empezado a guardarlo, no antes.
+  setTimeout(() => URL.revokeObjectURL(enlace.href), 10_000);
+}
+
+/** El nombre que trae `Content-Disposition`, en su forma UTF-8 si la trae. */
+export function nombreDeLaDescarga(cabecera: string | null): string | null {
+  if (!cabecera) return null;
+  const utf8 = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(cabecera);
+  if (utf8) {
+    try {
+      return decodeURIComponent(utf8[1].trim().replace(/^"|"$/g, ''));
+    } catch {
+      // Mal codificado: se prueba con la forma simple.
+    }
+  }
+  const simple = /filename="?([^";]+)"?/i.exec(cabecera);
+  return simple ? simple[1].trim() : null;
+}
+
 /**
  * Levantar el inventario de un documento que ya se procesó.
  *
@@ -327,7 +497,7 @@ export function documentFuidUrl(jobId: string): string {
  * libro de cuatrocientos folios son minutos, y el estado se consulta aparte.
  */
 export async function makeDocumentFuid(jobId: string): Promise<FuidStatus> {
-  const response = await fetch(`${BASE}/jobs/${jobId}/fuid`, {
+  const response = await pedir(`${BASE}/jobs/${jobId}/fuid`, {
     method: 'POST',
     headers: attribution()
   });
@@ -337,7 +507,7 @@ export async function makeDocumentFuid(jobId: string): Promise<FuidStatus> {
 
 /** Si ya está escrito. Se consulta mientras se levanta. */
 export async function documentFuidStatus(jobId: string): Promise<FuidStatus> {
-  const response = await fetch(`${BASE}/jobs/${jobId}/fuid`);
+  const response = await pedir(`${BASE}/jobs/${jobId}/fuid`);
   if (!response.ok) throw new ApiError(await detailOf(response));
   return await response.json();
 }
@@ -349,7 +519,7 @@ export async function documentFuidStatus(jobId: string): Promise<FuidStatus> {
  * depending on a new endpoint. A service older than this is not broken, it is
  * stale, and saying which is the difference between a restart and a bug hunt.
  */
-export const REQUIRED_API_REVISION = 18;
+export const REQUIRED_API_REVISION = 24;
 
 export interface Health {
   status: string;
@@ -389,7 +559,7 @@ export interface Health {
 /** One cheap call. Used by the status rail, which polls it slowly on purpose. */
 export async function fetchHealth(): Promise<Health | null> {
   try {
-    const response = await fetch(`${BASE}/health`);
+    const response = await pedir(`${BASE}/health`);
     return response.ok ? await response.json() : null;
   } catch {
     // The rail reports "sin conexión" from a null; it never throws at the UI.
@@ -401,7 +571,7 @@ export async function fetchHealth(): Promise<Health | null> {
 // -- mutations ---------------------------------------------------------------
 
 async function send<T>(url: string, method: string, body?: unknown): Promise<T> {
-  const response = await fetch(url, {
+  const response = await pedir(url, {
     method,
     headers: {
       ...attribution(),
@@ -453,7 +623,7 @@ export interface ArchivedDocument extends ProcessedDocument {
 }
 
 export async function fetchDocument(jobId: string): Promise<ArchivedDocument> {
-  const response = await fetch(`${BASE}/documents/${jobId}`);
+  const response = await pedir(`${BASE}/documents/${jobId}`);
   if (!response.ok) throw new ApiError(await detailOf(response));
   return response.json();
 }
@@ -487,14 +657,6 @@ export function renameJob(jobId: string, filename: string): Promise<Job> {
   return send(`${BASE}/jobs/${jobId}`, 'PATCH', { filename });
 }
 
-export function renameBatch(batchId: string, name: string): Promise<Batch> {
-  return send(`${BASE}/batches/${batchId}`, 'PATCH', { name });
-}
-
-export function deleteBatch(batchId: string, purge = false): Promise<{ removed: number }> {
-  return send(`${BASE}/batches/${batchId}${purge ? '?purge=true' : ''}`, 'DELETE');
-}
-
 // -- local folders -----------------------------------------------------------
 
 export function startFolderRun(options: {
@@ -508,6 +670,12 @@ export function startFolderRun(options: {
   oracle?: OracleChoice;
   /** Y con qué motor leer el papel de esta carpeta. */
   lectura?: LecturaChoice;
+  /** Y por dónde partir cada libro de diplomas que traiga. */
+  corte?: CorteChoice;
+  /** Y qué va en cada archivo de una caja de correspondencia. */
+  agrupar?: AgruparChoice;
+  /** Y la territorial de sus cajas, para el encabezado del Índice Electrónico. */
+  territorial?: string;
   /** Y qué clase de documento trae, cuando el operador lo sabe. */
   tipo?: TipoPedido;
 }): Promise<FolderRun> {
@@ -545,7 +713,7 @@ export function clearFolderRuns(): Promise<{ removed: number; ids: string[] }> {
  */
 export async function browseFolders(path: string | null): Promise<FolderListing> {
   const url = path ? `${BASE}/folders?path=${encodeURIComponent(path)}` : `${BASE}/folders`;
-  const response = await fetch(url);
+  const response = await pedir(url);
   if (!response.ok) throw new ApiError(await detailOf(response));
   return response.json();
 }
@@ -562,7 +730,7 @@ export async function pickFolderNatively(
   title: string,
   initial?: string
 ): Promise<{ path: string | null; cancelled: boolean }> {
-  const response = await fetch(`${BASE}/folders/pick`, {
+  const response = await pedir(`${BASE}/folders/pick`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ title, initial: initial || null })
@@ -576,7 +744,7 @@ export async function pickFolderNatively(
 export class PickerUnavailable extends Error {}
 
 export async function listFolderRuns(): Promise<FolderRun[]> {
-  const response = await fetch(`${BASE}/folder-runs`);
+  const response = await pedir(`${BASE}/folder-runs`);
   if (!response.ok) return [];
   return (await response.json()).runs ?? [];
 }
@@ -586,70 +754,21 @@ export async function listFolderRuns(): Promise<FolderRun[]> {
 // -----------------------------------------------------------------------------
 
 /**
- * Reconocer a quien teclea su cédula y su correo.
+ * Entrar con el usuario «siar», sin contraseña.
  *
  * El perfil lo contesta el servicio a partir del alta que hizo el
  * administrador; la pantalla no lo decide ni puede concedérselo. Sobre un
  * archivo recién instalado, el primero que entra queda de administrador y la
  * respuesta lo dice en `primer_administrador`.
  */
-export async function entrar(cedula: string, correo: string): Promise<UsuarioApi> {
-  const response = await fetch(`${BASE}/sesion`, {
+export async function entrar(usuario: string): Promise<UsuarioApi> {
+  const response = await pedir(`${BASE}/sesion`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ cedula, correo })
+    body: JSON.stringify({ usuario })
   });
   if (!response.ok) throw new ApiError(await detailOf(response));
   return await response.json();
-}
-
-/** Quién está dado de alta. Sólo contesta al administrador. */
-export async function listarUsuarios(): Promise<UsuarioApi[]> {
-  const response = await fetch(`${BASE}/usuarios`, { headers: attribution() });
-  if (!response.ok) throw new ApiError(await detailOf(response));
-  return (await response.json()).usuarios ?? [];
-}
-
-export async function crearUsuario(alta: {
-  cedula: string;
-  correo: string;
-  perfil: string;
-  nombre?: string;
-}): Promise<UsuarioApi> {
-  const response = await fetch(`${BASE}/usuarios`, {
-    method: 'POST',
-    headers: jsonHeaders(),
-    body: JSON.stringify({ nombre: '', ...alta })
-  });
-  if (!response.ok) throw new ApiError(await detailOf(response));
-  return await response.json();
-}
-
-/**
- * Cambiar el correo, el perfil o el nombre de alguien ya dado de alta.
- *
- * La cédula no se cambia: es la clave, y cambiarla es dar de baja a una persona
- * y de alta a otra, que conviene que se vea como dos actos y no como uno.
- */
-export async function cambiarUsuario(
-  cedula: string,
-  cambio: { correo?: string; perfil?: string; nombre?: string }
-): Promise<UsuarioApi> {
-  const response = await fetch(`${BASE}/usuarios/${encodeURIComponent(cedula)}`, {
-    method: 'PATCH',
-    headers: jsonHeaders(),
-    body: JSON.stringify(cambio)
-  });
-  if (!response.ok) throw new ApiError(await detailOf(response));
-  return await response.json();
-}
-
-export async function darDeBaja(cedula: string): Promise<void> {
-  const response = await fetch(`${BASE}/usuarios/${encodeURIComponent(cedula)}`, {
-    method: 'DELETE',
-    headers: attribution()
-  });
-  if (!response.ok) throw new ApiError(await detailOf(response));
 }
 
 /**
@@ -660,7 +779,7 @@ export async function darDeBaja(cedula: string): Promise<void> {
  * escrito: lo que se mira y lo que se firma tienen que ser el mismo documento.
  */
 export async function fuidTabla(jobId: string): Promise<FuidTabla> {
-  const response = await fetch(`${BASE}/jobs/${jobId}/fuid.tabla`, { headers: attribution() });
+  const response = await pedir(`${BASE}/jobs/${jobId}/fuid.tabla`, { headers: attribution() });
   if (!response.ok) throw new ApiError(await detailOf(response));
   return await response.json();
 }

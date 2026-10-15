@@ -35,6 +35,9 @@
     failed?: number | null;
     /** El trabajo ya terminó: las medidas dejan de ser «ahora» y pasan a ser «en total». */
     settled?: boolean;
+    /** Progreso de la etapa activa, cuando el total global aún no avanza. */
+    stageDone?: number | null;
+    stageTotal?: number | null;
     /**
      * Lo gastado con los proveedores de pago. Se enseña en sus unidades --
      * páginas facturadas, tokens -- y en dinero sólo si hay un precio puesto.
@@ -57,6 +60,8 @@
     queued = null,
     failed = null,
     settled = false,
+    stageDone = null,
+    stageTotal = null,
     consumo = null
   }: Props = $props();
 
@@ -109,6 +114,15 @@
       label="Peso"
       value={formatBytes(bytesTotal)}
       note={bytesDone ? `${formatBytes(bytesDone)} leídos` : 'sin leer todavía'}
+    />
+  {/if}
+
+  {#if !settled && stageTotal}
+    <StatTile
+      label="Etapa actual"
+      value={`${stageDone ?? 0} / ${stageTotal}`}
+      note="avance de la lectura activa"
+      tone="good"
     />
   {/if}
 

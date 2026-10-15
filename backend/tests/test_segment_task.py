@@ -185,7 +185,9 @@ CUERPO = (
 PAGINAS = [
     ("RESPUESTA A RECLAMACION", "Página 1 de 2"),
     ("", "Página 2 de 2"),
-    ("FACTURA DE VENTA", ""),
+    # No una factura: una factura ya nunca es documento propio, va con el
+    # anterior (ver test_anexos_declarados). Esta caja prueba el nombre por tipo.
+    ("NOTIFICACION POR AVISO", ""),
     ("", ""),
 ]
 
@@ -229,19 +231,18 @@ class TestElTrabajo:
     def test_la_caja_sale_como_un_pdf_por_documento(self, informe, tmp_path):
         """Bajo una carpeta con el nombre de la caja, y nombrados por lo que son.
 
-        Los dos documentos de esta caja de prueba salen distintos a propósito:
-        el segundo dice "FACTURA" y se llama así, el primero no dice qué es y se
-        queda con el nombre genérico. Esa diferencia es lo que hace que en una
-        carpeta de doscientos archivos se vea de un vistazo cuáles quedaron sin
-        tipificar.
+        Los dos con el título que dice su primera hoja: «RESPUESTA A
+        RECLAMACION» -- que el catálogo no reconoce, y antes salía «DOCUMENTO»
+        -- y «NOTIFICACION POR AVISO». El operador lo pidió así: ningún
+        documento de la caja se llama «DOCUMENTO» si su hoja dice qué es.
         """
         assert informe["outputs"] == [
-            "caja de correspondencia/01_DOCUMENTO.pdf",
-            "caja de correspondencia/02_FACTURA.pdf",
+            "caja de correspondencia/01_RESPUESTA-A-RECLAMACION.pdf",
+            "caja de correspondencia/02_NOTIFICACION-POR-AVISO.pdf",
         ]
         carpeta = tmp_path / "outputs" / "trabajo" / "caja de correspondencia"
         escritos = sorted(path.name for path in carpeta.glob("*.pdf"))
-        assert escritos == ["01_DOCUMENTO.pdf", "02_FACTURA.pdf"]
+        assert escritos == ["01_RESPUESTA-A-RECLAMACION.pdf", "02_NOTIFICACION-POR-AVISO.pdf"]
 
     def test_el_informe_dice_de_que_tipo_es_cada_documento(self, informe):
         """El tipo viaja en el informe, no sólo en el nombre del archivo.
@@ -249,7 +250,7 @@ class TestElTrabajo:
         Es lo que alimenta el inventario y lo que permite corregir un tipo
         discutible en la pantalla sin volver a leer la caja entera.
         """
-        assert [grupo["type"] for grupo in informe["groups"]] == ["DOCUMENTO", "FACTURA"]
+        assert [grupo["type"] for grupo in informe["groups"]] == ["RESPUESTA A RECLAMACION", "NOTIFICACION POR AVISO"]
 
     def test_el_informe_trae_las_claves_que_la_pantalla_lee(self, informe):
         faltan = [clave for clave in CLAVES_DE_LA_PANTALLA if clave not in informe]
@@ -277,7 +278,7 @@ class TestElTrabajo:
     def test_la_cuarta_hoja_ya_no_necesita_que_nadie_la_mire(self, informe):
         """Y antes sí, con esta misma caja.
 
-        La tercera hoja se titula "FACTURA DE VENTA" y la cuarta no dice nada,
+        La tercera hoja se titula "NOTIFICACION POR AVISO" y la cuarta no dice nada,
         así que la cuarta es su cuerpo: la regla de "la anterior abre y ésta no
         abre nada" lo resuelve gratis. No lo resolvía porque el rótulo no se
         reconocía -- la lista de rótulos que decidía cortes era una lista corta

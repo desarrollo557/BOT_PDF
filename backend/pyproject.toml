@@ -42,7 +42,7 @@ extend-exclude = [".venv", "**/__pycache__"]
 # Errores de verdad (pyflakes), estilo del pep8, imports ordenados, modernismos
 # de Python 3.12 y las trampas de bugbear. Sin reglas de opinión pura: la que
 # marca un problema real se queda, la que sólo discute de gustos no entra.
-select = ["E", "F", "I", "UP", "B", "SIM"]
+select = ["E", "F", "I", "UP", "B", "SIM", "BLE"]
 ignore = [
     "E501",  # el largo de línea lo decide el formateador, no el linter
     "B008",  # Depends() en la firma es la forma correcta en FastAPI

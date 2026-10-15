@@ -38,6 +38,8 @@ export interface InventoryItem {
   file_name: string;
   code: string;
   title: string | null;
+  /** El tipo documental con el nombre del catálogo («ACTA DE CONSEJO», …). */
+  type?: string | null;
   page_count: number;
   first_page: number;
   last_page: number;
@@ -70,6 +72,13 @@ export interface Stats {
   /** Qué resultó ser el documento, decidido sobre lo que se leyó de él. */
   document_type?: DocumentTypeId;
   type_confidence?: number;
+  /**
+   * Las caras que no hizo falta leer porque pertenecen a la hoja anterior.
+   *
+   * Opcional porque sólo la produce la ruta de los libros de registro, y
+   * porque un informe guardado por una versión anterior no la trae.
+   */
+  no_leidas?: number[];
 }
 
 /** Una cosa que no cuadra en la lectura, con el sitio exacto donde no cuadra. */
@@ -152,13 +161,58 @@ export interface Report {
   records?: number;
   /** Presente en los informes nuevos; los guardados antes no lo traen. */
   task?: TaskKind;
+  /**
+   * Lo que el worker quiso decir del trabajo en una frase: que la caja se
+   * agrupó por mes y cuántas páginas quedaron sin fecha, o que no encontró
+   * ninguna y la entregó por documento. Estaba en el informe y no lo pintaba
+   * ninguna pantalla.
+   */
+  notices?: string[];
+  /** Qué se entregó como un archivo en una caja de correspondencia. */
+  agrupar?: 'documento' | 'mes';
   validation?: Validation;
   issues?: Issue[];
   /** Nombre del FUID escrito, cuando la acción lo incluía. */
   fuid?: string;
   fuid_error?: string;
+  /** El Excel sencillo que deja un acta de consejo, y su única fila. */
+  inventario?: string;
+  inventario_error?: string;
+  inventario_actas?: FilaDeActa[];
+  /** El Índice Electrónico que dejó una caja de correspondencia, si lo dejó. */
+  indice_electronico?: string;
+  /** Si el libro de actas se dividió en un PDF por sesión. */
+  dividido?: boolean;
+  /** Las sesiones del libro, con sus páginas y las piezas que traen. */
+  sesiones?: {
+    orden: number;
+    nombre: string;
+    desde: number;
+    hasta: number;
+    piezas: { tipo: string; nombre: string; desde: number; hasta: number }[];
+  }[];
   /** Lo que costó producir este documento. Ausente en los informes anteriores. */
   consumo?: Consumo | null;
+}
+
+/** Una fila del inventario de actas de consejo: lo que se ve de cada PDF. */
+export interface FilaDeActa {
+  archivo: string;
+  acta: string;
+  fecha: string;
+  folio_inicial: number | string;
+  folio_final: number | string;
+  folios: number;
+  resumen: string;
+  observaciones: string;
+  /** La carpeta (UPD) del PDF, cuando viene de una corrida de carpeta. */
+  carpeta?: string;
+  /** Qué páginas del PDF son esta acta: en un libro, sólo las suyas. */
+  pagina_inicial?: number;
+  pagina_final?: number;
+  /** Las piezas de la sesión con sus páginas, en una línea. */
+  piezas?: string;
+  numero?: string;
 }
 
 /** Lo que devuelve un trabajo de inventario, que no escribe ningún PDF. */
@@ -263,6 +317,8 @@ export interface Job {
   /** A qué modelo se le pidió juzgar los bordes dudosos de esta caja. */
   oracle?: OracleChoice;
   lectura?: LecturaChoice;
+  /** La carpeta local o el lote del que salió. Nulo si se cargó suelto. */
+  origen?: Origen | null;
   state: JobState;
   created_at: string;
   started_at: string | null;
@@ -367,6 +423,12 @@ export interface FolderRun {
   queued?: number;
   current: string | null;
   current_job_id: string | null;
+  /**
+   * Todos los que se procesan ahora, en el orden en que se tomaron: la carpeta
+   * lleva varios a la vez. Ausente en un servicio anterior, que sólo daba
+   * `current`.
+   */
+  en_curso?: { job_id: string; nombre: string }[];
   /** Every document the run created, in the order it took them. */
   job_ids: string[];
   discovered: number;
@@ -377,6 +439,32 @@ export interface FolderRun {
   delivered: number;
   resolutions: number;
   deliveries: Delivery[];
+  /**
+   * El Excel con las actas de consejo de la carpeta, por su nombre, cuando ya
+   * está escrito: una fila por PDF. Ausente en un servicio anterior a la
+   * revisión 20.
+   */
+  inventario?: string | null;
+  /** Dónde quedó, en el disco del servicio. */
+  inventario_ruta?: string | null;
+  /** Cuántas actas lleva. */
+  inventario_filas?: number;
+  /** Por qué no se pudo escribir, si falló. */
+  inventario_error?: string | null;
+  /**
+   * El control de calidad del inventario antes de entregarlo: filas completas,
+   * completadas razonando con las vecinas y con algún dato que el papel no
+   * trae o no deja leer, por dato. Ausente en un servicio anterior.
+   */
+  inventario_validacion?: {
+    filas: number;
+    completas: number;
+    razonadas: number;
+    pendientes: number;
+    por_dato: Record<string, number>;
+    /** Nombres que las lecturas de la hoja no confirmaron del todo. */
+    nombres_dudosos?: number;
+  } | null;
 }
 
 /** One source document ever processed, folded back out of the ledger. */
@@ -392,6 +480,29 @@ export interface ProcessedDocument {
   source_pages: number;
   bytes: number;
   review: number;
+  /** Los tipos documentales que salieron de él. Ausente en servicios anteriores. */
+  types?: string[];
+  /** De qué carpeta o lote salió. Nulos si se cargó suelto o en servicios anteriores. */
+  origen_id?: string | null;
+  origen?: string | null;
+  origen_tipo?: string | null;
+  origen_inventario?: string | null;
+  /** Si es una caja de correspondencia con su Índice Electrónico en disco. */
+  indice?: boolean;
+}
+
+/**
+ * De qué corrida salió un documento: la carpeta local o el lote que lo trajo.
+ *
+ * Es lo que reúne sus PDF en una sola tarjeta del Archivo, con el nombre de la
+ * carpeta raíz y no el de uno de sus archivos.
+ */
+export interface Origen {
+  id: string;
+  nombre: string;
+  tipo: 'carpeta' | 'lote' | string;
+  /** Dónde queda el Excel general de una carpeta de actas. */
+  inventario?: string | null;
 }
 
 /** Una carpeta, tal como la lista el explorador del servicio. */

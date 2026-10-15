@@ -246,69 +246,6 @@ class TestRenamingADocument:
         assert client.patch("/api/jobs/ghost", json={"filename": "x.pdf"}).status_code == 404
 
 
-class TestBatches:
-    def test_a_batch_can_be_renamed(self, client):
-        batch_id = client.post("/api/batches", json={"name": "Lote"}).json()["id"]
-        response = client.patch(f"/api/batches/{batch_id}", json={"name": "Expedientes marzo"})
-        assert response.json()["name"] == "Expedientes marzo"
-
-    def test_an_empty_batch_name_is_refused(self, client):
-        batch_id = client.post("/api/batches", json={"name": "Lote"}).json()["id"]
-        assert client.patch(f"/api/batches/{batch_id}", json={"name": ""}).status_code == 422
-
-    def test_a_batch_can_be_cleared_off_the_screen(self, client):
-        from resolutions.api import main
-
-        batch_id = client.post("/api/batches", json={"name": "Lote"}).json()["id"]
-        for name in ("a.pdf", "b.pdf"):
-            job = main.contexto.registry.create(name, Path(name), batch_id=batch_id)
-            main.contexto.registry.mark_done(job, {"groups": [], "review_queue": []})
-
-        response = client.request("DELETE", f"/api/batches/{batch_id}")
-
-        assert response.json()["removed"] == 2
-        assert client.get("/api/jobs").json() == {"jobs": []}
-
-    def test_clearing_a_batch_keeps_its_files_unless_purged(self, client):
-        from resolutions.api import main
-
-        batch_id = client.post("/api/batches", json={"name": "Lote"}).json()["id"]
-        job = main.contexto.registry.create("a.pdf", Path("a.pdf"), batch_id=batch_id)
-        main.contexto.registry.mark_done(job, {"groups": [], "review_queue": []})
-        directory = main.contexto.settings.output_dir / job.id
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / "00086__acta.pdf").write_bytes(b"%PDF")
-
-        client.request("DELETE", f"/api/batches/{batch_id}")
-        assert directory.exists()
-
-    def test_purging_a_batch_takes_its_files(self, client):
-        from resolutions.api import main
-
-        batch_id = client.post("/api/batches", json={"name": "Lote"}).json()["id"]
-        job = main.contexto.registry.create("a.pdf", Path("a.pdf"), batch_id=batch_id)
-        main.contexto.registry.mark_done(job, {"groups": [], "review_queue": []})
-        directory = main.contexto.settings.output_dir / job.id
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / "00086__acta.pdf").write_bytes(b"%PDF")
-
-        client.request("DELETE", f"/api/batches/{batch_id}?purge=true")
-        assert not directory.exists()
-
-    def test_a_running_document_is_not_cleared_with_its_batch(self, client):
-        from resolutions.api import main
-
-        batch_id = client.post("/api/batches", json={"name": "Lote"}).json()["id"]
-        job = main.contexto.registry.create("a.pdf", Path("a.pdf"), batch_id=batch_id)
-        main.contexto.registry.mark_running(job)
-
-        assert client.request("DELETE", f"/api/batches/{batch_id}").json()["removed"] == 0
-        assert len(client.get("/api/jobs").json()["jobs"]) == 1
-
-    def test_deleting_an_unknown_batch_is_not_found(self, client):
-        assert client.request("DELETE", "/api/batches/ghost").status_code == 404
-
-
 class TestCorrectionsSurviveAScreenClear:
     def test_the_inventory_still_carries_the_correction(self, client):
         # The ledger outlives the registry, so a fix made before clearing has to

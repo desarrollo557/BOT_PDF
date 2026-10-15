@@ -84,6 +84,21 @@ def _compact(pages: list[int]) -> str:
     return ",".join(tramos)
 
 
+def _cabe(texto: str | None, limite: int, separador: str = ",") -> str | None:
+    """El texto recortado a lo que cabe en su columna, sin mentir al recortar.
+
+    ``INSERT IGNORE`` no falla con un valor largo: lo trunca callado, y un rango
+    de páginas cortado a media cifra («…,153-15») dice que el archivo trae hojas
+    que no trae. Pasa con un archivo por mes, que junta tramos sueltos de toda la
+    caja. Se corta en el último separador que cabe y se deja «…» para que se vea
+    que la lista sigue; la completa está en la planilla y en el libro mayor.
+    """
+    if not texto or len(texto) <= limite:
+        return texto
+    corte = texto.rfind(separador, 0, limite - 1)
+    return (texto[:corte] if corte > 0 else texto[: limite - 1]) + "…"
+
+
 #: Una resolución y todo lo que la pantalla necesita saber de ella. La consulta
 #: devuelve exactamente las mismas claves que el archivo JSONL, para que nada
 #: aguas arriba tenga que saber de dónde salieron.
@@ -218,14 +233,14 @@ class MySQLInventory(InventoryReads):
                             (
                                 documento_id,
                                 (item.get("code") or "")[:32],
-                                item.get("title") or None,
+                                _cabe(item.get("title") or None, 400, "; "),
                                 (item.get("type") or None) and str(item["type"])[:80],
                                 (item.get("file_name") or "")[:255],
                                 int(item.get("page_count") or 0),
                                 int(item.get("first_page") or 0),
                                 int(item.get("last_page") or 0),
-                                _compact(item.get("page_numbers") or []) or None,
-                                _compact(item.get("attachments") or []) or None,
+                                _cabe(_compact(item.get("page_numbers") or []) or None, 255),
+                                _cabe(_compact(item.get("attachments") or []) or None, 255),
                                 moment,
                             ),
                         )

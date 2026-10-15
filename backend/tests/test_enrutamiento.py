@@ -210,3 +210,93 @@ class TestElAvisoDeQueLaAccionNoPega:
         monkeypatch.setattr(worker, "_recognise", revienta)
         monkeypatch.setattr(worker, "_anunciar", lambda *a, **k: None)
         assert worker._aviso_de_ruta(payload(TaskKind.SEGMENT), worker._SIN_RECONOCER) == []
+
+    def test_si_se_pide_por_tramite_se_usa_la_agrupacion_por_tramite(self, monkeypatch, tmp_path):
+        """La opción elegida debe cambiar el agrupador, no sólo el nombre."""
+        from datetime import date
+
+        import pymupdf
+
+        import resolutions.application.agrupacion as agrupacion_mod
+        from resolutions.api.settings import Settings
+        from resolutions.application.agrupacion import PaginasLeidas, PorTramite
+
+        documento = pymupdf.open()
+        pagina = documento.new_page()
+        pagina.insert_text((72, 72), "N° PQR: RE4310202207352")
+        caja = tmp_path / "caja.pdf"
+        documento.save(caja)
+        documento.close()
+
+        llamadas = []
+
+        def fake_agrupar_por_tramite(grupos, leidas, anexos, retenidas=None, sellos=None):
+            llamadas.append((grupos, leidas, anexos))
+            return PorTramite(
+                grupos=grupos,
+                anexos={},
+                paginas=sum(len(g.page_numbers) for g in grupos.groups),
+                en_revision=[],
+                agrupo=True,
+            )
+
+        monkeypatch.setattr(agrupacion_mod, "agrupar_por_mes", lambda *a, **k: pytest.fail("se usó mes en vez de trámite"))
+        monkeypatch.setattr(agrupacion_mod, "agrupar_por_tramite", fake_agrupar_por_tramite)
+        monkeypatch.setattr(
+            agrupacion_mod,
+            "leer_paginas",
+            lambda *a, **k: PaginasLeidas(
+                fechas={1: date(2022, 8, 18)},
+                tipos={1: "RECLAMO"},
+                asuntos={1: "RECLAMO"},
+                con_ocr=0,
+                textos={1: "N° PQR: RE4310202207352"},
+            ),
+        )
+        monkeypatch.setattr(worker, "_anunciar", lambda *a, **k: None)
+        monkeypatch.setattr(worker, "_escribir_planilla", lambda *a, **k: None)
+
+        informe = worker._segment_job(
+            {
+                "job_id": "t",
+                "source": str(caja),
+                "filename": "caja.pdf",
+                "task": str(TaskKind.SEGMENT),
+                "agrupar": "tramite",
+                "settings": Settings(output_dir=tmp_path / "salida").as_worker_payload(),
+            },
+            TaskKind.SEGMENT,
+        )
+
+        assert llamadas
+        assert informe["agrupar"] == "tramite"
+
+
+class TestLoQueYaSeSabeDelDocumentoViajaConElTrabajo:
+    """La lectura no vuelve a muestrear lo que el despachador ya decidió.
+
+    Reconocer cuesta una muestra de doce páginas -- doce pasadas de OCR en un
+    escaneo -- y ocurría dos veces por trabajo: una aquí, para elegir la ruta, y
+    otra dentro de la lectura, que no sabía que ya se había hecho.
+    """
+
+    @pytest.fixture
+    def recibido(self, monkeypatch):
+        llegado = {}
+
+        def marcar(payload, task, tipo=None):
+            llegado["tipo"] = tipo
+            return {"ruta": "_record_split_job"}
+
+        monkeypatch.setattr(worker, "_record_split_job", marcar)
+        monkeypatch.setattr(worker, "_anunciar", lambda *a, **k: None)
+        return llegado
+
+    def test_el_tipo_declarado_por_el_operador_llega_a_la_lectura(self, recibido):
+        worker.process_document_job({**payload(TaskKind.SPLIT), "tipo": "diploma"})
+        assert recibido["tipo"] is DocumentType.DIPLOMA
+
+    def test_y_tambien_el_reconocido_por_la_muestra(self, recibido, monkeypatch):
+        reconoce(monkeypatch, DocumentType.MATRICULA)
+        worker.process_document_job(payload(TaskKind.SPLIT))
+        assert recibido["tipo"] is DocumentType.MATRICULA

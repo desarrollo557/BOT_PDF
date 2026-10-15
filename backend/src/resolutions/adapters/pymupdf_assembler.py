@@ -278,6 +278,7 @@ class PyMuPDFAssembler:
         # en una caja revuelta es de qué páginas salió, que ya está en el
         # inventario y en el nombre sólo estorba.
         con_titulo: bool = False,
+        mayusculas: bool = False,
         nombre: str | None = None,
     ) -> None:
         #: Escribir cuatrocientos archivos tarda tanto como leerlos. Sin un punto
@@ -294,6 +295,7 @@ class PyMuPDFAssembler:
         #: el disco algo que no es verdad.
         self._prefix = naming_prefix
         self._con_titulo = con_titulo
+        self._mayusculas = mayusculas
         #: Cómo llamó el operador al documento de origen. Las subidas se guardan
         #: con un nombre generado, y un aviso sobre "6ea93142663d.pdf" no dice
         #: de qué archivo se está hablando.
@@ -334,6 +336,7 @@ class PyMuPDFAssembler:
                     budget=budget,
                     prefix=self._prefix,
                     con_titulo=self._con_titulo,
+                    mayusculas=self._mayusculas,
                     kind=group.kind,
                 )
                 target = destination / name

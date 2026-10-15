@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { descargarPlanilla, downloadUrl, origenInventarioUrl } from '$lib/api';
+  import Icono from '$lib/components/Icono.svelte';
   import { consoleLog } from '$lib/console.svelte';
   import { formatBytes, formatDuration } from '$lib/format';
   import { jobStore } from '$lib/jobs.svelte';
@@ -19,6 +21,118 @@
   };
 
   const clean = $derived(completion.failedDocuments === 0 && completion.reviewItems === 0);
+
+  const capital = (texto: string) => texto.charAt(0).toUpperCase() + texto.slice(1);
+  /** «Actas», «Resoluciones», «Unidades documentales»: lo que de verdad salió. */
+  const Unidades = $derived(capital(completion.unidad[1]));
+  const soloActas = $derived(completion.actas > 0 && completion.actas === completion.resolutions);
+  const unidadDe = (cuantas: number, unidad: [string, string]) =>
+    `${cuantas} ${cuantas === 1 ? unidad[0] : unidad[1]}`;
+
+  /**
+   * El gasto, separado por lo que se pagó.
+   *
+   * Las páginas se facturan al OCR y los tokens a la IA que resume; sumar las
+   * peticiones de los dos decía «22 peticiones al OCR de pago» cuando once
+   * eran resúmenes.
+   */
+  const proveedores = $derived(Object.values(completion.consumo?.proveedores ?? {}));
+  const ocr = $derived(
+    proveedores
+      .filter((cuenta) => cuenta.paginas_facturadas > 0)
+      .reduce(
+        (total, cuenta) => ({
+          paginas: total.paginas + cuenta.paginas_facturadas,
+          peticiones: total.peticiones + cuenta.peticiones
+        }),
+        { paginas: 0, peticiones: 0 }
+      )
+  );
+  const ia = $derived(
+    proveedores
+      .filter((cuenta) => cuenta.paginas_facturadas === 0)
+      .reduce((total, cuenta) => total + cuenta.peticiones, 0)
+  );
+
+  /** Lo esencial en una frase, para quien escucha la pantalla en vez de verla. */
+  const resumenHablado = $derived(
+    [
+      `${completion.documents - completion.failedDocuments} de ${completion.documents} documentos completos`,
+      unidadDe(completion.resolutions, completion.unidad),
+      `${completion.pages} páginas`,
+      completion.reviewItems
+        ? `${completion.reviewItems} por revisar`
+        : 'nada pendiente de revisión'
+    ].join(', ')
+  );
+
+  let bajando = $state<string | null>(null);
+  let falloDeDescarga = $state<string | null>(null);
+
+  async function bajarInventario(runId: string, nombre: string) {
+    bajando = runId;
+    falloDeDescarga = null;
+    try {
+      await descargarPlanilla(origenInventarioUrl(runId), nombre);
+    } catch (problema) {
+      falloDeDescarga = (problema as Error).message;
+    } finally {
+      bajando = null;
+    }
+  }
+
+  /* -- teclado y foco -------------------------------------------------------
+     Un diálogo modal que se deja atrás con el tabulador no es modal: el foco
+     se iba a la pantalla de debajo, que no se ve. Al abrir se lleva al
+     título, Tab y Mayús+Tab dan la vuelta dentro, Escape cierra, y al cerrar
+     el foco vuelve a donde estaba. */
+  let sheet = $state<HTMLDivElement | null>(null);
+  let heading = $state<HTMLHeadingElement | null>(null);
+
+  $effect(() => {
+    const antes = document.activeElement as HTMLElement | null;
+    heading?.focus();
+    return () => antes?.focus?.();
+  });
+
+  function teclado(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      void dismiss();
+      return;
+    }
+    if (event.key !== 'Tab' || !sheet) return;
+    const enfocables = [
+      ...sheet.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input, [tabindex]:not([tabindex="-1"])'
+      )
+    ];
+    if (!enfocables.length) return;
+    const primero = enfocables[0];
+    const ultimo = enfocables[enfocables.length - 1];
+    if (event.shiftKey && (document.activeElement === primero || document.activeElement === heading)) {
+      event.preventDefault();
+      ultimo.focus();
+    } else if (!event.shiftKey && document.activeElement === ultimo) {
+      event.preventDefault();
+      primero.focus();
+    }
+  }
+
+  /** Flechas entre pestañas, como en cualquier lista de pestañas. */
+  function tecladoDePestanas(event: KeyboardEvent) {
+    const ids = tabs.map((item) => item.id);
+    const actual = ids.indexOf(tab);
+    let siguiente = actual;
+    if (event.key === 'ArrowRight') siguiente = (actual + 1) % ids.length;
+    else if (event.key === 'ArrowLeft') siguiente = (actual - 1 + ids.length) % ids.length;
+    else if (event.key === 'Home') siguiente = 0;
+    else if (event.key === 'End') siguiente = ids.length - 1;
+    else return;
+    event.preventDefault();
+    tab = ids[siguiente];
+    document.getElementById(`informe-tab-${tab}`)?.focus();
+  }
 
   /**
    * Cerrar el informe deja la pantalla lista para el siguiente lote. Siempre.
@@ -75,7 +189,7 @@
       { id: 'resumen', label: 'Resumen', count: 0 },
       { id: 'unidades', label: 'Unidades', count: completion.parts?.length ?? 0 },
       { id: 'documentos', label: 'Documentos', count: completion.items.length },
-      { id: 'resoluciones', label: 'Resoluciones', count: completion.codes.length }
+      { id: 'resoluciones', label: Unidades, count: completion.codes.length }
     ].filter((tab) => tab.id === 'resumen' || tab.count > 0)
   );
 
@@ -96,6 +210,24 @@
 
   const failed = $derived(completion.items.filter((item) => item.state === 'failed'));
 
+  /** El reparto de la lectura dicho con palabras, para el lector de pantalla. */
+  const repartoHablado = $derived(
+    rungs.map((entry) => `${entry.rung.label}: ${entry.count} páginas`).join(', ')
+  );
+
+  /** Lo que pasó por el camino, sólo lo que pasó: tres ceros no informan. */
+  const incidencias = $derived(
+    [
+      completion.escalated
+        ? `${completion.escalated} página${completion.escalated === 1 ? '' : 's'} se releyeron (${counted ? ((100 * completion.escalated) / counted).toFixed(1) : '0.0'} %)`
+        : null,
+      completion.repairs
+        ? `${completion.repairs} corrección${completion.repairs === 1 ? '' : 'es'} de OCR`
+        : null,
+      completion.quarantine ? `${completion.quarantine} en cuarentena` : null
+    ].filter(Boolean)
+  );
+
   function when(at: number): string {
     return new Date(at).toLocaleString('es', { dateStyle: 'medium', timeStyle: 'medium' });
   }
@@ -109,16 +241,37 @@
     if (event.target === event.currentTarget) void dismiss();
   }}
 >
-  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="informe-titulo">
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    class="sheet"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="informe-titulo"
+    aria-describedby="informe-resumen"
+    tabindex="-1"
+    bind:this={sheet}
+    onkeydown={teclado}
+  >
     <header>
       <div class="who">
-        <span class="badge" class:clean>{KIND[completion.kind]}</span>
-        <h2 id="informe-titulo">{completion.title}</h2>
+        <span class="pill badge" class:pill-good={clean} class:pill-warn={!clean}>
+          {KIND[completion.kind]}{clean ? '' : ' con pendientes'}
+        </span>
+        <h2 id="informe-titulo" tabindex="-1" bind:this={heading} title={completion.title}>
+          {completion.title}
+        </h2>
+        <p id="informe-resumen" class="sr-only">{resumenHablado}.</p>
       </div>
       <div class="meta">
-        {#if completion.operator}<span class="by">{completion.operator}</span>{/if}
-        <time>{when(completion.finishedAt)}</time>
-        <button class="close" onclick={() => void dismiss()} aria-label="Cerrar">✕</button>
+        {#if completion.operator}
+          <span class="pill"><span class="sr-only">Operador: </span>{completion.operator}</span>
+        {/if}
+        <time datetime={new Date(completion.finishedAt).toISOString()}>
+          {when(completion.finishedAt)}
+        </time>
+        <button class="btn btn-icon" onclick={() => void dismiss()} aria-label="Cerrar">
+          <Icono nombre="cerrar" />
+        </button>
       </div>
     </header>
 
@@ -136,9 +289,9 @@
         </dd>
       </div>
       <div>
-        <dt>Resoluciones</dt>
+        <dt>{Unidades}</dt>
         <dd class="tabular">{completion.resolutions}</dd>
-        <dd class="note">archivos generados</dd>
+        <dd class="note">{soloActas ? 'inventariadas en Excel' : 'archivos generados'}</dd>
       </div>
       <div>
         <dt>Páginas</dt>
@@ -155,20 +308,23 @@
         <dd class="tabular">{formatDuration(completion.elapsedSeconds)}</dd>
         <dd class="note">de reloj</dd>
       </div>
-      {#if completion.consumo?.paginas_facturadas}
+      {#if ocr.paginas}
         <div>
           <dt>Páginas facturadas</dt>
-          <dd class="tabular">{completion.consumo.paginas_facturadas}</dd>
-          <dd class="note">{completion.consumo.peticiones} peticiones al OCR de pago</dd>
+          <dd class="tabular">{ocr.paginas.toLocaleString('es-CO')}</dd>
+          <dd class="note">
+            {ocr.peticiones} {ocr.peticiones === 1 ? 'petición' : 'peticiones'} al OCR de pago
+          </dd>
         </div>
       {/if}
       {#if completion.consumo?.tokens}
         <div>
-          <dt>Tokens</dt>
+          <dt>Tokens de IA</dt>
           <dd class="tabular">{completion.consumo.tokens.toLocaleString('es-CO')}</dd>
           <dd class="note">
             {completion.consumo.tokens_entrada.toLocaleString('es-CO')} entrada ·
-            {completion.consumo.tokens_salida.toLocaleString('es-CO')} salida
+            {completion.consumo.tokens_salida.toLocaleString('es-CO')} salida{#if ia}{' · '}{ia}
+              {ia === 1 ? 'consulta' : 'consultas'}{/if}
           </dd>
         </div>
       {/if}
@@ -195,28 +351,98 @@
       <div>
         <dt>Requiere revisión</dt>
         <dd class="tabular" class:warn={completion.reviewItems > 0}>{completion.reviewItems}</dd>
-        <dd class="note">{completion.reviewItems ? 'páginas' : 'sin pendientes'}</dd>
+        <dd class="note">
+          {completion.reviewItems
+            ? completion.reviewItems === 1
+              ? 'página por revisar'
+              : 'páginas por revisar'
+            : 'sin pendientes'}
+        </dd>
       </div>
     </dl>
 
     {#if tabs.length > 1}
-      <nav class="tabs">
+      <div class="tabs" role="tablist" aria-label="Secciones del informe" tabindex="-1" onkeydown={tecladoDePestanas}>
         {#each tabs as item (item.id)}
-          <button class:current={tab === item.id} onclick={() => (tab = item.id)}>
+          <button
+            id={`informe-tab-${item.id}`}
+            role="tab"
+            aria-selected={tab === item.id}
+            aria-controls="informe-panel"
+            tabindex={tab === item.id ? 0 : -1}
+            class:current={tab === item.id}
+            onclick={() => (tab = item.id)}
+          >
             {item.label}
             {#if item.count}<span class="count tabular">{item.count}</span>{/if}
           </button>
         {/each}
-      </nav>
+      </div>
     {/if}
 
-    <div class="body">
+    <div
+      class="body"
+      id="informe-panel"
+      role={tabs.length > 1 ? 'tabpanel' : undefined}
+      aria-labelledby={tabs.length > 1 ? `informe-tab-${tab}` : undefined}
+    >
       {#if tab === 'resumen'}
-        {#if completion.destination}
-          <p class="destination">
-            Entregado en <b>{completion.destination}</b>
-            {#if completion.delivered}· {completion.delivered} archivos{/if}
-          </p>
+        {#if completion.entregas.length}
+          <section>
+            <h3>Entrega</h3>
+            <ul class="entregas">
+              {#each completion.entregas as entrega (entrega.origen + entrega.destino)}
+                <li>
+                  <b class="entrega-nombre">Carpeta {entrega.nombre}</b>
+                  <dl>
+                    <div><dt>Origen</dt><dd title={entrega.origen}>{entrega.origen}</dd></div>
+                    <div><dt>Destino</dt><dd title={entrega.destino}>{entrega.destino}</dd></div>
+                    {#if entrega.inventario}
+                      <div><dt>Inventario</dt><dd>{entrega.inventario}</dd></div>
+                    {:else if entrega.archivos}
+                      <div><dt>Archivos</dt><dd>{entrega.archivos} entregados</dd></div>
+                    {/if}
+                  </dl>
+                  {#if entrega.inventarioDe}
+                    <button
+                      class="btn btn-tonal"
+                      onclick={() =>
+                        bajarInventario(entrega.inventarioDe!, entrega.inventario ?? 'inventario.xlsx')}
+                      disabled={bajando === entrega.inventarioDe}
+                    >
+                      <Icono nombre="descargar" />
+                      {bajando === entrega.inventarioDe
+                        ? 'Descargando…'
+                        : 'Descargar inventario general (Excel)'}
+                    </button>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+            {#if falloDeDescarga}<p class="inline-error" role="alert">{falloDeDescarga}</p>{/if}
+          </section>
+        {/if}
+
+        {#if completion.archivos.length}
+          <section>
+            <h3>PDF generados ({completion.archivos.length})</h3>
+            <ul class="archivos">
+              {#each completion.archivos as archivo (archivo.jobId + archivo.ruta)}
+                <li>
+                  <span class="archivo" title={archivo.ruta}>{archivo.ruta.split('/').pop()}</span>
+                  <a
+                    class="btn btn-icon"
+                    href={downloadUrl(archivo.jobId, archivo.ruta)}
+                    download
+                    aria-label={`Descargar ${archivo.ruta.split('/').pop()}`}
+                    title="Descargar (PDF)"
+                  >
+                    <Icono nombre="descargar" />
+                  </a>
+                </li>
+              {/each}
+            </ul>
+          </section>
         {/if}
 
         {#if failed.length}
@@ -235,7 +461,7 @@
                labelled, with a 2px surface gap rather than a border. -->
           <section>
             <h3>Cómo se leyó cada página</h3>
-            <div class="stack" role="img" aria-label="Reparto de páginas por rung del cascade">
+            <div class="stack" role="img" aria-label={`Cómo se leyeron las páginas: ${repartoHablado}`}>
               {#each rungs as entry (entry.rung.key)}
                 <span
                   class="segment"
@@ -255,15 +481,29 @@
                 </li>
               {/each}
             </ul>
-            <p class="footnote">
-              {completion.escalated} página{completion.escalated === 1 ? '' : 's'} llegaron al
-              modelo de visión ({counted
-                ? ((100 * completion.escalated) / counted).toFixed(1)
-                : '0.0'} %) · {completion.repairs} corrección{completion.repairs === 1
-                ? ''
-                : 'es'} de OCR · {completion.quarantine} en cuarentena
-            </p>
+            {#if incidencias.length}
+              <p class="footnote">{incidencias.join(' · ')}</p>
+            {/if}
+
+            <!-- Lo que se dejó de pagar. Va aparte y con su propio énfasis porque
+                 no es una estadística más: es la respuesta a "¿por qué esta caja
+                 costó la mitad que la anterior?", y sin ella el ahorro existe
+                 pero nadie lo ve. -->
+            {#if completion.unread > 0}
+              <p class="footnote ahorro">
+                <b>{completion.unread}</b> cara{completion.unread === 1 ? '' : 's'} no hizo
+                falta leerla{completion.unread === 1 ? '' : 's'}: pertenecía{completion.unread ===
+                1
+                  ? ''
+                  : 'n'} a la hoja anterior, así que no nombran ningún archivo ni abren fila del
+                inventario.
+              </p>
+            {/if}
           </section>
+        {/if}
+
+        {#if !completion.entregas.length && !completion.archivos.length && !failed.length && !counted}
+          <p class="footnote">Todo terminó sin errores y no queda nada pendiente.</p>
         {/if}
       {:else if tab === 'unidades'}
         <!-- El desglose de una tanda: qué fue cada cosa que corrió. -->
@@ -272,7 +512,7 @@
             <li>
               <span class="tag">{KIND[part.kind]}</span>
               <span class="name" title={part.title}>{part.title}</span>
-              <span class="num tabular">{part.resolutions} res.</span>
+              <span class="num tabular">{unidadDe(part.resolutions, part.unidad)}</span>
               <span class="num tabular">{part.pages} pág.</span>
               <span class="num tabular">{formatDuration(part.elapsedSeconds)}</span>
               {#if part.failedDocuments}
@@ -283,19 +523,22 @@
         </ul>
       {:else if tab === 'documentos'}
         <table>
+          <caption class="sr-only">Documentos procesados, uno por fila</caption>
           <thead>
             <tr>
-              <th>Archivo</th>
-              <th>Páginas</th>
-              <th>Resoluciones</th>
-              <th>Tamaño</th>
-              <th>Revisión</th>
+              <th scope="col">Archivo</th>
+              <th scope="col" class="num">Páginas</th>
+              <th scope="col" class="num">{Unidades}</th>
+              <th scope="col" class="num">Tamaño</th>
+              <th scope="col" class="num">Revisión</th>
             </tr>
           </thead>
           <tbody>
             {#each completion.items as item (item.jobId)}
               <tr class:failed={item.state === 'failed'}>
-                <td title={item.error ?? item.filename}>{item.filename}</td>
+                <td title={item.error ?? item.filename}>
+                  {item.filename}{#if item.state === 'failed'}<span class="sr-only"> (falló: {item.error ?? 'error desconocido'})</span>{/if}
+                </td>
                 <td class="num tabular">{item.pages || '—'}</td>
                 <td class="num tabular">{item.resolutions || '—'}</td>
                 <td class="num tabular">{formatBytes(item.bytes)}</td>
@@ -306,9 +549,11 @@
         </table>
       {:else if tab === 'resoluciones'}
         <input
-          class="search"
+          class="input input-sm"
+          type="search"
           bind:value={filter}
           placeholder="Filtrar por número, título o documento"
+          aria-label="Filtrar por número, título o documento"
           spellcheck="false"
         />
         <ul class="codes">
@@ -321,7 +566,7 @@
             </li>
           {/each}
           {#if !shown.length}
-            <li class="empty">Ninguna resolución coincide con la búsqueda.</li>
+            <li class="empty-state">Nada coincide con la búsqueda.</li>
           {/if}
         </ul>
       {/if}
@@ -339,10 +584,10 @@
       <a href="/archivo" onclick={() => void dismiss()}>Ver en el archivo</a>
       {#if completion.reviewItems}
         <a class="warn" href="/revision" onclick={() => void dismiss()}>
-          Revisar {completion.reviewItems} páginas
+          Revisar {completion.reviewItems} {completion.reviewItems === 1 ? 'página' : 'páginas'}
         </a>
       {/if}
-      <button onclick={() => void dismiss()}>Cerrar</button>
+      <button class="btn cerrar" onclick={() => void dismiss()}>Cerrar</button>
     </footer>
   </div>
 </div>
@@ -354,7 +599,7 @@
     z-index: 80;
     display: grid;
     place-items: center;
-    background: rgb(0 0 0 / 0.45);
+    background: var(--scrim);
     padding: 1.5rem;
     backdrop-filter: blur(3px);
     animation: fade 0.16s ease-out;
@@ -367,9 +612,9 @@
     flex-direction: column;
     overflow: hidden;
     border: 1px solid var(--hairline);
-    border-radius: 16px;
+    border-radius: var(--radius-xl);
     background: var(--surface-2);
-    box-shadow: 0 24px 70px rgb(0 0 0 / 0.35);
+    box-shadow: var(--shadow-lg);
     animation: rise 0.18s ease-out;
   }
 
@@ -395,50 +640,28 @@
   }
   .badge {
     align-self: flex-start;
-    border: 1px solid color-mix(in oklab, var(--warning) 45%, var(--hairline));
-    border-radius: 999px;
-    padding: 0.1rem 0.6rem;
-    font-family: var(--font-mono);
-    font-size: 0.64rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--warning);
-  }
-  .badge.clean {
-    border-color: color-mix(in oklab, var(--good) 45%, var(--hairline));
-    color: var(--good);
   }
   header h2 {
     overflow: hidden;
     margin: 0;
-    font-size: 1.15rem;
+    font-size: var(--text-xl);
     font-weight: 650;
     letter-spacing: -0.015em;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .by {
-    border-radius: 999px;
-    background: var(--accent-soft);
-    padding: 0.05rem 0.5rem;
-    font-size: 0.72rem;
-    color: var(--accent);
-  }
   header time {
     font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
-  .close {
-    border: 0;
-    background: none;
-    padding: 0 0 0 0.25rem;
-    font-size: 0.9rem;
-    color: var(--muted);
-    cursor: pointer;
+  .sheet:focus,
+  header h2:focus {
+    outline: none;
   }
-  .close:hover {
-    color: var(--ink);
+  .sheet :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
   }
 
   .tiles {
@@ -448,32 +671,34 @@
     margin: 0;
     padding: 0.35rem 1.25rem 1rem;
   }
+  /* Las cifras con la misma forma que StatTile: rótulo en versalitas, valor
+     grande y una nota debajo, con un filete a la izquierda en vez de una caja. */
   .tiles div {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 0.15rem;
     border-left: 2px solid var(--rule);
-    padding-left: 0.7rem;
+    padding-left: 0.75rem;
   }
   .tiles dt {
-    font-size: 0.62rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.055em;
+    letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
     color: var(--muted);
   }
   .tiles dd {
     margin: 0;
-    font-size: 1.35rem;
+    font-size: var(--text-xl);
     font-weight: 550;
-    line-height: 1.2;
+    line-height: 1.15;
     letter-spacing: -0.02em;
   }
   .tiles dd.warn {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
   .tiles .note {
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     font-weight: 400;
     letter-spacing: 0;
     color: var(--ink-2);
@@ -494,7 +719,7 @@
     background: none;
     padding: 0.5rem 0.7rem;
     font: inherit;
-    font-size: 0.82rem;
+    font-size: var(--text-sm);
     color: var(--muted);
     cursor: pointer;
     transition:
@@ -509,11 +734,11 @@
     color: var(--ink);
   }
   .count {
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--plane);
     padding: 0.02rem 0.4rem;
     font-family: var(--font-mono);
-    font-size: 0.68rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -526,23 +751,83 @@
     padding: 1.25rem;
   }
 
-  .destination {
+  .entregas {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
     margin: 0;
-    border-left: 2px solid var(--s4);
-    padding-left: 0.7rem;
-    font-size: 0.82rem;
-    color: var(--ink-2);
+    padding: 0;
+    list-style: none;
   }
-  .destination b {
+  .entregas li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    border-left: 2px solid var(--accent);
+    padding-left: 0.75rem;
+  }
+  .entrega-nombre {
+    flex-basis: 100%;
+    font-size: var(--text-md);
+  }
+  .entregas dl {
+    display: grid;
+    flex: 1 1 22rem;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.15rem 0.75rem;
+    margin: 0;
+  }
+  .entregas dl div {
+    display: contents;
+  }
+  .entregas dt {
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+  .entregas dd {
+    overflow: hidden;
+    margin: 0;
     font-family: var(--font-mono);
-    font-size: 0.76rem;
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .archivos {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
+    gap: 2px 1rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .archivos li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    border-bottom: 1px solid var(--rule);
+    padding: 0.15rem 0;
+  }
+  .archivo {
+    overflow: hidden;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* El botón de icono común, un punto más bajo para no ensanchar la fila. */
+  .archivos .btn {
+    flex-shrink: 0;
+    width: 1.75rem;
+    height: 1.75rem;
   }
 
   section h3 {
     margin: 0 0 0.55rem;
-    font-size: 0.62rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.055em;
+    letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
     color: var(--muted);
   }
@@ -563,11 +848,10 @@
     gap: 0.15rem 0.6rem;
     border-left: 2px solid var(--critical);
     padding-left: 0.7rem;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
   }
   .errors span {
-    font-family: var(--font-mono);
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -575,7 +859,7 @@
     display: flex;
     height: 10px;
     overflow: hidden;
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
     /* A surface gap between segments, never a border around them. */
     gap: 2px;
   }
@@ -595,7 +879,7 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    font-size: 0.78rem;
+    font-size: var(--text-sm);
     color: var(--ink-2);
   }
   .swatch {
@@ -610,13 +894,21 @@
   }
   .pct {
     font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
+  }
+
+  .ahorro {
+    color: var(--ink-2);
+  }
+
+  .ahorro b {
+    color: var(--ink);
   }
 
   .footnote {
     margin: 0.6rem 0 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -632,9 +924,9 @@
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    border-radius: 7px;
+    border-radius: var(--radius-sm);
     padding: 0.4rem 0.55rem;
-    font-size: 0.82rem;
+    font-size: var(--text-sm);
   }
   .units li:nth-child(odd) {
     background: var(--plane);
@@ -642,8 +934,9 @@
   .tag {
     flex-shrink: 0;
     width: 9.5rem;
-    font-size: 0.66rem;
-    letter-spacing: 0.03em;
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
     color: var(--muted);
   }
@@ -660,13 +953,13 @@
   table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.82rem;
+    font-size: var(--text-sm);
   }
   thead th {
     padding: 0 0.5rem 0.4rem 0;
-    font-size: 0.62rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.055em;
+    letter-spacing: var(--tracking-caps);
     text-align: left;
     text-transform: uppercase;
     color: var(--muted);
@@ -685,25 +978,17 @@
     flex-shrink: 0;
     text-align: right;
     font-family: var(--font-mono);
-    font-size: 0.76rem;
+    font-size: var(--text-xs);
     color: var(--ink-2);
+  }
+  thead th.num {
+    font-family: inherit;
+    font-size: var(--text-2xs);
+    text-align: right;
+    color: var(--muted);
   }
   tr.failed td {
     color: var(--critical);
-  }
-
-  .search {
-    border: 1px solid var(--hairline);
-    border-radius: 8px;
-    background: var(--plane);
-    padding: 0.4rem 0.65rem;
-    font-family: var(--font-mono);
-    font-size: 0.76rem;
-    color: inherit;
-    outline: none;
-  }
-  .search:focus {
-    border-color: var(--accent);
   }
 
   .codes {
@@ -718,9 +1003,9 @@
     display: flex;
     align-items: baseline;
     gap: 0.6rem;
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
     padding: 0.22rem 0.4rem;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
   }
   .codes li:nth-child(odd) {
     background: var(--plane);
@@ -729,7 +1014,7 @@
     flex-shrink: 0;
     width: 6.5rem;
     font-family: var(--font-mono);
-    font-size: 0.76rem;
+    font-size: var(--text-xs);
   }
   .codes .title {
     overflow: hidden;
@@ -742,7 +1027,7 @@
     overflow: hidden;
     max-width: 14rem;
     flex-shrink: 0;
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -750,18 +1035,21 @@
   .size {
     flex-shrink: 0;
     font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
-  .empty {
-    color: var(--muted);
+  /* El vacío de la búsqueda va en la caja punteada común; la lista pinta las
+     filas impares y ésta no debe heredar ese fondo. */
+  .codes .empty-state {
+    margin-top: 0.5rem;
+    background: none;
   }
 
   /* La explicación empuja los botones a la derecha y se lee antes que ellos. */
   .note {
     flex: 1;
     color: var(--muted);
-    font-size: 0.78rem;
+    font-size: var(--text-sm);
     line-height: 1.35;
   }
 
@@ -773,7 +1061,7 @@
     padding: 0.85rem 1.25rem;
   }
   footer a {
-    font-size: 0.83rem;
+    font-size: var(--text-sm);
     color: var(--accent);
     text-decoration: none;
   }
@@ -781,22 +1069,10 @@
     text-decoration: underline;
   }
   footer a.warn {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
-  footer button {
+  footer .cerrar {
     margin-left: auto;
-    border: 1px solid var(--hairline);
-    border-radius: 8px;
-    background: transparent;
-    padding: 0.35rem 0.9rem;
-    font: inherit;
-    font-size: 0.82rem;
-    color: var(--ink-2);
-    cursor: pointer;
-  }
-  footer button:hover {
-    border-color: var(--accent);
-    color: var(--accent);
   }
 
   @keyframes fade {

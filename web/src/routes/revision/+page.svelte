@@ -1,7 +1,10 @@
 <script lang="ts">
   import { downloadUrl } from '$lib/api';
+  import EncabezadoDePagina from '$lib/components/EncabezadoDePagina.svelte';
+  import Icono from '$lib/components/Icono.svelte';
   import { jobStore } from '$lib/jobs.svelte';
   import { whereItLanded } from '$lib/revision';
+  import { enlaceAlDocumento } from '$lib/navegacion.svelte';
   import type { Job } from '$lib/types';
 
   /**
@@ -101,26 +104,21 @@
 
 </script>
 
-<header class="head">
-  <div>
-    <h2>Revisión</h2>
-    <p>
-      Lo que el separador no quiso adivinar. Nada de esto es un error del programa: son páginas
-      donde la evidencia no alcanzó, y adivinar habría metido páginas ajenas en una resolución
-      real sin que nadie se enterara. Una página sin encabezado no aparece aquí: es la vuelta de
-      un folio o un anexo, y su sitio es el PDF de la resolución que venía abierta.
-    </p>
-  </div>
-</header>
+<EncabezadoDePagina
+  titulo="Revisión"
+  descripcion="Lo que el separador no quiso adivinar. Nada de esto es un error del programa: son páginas donde la evidencia no alcanzó, y adivinar habría metido páginas ajenas en una resolución real sin que nadie se enterara. Una página sin encabezado no aparece aquí: es la vuelta de un folio o un anexo, y su sitio es el PDF de la resolución que venía abierta."
+/>
 
 {#if failedDocuments.length}
   <section class="failed">
-    <h3 class="band">Documentos que no se pudieron procesar ({failedDocuments.length})</h3>
+    <h2 class="caps band">
+      Documentos que no se pudieron procesar (<span class="tabular">{failedDocuments.length}</span>)
+    </h2>
     <ul>
       {#each failedDocuments as job (job.id)}
         <li>
-          <a href={`/documento/${job.id}`}>{job.filename}</a>
-          <code>{job.error}</code>
+          <a href={enlaceAlDocumento(job.id, 'revision')}>{job.filename}</a>
+          <span class="motivo">{job.error}</span>
         </li>
       {/each}
     </ul>
@@ -128,19 +126,16 @@
 {/if}
 
 {#if !items.length}
-  <div class="clear">
-    <span class="tick" aria-hidden="true">✓</span>
-    <div>
-      <p><b>No hay nada pendiente de revisión.</b></p>
-      <p class="muted">
-        {jobStore.reviewable.length
-          ? `Los ${jobStore.finished.length} documentos en pantalla se resolvieron enteros.`
-          : 'Todavía no se procesó ningún documento en esta sesión.'}
-      </p>
-    </div>
+  <div class="empty-state">
+    <strong>No hay nada pendiente de revisión.</strong>
+    {jobStore.reviewable.length
+      ? `Los ${jobStore.finished.length} documentos en pantalla se resolvieron enteros.`
+      : 'Todavía no se procesó ningún documento en esta sesión.'}
   </div>
 {:else}
-  <div class="filters" role="tablist" aria-label="Motivo">
+  <!-- Los filtros por motivo son el control segmentado común: el elegido lo
+       marca `aria-selected`, que es lo que la clase ya sabe pintar. -->
+  <div class="segmented filters" role="tablist" aria-label="Motivo">
     <button
       role="tab"
       aria-selected={filter === 'todas'}
@@ -172,20 +167,30 @@
 
   <div class="documents">
     {#each byDocument as bucket (bucket.job.id)}
-      <article>
+      <article class="panel">
         <header class="doc">
-          <a class="name" href={`/documento/${bucket.job.id}`} title={bucket.job.filename}>
+          <a
+            class="name"
+            href={enlaceAlDocumento(bucket.job.id, 'revision')}
+            title={bucket.job.filename}
+          >
             {bucket.job.filename}
           </a>
           <!-- El total del documento, no el del filtro: es un hecho del PDF y
                tiene que decir lo mismo se esté mirando el motivo que se esté. -->
-          <span class="count tabular">
+          <span class="pill pill-warn tabular count">
             {bucket.job.report?.review_queue?.length ?? bucket.items.length} de {bucket.job
               .report?.page_count ?? '?'} páginas
           </span>
           {#if bucket.job.report?.quarantine?.length}
-            <a class="quarantine" href={downloadUrl(bucket.job.id, '_quarantine.pdf')} download>
-              cuarentena ({bucket.job.report.quarantine?.length})
+            <a
+              class="btn btn-tonal btn-sm"
+              href={downloadUrl(bucket.job.id, '_quarantine.pdf')}
+              download
+              title={`${bucket.job.report.quarantine?.length} páginas en cuarentena`}
+            >
+              <Icono nombre="descargar" />
+              Descargar cuarentena (PDF)
             </a>
           {/if}
         </header>
@@ -193,15 +198,15 @@
         <ul class="reasons">
           {#each bucket.items as item, index (`${item.page}-${index}`)}
             <li>
-              <span class="page-no tabular">pág. {item.page}</span>
+              <span class="page-no tabular">Pág. {item.page}</span>
               <span class="detail">
                 <span class="why">{item.reason}</span>
                 {#if item.file}
                   <a class="landed" href={downloadUrl(item.job.id, item.file)} download>
-                    quedó en {item.file}
+                    Quedó en {item.file}
                   </a>
                 {:else if item.code}
-                  <span class="landed">quedó en {item.code}</span>
+                  <span class="landed">Quedó en {item.code}</span>
                 {/if}
               </span>
             </li>
@@ -213,32 +218,10 @@
 {/if}
 
 <style>
-  .head {
-    margin-bottom: 1.25rem;
-  }
-  .head h2 {
-    margin: 0;
-    font-size: 1.25rem;
-    font-weight: 650;
-    letter-spacing: -0.015em;
-  }
-  .head p {
-    margin: 0.3rem 0 0;
-    max-width: 68ch;
-    font-size: 0.85rem;
-    line-height: 1.55;
-    color: var(--ink-2);
-  }
-
   .band {
     margin: 0 0 0.6rem;
     border-bottom: 1px solid var(--rule);
     padding-bottom: 0.4rem;
-    font-size: 0.68rem;
-    font-weight: 600;
-    letter-spacing: 0.055em;
-    text-transform: uppercase;
-    color: var(--muted);
   }
 
   .failed {
@@ -261,84 +244,32 @@
     padding-left: 0.7rem;
   }
   .failed a {
-    font-size: 0.86rem;
+    font-size: var(--text-md);
     font-weight: 600;
     color: var(--critical);
   }
-  .failed code {
+  /* El motivo del fallo, apagado y en una línea: el documento es lo que se
+     busca; el porqué se lee al abrirlo. */
+  .motivo {
     overflow: hidden;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .clear {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    border: 1px solid color-mix(in oklab, var(--good) 30%, var(--hairline));
-    border-radius: 14px;
-    background: var(--surface-2);
-    padding: 1.5rem;
-    box-shadow: var(--shadow);
-  }
-  .tick {
-    display: grid;
-    width: 34px;
-    height: 34px;
-    flex-shrink: 0;
-    place-items: center;
-    border-radius: 50%;
-    background: color-mix(in oklab, var(--good) 14%, transparent);
-    font-size: 1rem;
-    color: var(--good);
-  }
-  .clear p {
-    margin: 0;
-    font-size: 0.9rem;
-  }
-  .clear .muted {
-    margin-top: 0.15rem;
-    font-size: 0.82rem;
-    color: var(--muted);
-  }
-
   .filters {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
     margin-bottom: 0.9rem;
   }
   .filters button {
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    border: 1px solid var(--hairline);
-    border-radius: 999px;
-    background: var(--surface-2);
-    padding: 0.3rem 0.75rem;
-    font: inherit;
-    font-size: 0.8rem;
-    color: var(--muted);
-    cursor: pointer;
-    transition:
-      border-color 0.15s,
-      color 0.15s;
-  }
-  .filters button:hover {
-    color: var(--ink-2);
-  }
-  .filters button.current {
-    border-color: var(--warning);
-    color: var(--ink);
   }
   .filters b {
-    font-family: var(--font-mono);
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     font-weight: 600;
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .advice {
@@ -346,7 +277,7 @@
     max-width: 72ch;
     border-left: 2px solid var(--warning);
     padding-left: 0.75rem;
-    font-size: 0.83rem;
+    font-size: var(--text-md);
     line-height: 1.5;
     color: var(--ink-2);
   }
@@ -356,25 +287,19 @@
     grid-template-columns: repeat(auto-fill, minmax(23rem, 1fr));
     gap: 0.8rem;
   }
-  article {
-    border: 1px solid var(--hairline);
-    border-radius: 12px;
-    background: var(--surface-2);
-    padding: 0.85rem 1rem;
-    box-shadow: var(--shadow);
-  }
-
   .doc {
     display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.6rem;
     border-bottom: 1px solid var(--rule);
     padding-bottom: 0.5rem;
   }
   .doc .name {
     overflow: hidden;
     flex: 1;
-    font-size: 0.87rem;
+    min-width: 8rem;
+    font-size: var(--text-md);
     font-weight: 600;
     color: inherit;
     text-decoration: none;
@@ -386,19 +311,6 @@
   }
   .count {
     flex-shrink: 0;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    color: var(--warning);
-  }
-  .quarantine {
-    flex-shrink: 0;
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    color: var(--accent);
-    text-decoration: none;
-  }
-  .quarantine:hover {
-    text-decoration: underline;
   }
 
   .reasons {
@@ -416,7 +328,7 @@
     grid-template-columns: 4.4rem 1fr;
     padding-bottom: 0.3rem;
     border-bottom: 1px solid var(--rule);
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
   }
   .reasons li:last-child {
     padding-bottom: 0;
@@ -424,10 +336,9 @@
   }
   .page-no {
     flex-shrink: 0;
-    font-family: var(--font-mono);
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     font-weight: 600;
-    color: var(--warning);
+    color: var(--warning-ink);
   }
   .detail {
     display: flex;
@@ -442,7 +353,7 @@
   .landed {
     overflow: hidden;
     font-family: var(--font-mono);
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     color: var(--accent);
     text-decoration: none;
     text-overflow: ellipsis;

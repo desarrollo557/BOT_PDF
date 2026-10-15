@@ -11,7 +11,9 @@ cosas y nada más: qué parámetro, qué se esperaba de él y qué llegó.
 
 from __future__ import annotations
 
+import errno
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 
 #: De dónde viene el parámetro. Es útil para el programa y ruido para quien
 #: lee: «limit» se entiende; «query.limit» no dice nada más.
@@ -97,3 +99,95 @@ def explicar_validacion(errores: Iterable[Mapping[str, object]]) -> str:
     if not frases:
         return "La petición no es válida."
     return ". ".join(frases) + "."
+
+
+# -- fallos del trabajo -------------------------------------------------------
+
+#: Hasta dónde se repite el texto técnico de un fallo que no se reconoce.
+_LARGO_DEL_DETALLE = 300
+
+#: Los fallos de los proveedores, por el nombre de su clase: quien los lanza
+#: es un adaptador, y esta capa no tiene por qué importarlo para nombrarlo.
+_DE_UN_PROVEEDOR = {
+    "TesseractError": "El OCR (Tesseract) no pudo leer una página",
+    "MistralOcrError": "El OCR con IA (Mistral) no contestó bien",
+    "InventoryUnavailable": "No se pudo escribir en la base del inventario",
+    "ResumenNoDisponible": "El resumen con IA no está disponible",
+}
+
+
+def _archivo(error: OSError) -> str:
+    # Sólo el nombre: la ruta entera dice dónde vive el servicio a quien no le hace falta.
+    nombre = Path(str(error.filename)).name if error.filename else ""
+    return f" «{nombre}»" if nombre else ""
+
+
+def fallo_conocido(error: BaseException) -> str | None:
+    """El fallo en palabras del operador si es uno de los que se saben explicar.
+
+    Sin el texto crudo de la excepción, que lleva rutas e interioridades: lo que
+    devuelve se puede enseñar en cualquier pantalla. ``None`` si no se reconoce.
+    """
+    if isinstance(error, PermissionError):
+        return (
+            f"No hay permiso para usar{_archivo(error)}. Si es un Excel o un PDF, "
+            "ciérrelo en el programa que lo tenga abierto; si es una carpeta, revise "
+            "que no sea de solo lectura. Después vuelva a intentarlo."
+        )
+    if isinstance(error, FileNotFoundError):
+        if "tesseract" in str(error.filename or "").lower():
+            return "No se encontró Tesseract en este equipo: hay que instalarlo o configurar su ruta."
+        return (
+            f"No se encontró{_archivo(error)}: se movió, se renombró o se borró "
+            "mientras se procesaba."
+        )
+    if isinstance(error, IsADirectoryError | NotADirectoryError):
+        return f"La ruta{_archivo(error)} no es lo que se esperaba (archivo o carpeta)."
+    if isinstance(error, OSError) and error.errno == errno.ENOSPC:
+        return "El disco de destino se quedó sin espacio. Libere espacio y vuelva a intentarlo."
+    if isinstance(error, MemoryError):
+        return (
+            "El equipo se quedó sin memoria con este documento. Pruebe a procesar "
+            "menos documentos a la vez."
+        )
+    if type(error).__name__ == "BrokenProcessPool":
+        return (
+            "El proceso que leía el documento se cerró de golpe, casi siempre por "
+            "falta de memoria. Vuelva a intentarlo."
+        )
+    if isinstance(error, TimeoutError):
+        return "Una operación tardó demasiado y se abandonó. Vuelva a intentarlo."
+    if isinstance(error, ConnectionError):
+        return "Se perdió la conexión con un servicio externo. Revise la red y vuelva a intentarlo."
+    return None
+
+
+def explicar_fallo(error: BaseException) -> str:
+    """Un fallo del procesamiento contado en español, con qué hacer cuando se sabe.
+
+    El texto crudo de una excepción -- «PermissionError: [Errno 13] Permission
+    denied: '…inventario.xlsx'» -- no le dice al operador que el Excel está
+    abierto y basta con cerrarlo. Los fallos conocidos se traducen; los demás
+    conservan su texto técnico recortado, que sigue sirviendo para buscarlo.
+    Es para el estado de un trabajo, que sólo ve quien lo lanzó; una respuesta
+    HTTP usa ``fallo_conocido``.
+    """
+    if getattr(error, "para_el_operador", False):
+        return str(error)
+    nombre = type(error).__name__
+    if nombre in _DE_UN_PROVEEDOR:
+        return f"{_DE_UN_PROVEEDOR[nombre]}: {_recortar(str(error))}"
+    conocido = fallo_conocido(error)
+    if conocido:
+        return conocido
+    if isinstance(error, OSError):
+        motivo = error.strerror or str(error)
+        return f"El sistema de archivos rechazó la operación{_archivo(error)}: {_recortar(motivo)}"
+    return f"{nombre}: {_recortar(str(error))}"
+
+
+def _recortar(texto: str) -> str:
+    texto = " ".join(texto.split())
+    if len(texto) > _LARGO_DEL_DETALLE:
+        return texto[: _LARGO_DEL_DETALLE - 1] + "…"
+    return texto or "sin detalle"

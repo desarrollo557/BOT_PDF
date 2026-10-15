@@ -1,5 +1,5 @@
 import type { Entry } from './components/ProcessedCard.svelte';
-import type { Job, ProcessedDocument } from './types';
+import type { Job, Origen, ProcessedDocument } from './types';
 
 /**
  * The archive's filtering and ordering, kept out of the screen that draws it.
@@ -29,6 +29,11 @@ export const EMPTY_FILTERS: Filters = {
 
 const DAY = 86_400_000;
 
+/** Cómo anota el servicio un acta de consejo en el inventario. */
+export const TIPO_ACTA = 'ACTA DE CONSEJO';
+/** Las clases de actas que llevan su propio Excel: consejo y grado. */
+export const TIPOS_DE_ACTA = [TIPO_ACTA, 'ACTA DE GRADO'];
+
 function stamp(value: string | null | undefined): number {
   if (!value) return 0;
   const parsed = Date.parse(value);
@@ -50,7 +55,17 @@ export function fromJob(job: Job): Entry {
     codes: job.report?.groups?.map((group) => group.code) ?? [],
     failed: job.state === 'failed',
     error: job.error,
-    live: true
+    live: true,
+    acta: Boolean(job.report?.inventario_actas?.length),
+    indice: Boolean(job.report?.indice_electronico),
+    origen: job.origen ?? null,
+    tipos: [
+      ...new Set(
+        (job.report?.inventory?.items ?? [])
+          .map((item) => item.type)
+          .filter((tipo): tipo is string => !!tipo)
+      )
+    ]
   };
 }
 
@@ -69,7 +84,18 @@ export function fromHistory(entry: ProcessedDocument): Entry {
     codes: entry.codes ?? [],
     failed: false,
     error: null,
-    live: false
+    live: false,
+    acta: (entry.types ?? []).some((tipo) => TIPOS_DE_ACTA.includes(tipo)),
+    indice: Boolean(entry.indice),
+    origen: entry.origen_id
+      ? {
+          id: entry.origen_id,
+          nombre: entry.origen || entry.origen_id,
+          tipo: entry.origen_tipo || 'carpeta',
+          inventario: entry.origen_inventario ?? null
+        }
+      : null,
+    tipos: entry.types ?? []
   };
 }
 
@@ -110,7 +136,9 @@ function plano(texto: string): string {
  * pantalla escondería filas que la búsqueda encontró.
  */
 function matches(entry: Entry, needle: string): boolean {
-  const heno = plano([entry.name, entry.operator ?? '', ...entry.codes].join(' '));
+  const heno = plano(
+    [entry.name, entry.operator ?? '', entry.origen?.nombre ?? '', ...entry.codes].join(' ')
+  );
   return plano(needle)
     .split(/\s+/)
     .filter(Boolean)
@@ -152,10 +180,140 @@ export function order(entries: Entry[], sort: Sort): Entry[] {
   }
 }
 
+/**
+ * Los documentos de una misma carpeta local o de un mismo lote, juntos.
+ *
+ * Una corrida por carpeta procesa cada PDF como un trabajo propio, y el
+ * Archivo los dibujaba sueltos: una «carpeta» por PDF con el nombre del
+ * archivo donde el operador buscaba el de la carpeta raíz. Reunidos, la
+ * carpeta es una tarjeta con su nombre y sus PDF dentro.
+ */
+export interface Grupo {
+  key: string;
+  origen: Origen;
+  entries: Entry[];
+  /** El más reciente: es cuando la carpeta terminó de procesarse. */
+  at: number;
+  resolutions: number;
+  pages: number;
+  bytes: number;
+  review: number;
+  failed: number;
+  /** Si trae actas de consejo, que son las que dejan un Excel general. */
+  acta: boolean;
+  /** Si trae cajas de correspondencia: su Excel general es el Índice Electrónico, una hoja por caja. */
+  indice: boolean;
+  operators: string[];
+  tipos: string[];
+}
+
+/** Lo que ocupa un sitio en la lista: un documento suelto o una carpeta entera. */
+export type Item =
+  | { kind: 'documento'; key: string; entry: Entry }
+  | { kind: 'grupo'; key: string; grupo: Grupo };
+
+function unicos<T>(valores: T[]): T[] {
+  return [...new Set(valores)];
+}
+
+function grupoDe(origen: Origen, entries: Entry[]): Grupo {
+  return {
+    key: `origen:${origen.id}`,
+    origen,
+    entries: [...entries].sort((a, b) => a.name.localeCompare(b.name, 'es', { numeric: true })),
+    at: Math.max(...entries.map((entry) => entry.at)),
+    resolutions: entries.reduce((sum, entry) => sum + entry.resolutions, 0),
+    pages: entries.reduce((sum, entry) => sum + entry.pages, 0),
+    bytes: entries.reduce((sum, entry) => sum + entry.bytes, 0),
+    review: entries.reduce((sum, entry) => sum + entry.review, 0),
+    failed: entries.filter((entry) => entry.failed).length,
+    acta: entries.some((entry) => entry.acta),
+    indice: entries.some((entry) => entry.indice),
+    operators: unicos(
+      entries.map((entry) => entry.operator).filter((name): name is string => !!name)
+    ),
+    tipos: unicos(entries.flatMap((entry) => entry.tipos ?? []))
+  };
+}
+
+/**
+ * Reunir lo que vino de una misma carpeta o lote; lo cargado suelto queda solo.
+ *
+ * Los PDF de dentro van en orden natural (1N°…, 2N°…, 10N°…), que es el de la
+ * carpeta y no el de cuándo terminó cada uno.
+ */
+export function reunir(entries: Entry[]): Item[] {
+  const porOrigen = new Map<string, { origen: Origen; entries: Entry[] }>();
+  const items: Item[] = [];
+  for (const entry of entries) {
+    if (!entry.origen) {
+      items.push({ kind: 'documento', key: entry.key, entry });
+      continue;
+    }
+    let grupo = porOrigen.get(entry.origen.id);
+    if (!grupo) {
+      grupo = { origen: entry.origen, entries: [] };
+      porOrigen.set(entry.origen.id, grupo);
+    }
+    grupo.entries.push(entry);
+  }
+  for (const { origen, entries: suyos } of porOrigen.values()) {
+    const grupo = grupoDe(origen, suyos);
+    items.push({ kind: 'grupo', key: grupo.key, grupo });
+  }
+  return items;
+}
+
+/** Lo que el orden necesita saber de un sitio de la lista, sea cual sea. */
+function medidas(item: Item): { at: number; resolutions: number; pages: number; name: string } {
+  if (item.kind === 'grupo') {
+    const { at, resolutions, pages, origen } = item.grupo;
+    return { at, resolutions, pages, name: origen.nombre };
+  }
+  const { at, resolutions, pages, name } = item.entry;
+  return { at, resolutions, pages, name };
+}
+
+export function orderItems(items: Item[], sort: Sort): Item[] {
+  const m = medidas;
+  const sorted = [...items];
+  switch (sort) {
+    case 'antiguo':
+      return sorted.sort((a, b) => m(a).at - m(b).at);
+    case 'resoluciones':
+      return sorted.sort((a, b) => m(b).resolutions - m(a).resolutions || m(b).at - m(a).at);
+    case 'paginas':
+      return sorted.sort((a, b) => m(b).pages - m(a).pages || m(b).at - m(a).at);
+    case 'nombre':
+      return sorted.sort(
+        (a, b) => m(a).name.localeCompare(m(b).name, 'es', { numeric: true }) || m(b).at - m(a).at
+      );
+    default:
+      return sorted.sort((a, b) => m(b).at - m(a).at);
+  }
+}
+
+/**
+ * Cómo se llaman las unidades que salieron, según qué papel era.
+ *
+ * La pantalla decía «resoluciones» de todo, y de un libro de actas salen
+ * actas y de una caja de correspondencia, documentos.
+ */
+export function unidades(tipos: string[], acta = false): string {
+  if (acta) return 'Actas';
+  if (!tipos.length || tipos.every((tipo) => plano(tipo).startsWith('resolucion'))) {
+    return 'Resoluciones';
+  }
+  return 'Documentos';
+}
+
 export interface Day {
   key: string;
   label: string;
+  /** Los documentos del día, uno por uno, para contarlos y seleccionarlos. */
   entries: Entry[];
+  /** Lo que se dibuja: documentos sueltos y carpetas enteras. */
+  items: Item[];
   documents: number;
   resolutions: number;
   pages: number;
@@ -187,18 +345,23 @@ function dayLabel(at: number): string {
  * A day heading that only says the date makes the operator add up the cards
  * underneath it themselves. Carrying the totals is the difference between a
  * list and a report.
+ *
+ * Una carpeta va entera en el día en que terminó, aunque haya empezado la
+ * víspera: partirla en dos días la volvería a dejar como PDF sueltos.
  */
 export function byDay(entries: Entry[], sort: Sort): Day[] {
   const buckets = new Map<string, Day>();
 
-  for (const entry of entries) {
-    const key = dayKey(entry.at);
+  for (const item of reunir(entries)) {
+    const at = medidas(item).at;
+    const key = dayKey(at);
     let day = buckets.get(key);
     if (!day) {
       day = {
         key,
-        label: dayLabel(entry.at),
+        label: dayLabel(at),
         entries: [],
+        items: [],
         documents: 0,
         resolutions: 0,
         pages: 0,
@@ -207,19 +370,27 @@ export function byDay(entries: Entry[], sort: Sort): Day[] {
       };
       buckets.set(key, day);
     }
-    day.entries.push(entry);
-    day.documents += 1;
-    day.resolutions += entry.resolutions;
-    day.pages += entry.pages;
-    day.bytes += entry.bytes;
-    day.review += entry.review;
+    day.items.push(item);
+    for (const entry of item.kind === 'grupo' ? item.grupo.entries : [item.entry]) {
+      day.entries.push(entry);
+      day.documents += 1;
+      day.resolutions += entry.resolutions;
+      day.pages += entry.pages;
+      day.bytes += entry.bytes;
+      day.review += entry.review;
+    }
   }
 
   const days = [...buckets.values()];
-  for (const day of days) day.entries = order(day.entries, sort);
+  for (const day of days) {
+    day.entries = order(day.entries, sort);
+    day.items = orderItems(day.items, sort);
+  }
   // Days always run newest first; the sort orders within a day. An "oldest
   // first" list of days would put today at the bottom, which nobody wants.
-  return days.sort((a, b) => (sort === 'antiguo' ? a.key.localeCompare(b.key) : b.key.localeCompare(a.key)));
+  return days.sort((a, b) =>
+    sort === 'antiguo' ? a.key.localeCompare(b.key) : b.key.localeCompare(a.key)
+  );
 }
 
 /** Operators seen in the data, for the filter. */
@@ -262,6 +433,20 @@ export function toggle(selected: Set<string>, jobId: string): Set<string> {
   const next = new Set(selected);
   if (next.has(jobId)) next.delete(jobId);
   else next.add(jobId);
+  return next;
+}
+
+/**
+ * Marcar o desmarcar una carpeta entera: si ya estaban todos, se quitan; si
+ * faltaba alguno, se marcan todos. Es la casilla de la tarjeta de la carpeta.
+ */
+export function toggleMany(selected: Set<string>, jobIds: string[]): Set<string> {
+  const todos = jobIds.length > 0 && jobIds.every((id) => selected.has(id));
+  const next = new Set(selected);
+  for (const id of jobIds) {
+    if (todos) next.delete(id);
+    else next.add(id);
+  }
   return next;
 }
 

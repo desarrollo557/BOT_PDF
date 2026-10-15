@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ...application.consumo import Consumo
 from ...application.control import RunControl
@@ -54,6 +55,14 @@ class Taller:
     #: mecanografiado -- donde el remoto no aportaría nada y se pagaría igual --
     #: o un libro donde todo lo que identifica al documento está escrito a mano.
     lectura_choice: str | None
+    #: Con qué señal del papel se corta un libro de diplomas: por el folio de la
+    #: esquina o por el número de cédula. Sólo lo mira esa habilidad; las demás
+    #: cortan por lo suyo y este campo les da igual.
+    corte_choice: str | None
+    #: Qué se entrega como un archivo en una caja de correspondencia, una vez
+    #: cortada: cada documento, o todos los de un mismo mes juntos. Sólo lo
+    #: mira esa habilidad.
+    agrupar_choice: str | None
     #: A dónde acabará la copia en una corrida sobre carpeta local.
     delivered_to: str | None
     operator: str | None
@@ -62,6 +71,9 @@ class Taller:
     #: construya, para que el informe pueda decir cuánto costó el documento y
     #: no cuánto costó cada llamada por separado.
     consumo: Consumo = field(default_factory=Consumo)
+    #: El tope común de llamadas a la IA de todo el servicio: un semáforo del
+    #: Manager que comparten los procesos del pool. ``None`` fuera del servicio.
+    turnos_de_ia: Any = None
 
     @classmethod
     def desde(cls, payload: dict) -> Taller:
@@ -77,16 +89,23 @@ class Taller:
             control=_control(payload),
             oracle_choice=payload.get("oracle"),
             lectura_choice=payload.get("lectura"),
+            corte_choice=payload.get("corte"),
+            agrupar_choice=payload.get("agrupar"),
             delivered_to=payload.get("destination"),
             operator=payload.get("operator"),
+            turnos_de_ia=payload.get("turnos_de_ia"),
             # El despachador lo crea antes de elegir ruta y lo deja en el
             # payload, para poder adjuntarlo al informe cuando la ruta vuelva.
             consumo=(
                 payload["consumo"]
                 if isinstance(payload.get("consumo"), Consumo)
-                else Consumo(precio_por_pagina=settings.get("precio_ocr_por_pagina"))
+                else Consumo(
+                    precio_por_pagina=settings.get("precio_ocr_por_pagina"),
+                    tope_de_paginas=settings.get("tope_paginas_ocr"),
+                )
             ),
         )
+
 
     def ocr(self):
         """El motor de lectura de este trabajo, que es el mismo para todas.
@@ -101,10 +120,9 @@ class Taller:
         se puede pedir ya se rechazó en la API, antes de recibir el archivo.
         """
         from ...adapters.tesseract_ocr import HeaderAndPageOcr
-        from ...application.lectura import LecturaChoice
 
         local = HeaderAndPageOcr(language=self.settings["ocr_language"])
-        if LecturaChoice.parse(self.lectura_choice) is not LecturaChoice.MISTRAL:
+        if not self._con_ia():
             return local
 
         llave = self.settings.get("mistral_api_key")
@@ -118,11 +136,15 @@ class Taller:
         from ...adapters.ocr_cascada import OcrEnCascada
 
         return OcrEnCascada(
-            local=local, remoto=MistralOcr(api_key=llave, consumo=self.consumo)
+            local=local, remoto=MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
         )
 
     def vision(self):
-        """El modelo de visión para el último peldaño de la cascada, o nadie."""
+        """El modelo de visión para el último peldaño de la cascada, o nadie.
+
+        Con «Solo OCR», nadie: es una IA de pago, y esa elección existe para
+        no gastar en lo que no se pidió.
+        """
         from ...adapters.claude_vision import (
             ClaudeVisionConfig,
             ClaudeVisionOracle,
@@ -130,7 +152,7 @@ class Taller:
         )
 
         api_key = self.settings.get("anthropic_api_key")
-        if not api_key:
+        if not api_key or not self._con_ia():
             return NullVisionOracle()
         from anthropic import Anthropic
 
@@ -156,7 +178,200 @@ class Taller:
         )
 
     def oraculo_de_bordes(self):
+        """Quién juzga las costuras que la estructura no decidió.
+
+        Con «Solo OCR», nadie: las costuras dudosas se unen y van a revisión
+        (ante la duda se une). Lo decidió el operador: «cuando sea solo OCR,
+        sea solo OCR». Antes el oráculo en «auto» consultaba al modelo que
+        tuviera llave aunque se hubiera elegido no gastar.
+        """
+        if not self._con_ia():
+            from ...adapters.boundary_prompt import NullBoundaryOracle
+
+            return NullBoundaryOracle()
         return _boundary_oracle(self.settings, self.oracle_choice, consumo=self.consumo)
+
+    def con_ia(self) -> bool:
+        """Si el operador pidió la ayuda de pago para este trabajo."""
+        return self._con_ia()
+
+    def _con_ia(self) -> bool:
+        """Si este trabajo puede pedirle páginas al motor de pago."""
+        from ...application.lectura import LecturaChoice
+
+        return LecturaChoice.parse(self.lectura_choice) in (
+            LecturaChoice.MISTRAL,
+            LecturaChoice.MISTRAL_NOMBRES,
+        )
+
+    def mosaico(self):
+        """Quien lee los nombres de muchas caras pagando por unas pocas páginas.
+
+        Con cualquiera de las dos lecturas de pago. En la de ahorro **sustituye**
+        a la lectura entera: de esas caras se lee el nombre y nada más, que es la
+        renuncia que el operador aceptó. En la completa **repesca** lo que la
+        tanda dejó sin nombre: viajando en tanda, el motor de pago devuelve el
+        renglón manuscrito como imagen en una de cada seis caras, y en la franja
+        ampliada lo lee.
+        """
+        from ...adapters.mosaico_de_nombres import MosaicoDeNombres
+
+        return self._mosaico(MosaicoDeNombres)
+
+    def mosaico_de_cedulas(self):
+        """Quien repesca la cédula en franjas ampliadas, con cualquier lectura de pago.
+
+        A página entera el motor de pago se come dígitos de la cédula
+        manuscrita; en la franja del renglón "C.C. No." los lee casi todos, y
+        cuesta una página facturada por cada diez caras.
+        """
+        from ...adapters.mosaico_de_nombres import MosaicoDeCedulas
+
+        return self._mosaico(MosaicoDeCedulas)
+
+    def lectura_de_ahorro(self) -> bool:
+        """Si el operador eligió pagar por la franja del nombre y no por la hoja."""
+        from ...application.lectura import LecturaChoice
+
+        return LecturaChoice.parse(self.lectura_choice) is LecturaChoice.MISTRAL_NOMBRES
+
+    def _mosaico(self, clase):
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_ocr import MistralOcr
+
+        motor = MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
+        return clase(
+            leer=lambda imagen: motor.read(imagen).text,
+            # La mitad de los lectores de página: un mosaico son diez caras, y
+            # cuatro en vuelo son cuarenta franjas en camino.
+            lectores=max(1, int(self.settings.get("page_workers") or 8) // 2),
+        )
+
+    def mosaico_de_fechas(self):
+        """Quien repesca la fecha manuscrita en el pie del diploma, con cualquier lectura de pago.
+
+        La fecha va escrita a mano en la fórmula "a los X días del mes de Y de mil
+        novecientos Z". Tesseract no la lee; el motor de pago sí.
+        En la franja del pie (12% de la hoja) agrupa 10 caras = 1 página facturada.
+        """
+        from ...adapters.mosaico_de_fechas import MosaicoDeFechas
+
+        return self._mosaico(MosaicoDeFechas)
+
+    def mistral_summary(self):
+        """Adaptador para generar resúmenes de actas con Mistral (chat completions)."""
+        from ...adapters.mistral_summary import (
+            MistralSummaryAdapter,
+            MistralSummaryConfig,
+        )
+
+        api_key = self.settings.get("mistral_api_key")
+        if not api_key or not self._con_ia():
+            return None
+        return MistralSummaryAdapter(
+            api_key=api_key,
+            config=MistralSummaryConfig(),
+            consumo=self.consumo,
+        )
+
+    def resumidor(self):
+        """Quien escribe el resumen de un acta de consejo, si se pidió la IA.
+
+        Lee el texto que ya sacó el OCR de casa, nunca la imagen: se paga por
+        los tokens del resumen y no por página. Con «Solo OCR» no hay
+        resumidor, porque gastar en lo que el operador no pidió es justo lo que
+        esa elección existe para evitar.
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_resumen import MistralResumidor
+
+        return MistralResumidor(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
+
+    def lector_de_folios(self):
+        """Quien lee el folio manuscrito de un acta, si se pidió la IA.
+
+        Lee sólo la esquina de la primera y la última hoja foliada, apiladas en
+        una imagen: una página facturada por acta. Con «Solo OCR» no hay lector,
+        y el acta sale con las hojas foliadas contadas por la tinta.
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.esquinas_del_folio import LectorDeFolios
+        from ...adapters.mistral_ocr import MistralOcr
+
+        motor = MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
+        return LectorDeFolios(leer=lambda imagen: motor.read(imagen).text)
+
+    def lector_de_pago(self):
+        """Quien relee con la IA una hoja entera, si se pidió la IA.
+
+        Lo usan las actas de grado para lo que Tesseract no supo leer del
+        graduado: se paga sólo por esas hojas. Con «Solo OCR», o sin llave, no
+        hay lector y el acta se queda con lo que leyó el de casa.
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_ocr import MistralOcr
+
+        return MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
+
+    def motivo_sin_resumidor(self) -> str:
+        """Por qué este trabajo no tiene resumidor, dicho para la columna de notas."""
+        if not self._con_ia():
+            return "se leyó con «Solo OCR»"
+        return "falta la llave de Mistral en el servicio"
+
+    def rastreo(self):
+        """Quién da la segunda mirada local a una cédula que no salió.
+
+        Se construye siempre: es gratis en dinero y casi gratis en tiempo --
+        sólo mira las caras que traen capa de texto y el rótulo impreso de la
+        cédula --, y lo que recupera son páginas que iban camino del motor de
+        pago. En un libro escaneado sin capa de texto no llega a mirar ninguna.
+        """
+        from ...adapters.rastreo_cedula import RastreoDeCedula
+
+        return RastreoDeCedula(language=self.settings["ocr_language"])
+
+    def criterio(self):
+        """El criterio de corte que pidió el operador, o el de siempre.
+
+        Lo desconocido no se adivina: la API lo rechaza antes de aceptar el
+        archivo, así que llegar aquí con algo raro sólo pasa si alguien llama al
+        worker por su cuenta, y entonces vale más fallar que cortar por un
+        criterio que nadie pidió.
+        """
+        from ...domain.diploma import CriterioDeCorte
+
+        return CriterioDeCorte.parse(self.corte_choice)
+
+    def agrupacion(self):
+        """Qué se entrega como un archivo: cada documento o cada mes.
+
+        Como el criterio de corte, lo desconocido falla en vez de adivinarse: la
+        API ya lo rechazó antes de aceptar el archivo.
+        """
+        from ...application.agrupacion import Agrupacion
+
+        return Agrupacion.parse(self.agrupar_choice)
 
     def ubicacion(self):
         return _ubicacion(self.settings)

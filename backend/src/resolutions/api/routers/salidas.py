@@ -169,6 +169,17 @@ XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 #: aquí duplicado porque abrir `excel_inventory` exige openpyxl, y el servicio
 #: tiene que arrancar igual sin él; una prueba comprueba que los dos coincidan.
 SHEET_SUFFIX = "__inventario.xlsx"
+#: Y el Índice Electrónico, que es el inventario de una caja de correspondencia
+#: y no lleva sufijo: se llama como la plantilla del cliente. También duplicado
+#: por lo mismo, y también comprobado por una prueba.
+INDICE = "00.INDICE ELECTRONICO.xlsx"
+
+
+def _hojas_de(directory: Path) -> list[Path]:
+    """El inventario en Excel que dejó un trabajo: su planilla o su índice."""
+    if not directory.is_dir():
+        return []
+    return sorted([*directory.rglob(f"*{SHEET_SUFFIX}"), *directory.rglob(INDICE)])
 
 _MEDIA_TYPES = {
     ".pdf": "application/pdf",
@@ -191,13 +202,95 @@ async def job_inventory(ctx: Ctx, job_id: str) -> FileResponse:
     # sólo en la raíz del trabajo, la descarga contestaba 404 justo en la ruta
     # que más la necesita, porque sus archivos se llaman por un número de orden
     # y sin el listado no dicen nada.
-    sheets = sorted(directory.rglob(f"*{SHEET_SUFFIX}")) if directory.is_dir() else []
+    sheets = _hojas_de(directory)
     if not sheets:
         raise HTTPException(
             status_code=404,
             detail="Ese documento no tiene inventario en Excel",
         )
     return FileResponse(sheets[0], media_type=XLSX_MEDIA, filename=sheets[0].name)
+
+def _orden_natural(ruta: str) -> list[object]:
+    """«2_…» antes que «10_…»: los números del nombre como números."""
+    import re
+
+    return [int(trozo) if trozo.isdigit() else trozo.lower() for trozo in re.split(r"(\d+)", ruta)]
+
+
+@router.get("/api/jobs/{job_id}/archivos")
+async def archivos(ctx: Ctx, job_id: str) -> dict[str, object]:
+    """Los PDF que dejó un trabajo y su inventario en Excel, tal como están en el disco.
+
+    Del disco y no del inventario: es lo que de verdad se puede bajar, y un
+    trabajo procesado antes de que el inventario anotara cada PDF -- un libro de
+    actas dividido, que sólo apuntaba su Excel -- también los enseña.
+    """
+    directory = (ctx.settings.output_dir / job_id).resolve()
+    if not directory.is_dir() or directory.parent != ctx.settings.output_dir.resolve():
+        raise HTTPException(status_code=404, detail="Ese documento no tiene archivos")
+    pdfs = sorted(
+        (ruta for ruta in directory.rglob("*.pdf") if ruta.is_file()),
+        key=lambda ruta: _orden_natural(ruta.relative_to(directory).as_posix()),
+    )
+    hojas = _hojas_de(directory)
+    return {
+        "archivos": [
+            {
+                "ruta": ruta.relative_to(directory).as_posix(),
+                "nombre": ruta.name,
+                "bytes": ruta.stat().st_size,
+            }
+            for ruta in pdfs
+        ],
+        "inventario": hojas[0].name if hojas else None,
+    }
+
+
+@router.get("/api/jobs/{job_id}/archivos.zip")
+async def archivos_zip(ctx: Ctx, job_id: str) -> FileResponse:
+    """Todo lo que dejó un trabajo en un solo ZIP: sus PDF y su inventario.
+
+    Doce PDF de un libro de actas son doce descargas; esto es una. Sin
+    comprimir lo que ya viene comprimido -- un PDF escaneado no encoge -- para
+    que armarlo cueste copiar y no recomprimir sesenta megas. Se escribe en un
+    temporal que se borra en cuanto sale.
+    """
+    import asyncio
+    import os
+    import tempfile
+    import zipfile
+
+    from starlette.background import BackgroundTask
+
+    directory = (ctx.settings.output_dir / job_id).resolve()
+    if not directory.is_dir() or directory.parent != ctx.settings.output_dir.resolve():
+        raise HTTPException(status_code=404, detail="Ese documento no tiene archivos")
+    contenido = sorted(
+        (ruta for ruta in directory.rglob("*") if ruta.is_file() and ruta.suffix.lower() in (".pdf", ".xlsx")),
+        key=lambda ruta: _orden_natural(ruta.relative_to(directory).as_posix()),
+    )
+    if not contenido:
+        raise HTTPException(status_code=404, detail="Ese documento no dejó archivos que bajar")
+
+    carpetas = sorted({ruta.relative_to(directory).parts[0] for ruta in contenido if len(ruta.relative_to(directory).parts) > 1})
+    nombre = f"{carpetas[0] if len(carpetas) == 1 else job_id}.zip"
+
+    def armar() -> str:
+        descriptor, ruta_zip = tempfile.mkstemp(suffix=".zip")
+        os.close(descriptor)
+        with zipfile.ZipFile(ruta_zip, "w", zipfile.ZIP_STORED) as paquete:
+            for ruta in contenido:
+                paquete.write(ruta, ruta.relative_to(directory).as_posix())
+        return ruta_zip
+
+    ruta_zip = await asyncio.to_thread(armar)
+    return FileResponse(
+        ruta_zip,
+        media_type="application/zip",
+        filename=nombre,
+        background=BackgroundTask(os.unlink, ruta_zip),
+    )
+
 
 @router.get("/api/jobs/{job_id}/outputs/{name:path}")
 async def download(ctx: Ctx, job_id: str, name: str) -> FileResponse:

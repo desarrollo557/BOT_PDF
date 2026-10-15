@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { consoleLog } from '$lib/console.svelte';
+  import { confirmar } from '$lib/confirmar.svelte';
+  import Icono from '$lib/components/Icono.svelte';
 
   interface Props {
     /** Documents queued or running, for the status light. */
@@ -124,7 +126,9 @@
       <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
       <span class="title">resolutions@siar — <b>/proc/split</b></span>
       <span class="led" class:on={active > 0} aria-hidden="true"></span>
-      <button class="hide" onclick={toggle} aria-label="Ocultar la consola">✕</button>
+      <button class="hide" onclick={toggle} aria-label="Ocultar la consola">
+        <Icono nombre="cerrar" />
+      </button>
     </header>
 
     <div class="viewport" bind:this={viewport} onscroll={onScroll} role="log" aria-live="polite">
@@ -164,7 +168,16 @@
       >
         {consoleLog.paused ? 'reanudar' : 'pausar'}
       </button>
-      <button onclick={() => consoleLog.clear()}>limpiar</button>
+      <button
+        onclick={async () => {
+          const seguro = await confirmar({
+            titulo: '¿Limpiar la consola?',
+            mensaje: 'Se borran las líneas de la pantalla. El trabajo no se toca.',
+            aceptar: 'Limpiar'
+          });
+          if (seguro) consoleLog.clear();
+        }}>limpiar</button
+      >
     </footer>
 
     <div class="scanlines" aria-hidden="true"></div>
@@ -193,6 +206,21 @@
     --term-amber: #fbbf24;
     --term-red: #fb5c6b;
     --term-violet: #c084fc;
+    /* Los tonos de la carcasa -- filetes, fichas apagadas, la hora, el
+       degradado de las barras --, que antes iban sueltos por cada regla. */
+    --term-line: #133038;
+    --term-chip: #1d3d46;
+    --term-time: #2f545d;
+    --term-close: #3b2a2f;
+    --term-glow: #0b1a1e;
+    --term-bar: #0c1a1f;
+    --term-bar-end: #081215;
+    --term-page: #7fb8ac;
+    --term-ok: #d6fff0;
+    --term-ok-glow: rgb(44 230 155 / 0.35);
+    --term-caret-glow: rgb(44 230 155 / 0.6);
+    --term-shadow: -18px 0 40px rgb(0 0 0 / 0.3);
+    --term-scan: rgb(255 255 255 / 0.025);
   }
 
   .dock {
@@ -203,11 +231,11 @@
     z-index: 45;
     display: flex;
     flex-direction: column;
-    border-left: 1px solid #133038;
+    border-left: 1px solid var(--term-line);
     background:
-      radial-gradient(120% 60% at 50% 0%, #0b1a1e 0%, var(--term-bg) 70%),
+      radial-gradient(120% 60% at 50% 0%, var(--term-glow) 0%, var(--term-bg) 70%),
       var(--term-bg);
-    box-shadow: -18px 0 40px rgb(0 0 0 / 0.3);
+    box-shadow: var(--term-shadow);
     font-family: var(--font-mono);
   }
 
@@ -232,11 +260,11 @@
     flex-shrink: 0;
     align-items: center;
     gap: 0.5rem;
-    border-bottom: 1px solid #123038;
-    background: linear-gradient(#0c1a1f, #081215);
+    border-bottom: 1px solid var(--term-line);
+    background: linear-gradient(var(--term-bar), var(--term-bar-end));
     padding: 0.5rem 0.7rem;
-    font-size: 0.68rem;
-    letter-spacing: 0.04em;
+    font-size: var(--text-xs);
+    letter-spacing: var(--tracking-caps);
     color: var(--term-dim);
   }
 
@@ -249,10 +277,10 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #1d3d46;
+    background: var(--term-chip);
   }
   .dots i:first-child {
-    background: #3b2a2f;
+    background: var(--term-close);
   }
 
   .title {
@@ -272,7 +300,7 @@
     flex-shrink: 0;
     margin-left: auto;
     border-radius: 50%;
-    background: #1d3d46;
+    background: var(--term-chip);
   }
   .led.on {
     background: var(--term-green);
@@ -281,12 +309,12 @@
   }
 
   .hide {
+    display: grid;
     flex-shrink: 0;
+    place-items: center;
     border: 0;
     background: none;
     padding: 0 0 0 0.3rem;
-    font: inherit;
-    font-size: 0.75rem;
     color: var(--term-dim);
     cursor: pointer;
   }
@@ -299,11 +327,11 @@
     overflow-x: hidden;
     overflow-y: auto;
     padding: 0.6rem 0.7rem 0.9rem;
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     line-height: 1.45;
     color: var(--term-fg);
     scrollbar-width: thin;
-    scrollbar-color: #1d3d46 transparent;
+    scrollbar-color: var(--term-chip) transparent;
   }
 
   .line {
@@ -314,13 +342,13 @@
   }
   .time {
     flex-shrink: 0;
-    color: #2f545d;
+    color: var(--term-time);
   }
   .tag {
     min-width: 5ch;
     flex-shrink: 0;
     font-weight: 600;
-    letter-spacing: 0.04em;
+    letter-spacing: var(--tracking-caps);
   }
   .scope {
     max-width: 14ch;
@@ -346,7 +374,7 @@
     color: var(--term-green);
   }
   .lvl-page .text {
-    color: #7fb8ac;
+    color: var(--term-page);
   }
   .lvl-model .tag,
   .lvl-model .text {
@@ -356,8 +384,8 @@
     color: var(--term-green);
   }
   .lvl-ok .text {
-    color: #d6fff0;
-    text-shadow: 0 0 8px rgb(44 230 155 / 0.35);
+    color: var(--term-ok);
+    text-shadow: 0 0 8px var(--term-ok-glow);
   }
   .lvl-warn .tag,
   .lvl-warn .text {
@@ -380,12 +408,12 @@
     width: 7px;
     height: 13px;
     background: var(--term-green);
-    box-shadow: 0 0 8px rgb(44 230 155 / 0.6);
+    box-shadow: 0 0 8px var(--term-caret-glow);
     animation: blink 1.05s steps(1) infinite;
   }
 
   .foot {
-    border-top: 1px solid #123038;
+    border-top: 1px solid var(--term-line);
     border-bottom: 0;
     gap: 0.35rem;
   }
@@ -393,15 +421,15 @@
     flex: 1;
   }
   .count {
-    color: #2f545d;
+    color: var(--term-time);
   }
   .foot button {
-    border: 1px solid #1d3d46;
-    border-radius: 4px;
+    border: 1px solid var(--term-chip);
+    border-radius: var(--radius-sm);
     background: transparent;
     padding: 0.1rem 0.45rem;
     font: inherit;
-    font-size: 0.66rem;
+    font-size: var(--text-2xs);
     color: var(--term-dim);
     cursor: pointer;
     transition:
@@ -422,7 +450,7 @@
     inset: 0;
     background: repeating-linear-gradient(
       to bottom,
-      rgb(255 255 255 / 0.025) 0 1px,
+      var(--term-scan) 0 1px,
       transparent 1px 3px
     );
     mix-blend-mode: overlay;
@@ -441,8 +469,8 @@
     align-items: center;
     gap: 0.75rem;
     border: 0;
-    border-left: 1px solid #133038;
-    background: linear-gradient(#0c1a1f, #05080a);
+    border-left: 1px solid var(--term-line);
+    background: linear-gradient(var(--term-bar), var(--term-bg));
     padding-top: 0.85rem;
     font-family: var(--font-mono);
     color: var(--term-dim);
@@ -456,7 +484,7 @@
     margin-left: 0;
   }
   .vertical {
-    font-size: 0.68rem;
+    font-size: var(--text-xs);
     letter-spacing: 0.14em;
     text-transform: uppercase;
     writing-mode: vertical-rl;

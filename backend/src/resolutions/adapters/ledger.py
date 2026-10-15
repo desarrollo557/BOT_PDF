@@ -43,6 +43,28 @@ LEDGER_COLUMNS = (
 )
 
 
+def _origen_de(report: dict) -> dict[str, str]:
+    """Las columnas que dicen de qué carpeta o lote salió un documento.
+
+    Vacío para lo que se cargó suelto, para no llenar el archivo de nulos. Sólo
+    las guarda el archivo JSONL: la base MySQL no tiene dónde, y allí el
+    Archivo sigue mostrando cada PDF por su lado, como hasta ahora.
+    """
+    origen = report.get("origen")
+    if not isinstance(origen, dict) or not origen.get("id"):
+        return {}
+    columnas = {
+        "origen_id": str(origen["id"]),
+        "origen": str(origen.get("nombre") or ""),
+        "origen_tipo": str(origen.get("tipo") or ""),
+    }
+    if origen.get("inventario"):
+        columnas["origen_inventario"] = str(origen["inventario"])
+    if origen.get("procesos"):
+        columnas["origen_procesos"] = str(origen["procesos"])
+    return columnas
+
+
 def _compact(page_numbers: list[int]) -> str:
     """Page numbers as ranges: forty integers read as "12-51"."""
     if not page_numbers:
@@ -97,7 +119,21 @@ class InventoryReads:
                     "source_pages": int(row.get("source_pages") or 0),
                     "bytes": int(row.get("source_bytes") or 0),
                     "review": int(row.get("review") or 0),
+                    # Qué tipos documentales salieron de él: «ACTA DE CONSEJO»
+                    # dice a la tarjeta del Archivo que es un acta, y que su
+                    # inventario es el de actas y no el de resoluciones.
+                    "types": [],
+                    # La carpeta o el lote del que salió, si no se cargó
+                    # suelto. Es lo que reúne sus PDF en una sola tarjeta.
+                    "origen_id": row.get("origen_id"),
+                    "origen": row.get("origen"),
+                    "origen_tipo": row.get("origen_tipo"),
+                    "origen_inventario": row.get("origen_inventario"),
+                    "origen_procesos": row.get("origen_procesos"),
                 }
+            tipo = row.get("type")
+            if tipo and tipo not in entry["types"] and len(entry["types"]) < 8:
+                entry["types"].append(tipo)
             entry["resolutions"] += 1
             entry["pages"] += int(row.get("page_count") or 0)
             # Enough codes to recognise the document, not enough to be a list.
@@ -176,6 +212,7 @@ class InventoryLedger(InventoryReads):
         source_pages = int(inventory.get("source_pages") or report.get("page_count") or 0)
         review = len(report.get("review_queue") or [])
         nic = report.get("nic") or None
+        origen = _origen_de(report)
         lines = [
             json.dumps(
                 {
@@ -203,6 +240,7 @@ class InventoryLedger(InventoryReads):
                     "source_pages": source_pages,
                     "source_bytes": source_bytes,
                     "review": review,
+                    **origen,
                 },
                 ensure_ascii=False,
             )

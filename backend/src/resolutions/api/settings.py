@@ -18,6 +18,24 @@ def _float_opcional(name: str) -> float | None:
         return None
 
 
+def _int_opcional(name: str) -> int | None:
+    """Un entero del entorno, o nada. Un valor ilegible es nada, no cero.
+
+    Nada y cero son cosas distintas aquí: en un tope de páginas, "nada"
+    significa sin tope y cero significa no gastar ni una. Un `RESOLUTIONS_TOPE_
+    PAGINAS_OCR=abc` que se interpretara como cero apagaría el motor de pago en
+    silencio, que es exactamente la clase de degradación callada que esta casa
+    no admite.
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 def _int(name: str, fallback: int) -> int:
     try:
         return int(os.environ[name])
@@ -43,7 +61,21 @@ class Settings:
 
     #: Threads inside a worker, fanning pages out across the OCR engine. Native
     #: code releases the GIL, so this scales without another process boundary.
+    #: Es el tope de un documento solo: con varios a la vez el planificador
+    #: reparte los hilos de la máquina entre ellos (ver `planificador.py`).
     page_workers: int = 8
+
+    #: Cuántos documentos de carpeta se procesan a la vez, sumando todas las
+    #: carpetas en marcha. Uno los ponía en fila y dejaba parados los demás
+    #: procesos del pool: una carpeta de 103 PDF tardó 41 minutos con diez de
+    #: once procesos sin trabajo. Por defecto, uno por cada cuatro hilos de la
+    #: máquina -- tres en una de doce --, que deja hilos de OCR a cada uno.
+    folder_documents: int = 0
+
+    #: Cuántas llamadas a la IA de pago a la vez, sumando todos los documentos.
+    #: Con varios documentos en paralelo cada uno pide las suyas, y el
+    #: proveedor contesta 429 si se le pisa: este tope común marca el paso.
+    ia_a_la_vez: int = 8
 
     #: Documents in flight before the API pushes back. Not a limit on how much
     #: can be processed -- the pool drains it steadily -- only on how much may be
@@ -73,6 +105,21 @@ class Settings:
     #: moneda, y una cifra inventada aquí sería la única de la pantalla que no
     #: sale de una medida. Sin él se enseñan páginas y tokens, que sí se miden.
     precio_ocr_por_pagina: float | None = None
+
+    #: Cuántas páginas facturadas como máximo puede gastar **un trabajo**.
+    #:
+    #: ``None`` es sin tope, que es lo que había y sigue siendo lo normal. Se
+    #: pone cuando importa más no pasarse de una cifra que leerlo todo: una caja
+    #: son cientos de páginas y el motor remoto cobra por cada una, de modo que
+    #: sin tope la única señal de que un trabajo se comió el crédito llegaba
+    #: cuando el proveedor contestaba "sin presupuesto" en mitad del libro
+    #: siguiente.
+    #:
+    #: Alcanzarlo no cancela nada: el motor de pago deja de pedirse y lo que
+    #: falte se lee con el local. En un libro de diplomas eso significa que los
+    #: documentos salen igual -- el corte sale de medir tinta y no necesita OCR
+    #: -- sólo que nombrados por su folio o su orden en vez de por su cédula.
+    tope_paginas_ocr: int | None = None
 
     #: Uploads are streamed to disk in chunks and never held in memory, so this
     #: bounds disk use rather than RAM. Four gigabytes covers a full archive box
@@ -109,6 +156,18 @@ class Settings:
     fuid_codigo_trd: str = "N/A"
     fuid_oficina: str | None = None
 
+    def __post_init__(self) -> None:
+        # Cero es «lo que aguante la máquina»: uno por cada cuatro hilos, sin
+        # pasar de los procesos del pool, que son quienes de verdad los leen.
+        if self.folder_documents <= 0:
+            por_defecto = max(1, min(self.document_workers, (os.cpu_count() or 4) // 4))
+            object.__setattr__(self, "folder_documents", por_defecto)
+        else:
+            object.__setattr__(
+                self, "folder_documents", min(self.folder_documents, self.document_workers)
+            )
+        object.__setattr__(self, "ia_a_la_vez", max(1, self.ia_a_la_vez))
+
     @classmethod
     def from_env(cls) -> Settings:
         return cls(
@@ -116,6 +175,8 @@ class Settings:
             output_dir=Path(os.environ.get("RESOLUTIONS_OUTPUT_DIR", DEFAULT_ROOT / "outputs")),
             document_workers=_int("RESOLUTIONS_DOCUMENT_WORKERS", max(1, (os.cpu_count() or 4) - 1)),
             page_workers=_int("RESOLUTIONS_PAGE_WORKERS", 8),
+            folder_documents=_int("RESOLUTIONS_FOLDER_DOCUMENTS", 0),
+            ia_a_la_vez=_int("RESOLUTIONS_IA_A_LA_VEZ", 8),
             queue_limit=_int("RESOLUTIONS_QUEUE_LIMIT", 10_000),
             ocr_language=os.environ.get("RESOLUTIONS_OCR_LANG", "spa"),
             mosaic_size=_int("RESOLUTIONS_MOSAIC_SIZE", 12),
@@ -124,6 +185,7 @@ class Settings:
             gemini_api_key=os.environ.get("GEMINI_API_KEY") or None,
             mistral_api_key=os.environ.get("MISTRAL_API_KEY") or None,
             precio_ocr_por_pagina=_float_opcional("RESOLUTIONS_PRECIO_OCR_POR_PAGINA"),
+            tope_paginas_ocr=_int_opcional("RESOLUTIONS_TOPE_PAGINAS_OCR"),
             max_upload_bytes=_int("RESOLUTIONS_MAX_UPLOAD_BYTES", 4 * 1024 * 1024 * 1024),
             ledger_path=Path(
                 os.environ.get("RESOLUTIONS_LEDGER", DEFAULT_ROOT / "inventory.jsonl")
@@ -157,6 +219,7 @@ class Settings:
             "gemini_api_key": self.gemini_api_key,
             "mistral_api_key": self.mistral_api_key,
             "precio_ocr_por_pagina": self.precio_ocr_por_pagina,
+            "tope_paginas_ocr": self.tope_paginas_ocr,
             "fuid_template": self.fuid_template,
             "fuid_caja": self.fuid_caja,
             "fuid_otro": self.fuid_otro,

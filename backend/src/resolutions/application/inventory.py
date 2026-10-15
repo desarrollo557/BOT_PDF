@@ -210,13 +210,54 @@ def _fila_del_archivo_inventariado(report: dict) -> dict[str, object] | None:
         # La fecha extrema final, que es lo que esta columna significa en el
         # resto del archivo: la más reciente escrita en el documento.
         "fecha": _sin_na(report.get("fecha_final")),
-        "file_name": report.get("fuid") or "",
+        # La planilla que dejó: el FUID, o el Excel sencillo de un acta.
+        "file_name": report.get("fuid") or report.get("inventario") or "",
         "page_count": folios,
         "first_page": 1 if folios else 0,
         "last_page": folios,
         "page_numbers": [],
         "attachments": [],
     }
+
+
+def _filas_de_actas_divididas(report: dict) -> list[dict[str, object]] | None:
+    """Una fila por acta de un libro que se dividió, apuntando a su PDF.
+
+    Un libro de actas inventariado entero es una fila -- la del Excel --, pero
+    dividido son tantos PDF como sesiones, y cada uno tiene que poder
+    encontrarse y bajarse desde el Archivo: con una sola fila, los PDF quedaban
+    escritos en el disco y la pantalla no los enseñaba por ninguna parte.
+    """
+    if not report.get("dividido"):
+        return None
+    actas = report.get("inventario_actas") or []
+    salidas = report.get("outputs") or []
+    filas: list[dict[str, object]] = []
+    for sesion in report.get("sesiones") or []:
+        orden = int(sesion.get("orden") or 0)
+        prefijo = f"{orden:02d}_"
+        salida = next(
+            (ruta for ruta in salidas if ruta.rsplit("/", 1)[-1].startswith(prefijo)), None
+        )
+        if salida is None:
+            continue
+        desde, hasta = int(sesion["desde"]), int(sesion["hasta"])
+        acta = actas[orden - 1] if 1 <= orden <= len(actas) else {}
+        filas.append(
+            {
+                "code": acta.get("numero") or "",
+                "title": sesion.get("nombre"),
+                "type": report.get("tipo_documental") if acta else None,
+                "fecha": _sin_na(acta.get("fecha")),
+                "file_name": salida,
+                "page_count": hasta - desde + 1,
+                "first_page": desde,
+                "last_page": hasta,
+                "page_numbers": list(range(desde, hasta + 1)),
+                "attachments": [],
+            }
+        )
+    return filas or None
 
 
 def _sin_na(valor: object) -> str | None:
@@ -256,6 +297,11 @@ def rows_of(report: dict) -> list[dict[str, object]]:
     # agujero que dejó fuera a las cajas separadas por continuidad, y se tapa
     # igual: lo que el trabajo produjo se anota, aunque lo que produjera sea una
     # sola fila y una planilla.
+    # Un libro de actas dividido: una fila por cada PDF de sesión que se escribió.
+    divididas = _filas_de_actas_divididas(report)
+    if divididas:
+        return divididas
+
     fila = _fila_del_archivo_inventariado(report)
     if fila is not None:
         return [fila]

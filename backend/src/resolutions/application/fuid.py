@@ -9,7 +9,8 @@ sabe de openpyxl la recibe ya decidida.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 
 #: Lo que el instructivo del formato manda escribir donde no hay dato. Nunca se
 #: deja en blanco -- una celda vacía no dice "no aplica", dice "se olvidó" -- y
@@ -41,6 +42,15 @@ class FuidRow:
     soporte: str = NO_APLICA
     frecuencia: str = NO_APLICA
     notas: str = ""
+    #: En qué página del PDF de origen empieza esta unidad documental.
+    #:
+    #: No es una columna del formato y no sale en `as_cells`: es la costura por
+    #: la que esta fila se vuelve a encontrar con el archivo que se escribió
+    #: para ella. Emparejarlas por su posición en las dos listas parece
+    #: equivalente y no lo es -- una unidad que no se pudo escribir desaparece
+    #: de la lista de archivos y desde ahí todo queda corrido una fila --, y un
+    #: inventario corrido una fila es peor que uno sin nombres de archivo.
+    pagina_inicial: int | None = None
 
     def as_cells(self) -> list[object]:
         """Los valores en el orden de las columnas A a P de la plantilla."""
@@ -62,6 +72,49 @@ class FuidRow:
             self.frecuencia,
             self.notas,
         ]
+
+
+
+def con_los_archivos(
+    filas: Sequence[FuidRow], archivos: Mapping[int, str]
+) -> list[FuidRow]:
+    """Las mismas filas, cada una diciendo cómo se llama su archivo.
+
+    La planilla y la carpeta de salida son las dos mitades de la misma entrega y
+    hasta ahora sólo se podían cruzar contando: la fila 57 correspondía al
+    archivo 57 si nadie se había equivocado en medio. Escribirlo convierte esa
+    correspondencia en algo comprobable -- quien recibe la caja lee la fila y
+    sabe qué PDF abrir --, y de paso deja constancia de cuáles se nombraron por
+    su folio o su orden porque el dato no se dejó leer.
+
+    Va aparte de quien construye las filas porque los dos datos no se saben a la
+    vez: el inventario se arma al leer el documento y los nombres de archivo no
+    existen hasta que el escritor terminó de partirlo. Volver a armar las filas
+    con los nombres dentro habría obligado a leer el documento dos veces.
+
+    El emparejamiento es por **la página que abre la unidad** y no por la
+    posición en la lista. La diferencia importa cuando una unidad no se pudo
+    escribir: desaparece de la lista de archivos, y emparejar por posición
+    correría una fila todos los nombres siguientes. Una fila sin nombre es un
+    hueco que se ve; una fila con el nombre del archivo de al lado, no.
+    """
+    return [
+        replace(fila, notas=_con_archivo(fila.notas, archivos.get(fila.pagina_inicial)))
+        if fila.pagina_inicial in archivos
+        else fila
+        for fila in filas
+    ]
+
+
+def _con_archivo(notas: str, archivo: str | None) -> str:
+    """Le añade el nombre del archivo a unas notas que ya dicen otra cosa.
+
+    Se escribe sólo lo que hay. Una nota que dijera "Archivo: N/A" gastaría la
+    única columna libre del formato en decir que no sabe nada.
+    """
+    if not archivo or f"Archivo: {archivo}" in notas:
+        return notas
+    return "; ".join(parte for parte in (notas, f"Archivo: {archivo}") if parte)
 
 
 @dataclass(frozen=True, slots=True)

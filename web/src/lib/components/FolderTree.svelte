@@ -1,11 +1,14 @@
 <script lang="ts">
   import {
+    descargarPlanilla,
     documentFuidStatus,
     documentFuidUrl,
     documentInventoryUrl,
     downloadUrl,
     makeDocumentFuid
   } from '$lib/api';
+  import Icono from '$lib/components/Icono.svelte';
+  import { pageRange } from '$lib/format';
   import { jobStore } from '$lib/jobs.svelte';
   import { session } from '$lib/session.svelte';
   import type { FolderRun, Job } from '$lib/types';
@@ -74,6 +77,15 @@
   async function inventariar(job: Job) {
     inventarios = { ...inventarios, [job.id]: { trabajando: true, error: null } };
     try {
+      // Un acta de consejo ya dejó su Excel al procesarse: se baja y nada más.
+      // Volver a leerla -- lo que hacía este botón cuando no encontraba la
+      // planilla -- la leía sin IA y pisaba su Excel con uno sin folios ni
+      // resumen.
+      if (job.report?.inventario_actas?.length) {
+        await descargarPlanilla(documentInventoryUrl(job.id));
+        inventarios = { ...inventarios, [job.id]: { trabajando: false, error: null } };
+        return;
+      }
       // La planilla del documento se escribe sola al procesarlo, así que lo
       // primero es probar si ya está: bajarla es instantáneo y no vuelve a
       // leer el PDF. Sólo si no está se levanta el FUID, que sí lo lee entero.
@@ -102,7 +114,9 @@
       // Bajarla sólo quien puede. A los demás se les dice dónde mirarla, en
       // vez de dispararles una descarga que el servicio va a rechazar: un 403
       // sin explicación se lee como una avería del programa.
-      if (session.descargaPlanillas) descargar(documentFuidUrl(job.id));
+      // Por `fetch`, que lleva la cédula: un enlace llega sin ella y el
+      // servicio contesta 401 en vez de la planilla.
+      if (session.descargaPlanillas) await descargarPlanilla(documentFuidUrl(job.id));
       inventarios = {
         ...inventarios,
         [job.id]: {
@@ -123,38 +137,29 @@
 
   /** La planilla que el proceso ya dejó escrita, si está. */
   async function bajarLaPlanilla(job: Job): Promise<boolean> {
+    // Quien no descarga planillas tampoco se lleva ésta por este atajo. No
+    // es el FUID -- es el inventario que el proceso deja junto a los PDF --
+    // pero es el mismo Excel saliendo por la misma puerta, y dejarlo abierto
+    // haría de la restricción una que sólo aplica a veces.
+    if (!session.descargaPlanillas) return false;
+    // Con GET y no con HEAD: el servicio no contesta HEAD (405), y tomar eso
+    // por «no hay planilla» relanzaba la lectura entera del documento.
     try {
-      const respuesta = await fetch(documentInventoryUrl(job.id), { method: 'HEAD' });
-      if (!respuesta.ok) return false;
-      // Quien no descarga planillas tampoco se lleva ésta por este atajo. No
-      // es el FUID -- es el inventario que el proceso deja junto a los PDF --
-      // pero es el mismo Excel saliendo por la misma puerta, y dejarlo abierto
-      // haría de la restricción una que sólo aplica a veces.
-      if (!session.descargaPlanillas) return false;
-      descargar(documentInventoryUrl(job.id));
+      await descargarPlanilla(documentInventoryUrl(job.id));
       return true;
-    } catch {
-      return false;
+    } catch (problema) {
+      if ((problema as { status?: number }).status === 404) return false;
+      throw problema;
     }
   }
 
-  /** Empujar el archivo al navegador sin sacar al operador de la pantalla. */
-  function descargar(url: string) {
-    const enlace = document.createElement('a');
-    enlace.href = url;
-    enlace.download = '';
-    document.body.appendChild(enlace);
-    enlace.click();
-    enlace.remove();
-  }
-
   const ESTADOS: Record<string, string> = {
-    queued: 'en cola',
-    running: 'leyendo',
-    paused: 'en pausa',
-    done: 'listo',
-    failed: 'falló',
-    cancelled: 'cancelado'
+    queued: 'En cola',
+    running: 'Leyendo',
+    paused: 'En pausa',
+    done: 'Listo',
+    failed: 'Falló',
+    cancelled: 'Cancelado'
   };
 </script>
 
@@ -185,6 +190,7 @@
     {#each documentos as job (job.id)}
       {@const unidades = unidadesDe(job)}
       {@const inventario = inventarios[job.id]}
+      {@const acta = job.report?.inventario_actas?.[0]}
       <li class="pdf" data-state={job.state}>
         <div class="nodo">
           <span class="rama" aria-hidden="true"></span>
@@ -204,26 +210,52 @@
           <!-- Lo que se dice de un documento es lo que su informe dice, y sólo
                cuando lo dice: mientras corre, su estado; cuando terminó, sus
                páginas y sus unidades. -->
-          {#if job.state === 'done' && job.report}
+          {#if job.state === 'done' && job.report && acta}
+            <!-- Un acta de consejo no se parte: lo que se dice de ella es su
+                 acta y su fecha, que es lo que el inventario general anota. -->
+            {@const actas = job.report.inventario_actas?.length ?? 1}
+            <span class="cuenta" title={`${acta.acta} · ${acta.fecha}`}>
+              {actas > 1 ? `Libro de ${actas} actas` : `${acta.acta} · ${acta.fecha}`}
+            </span>
+            <button
+              class="btn btn-tonal btn-sm"
+              onclick={() => inventariar(job)}
+              disabled={inventario?.trabajando}
+              title="Sólo esta acta. El inventario general de la carpeta, con todas, está arriba."
+            >
+              <Icono nombre="descargar" />
+              {inventario?.trabajando
+                ? 'Descargando…'
+                : actas > 1
+                  ? 'Descargar inventario del libro (Excel)'
+                  : 'Descargar inventario del acta (Excel)'}
+            </button>
+          {:else if job.state === 'done' && job.report}
             <span class="cuenta tabular">
               {job.report.page_count} pág · {unidades.length}
               {unidades.length === 1 ? 'unidad' : 'unidades'}
             </span>
             <button
-              class="inventario"
+              class="btn btn-tonal btn-sm"
               onclick={() => inventariar(job)}
               disabled={inventario?.trabajando}
               title="Levanta el inventario con la plantilla del tipo de documento que se reconozca, y lo descarga"
             >
-              {inventario?.trabajando ? 'levantando…' : 'Inventario'}
+              <Icono nombre="descargar" />
+              {inventario?.trabajando ? 'Levantando…' : 'Descargar inventario (Excel)'}
             </button>
           {:else}
-            <span class="cuenta estado">{ESTADOS[job.state] ?? job.state}</span>
+            <span
+              class="pill estado"
+              class:pill-bad={job.state === 'failed'}
+              class:pill-warn={job.state === 'paused' || job.state === 'cancelled'}
+              >{ESTADOS[job.state] ?? job.state}</span
+            >
           {/if}
         </div>
 
         {#if inventario?.error}
-          <p class="error">{inventario.error}</p>
+          <p class="inline-error">{inventario.error}</p>
         {:else if inventario?.aviso}
           <p class="aviso">{inventario.aviso}</p>
         {/if}
@@ -244,7 +276,7 @@
                     {unidad.file_name}
                   </a>
                   <span class="cuenta tabular">
-                    pág. {unidad.first_page}–{unidad.last_page}
+                    pág. {pageRange(unidad.page_numbers)}
                   </span>
                 </div>
                 {#if unidad.title}
@@ -278,7 +310,7 @@
     display: flex;
     min-width: 0;
     flex-direction: column;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
   }
 
   .nodo {
@@ -321,7 +353,7 @@
 
   .glifo {
     flex: none;
-    font-size: 0.78rem;
+    font-size: var(--text-sm);
   }
 
   .etiqueta {
@@ -329,7 +361,7 @@
     min-width: 0;
     flex: 1;
     font-family: var(--font-mono);
-    font-size: 0.76rem;
+    font-size: var(--text-xs);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -344,11 +376,19 @@
 
   .cuenta {
     flex: none;
-    font-size: 0.68rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
   .estado {
-    font-family: var(--font-mono);
+    flex: none;
+    padding-block: 0;
+  }
+  /* El botón de cada fila es el `btn-sm` común, apretado a la altura de la
+     línea del árbol para que no la ensanche. */
+  .nodo .btn {
+    flex: none;
+    min-height: 0;
+    padding-block: 1px;
   }
 
   .pliegue {
@@ -375,33 +415,8 @@
   .chevron {
     flex: none;
     width: 0.7rem;
-    font-size: 0.66rem;
+    font-size: var(--text-2xs);
     color: var(--muted);
-  }
-
-  .inventario {
-    flex: none;
-    border: 1px solid color-mix(in oklab, var(--accent) 38%, var(--hairline));
-    border-radius: 7px;
-    background: color-mix(in oklab, var(--accent) 8%, transparent);
-    padding: 1px 0.5rem;
-    font: inherit;
-    font-size: 0.68rem;
-    font-weight: 600;
-    color: var(--ink-2);
-    cursor: pointer;
-    transition:
-      background 0.16s,
-      border-color 0.16s;
-  }
-  .inventario:hover:not(:disabled) {
-    border-color: var(--accent);
-    background: color-mix(in oklab, var(--accent) 16%, transparent);
-    color: var(--ink);
-  }
-  .inventario:disabled {
-    cursor: default;
-    opacity: 0.6;
   }
 
   /* El asunto es la única línea que puede ser larga, y es la que dice qué es
@@ -409,7 +424,7 @@
   .asunto {
     overflow: hidden;
     margin: 0 0 2px 2.1rem;
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--muted);
@@ -422,23 +437,20 @@
     color: var(--ink);
   }
 
-  .error {
+  .pdf > .inline-error {
     margin: 2px 0 4px 1.4rem;
-    border-left: 2px solid var(--critical);
-    padding-left: 0.5rem;
-    font-size: 0.72rem;
-    color: var(--critical);
+    font-size: var(--text-xs);
   }
   .aviso {
     margin: 0.35rem 0 0 1.9rem;
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     line-height: 1.45;
     color: var(--muted);
   }
 
   .nota {
     margin: 0.5rem 0 0;
-    font-size: 0.74rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 </style>

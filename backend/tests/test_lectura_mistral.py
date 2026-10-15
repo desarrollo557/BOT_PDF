@@ -16,6 +16,7 @@ import pytest
 
 from resolutions.adapters.mistral_ocr import MistralOcr, MistralOcrConfig
 from resolutions.adapters.ocr_cascada import MINIMO_UTIL, OcrEnCascada
+from resolutions.application.consumo import Consumo
 from resolutions.application.lectura import LecturaChoice, available_readers
 from resolutions.application.ports import OcrResult
 
@@ -183,8 +184,16 @@ class TestLaEleccionDelOperador:
             LecturaChoice.parse("el-que-sea")
 
     def test_la_pantalla_recibe_que_hay_y_que_no(self):
-        assert available_readers({}) == {"local": True, "mistral": False}
-        assert available_readers({"mistral_api_key": "x"}) == {"local": True, "mistral": True}
+        assert available_readers({}) == {
+            "local": True,
+            "mistral": False,
+            "mistral-nombres": False,
+        }
+        assert available_readers({"mistral_api_key": "x"}) == {
+            "local": True,
+            "mistral": True,
+            "mistral-nombres": True,
+        }
 
 
 class TestUnCorteDeConexionNoEsUnaRespuesta:
@@ -302,3 +311,246 @@ class TestCuandoSeAcabaElCredito:
         cascada = OcrEnCascada(local=local, remoto=MistralOcr(api_key="x"))
 
         assert cascada.read(b"imagen").text == "RESOLUCION NUMERO 00412 DE 2024"
+
+
+def _respuesta(paginas=1, markdown="135 70/1"):
+    """Una respuesta del proveedor como la devuelve `urlopen`."""
+
+    class RespuestaFalsa:
+        def read(self):
+            return json.dumps(
+                {"pages": [{"markdown": markdown}], "usage_info": {"pages_processed": paginas}}
+            ).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    return RespuestaFalsa()
+
+
+class TestElTopeDeGastoDelTrabajo:
+    """Ni una p\u00e1gina m\u00e1s de las que el operador autoriz\u00f3.
+
+    Existe porque una caja son cientos de p\u00e1ginas y el motor remoto cobra por
+    cada una: hasta ahora la \u00fanica se\u00f1al de que un trabajo se hab\u00eda comido el
+    cr\u00e9dito llegaba cuando el proveedor contestaba "sin presupuesto" en mitad
+    del libro siguiente.
+    """
+
+    def motor(self, monkeypatch, tope, llamadas):
+        def urlopen_falso(peticion, timeout=None):
+            llamadas.append(peticion)
+            return _respuesta()
+
+        monkeypatch.setattr("urllib.request.urlopen", urlopen_falso)
+        monkeypatch.setattr("json.load", lambda conexion: json.loads(conexion.read()))
+        consumo = Consumo(tope_de_paginas=tope)
+        return MistralOcr(api_key="llave", consumo=consumo), consumo
+
+    def test_se_deja_de_pedir_al_alcanzarlo(self, monkeypatch):
+        llamadas = []
+        motor, consumo = self.motor(monkeypatch, tope=3, llamadas=llamadas)
+        for _ in range(10):
+            motor.read(b"imagen")
+        assert len(llamadas) == 3
+        assert consumo.as_dict()["paginas_facturadas"] == 3
+
+    def test_sin_tope_no_se_limita_nada(self, monkeypatch):
+        llamadas = []
+        motor, _ = self.motor(monkeypatch, tope=None, llamadas=llamadas)
+        for _ in range(5):
+            motor.read(b"imagen")
+        assert len(llamadas) == 5
+
+    def test_pasado_el_tope_la_pagina_vuelve_sin_texto_y_no_falla(self, monkeypatch):
+        """Alcanzar el tope no rompe el trabajo: el libro se sigue partiendo.
+
+        El corte de un libro de diplomas sale de medir tinta y no necesita OCR,
+        as\u00ed que pasado el tope los documentos salen igual, s\u00f3lo que nombrados
+        por su folio o su orden en vez de por su c\u00e9dula.
+        """
+        motor, _ = self.motor(monkeypatch, tope=1, llamadas=[])
+        motor.read(b"imagen")
+        segunda = motor.read(b"imagen")
+        assert segunda.text == ""
+        assert segunda.mean_confidence == 0.0
+
+    def test_el_tope_se_mira_antes_de_gastar(self, monkeypatch):
+        """Un tope que se comprueba al volver ya pag\u00f3 la p\u00e1gina que sobraba."""
+        llamadas = []
+        motor, _ = self.motor(monkeypatch, tope=0, llamadas=llamadas)
+        motor.read(b"imagen")
+        assert llamadas == []
+
+
+class TestLoQueViajaPesaLoMenosPosible:
+    """Una p\u00e1gina a 300 dpi son 2,6 MB en PNG y 718 KB en JPEG.
+
+    Con ocho lectores en vuelo esa diferencia es la que hay entre una
+    conversaci\u00f3n normal con el proveedor y la r\u00e1faga de conexiones cortadas que
+    este mismo adaptador tiene que reintentar. Se comprob\u00f3 sobre el caso dif\u00edcil
+    -- la cara 3 del libro 7, manuscrita -- que la lectura no cambia.
+    """
+
+    def capturar(self, monkeypatch, imagen):
+        capturado = {}
+
+        def urlopen_falso(peticion, timeout=None):
+            capturado["cuerpo"] = json.loads(peticion.data)
+            return _respuesta()
+
+        monkeypatch.setattr("urllib.request.urlopen", urlopen_falso)
+        monkeypatch.setattr("json.load", lambda conexion: json.loads(conexion.read()))
+        MistralOcr(api_key="llave").read(imagen)
+        return capturado["cuerpo"]["document"]["image_url"]
+
+    def escaneo(self):
+        """Un PNG con grano, que es lo que produce un escáner de verdad.
+
+        Con ruido y no con texto vectorial limpio: un PNG de texto nítido se
+        comprime tan bien que la JPEG sale más pesada, y una prueba montada así
+        fijaría lo contrario de lo que pasa con el papel.
+        """
+        import random
+
+        import pymupdf
+
+        random.seed(7)
+        ancho, alto = 900, 1200
+        pixeles = bytes(random.randrange(120, 210) for _ in range(ancho * alto))
+        return pymupdf.Pixmap(
+            pymupdf.csGRAY, ancho, alto, pixeles, False
+        ).tobytes("png")
+
+    def test_un_escaneo_viaja_comprimido(self, monkeypatch):
+        url = self.capturar(monkeypatch, self.escaneo())
+        assert url.startswith("data:image/jpeg;base64,")
+
+    def test_y_pesa_menos_que_el_original(self, monkeypatch):
+        import base64
+
+        original = self.escaneo()
+        url = self.capturar(monkeypatch, original)
+        enviado = base64.b64decode(url.split(",", 1)[1])
+        assert len(enviado) < len(original)
+
+    def test_lo_que_no_mejora_comprimido_se_manda_como_estaba(self, monkeypatch):
+        """El caso contrario, y cuesta una prueba descubrirlo.
+
+        Sobre una imagen sintética de texto nítido -- lo que sale de rasterizar
+        un PDF nativo -- el PNG gana por bastante: 931 KB contra 1,7 MB de JPEG.
+        Comprimir a ciegas habría hecho más pesadas las páginas que ya iban
+        ligeras, así que se manda la más pequeña de las dos.
+        """
+        import pymupdf
+
+        documento = pymupdf.open()
+        pagina = documento.new_page(width=1700, height=2200)
+        for indice in range(120):
+            pagina.insert_text(
+                (40, 30 + indice * 18),
+                "C.C. No. 7.882.907 Expedida en Arizona Bolivar  ALBERTO FERNANDEZ",
+                fontsize=11,
+            )
+        nitida = pagina.get_pixmap(
+            matrix=pymupdf.Matrix(3, 3), colorspace=pymupdf.csGRAY, alpha=False
+        ).tobytes("png")
+        documento.close()
+
+        url = self.capturar(monkeypatch, nitida)
+        assert url.startswith("data:image/png;base64,")
+
+    def test_una_esquina_pequena_se_manda_tal_cual(self, monkeypatch):
+        """Recomprimir unos kilobytes costar\u00eda m\u00e1s tiempo del que ahorrar\u00eda."""
+        url = self.capturar(monkeypatch, b"\x89PNG" + b"\x00" * 100)
+        assert url.startswith("data:image/png;base64,")
+
+    def test_una_imagen_que_no_se_deja_recomprimir_se_manda_igual(self, monkeypatch):
+        """Abaratar jam\u00e1s puede costar una lectura."""
+        rota = b"\x89PNG" + b"basura" * 50000
+        url = self.capturar(monkeypatch, rota)
+        assert url.startswith("data:image/png;base64,")
+
+
+class TestLaLecturaDeAhorro:
+    """La tercera forma de leer: pagar por la franja del nombre, no por la hoja.
+
+    El proveedor cobra por **página procesada**, así que diez franjas apiladas
+    en una imagen son una página. Medido sobre el libro de posgrados 3858080 --
+    manuscrito y sin cédulas en el papel --: dieciséis caras leídas por dos
+    páginas facturadas, los dieciséis nombres correctos.
+
+    Lo que se deja de leer de esas caras es el folio, la fecha y el título. En un
+    libro manuscrito eso no cuesta nada -- salen ilegibles igual y el FUID los
+    escribe N/A con esta opción y sin ella -- y es justamente donde el ahorro
+    hace falta, porque son los libros que obligan a pagar cada cara.
+    """
+
+    def test_es_una_eleccion_mas_del_operador(self):
+        assert LecturaChoice.parse("mistral-nombres") is LecturaChoice.MISTRAL_NOMBRES
+
+    def test_se_llama_por_lo_que_hace_y_no_por_el_proveedor(self):
+        assert LecturaChoice.MISTRAL_NOMBRES.label == "OCR + IA (ahorro)"
+
+    def test_necesita_la_misma_llave_que_la_otra(self):
+        assert not LecturaChoice.MISTRAL_NOMBRES.is_available({})
+        assert LecturaChoice.MISTRAL_NOMBRES.is_available({"mistral_api_key": "x"})
+
+    def test_y_la_pantalla_la_recibe_con_las_demas(self):
+        disponibles = available_readers({"mistral_api_key": "x"})
+        assert disponibles == {
+            "local": True,
+            "mistral": True,
+            "mistral-nombres": True,
+        }
+
+
+class TestElSobreDeLaTanda:
+    """Las caras de una tanda viajan juntas, y cada una tan ligera como sola.
+
+    Medido sobre doce caras del libro 7 a 300 ppp: el sobre pesaba doce megas
+    -- treinta y uno en el peor de los casos -- y tardaba dos segundos y medio
+    en armarse, porque cada cara entraba como PNG decodificado. En JPEG e
+    incrustado tal cual pesa cinco y se arma en cuatro centésimas.
+    """
+
+    @staticmethod
+    def jpeg(ancho: int, alto: int) -> bytes:
+        from io import BytesIO
+
+        from PIL import Image
+
+        salida = BytesIO()
+        Image.new("L", (ancho, alto), 220).save(salida, "JPEG", quality=85)
+        return salida.getvalue()
+
+    def test_cada_jpeg_entra_tal_cual_sin_recomprimir(self):
+        import pymupdf
+
+        from resolutions.adapters.mistral_ocr import _encuadernadas
+
+        caras = [self.jpeg(300, 400), self.jpeg(320, 410)]
+        sobre = _encuadernadas(caras)
+
+        with pymupdf.open("pdf", sobre) as documento:
+            assert documento.page_count == 2
+            for pagina, original in zip(documento, caras, strict=True):
+                xref = pagina.get_images(full=True)[0][0]
+                assert documento.xref_get_key(xref, "Filter") == ("name", "/DCTDecode")
+                assert documento.extract_image(xref)["image"] == original
+
+    def test_cada_pagina_mide_lo_que_mide_su_imagen(self):
+        import pymupdf
+
+        from resolutions.adapters.mistral_ocr import _encuadernadas
+
+        with pymupdf.open("pdf", _encuadernadas([self.jpeg(300, 400)])) as documento:
+            assert (round(documento[0].rect.width), round(documento[0].rect.height)) == (300, 400)
+
+    def test_lo_que_no_es_una_imagen_no_arma_sobre(self):
+        from resolutions.adapters.mistral_ocr import _encuadernadas
+
+        assert _encuadernadas([b"esto no es una imagen"]) is None

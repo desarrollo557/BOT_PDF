@@ -16,6 +16,7 @@ import pytest
 
 from resolutions.adapters.mysql_inventory import (
     MySQLInventory,
+    _cabe,
     _compact,
     settings_from_env,
 )
@@ -353,3 +354,20 @@ class TestElDocumentoEntero:
             for sql, params in sentencias
         )
         assert conector.conexion.commits == 1
+
+
+class TestLoQueNoCabeEnSuColumna:
+    """Un archivo por mes junta tramos sueltos de toda la caja, y su rango crece."""
+
+    def test_lo_que_cabe_pasa_tal_cual(self):
+        assert _cabe("1-3,8-9", 255) == "1-3,8-9"
+        assert _cabe(None, 255) is None
+
+    def test_se_corta_en_un_separador_y_no_a_media_cifra(self):
+        rango = _compact(list(range(1, 400, 2)))
+        recortado = _cabe(rango, 255)
+        assert len(recortado) <= 255
+        assert recortado.endswith("…")
+        # Lo que queda antes de la elipsis son páginas enteras de la lista.
+        assert rango.startswith(recortado[:-1])
+        assert rango[len(recortado) - 1] == ","

@@ -67,7 +67,13 @@ class TestCamposQueFaltan:
 
     def test_la_vuelta_de_una_hoja_no_produce_hallazgos(self):
         """Sus datos son los de la cara que la abre; pedírselos a un reverso en
-        blanco ponía cinco hallazgos por cada página par del libro."""
+        blanco ponía cinco hallazgos por cada página par del libro.
+
+        Cortando por folio, que es el criterio en que una cara de esquina limpia
+        es la vuelta de la anterior. Cortando cara a cara no hay vueltas: cada
+        página es un diploma y se le exige lo mismo que a las demás.
+        """
+        from resolutions.domain.diploma import CriterioDeCorte
         from resolutions.domain.folio_manuscrito import MarcaDeFolio
 
         cara = registro(1)
@@ -81,7 +87,21 @@ class TestCamposQueFaltan:
             book=None,
             folio_mark=MarcaDeFolio.AUSENTE,
         )
-        assert [h.page_number for h in validate_diplomas([cara, vuelta])] == []
+        hallazgos = validate_diplomas([cara, vuelta], CriterioDeCorte.FOLIO)
+        assert [h.page_number for h in hallazgos] == []
+
+    def test_cortando_cara_a_cara_la_esquina_limpia_tambien_es_un_diploma(self):
+        """La misma vuelta, con el criterio en que no es una vuelta: se declara
+        que queda sin cédula y sin nombre, como cualquier otra cara."""
+        from resolutions.domain.diploma import CriterioDeCorte
+        from resolutions.domain.folio_manuscrito import MarcaDeFolio
+
+        cara = registro(1)
+        vuelta = registro(
+            2, name=None, identity_number=None, folio_mark=MarcaDeFolio.AUSENTE
+        )
+        hallazgos = validate_diplomas([cara, vuelta], CriterioDeCorte.PAGINA)
+        assert [h.field for h in hallazgos if h.page_number == 2 and h.field == "identidad"]
 
 
 class TestCoherenciaDelLibro:
@@ -121,11 +141,16 @@ class TestCoherenciaDelLibro:
 
 
 class TestNumeroDeIdentificacion:
-    def test_una_cedula_de_forma_imposible_se_señala(self):
-        """Cuatro cifras es un folio que se coló, no un documento de identidad."""
+    def test_una_cedula_de_forma_imposible_se_señala_como_aviso(self):
+        """Cuatro cifras es un folio que se coló, no un documento de identidad.
+
+        Aviso y no error: ese número no se sostiene, así que ni nombra el
+        archivo ni va al FUID. Como error mandaba a revisión hojas que habían
+        salido con su nombre por un número que ya se había descartado.
+        """
         hallazgos = validate_diplomas([registro(1, identity_number="348")])
         documento = [h for h in hallazgos if h.field == "documento"]
-        assert documento and documento[0].severity is Severity.ERROR
+        assert documento and documento[0].severity is Severity.WARNING
 
     def test_una_cedula_normal_pasa(self):
         assert not [
@@ -225,3 +250,24 @@ class TestResumen:
 
     def test_sin_hallazgos_no_hay_nada_que_resumir(self):
         assert summarise([])["total"] == 0
+
+
+class TestSoloLosErroresRealesVanARevision:
+    """«Necesito que ninguna página pase a revisión, y la que sí pase que sea en
+    realidad por algún error verdaderamente real», dijo el operador con el
+    libro 7 delante: cincuenta caras en la cola por una cédula a la que el OCR
+    le comió dígitos, cuando el archivo había salido con su nombre."""
+
+    def test_una_cedula_que_no_se_sostiene_es_un_aviso_y_no_un_error(self):
+        from resolutions.domain.diploma import extract_diploma_warnings
+
+        leido = extract_diploma_warnings(registro(1, identity_number="45425"))
+        assert leido.warnings, "el aviso existe..."
+        hallazgos = [h for h in validate_diplomas([leido]) if h.field == "lectura"]
+        assert hallazgos and all(h.severity is Severity.WARNING for h in hallazgos)
+
+    def test_un_nombre_con_acento_grave_no_es_un_nombre_danado(self):
+        assert registro(1, name="BEATRIZ EUGÈNE VERGARA").nombre_creible
+
+    def test_un_nombre_con_un_digito_si(self):
+        assert not registro(1, name="WILHELM S. AUGUST 15").nombre_creible

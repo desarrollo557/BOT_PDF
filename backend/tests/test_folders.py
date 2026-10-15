@@ -1,8 +1,8 @@
 """Consuming a local folder and delivering into another one.
 
-No upload: the service reads and writes the machine it runs on. One document at
-a time, on purpose -- a watched folder is a background service, and taking one
-at a time is what makes "which file is it on" a question with one answer.
+No upload: the service reads and writes the machine it runs on. Varios
+documentos a la vez, en el orden de la carpeta; el paralelismo en sí se prueba
+en `test_procesos_en_paralelo.py`.
 """
 
 from __future__ import annotations
@@ -125,7 +125,7 @@ class TestConsuming:
         assert run.processed == 3
         assert run.state is RunState.DONE
 
-    def test_files_are_taken_in_name_order_one_at_a_time(self, workspace, tmp_path):
+    def test_files_are_taken_in_name_order(self, workspace, tmp_path):
         put(tmp_path / "origen", "c.pdf", "a.pdf", "b.pdf")
         engine, processed = runner(workspace, JobRegistry())
         drain(engine, tmp_path / "origen", tmp_path / "destino")

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 
 from ..domain.doctype import DocumentType, TypeVerdict, classify_pages
@@ -12,7 +11,7 @@ from ..domain.page import PageClassification, Provenance
 from ..domain.resolution_code import ResolutionCode
 from ..domain.scoring import Selection, select_best
 from ..domain.title import extract_title
-from .control import NullRunControl, RunControl
+from .control import NullRunControl, RunControl, hilos, mapear
 from .diagnostico import explicar
 from .ports import HEADER_BAND, Band, Crop, OcrEngine, PageSource, VisionOracle
 from .progress import NullProgressReporter, ProgressEvent, ProgressReporter, Stage
@@ -353,8 +352,8 @@ class ClassificationPipeline:
         # Threads, not processes: the expensive calls are native (MuPDF render,
         # Tesseract) and release the GIL, so this scales with cores without
         # paying to serialise page images across a process boundary.
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            return list(pool.map(lambda n: self._analyse_one(source, n), pages))
+        with hilos(workers) as pool:
+            return mapear(pool, lambda n: self._analyse_one(source, n), pages, self._control)
 
     def _analyse_one(self, source: PageSource, page_number: int) -> PageAnalysis:
         """Analyse one page, containing any failure to that page.
@@ -565,8 +564,10 @@ class ClassificationPipeline:
 
         if a_contrastar:
             workers = max(1, min(self._config.max_workers, len(a_contrastar)))
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                segundas = pool.map(contrastar, [page for _, page in a_contrastar])
+            with hilos(workers) as pool:
+                segundas = mapear(
+                    pool, contrastar, [page for _, page in a_contrastar], self._control
+                )
                 # `map` entrega en el orden en que se pidió, así que el contador
                 # y las discrepancias salen iguales corran en el orden que corran.
                 for (index, page), second in zip(a_contrastar, segundas, strict=True):

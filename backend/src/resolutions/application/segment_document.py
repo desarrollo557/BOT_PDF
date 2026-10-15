@@ -48,10 +48,17 @@ class SegmentDocument:
         oracle: BoundaryOracle | None = None,
         reporter: ProgressReporter | None = None,
         control: RunControl | None = None,
+        #: Si pinta en la cinta lo que leyó de cada hoja. No cuando lo que se
+        #: entrega se reagrupa después leyendo cada página con OCR -- por mes,
+        #: por trámite --: entonces la pinta esa lectura, y pintarla aquí con la
+        #: capa vacía de un escaneo mandaba cada hoja a «revisión» en la consola
+        #: para nada.
+        marcar_paginas: bool = True,
     ) -> None:
         self._oracle = oracle
         self._reporter = reporter
         self._control = control or NullRunControl()
+        self._marcar_paginas = marcar_paginas
 
     def run(self, source: PageSource) -> SegmentationResult:
         fingerprints = self._read(source)
@@ -91,14 +98,15 @@ class SegmentDocument:
             # dejó nada legible. Esta ruta no tiene más peldaños, así que la
             # cinta sale de dos colores y eso es exactamente lo que informa --
             # dónde el escaneo dejó páginas mudas.
-            self._emit(
-                ProgressEvent(
-                    stage=Stage.PAGE,
-                    page_number=page_number,
-                    page_count=total,
-                    provenance="text_layer" if huella.legible else "none",
+            if self._marcar_paginas:
+                self._emit(
+                    ProgressEvent(
+                        stage=Stage.PAGE,
+                        page_number=page_number,
+                        page_count=total,
+                        provenance="text_layer" if huella.legible else "none",
+                    )
                 )
-            )
             self._report(Stage.IDENTIFYING, page_number, total, "leyendo la caja")
         return self._en_ritmo(fingerprints)
 

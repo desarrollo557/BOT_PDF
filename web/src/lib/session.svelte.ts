@@ -1,9 +1,9 @@
 /**
  * Quién está operando el separador, con qué perfil, y desde cuándo.
  *
- * Se entra con dos datos: la cédula y el correo. No hay contraseña, y la
- * pantalla lo dice con todas sus letras, porque **esto identifica y no
- * autentica**: quien sepa la cédula y el correo de un compañero entra como él.
+ * Se entra como «siar», sin contraseña: lo pidió el archivo, y **esto
+ * identifica el puesto y no autentica a nadie**. El perfil -- administrador --
+ * lo contesta el servicio, no esta pantalla.
  *
  * Lo que compra de todos modos es real. Cada documento lleva quién lo procesó
  * hasta el libro mayor, un turno tiene principio y final, y el perfil impide el
@@ -18,7 +18,7 @@
  * gana ningún permiso, porque cada petición se vuelve a juzgar allá.
  */
 
-import { ApiError, entrar as entrarEnElServicio } from '$lib/api';
+import { ApiError, SinConexion, entrar as entrarEnElServicio } from '$lib/api';
 
 export type SessionState = 'anonymous' | 'active' | 'idle';
 
@@ -196,23 +196,22 @@ export class Session {
   // -- transiciones -----------------------------------------------------------
 
   /**
-   * Entrar con una cédula y un correo.
+   * Entrar con el usuario «siar», sin contraseña.
    *
    * El perfil lo contesta el servicio. Devuelve si se entró, y deja en `error`
    * la frase con que el servicio lo explicó cuando no.
    */
-  async open(cedula: string, correo: string): Promise<boolean> {
-    const limpia = cedula.trim();
-    const buzon = correo.trim();
-    if (!limpia || !buzon) {
-      this.error = 'Hacen falta la cédula y el correo.';
+  async open(usuario: string): Promise<boolean> {
+    const nombre = usuario.trim();
+    if (!nombre) {
+      this.error = 'Escriba el usuario.';
       return false;
     }
 
     this.entrando = true;
     this.error = null;
     try {
-      const quien = await entrarEnElServicio(limpia, buzon);
+      const quien = await entrarEnElServicio(nombre);
       this.operator = {
         cedula: quien.cedula,
         correo: quien.correo,
@@ -270,7 +269,7 @@ export class Session {
     const guardado = this.operator;
     if (!guardado) return;
     try {
-      const quien = await entrarEnElServicio(guardado.cedula, guardado.correo);
+      const quien = await entrarEnElServicio(guardado.cedula);
       this.operator = {
         ...guardado,
         nombre: quien.nombre ?? '',
@@ -279,7 +278,9 @@ export class Session {
       };
       this.#persist();
     } catch (problema) {
-      if (problema instanceof ApiError) {
+      // Un servicio que se reinicia no es un perfil dado de baja: quien está
+      // trabajando sigue dentro y se vuelve a preguntar la próxima vez.
+      if (problema instanceof ApiError && !(problema instanceof SinConexion)) {
         this.error = problema.message;
         this.close();
       }

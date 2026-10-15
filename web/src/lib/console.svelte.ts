@@ -281,10 +281,18 @@ class ConsoleLog {
     // Y se llaman por su nombre: "12 resoluciones" delante de un libro de
     // diplomas es una cifra correcta con la palabra equivocada.
     const unidad = unitFor(report, groups.length);
+    // Un acta de consejo no se parte: no deja grupos sino filas de inventario,
+    // y contar grupos decía «0 unidades documentales» de cada acta leída.
+    const actas = report.inventario_actas?.length ?? 0;
+    const piezas = actas ? (report.outputs?.length ?? 0) : 0;
+    const cuenta = actas
+      ? `${actas} ${actas === 1 ? 'acta inventariada' : 'actas inventariadas'}` +
+        (piezas ? `, ${piezas} PDF` : '')
+      : `${groups.length} ${unidad}`;
 
     this.push(
       'DONE',
-      `${report.page_count} páginas → ${groups.length} ${unidad} en ${job.progress.elapsed_seconds.toFixed(1)} s`,
+      `${report.page_count} páginas → ${cuenta} en ${job.progress.elapsed_seconds.toFixed(1)} s`,
       'ok',
       scope
     );

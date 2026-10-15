@@ -22,6 +22,30 @@ export function formatBytes(bytes: number): string {
 }
 
 /** A duration a person would say out loud, not a count of seconds. */
+/**
+ * Las páginas de una unidad, en tramos: «1–2, 4–5».
+ *
+ * Con tramos y no con la primera y la última porque una unidad no siempre es
+ * contigua -- un archivo por mes junta documentos que en la caja estaban
+ * separados --, y «1–5» diría que trae la hoja 3, que es de otro mes.
+ */
+export function pageRange(pages: number[]): string {
+  if (!pages.length) return '';
+  const parts: string[] = [];
+  let start = pages[0];
+  let previous = pages[0];
+  for (const page of pages.slice(1)) {
+    if (page === previous + 1) {
+      previous = page;
+      continue;
+    }
+    parts.push(start === previous ? `${start}` : `${start}–${previous}`);
+    start = previous = page;
+  }
+  parts.push(start === previous ? `${start}` : `${start}–${previous}`);
+  return parts.join(', ');
+}
+
 export function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '—';
   if (seconds < 10) return `${seconds.toFixed(1)} s`;
@@ -54,9 +78,12 @@ const UNIT_NAMES: Record<string, [string, string]> = {
 };
 
 export function unitFor(
-  report: { document_type?: string } | null | undefined,
+  report: { document_type?: string; agrupar?: string } | null | undefined,
   count: number
 ): string {
+  // Una caja entregada por mes produce meses, no documentos: «7 unidades
+  // documentales» de algo que junta varias cartas en cada archivo engaña.
+  if (report?.agrupar === 'mes') return count === 1 ? 'mes' : 'meses';
   const names = UNIT_NAMES[report?.document_type ?? ''];
   if (!names) return count === 1 ? 'unidad documental' : 'unidades documentales';
   return count === 1 ? names[0] : names[1];

@@ -10,7 +10,9 @@ sale como "de! graduando" en 48 de 397 páginas, ni que un apellido puede ser
 from resolutions.domain.diploma import (
     DiplomaRecord,
     TextLine,
+    cedula_creible,
     extract_diploma,
+    extract_diploma_warnings,
     fecha_en_letras,
     lines_from_text,
     merge,
@@ -170,6 +172,28 @@ class TestSelloAnulado:
 
 
 class TestIdentificacion:
+    def test_lee_cedula_con_espacios_despues_de_cc(self):
+        registro = extract_diploma(
+            lines(
+                "en atención a que el Señor",
+                "JUAN CORREA REYES",
+                "C.C. No. 73 873 966 Expedida en Cartagena",
+            ),
+            page_number=1,
+        )
+        assert registro.identity_number == "73873966"
+
+    def test_normaliza_el_nombre_del_graduado_a_mayusculas(self):
+        registro = extract_diploma(
+            lines(
+                "en atención a que el Señor",
+                "Juan Correa Reyes",
+                "C.C. No. 73 873 966",
+            ),
+            page_number=1,
+        )
+        assert registro.name == "JUAN CORREA REYES"
+
     def test_admite_cedula_de_extranjeria(self):
         # Página 335 del libro 6.
         registro = extract_diploma(
@@ -311,3 +335,101 @@ class TestFechaEnLetras:
         assert fecha_en_letras(
             "a los 10 días del mes de Maio de mil novecientos setenta"
         ) is None
+
+
+class TestLaCedulaQueSeSostiene:
+    """Cuándo un número leído se puede usar para nombrar y para cortar.
+
+    La pregunta no es si el número es correcto -- eso sólo lo sabe quien tenga
+    la hoja delante -- sino si se puede apoyar una decisión en él. El operador
+    había quitado la comprobación por cédula justamente porque el OCR le come
+    dígitos a lo manuscrito, y volvió con esta condición encima: lo que no llega
+    a cédula no compara con nada.
+    """
+
+    def test_siete_digitos_se_sostienen(self):
+        assert cedula_creible("7882907")
+
+    def test_ocho_digitos_tambien(self):
+        assert cedula_creible("45424485")
+
+    def test_cinco_digitos_a_secas_no(self):
+        """`30761`, leído en la cara 5 del libro 7. Iba a nombrar un archivo."""
+        assert not cedula_creible("30761")
+
+    def test_seis_digitos_si(self):
+        """`780064`, leído en la cara 1. Seis dígitos es el suelo real de estos
+        libros, y no hay nada que pruebe que le falte uno: la norma de la casa
+        es que la ausencia de prueba no es prueba."""
+        assert cedula_creible("780064")
+
+    def test_los_separadores_no_bajan_el_suelo(self):
+        """Se probó y no se sostiene: perder el dígito de delante conserva la
+        agrupación -- de "930.761" sale "30.761" --, así que los puntos de
+        millar no prueban que el número esté entero."""
+        assert not cedula_creible("30.761")
+
+    def test_un_cero_delante_no_es_una_cedula(self):
+        """Ninguna empieza por cero; lo que hay es un carácter del formulario."""
+        assert not cedula_creible("07882907")
+
+    def test_el_mismo_digito_repetido_no_es_una_cedula(self):
+        """Es lo que contesta un escáner ante una raya del formulario."""
+        assert not cedula_creible("1111111")
+
+    def test_mas_de_diez_digitos_no(self):
+        """Ninguna cédula colombiana pasa de diez: eso es el número pegado a
+        otra cosa que el OCR arrastró del renglón."""
+        assert not cedula_creible("788290712345")
+
+    def test_los_puntos_de_millar_no_estorban(self):
+        """El mismo número se escribe de las dos formas en la misma página."""
+        assert cedula_creible("7.882.907")
+
+    def test_una_cedula_que_no_se_sostiene_se_declara_sin_mandar_a_revisar(self):
+        """No se calla: el aviso dice el número y que no se usó. Pero es un
+        aviso informativo y no manda a revisar: el número no nombró el archivo
+        ni fue al FUID, así que no hay nada mal que corregir en esa hoja."""
+        registro = extract_diploma_warnings(
+            DiplomaRecord(page_number=5, identity_number="30761")
+        )
+        assert any("30761" in aviso for aviso in registro.warnings)
+        assert not registro.needs_review
+        assert registro.review_reason is None
+
+
+class TestElTituloNoArrastraLaLeyenda:
+    """El renglón del título se rellenaba a mano, y el hueco se lee pegado.
+
+    Medido sobre las dieciséis primeras caras del libro 7: cuatro asuntos del
+    FUID decían "le expide el presente Diploma, - Al mismo tiempo testifica y
+    garantiza ba", que es la leyenda impresa que viene detrás del hueco.
+    """
+
+    def test_una_leyenda_larga_no_pasa_por_titulo(self):
+        texto = (
+            "exigen para optar el título de: le expide el presente Diploma, - Al "
+            "mismo tiempo testifica y garantiza bajo la fé pública de que se halla"
+        )
+        registro = extract_diploma(lines_from_text(texto), 3)
+        assert registro.degree is None
+
+    def test_un_titulo_de_verdad_si(self):
+        registro = extract_diploma(
+            lines_from_text("exigen para optar el título de: ECONOMISTA"), 3
+        )
+        assert registro.degree == "ECONOMISTA"
+
+    def test_un_caracter_suelto_no_es_un_titulo(self):
+        """El otro extremo: lo que el OCR rascó del hueco que no supo leer.
+
+        Medido sobre las mismas dieciséis caras, cuatro filas del FUID
+        archivaban al graduado con el título "V", "I", ")I" o "i". Un título de
+        un carácter en un inventario documental no es un dato pobre: es ruido
+        con aspecto de dato.
+        """
+        for basura in ("V", "I", ")I", "i"):
+            registro = extract_diploma(
+                lines_from_text(f"exigen para optar el título de: {basura}"), 3
+            )
+            assert registro.degree is None, basura

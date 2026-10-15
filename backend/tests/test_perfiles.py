@@ -47,10 +47,6 @@ def _con_planilla(main, job_id="job1"):
 
 
 class TestQuePuedeCadaPerfil:
-    def test_solo_el_administrador_administra_usuarios(self):
-        assert Perfil.ADMINISTRADOR.administra_usuarios
-        assert not Perfil.TECNICO.administra_usuarios
-        assert not Perfil.CALIDAD.administra_usuarios
 
     def test_solo_el_administrador_descarga_la_planilla(self):
         assert Perfil.ADMINISTRADOR.descarga_planillas
@@ -180,135 +176,33 @@ class TestEntrar:
 # -----------------------------------------------------------------------------
 
 
-class TestDarDeAlta:
-    def test_el_administrador_da_de_alta(self, client, administrador):
-        respuesta = client.post(
-            "/api/usuarios",
-            headers=administrador,
-            json={
-                "cedula": "52814663",
-                "correo": "tecnico@archivo.edu.co",
-                "perfil": "tecnico",
-                "nombre": "Quien procesa",
-            },
-        )
+class TestEntrarComoSiar:
+    """El usuario de la casa: «siar», sin contraseña y sin alta previa."""
 
-        assert respuesta.status_code == 201
-        assert respuesta.json()["perfil_label"] == "Técnico"
+    def test_entra_como_administrador_sin_alta(self, client):
+        r = client.post("/api/sesion", json={"usuario": "siar"})
+        assert r.status_code == 200
+        assert r.json()["perfil"] == "administrador"
+        assert r.json()["cedula"] == "siar"
 
-    def test_el_tecnico_no(self, client, tecnico):
-        respuesta = client.post(
-            "/api/usuarios",
-            headers=tecnico,
-            json={"cedula": "111111", "correo": "x@y.co", "perfil": "calidad", "nombre": "Alguien"},
-        )
+    def test_entra_aunque_ya_haya_otros_dados_de_alta(self, client, administrador):
+        assert client.post("/api/sesion", json={"usuario": " SIAR "}).status_code == 200
 
-        assert respuesta.status_code == 403
+    def test_otro_usuario_no_entra(self, client):
+        assert client.post("/api/sesion", json={"usuario": "juan"}).status_code == 401
 
-    def test_el_de_calidad_tampoco(self, client, calidad):
-        respuesta = client.post(
-            "/api/usuarios",
-            headers=calidad,
-            json={"cedula": "111111", "correo": "x@y.co", "perfil": "calidad", "nombre": "Alguien"},
-        )
+    def test_su_cabecera_le_da_permisos_de_administrador(self, client):
+        # La cabecera «X-Cedula: siar» es lo que cada endpoint lee para saber
+        # quién le habla (``identidad.quien_manda``).
+        from resolutions.api import main
 
-        assert respuesta.status_code == 403
+        siar = main.contexto.usuarios.buscar("siar")
+        assert siar is not None and siar.perfil is Perfil.ADMINISTRADOR
+        assert siar.perfil.descarga_planillas
 
-    def test_y_nadie_sin_identificarse(self, client, administrador):
-        respuesta = client.post(
-            "/api/usuarios",
-            json={"cedula": "111111", "correo": "x@y.co", "perfil": "calidad", "nombre": "Alguien"},
-        )
-
-        assert respuesta.status_code == 401
-
-    def test_el_mismo_correo_de_otra_cedula_se_rechaza(self, client, administrador, tecnico):
-        # Es el segundo dato con que se entra: dos personas con el mismo correo
-        # hacen que entrar dependa de a cuál se mire primero.
-        respuesta = client.post(
-            "/api/usuarios",
-            headers=administrador,
-            json={
-                "cedula": "999999999",
-                "correo": "tecnico@archivo.edu.co",
-                "perfil": "calidad",
-                "nombre": "Otra persona",
-            },
-        )
-
-        assert respuesta.status_code == 422
-        assert "ya es de la cédula" in respuesta.json()["detail"]
-
-    def test_dar_de_alta_dos_veces_la_misma_cedula_la_actualiza(self, client, administrador):
-        for perfil in ("tecnico", "calidad"):
-            client.post(
-                "/api/usuarios",
-                headers=administrador,
-                json={"cedula": "52814663", "correo": "t@a.co", "perfil": perfil, "nombre": "Quien sea"},
-            )
-
-        listado = client.get("/api/usuarios", headers=administrador).json()["usuarios"]
-        cuantas = [u for u in listado if u["cedula"] == "52814663"]
-        assert len(cuantas) == 1, "dos filas con la misma cédula no tienen un perfil"
-        assert cuantas[0]["perfil"] == "calidad"
-
-    def test_un_perfil_inventado_no_se_da_de_alta(self, client, administrador):
-        respuesta = client.post(
-            "/api/usuarios",
-            headers=administrador,
-            json={"cedula": "52814663", "correo": "t@a.co", "perfil": "jefe", "nombre": "Quien sea"},
-        )
-
-        assert respuesta.status_code == 422
-
-
-class TestDarDeBaja:
-    def test_el_administrador_da_de_baja(self, client, administrador, tecnico):
-        assert client.delete("/api/usuarios/52814663", headers=administrador).status_code == 200
-
-    def test_una_cedula_que_no_esta_dice_que_no_esta(self, client, administrador):
-        assert client.delete("/api/usuarios/999999999", headers=administrador).status_code == 404
-
-    def test_nunca_al_ultimo_administrador(self, client, administrador):
-        # Dejaría el archivo sin nadie que pueda dar de alta a nadie, y la única
-        # salida sería editar un archivo del disco a mano.
-        respuesta = client.delete("/api/usuarios/1047382991", headers=administrador)
-
-        assert respuesta.status_code == 409
-        assert "sin administrador" in respuesta.json()["detail"]
-
-    def test_ni_quitandole_el_perfil(self, client, administrador):
-        respuesta = client.patch(
-            "/api/usuarios/1047382991", headers=administrador, json={"perfil": "tecnico"}
-        )
-
-        assert respuesta.status_code == 409
-
-    def test_con_otro_administrador_si(self, client, administrador):
-        client.post(
-            "/api/usuarios",
-            headers=administrador,
-            json={"cedula": "52814663", "correo": "otro@a.co", "perfil": "administrador", "nombre": "La otra"},
-        )
-
-        assert client.delete("/api/usuarios/1047382991", headers=administrador).status_code == 200
-
-
-class TestCambiarleElPerfilAAlguien:
-    def test_se_le_cambia_y_se_nota_al_entrar(self, client, administrador, tecnico):
-        client.patch("/api/usuarios/52814663", headers=administrador, json={"perfil": "calidad"})
-
-        entrada = client.post(
-            "/api/sesion", json={"cedula": "52814663", "correo": "tecnico@archivo.edu.co"}
-        )
-        assert entrada.json()["perfil"] == "calidad"
-
-    def test_la_cedula_de_alguien_que_no_esta_se_dice(self, client, administrador):
-        respuesta = client.patch(
-            "/api/usuarios/999999999", headers=administrador, json={"perfil": "calidad"}
-        )
-
-        assert respuesta.status_code == 422
+    def test_el_servicio_lo_anuncia(self, client):
+        """Contra un servicio anterior, la pantalla tiene que poder decir qué falta."""
+        assert "usuario-siar" in client.get("/api/health").json()["features"]
 
 
 # -----------------------------------------------------------------------------
@@ -507,80 +401,3 @@ class TestMirarElFuidEnPantalla:
         assert respuesta.status_code == 404
         assert "Solo inventariar" in respuesta.json()["detail"]
 
-
-class TestNingunCampoEnBlanco:
-    """Un alta no entra con un campo vacío, ni por la pantalla ni por la API.
-
-    El nombre era opcional y dejó de serlo a petición del archivo: un alta sin
-    nombre deja una fila que sólo se sabe leer por su cédula, y nadie vuelve
-    sobre ella para completarla. La pantalla apaga el botón hasta que estén los
-    cuatro campos; esto fija que el servicio tampoco la acepte, porque una regla
-    que sólo vive en el formulario la esquiva cualquier petición escrita a mano.
-    """
-
-    def test_sin_nombre_no_se_da_de_alta(self, client, administrador):
-        respuesta = client.post(
-            "/api/usuarios",
-            headers=administrador,
-            json={"cedula": "52814663", "correo": "t@a.co", "perfil": "tecnico"},
-        )
-
-        assert respuesta.status_code == 422
-
-    def test_con_el_nombre_en_blanco_tampoco(self, client, administrador):
-        respuesta = client.post(
-            "/api/usuarios",
-            headers=administrador,
-            json={"cedula": "52814663", "correo": "t@a.co", "perfil": "tecnico", "nombre": "  "},
-        )
-
-        assert respuesta.status_code == 422
-
-    def test_ni_con_el_correo_en_blanco(self, client, administrador):
-        respuesta = client.post(
-            "/api/usuarios",
-            headers=administrador,
-            json={"cedula": "52814663", "correo": "", "perfil": "tecnico", "nombre": "Quien sea"},
-        )
-
-        assert respuesta.status_code == 422
-
-    def test_ni_con_la_cedula_en_blanco(self, client, administrador):
-        respuesta = client.post(
-            "/api/usuarios",
-            headers=administrador,
-            json={"cedula": "", "correo": "t@a.co", "perfil": "tecnico", "nombre": "Quien sea"},
-        )
-
-        assert respuesta.status_code == 422
-
-    def test_con_los_cuatro_sí(self, client, administrador):
-        respuesta = client.post(
-            "/api/usuarios",
-            headers=administrador,
-            json={
-                "cedula": "52814663",
-                "correo": "t@a.co",
-                "perfil": "tecnico",
-                "nombre": "Quien procesa",
-            },
-        )
-
-        assert respuesta.status_code == 201
-
-    def test_un_cambio_no_borra_el_nombre_escribiendo_nada(self, client, administrador, tecnico):
-        # Ausente significa «no lo toques»; la cadena vacía sería borrar un dato
-        # escribiendo nada, que es lo que esta regla existe para impedir.
-        respuesta = client.patch(
-            "/api/usuarios/52814663", headers=administrador, json={"nombre": ""}
-        )
-
-        assert respuesta.status_code == 422
-
-    def test_pero_cambiar_solo_el_perfil_sigue_valiendo(self, client, administrador, tecnico):
-        respuesta = client.patch(
-            "/api/usuarios/52814663", headers=administrador, json={"perfil": "calidad"}
-        )
-
-        assert respuesta.status_code == 200
-        assert respuesta.json()["nombre"] == "Quien procesa", "no se tocó lo que no se mandó"

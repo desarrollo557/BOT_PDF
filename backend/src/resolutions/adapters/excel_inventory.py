@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -191,9 +192,13 @@ def _reloj(value: str | None) -> str:
     if not value:
         return "—"
     try:
-        return datetime.fromisoformat(value).strftime("%d/%m/%Y  %H:%M:%S")
+        momento = datetime.fromisoformat(value)
     except ValueError:
         return value
+    # Los trabajos se anotan en UTC; en la planilla, la hora de quien la lee.
+    if momento.tzinfo is not None:
+        momento = momento.astimezone()
+    return momento.strftime("%d/%m/%Y  %H:%M:%S")
 
 
 def _peso(size: int) -> str:
@@ -624,5 +629,142 @@ class ExcelRunInventory:
         )
 
         target = destination / RUN_SHEET
+        book.save(target)
+        return target
+
+
+#: El inventario general del bot: una fila por cada PDF que procesó. Va en la
+#: raíz de un lote o de una carpeta, junto al general de su habilidad (el
+#: Índice Electrónico de las cajas de correspondencia). El «00.» lo deja arriba
+#: en la carpeta, junto al índice.
+NOMBRE_DEL_INVENTARIO_DE_PROCESOS = "00.INVENTARIO GENERAL DE PROCESOS.xlsx"
+
+
+@dataclass(frozen=True, slots=True)
+class FilaDeProceso:
+    """Lo que el bot hizo con un PDF: qué entró, cómo se leyó y qué salió."""
+
+    pdf: str
+    habilidad: str
+    lectura: str
+    entrega: str
+    paginas: int
+    documentos: int
+    en_revision: int
+    estado: str
+    inicio: str | None
+    duracion: str
+    paginas_pagadas: int
+    operador: str
+    destino: str
+    observaciones: str = ""
+
+
+class ExcelInventarioDeProcesos:
+    """El control de una corrida: cada proceso del bot, con su resultado.
+
+    Lo pidió el operador: «en el general vamos por los procesos del bot, y
+    dentro de la carpeta del PDF puede estar el de la habilidad». Es el mismo
+    para cualquier habilidad -- una caja de correspondencia, un libro de
+    diplomas, un legajo de resoluciones --, porque dice lo que hizo el bot y no
+    lo que trae el papel; eso lo dice el inventario de cada habilidad.
+    """
+
+    COLUMNAS = [
+        ("#", 5),
+        ("PDF de origen", 30),
+        ("Habilidad", 24),
+        ("Lectura", 15),
+        ("Entrega", 14),
+        ("Páginas", 9),
+        ("Documentos", 11),
+        ("En revisión", 11),
+        ("Estado", 11),
+        ("Inicio", 19),
+        ("Duración", 10),
+        ("IA: págs. pagadas", 12),
+        ("Operador", 14),
+        ("Carpeta de destino", 34),
+        ("Observaciones", 40),
+    ]
+    CENTRADAS = ("#", "Páginas", "Documentos", "En revisión", "Estado", "Duración", "IA: págs. pagadas")
+    ARRIBA = ("PDF de origen", "Carpeta de destino", "Observaciones")
+
+    def write(
+        self,
+        filas: list[FilaDeProceso],
+        destino: Path,
+        *,
+        origen: str,
+        clase_de_origen: str = "Lote",
+        operador: str | None = None,
+        nombre: str = NOMBRE_DEL_INVENTARIO_DE_PROCESOS,
+    ) -> Path:
+        destino.mkdir(parents=True, exist_ok=True)
+        book = Workbook()
+
+        sheet = book.active
+        sheet.title = "Resumen"
+        span = 6
+        _ancho(sheet, [28, 20, 20, 20, 20, 20])
+        row = _portada(
+            sheet, span, "INVENTARIO GENERAL DE PROCESOS", "Lo que hizo el bot con cada PDF"
+        )
+        row = _seccion(sheet, row, span, "Identificación")
+        row = _campo(sheet, row, span, clase_de_origen, origen or "—")
+        row = _campo(sheet, row, span, "Carpeta de destino", str(destino))
+        row = _campo(sheet, row, span, "Operador", operador or "no registrado")
+        row = _campo(sheet, row, span, "Generado", datetime.now().strftime("%d/%m/%Y  %H:%M:%S"))
+        row += 1
+        listos = sum(1 for f in filas if f.estado == "Listo")
+        row = _seccion(sheet, row, span, "Totales")
+        row = _campo(sheet, row, span, "PDF procesados", len(filas))
+        row = _campo(sheet, row, span, "Terminados", listos)
+        row = _campo(
+            sheet, row, span, "Con fallo o cancelados", len(filas) - listos,
+            relleno=_NO_CUADRA if len(filas) - listos else None,
+        )
+        row = _campo(sheet, row, span, "Páginas leídas", sum(f.paginas for f in filas))
+        row = _campo(sheet, row, span, "Documentos generados", sum(f.documentos for f in filas))
+        row = _campo(
+            sheet, row, span, "Páginas en revisión", sum(f.en_revision for f in filas),
+            relleno=_PENDIENTE if any(f.en_revision for f in filas) else None,
+        )
+        row = _campo(sheet, row, span, "IA: páginas pagadas", sum(f.paginas_pagadas for f in filas))
+        _firma(sheet, row, span)
+        _imprimible(sheet, span)
+
+        detalle = book.create_sheet("Procesos")
+        _tabla(
+            detalle,
+            self.COLUMNAS,
+            [
+                [
+                    indice,
+                    f.pdf,
+                    f.habilidad,
+                    f.lectura,
+                    f.entrega,
+                    f.paginas,
+                    f.documentos,
+                    f.en_revision,
+                    f.estado,
+                    _reloj(f.inicio),
+                    f.duracion,
+                    f.paginas_pagadas,
+                    f.operador or "—",
+                    f.destino,
+                    f.observaciones or None,
+                ]
+                for indice, f in enumerate(filas, start=1)
+            ],
+            titulo="PROCESOS DEL BOT",
+            subtitulo=f"{clase_de_origen}: {origen}",
+            centradas=self.CENTRADAS,
+            arriba=self.ARRIBA,
+            columna_total="Páginas",
+        )
+
+        target = destino / nombre
         book.save(target)
         return target

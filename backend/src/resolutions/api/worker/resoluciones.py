@@ -42,15 +42,29 @@ def _split_job(payload: dict, task) -> dict:
     #    agrupadas y no hace falta volver a abrir el documento -- y la planilla
     #    del documento, junto a los PDF.
     if task.writes_inventory:
+        from ...application.fuid import con_los_archivos
         from ...application.resolution_fuid import filas_de_resoluciones
+
+        filas = filas_de_resoluciones(
+            resultado.grouping.groups,
+            nombre_del_archivo=taller.name,
+            ubicacion=taller.ubicacion(),
+        )
+        # Cada fila diciendo cómo se llama su archivo, cuando se escribió alguno.
+        # El inventario y la carpeta son las dos mitades de la misma entrega, y
+        # esto es lo que permite cruzarlas sin contar filas.
+        if resultado.inventory is not None:
+            filas = con_los_archivos(
+                filas,
+                {
+                    item.first_page: item.file_name
+                    for item in resultado.inventory.items
+                },
+            )
 
         _escribir_fuid(
             report,
-            filas_de_resoluciones(
-                resultado.grouping.groups,
-                nombre_del_archivo=taller.name,
-                ubicacion=taller.ubicacion(),
-            ),
+            filas,
             settings=taller.settings,
             destination=taller.destination,
             name=taller.name,

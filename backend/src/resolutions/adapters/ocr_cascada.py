@@ -65,6 +65,37 @@ class OcrEnCascada:
         return local
 
 
+    def read_local(self, image_png: bytes) -> OcrResult:
+        """Sólo el motor de casa, que no cuesta nada.
+
+        Existe por el mismo motivo que `read_remote` pero al revés: quien sabe
+        qué está buscando puede intentarlo gratis primero y decidir **con los
+        campos en la mano** si merece la pena preguntar fuera. La cascada no
+        sirve para eso porque mide caracteres, y en un diploma de 1982 Tesseract
+        devuelve el formulario impreso entero sin haber leído ninguno de los
+        cinco datos que identifican al graduado.
+
+        Que el local falle no es un error: es una lectura vacía, que es
+        exactamente lo que el llamador necesita saber para escalar.
+        """
+        try:
+            return self._local.read(image_png)
+        except Exception:  # noqa: BLE001 - una lectura vacía, no un libro roto
+            logger.debug("el OCR local falló", exc_info=True)
+            return OcrResult(text="", mean_confidence=0.0)
+
+    def read_many_remote(self, imagenes: list[bytes]) -> list[str]:
+        """Varias páginas al motor de pago en una sola petición, si sabe.
+
+        Se le pregunta al remoto si tiene el método; si no lo tiene, se le piden
+        una por una, que es lo que se hacía antes. Sirve para que un motor de
+        pago que no sepa leer en tandas siga encajando en el mismo puerto.
+        """
+        por_tandas = getattr(self._remoto, "read_many", None)
+        if por_tandas is not None:
+            return por_tandas(imagenes)
+        return [self.read_remote(imagen).text for imagen in imagenes]
+
     @property
     def consumo(self):
         """El contador del motor de pago, que es el único que cuesta."""

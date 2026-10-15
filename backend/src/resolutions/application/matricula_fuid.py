@@ -84,6 +84,9 @@ def filas_de_expedientes(
             # expedientes es el código del estudiante -- "51-8710099" -- que es
             # con lo que la Universidad los cita.
             consecutivo_inicial=registro.codigo or NO_APLICA,
+            # Por dónde empieza este expediente, que es la costura con la que la
+            # fila se vuelve a encontrar con el archivo que se escribió de ella.
+            pagina_inicial=registro.page_numbers[0] if registro.page_numbers else None,
             consecutivo_final=NO_APLICA,
             fecha_inicial=registro.fecha_inicial or NO_APLICA,
             fecha_final=registro.fecha_final or NO_APLICA,

@@ -130,3 +130,83 @@ def primera_fecha(paginas: list[str], *, hoy: date | None = None) -> date | None
     """La más antigua del documento: la fecha extrema inicial del FUID."""
     todas = [fecha for pagina in paginas for fecha in fechas_de(pagina, hoy=hoy)]
     return min(todas) if todas else None
+
+
+# -- la fecha de una página ---------------------------------------------------
+
+_MES = (
+    "enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre"
+    "|octubre|noviembre|diciembre"
+)
+
+#: «25/ 05/ 2021»: la OCR mete espacios alrededor de las barras de una fecha
+#: escaneada, y sin quitarlos la fecha no se reconoce.
+_CIFRAS_CON_ESPACIOS = re.compile(r"\b(\d{1,2})\s*([/-])\s*(\d{1,2})\s*\2\s*(\d{4})\b")
+
+#: «Mayo 20 de 2021»: el mes delante del día, como se encabezan algunos oficios.
+_MES_DIA_ANIO = re.compile(rf"\b({_MES})\s+(\d{{1,2}})\s*(?:de|,)\s*(\d{{4}})\b", re.IGNORECASE)
+
+#: «a los 26 días del mes de Abril del 2021»: la fórmula con que se firman
+#: pagarés, actas y certificados. La OCR suele pegar «alos».
+_A_LOS_DIAS = re.compile(
+    rf"\ba\s*los\s+(\d{{1,2}})\s+d[ií]as?\s+del\s+mes\s+de\W{{0,4}}({_MES})\s+(?:del?\s+)?(\d{{4}})\b",
+    re.IGNORECASE,
+)
+
+#: «SAHAGUN, 25/05/2021» o «Sahagun, 07 de Diciembre de 2021»: el lugar y la
+#: fecha con que se encabeza una carta. Es la fecha que el papel declara de sí
+#: mismo, y por eso manda sobre las demás que haya en la página.
+_LUGAR_Y_FECHA = re.compile(
+    r"\b([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ.]+(?: [A-Za-zÁÉÍÓÚÑáéíóúñ.]+){0,3}),\s*"
+    r"(\d{1,2}[/-]\d{1,2}[/-]\d{4}|\d{1,2}\s+de\s+[A-Za-záéíóúñ]+\s+(?:del?\s+)?\d{4})"
+)
+
+
+#: «VALLEDUPAR, 2020/12/07»: el año delante, como fecha la empresa sus
+#: citaciones. Sólo con barras: con guiones es también la forma de los códigos
+#: de las guías de envío.
+_ANIO_MES_DIA = re.compile(r"\b(\d{4})/(\d{1,2})/(\d{1,2})\b")
+
+
+def _normalizar(texto: str) -> str:
+    """El texto con las fechas escritas como las reconoce :func:`fechas_de`."""
+    plano = " ".join(texto.split())
+    plano = _ANIO_MES_DIA.sub(r"\3/\2/\1", plano)
+    plano = _CIFRAS_CON_ESPACIOS.sub(r"\1\2\3\2\4", plano)
+    plano = _MES_DIA_ANIO.sub(r"\2 de \1 de \3", plano)
+    return _A_LOS_DIAS.sub(r"\1 de \2 de \3", plano)
+
+
+def fecha_de_la_pagina(texto: str, *, hoy: date | None = None) -> date | None:
+    """La fecha que fecha una página suelta, o ``None`` si no lleva ninguna.
+
+    Primero la del encabezado «Ciudad, fecha», que es la que una carta declara
+    de sí misma. Hace falta preferirla porque la más reciente de la página
+    engaña: medido sobre un expediente real, una carta encabezada «Cartagena,
+    21/12/2021» cita más abajo un plazo del 01/02/2022, y por la más reciente
+    habría ido a parar a febrero.
+
+    Sin encabezado, la más reciente de la página, que es lo que la columna
+    Fecha del inventario ya significa para cualquier unidad: su fecha extrema
+    final. Así se fechan bien la tabla de cuotas de un pagaré, la publicación de
+    un aviso o una notificación personal, que no llevan lugar delante.
+    """
+    encabezado = fecha_del_encabezado(texto, hoy=hoy)
+    if encabezado is not None:
+        return encabezado
+    todas = fechas_de(_normalizar(texto), hoy=hoy)
+    return max(todas) if todas else None
+
+
+def fecha_del_encabezado(texto: str, *, hoy: date | None = None) -> date | None:
+    """Sólo la fecha del encabezado «Ciudad, fecha», o ``None`` si no lo lleva.
+
+    Para quien tiene otra fuente mejor que la fecha más reciente de la página:
+    el escrito radicado sin encabezado lleva la suya en el sello.
+    """
+    plano = _normalizar(texto)
+    for encabezado in _LUGAR_Y_FECHA.finditer(plano):
+        declaradas = fechas_de(encabezado.group(2), hoy=hoy)
+        if declaradas:
+            return declaradas[0]
+    return None

@@ -66,35 +66,27 @@ def administrador(client):
     return {"X-Cedula": "1047382991"}
 
 
-@pytest.fixture
-def tecnico(client, administrador):
-    """Alguien de perfil técnico, dado de alta por el administrador."""
-    respuesta = client.post(
-        "/api/usuarios",
-        headers=administrador,
-        json={
-            "cedula": "52814663",
-            "correo": "tecnico@archivo.edu.co",
-            "perfil": "tecnico",
-            "nombre": "Quien procesa",
-        },
-    )
-    assert respuesta.status_code == 201, respuesta.text
-    return {"X-Cedula": "52814663"}
+def _dar_de_alta(tmp_path, cedula: str, correo: str, perfil: str, nombre: str) -> dict[str, str]:
+    """Alguien en el almacén de usuarios de la prueba, y su cabecera.
+
+    Ya no hay endpoint de altas -- se entra sólo como «siar» --, así que los
+    perfiles que las pruebas de permisos necesitan se guardan directamente en el
+    almacén que el servicio lee (el mismo ``usuarios.jsonl`` de ``client``).
+    """
+    from resolutions.adapters.user_store import FileUserStore
+    from resolutions.domain.usuario import Usuario
+
+    FileUserStore(tmp_path / "usuarios.jsonl").save(Usuario.crear(cedula, correo, perfil, nombre))
+    return {"X-Cedula": cedula}
 
 
 @pytest.fixture
-def calidad(client, administrador):
-    """Alguien de perfil calidad, dado de alta por el administrador."""
-    respuesta = client.post(
-        "/api/usuarios",
-        headers=administrador,
-        json={
-            "cedula": "39158204",
-            "correo": "calidad@archivo.edu.co",
-            "perfil": "calidad",
-            "nombre": "Quien revisa",
-        },
-    )
-    assert respuesta.status_code == 201, respuesta.text
-    return {"X-Cedula": "39158204"}
+def tecnico(client, administrador, tmp_path):
+    """Alguien de perfil técnico."""
+    return _dar_de_alta(tmp_path, "52814663", "tecnico@archivo.edu.co", "tecnico", "Quien procesa")
+
+
+@pytest.fixture
+def calidad(client, administrador, tmp_path):
+    """Alguien de perfil calidad."""
+    return _dar_de_alta(tmp_path, "39158204", "calidad@archivo.edu.co", "calidad", "Quien revisa")

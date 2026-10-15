@@ -1,11 +1,15 @@
 <script lang="ts">
   import { createBatch, uploadDocument, withConcurrency } from '$lib/api';
+  import { confirmar } from '$lib/confirmar.svelte';
   import BatchMonitor from '$lib/components/BatchMonitor.svelte';
+  import ColaDeProcesos, { type Proceso } from '$lib/components/ColaDeProcesos.svelte';
+  import EncabezadoDePagina from '$lib/components/EncabezadoDePagina.svelte';
   import FolderRunMonitor from '$lib/components/FolderRunMonitor.svelte';
   import JobCard from '$lib/components/JobCard.svelte';
   import SingleDocumentMonitor from '$lib/components/SingleDocumentMonitor.svelte';
   import UploadPanel from '$lib/components/UploadPanel.svelte';
   import { consoleLog } from '$lib/console.svelte';
+  import type { AgruparChoice, CorteChoice } from '$lib/habilidades';
   import type { LecturaChoice } from '$lib/lectura';
   import type { TipoPedido } from '$lib/tipos';
   import type { OracleChoice } from '$lib/oracles';
@@ -85,6 +89,13 @@
   let runsError = $state<string | null>(null);
 
   async function forgetClosedRuns() {
+    const seguro = await confirmar({
+      titulo: `¿Quitar las ${closedRuns.length} carpetas terminadas?`,
+      mensaje:
+        'Sólo se quitan las tarjetas: lo entregado sigue en las carpetas de destino y en el archivo.',
+      aceptar: 'Quitar todas'
+    });
+    if (!seguro) return;
     clearingRuns = true;
     runsError = null;
     try {
@@ -108,6 +119,73 @@
   const conAlgoQueVer = $derived(busy || runs.length > 0);
 
   const inFlightBytes = $derived(inFlight.reduce((sum, job) => sum + (job.bytes ?? 0), 0));
+
+  /**
+   * El flujo de la pantalla tiene dos niveles.
+   *
+   * Sin nada en curso, el asistente de carga ocupa la columna: es lo único que
+   * hay que hacer. Con algo en curso, la columna pasa a ser la cola -- qué
+   * corre, en qué orden, cuánto lleva -- y el asistente se abre sólo cuando se
+   * pide agregar otro proceso. Así no queda a la vista, a medio rellenar, un
+   * formulario que nadie está usando mientras el trabajo corre al lado.
+   */
+  let agregando = $state(false);
+
+  const procesos = $derived.by<Proceso[]>(() => {
+    const lista: Proceso[] = [];
+    for (const run of liveRuns) {
+      const tomados = run.processed + run.failed;
+      lista.push({
+        ancla: `proceso-carpeta-${run.id}`,
+        tipo: 'carpeta',
+        nombre: run.source.split(/[\\/]/).filter(Boolean).at(-1) ?? run.source,
+        estado: run.state === 'watching' ? 'vigilando' : 'procesando',
+        avance: run.discovered ? Math.min(100, (100 * tomados) / run.discovered) : null,
+        detalle:
+          `${tomados} de ${run.discovered} documentos` +
+          (run.en_curso && run.en_curso.length > 1 ? ` · ${run.en_curso.length} a la vez` : '') +
+          (run.failed ? ` · ${run.failed} con fallo` : '')
+      });
+    }
+    for (const [batchId, jobs] of activeBatches) {
+      const cerrados = jobs.filter(
+        (job) => job.state === 'done' || job.state === 'failed' || job.state === 'cancelled'
+      ).length;
+      const corriendo = jobs.some((job) => job.state === 'running');
+      const pausado = jobs.some((job) => job.state === 'paused');
+      lista.push({
+        ancla: `proceso-lote-${batchId}`,
+        tipo: 'lote',
+        nombre: jobStore.batchNames[batchId] ?? `Lote de ${jobs.length} documentos`,
+        estado: corriendo ? 'procesando' : pausado ? 'en pausa' : 'en cola',
+        avance: jobs.length ? (100 * cerrados) / jobs.length : null,
+        detalle: `${cerrados} de ${jobs.length} documentos`
+      });
+    }
+    for (const job of looseInFlight) {
+      lista.push({
+        ancla: `proceso-doc-${job.id}`,
+        tipo: 'documento',
+        nombre: job.filename,
+        estado:
+          job.state === 'running' ? 'procesando' : job.state === 'paused' ? 'en pausa' : 'en cola',
+        avance: job.progress.percent || null,
+        detalle: job.progress.page_count
+          ? `${job.progress.pages_done} de ${job.progress.page_count} páginas`
+          : 'esperando turno'
+      });
+    }
+    return lista;
+  });
+
+  // Lo agregado aparece en la cola y el asistente se pliega solo: el operador
+  // ve enseguida que su proceso entró, en su sitio de la fila.
+  let procesosAntes = 0;
+  $effect(() => {
+    const ahora = procesos.length;
+    if (ahora > procesosAntes) agregando = false;
+    procesosAntes = ahora;
+  });
 
   /**
    * Raise a report when a unit of work settles -- and only then.
@@ -140,13 +218,22 @@
 
     for (const job of jobStore.jobs) {
       if (job.batch_id) continue;
+      // A document taken from a folder is reported with its run, not alone.
+      // Por su origen y no sólo por la lista de la corrida: el PDF puede
+      // terminar antes de que esa lista llegue a la pantalla, y entonces se
+      // contaba dos veces -- suelto y dentro de su carpeta --, que es como
+      // una carpeta de 10 PDF salía en el informe con 11 documentos.
+      if (
+        job.origen?.tipo === 'carpeta' ||
+        jobStore.runs.some((run) => run.job_ids?.includes(job.id))
+      ) {
+        continue;
+      }
       const id = `doc:${job.id}`;
       if (job.state === 'queued' || job.state === 'running' || job.state === 'paused') {
         reports.watch(id);
         continue;
       }
-      // A document taken from a folder is reported with its run, not alone.
-      if (jobStore.runs.some((run) => run.job_ids?.includes(job.id))) continue;
       reports.register(summarise(id, 'documento', job.filename, [job]));
     }
 
@@ -174,10 +261,23 @@
    */
   function fromRun(id: string, run: (typeof jobStore.runs)[number]) {
     const jobs = jobStore.jobs.filter((job) => run.job_ids?.includes(job.id));
-    const completion = summarise(id, 'carpeta', run.source, jobs);
+    // Con el nombre de la carpeta raíz, que es como se la reconoce; la ruta
+    // entera va en la entrega.
+    const nombre = run.source.split(/[\\/]/).filter(Boolean).at(-1) ?? run.source;
+    const completion = summarise(id, 'carpeta', nombre, jobs);
 
     completion.destination = run.destination;
     completion.delivered = run.delivered;
+    completion.entregas = [
+      {
+        nombre,
+        origen: run.source,
+        destino: run.destination,
+        archivos: run.delivered,
+        inventarioDe: run.inventario ? run.id : null,
+        inventario: run.inventario ?? null
+      }
+    ];
     completion.operator = completion.operator ?? run.operator;
     // The run is the authority on its own totals; the jobs are only richer
     // while they are still around.
@@ -212,11 +312,15 @@
     task: TaskKind = 'split',
     oracle: OracleChoice = 'auto',
     lectura: LecturaChoice = 'local',
-    tipo: TipoPedido = 'auto'
+    tipo: TipoPedido = 'auto',
+    corte: CorteChoice = 'folio',
+    agrupar: AgruparChoice = 'documento',
+    territorial = ''
   ) {
     errors = [];
     uploaded = 0;
     uploadTotal = files.length;
+    agregando = false;
 
     let batchId: string | undefined;
     if (asBatch) {
@@ -242,7 +346,7 @@
 
     await withConcurrency(files, UPLOAD_CONCURRENCY, async (file) => {
       try {
-        await uploadDocument(file, batchId, task, oracle, lectura, tipo);
+        await uploadDocument(file, batchId, task, oracle, lectura, tipo, corte, agrupar, territorial);
         consoleLog.push('UP', `${formatBytes(file.size)} subidos`, 'net', file.name);
       } catch (error) {
         errors = [...errors, `${file.name}: ${(error as Error).message}`];
@@ -258,17 +362,39 @@
 <!-- One job for this screen: take documents in, and show the work while it is
      happening. Nothing that has finished belongs here -- it is on Procesados,
      and the count on that tab is what says so. -->
+<div class="workspace-frame">
 <div class="workspace" class:busy={conAlgoQueVer}>
-  <section class="intake">
-    <div class="intake-head">
-      <h2>Cargar documentos</h2>
-      <p>
-        Cada página se dirige a la resolución que le corresponde. Una página sin número queda con
-        la resolución anterior, hasta que aparezca una nueva.
-      </p>
-    </div>
+  <!-- El encabezado de la pantalla, como en Archivo: ocupa la fila entera de la
+       rejilla, así queda alineado con el asistente cuando está solo y con las
+       dos columnas cuando hay trabajo corriendo. -->
+  <div class="cabecera">
+    <EncabezadoDePagina
+      titulo="Procesar"
+      descripcion="Elija qué va a procesar, cómo se lee y qué se entrega."
+    />
+  </div>
 
-    <UploadPanel onfiles={handle} disabled={uploading} />
+  <section class="intake">
+    {#if busy && !agregando}
+      <ColaDeProcesos {procesos} onagregar={() => (agregando = true)} subiendo={uploading} />
+    {:else}
+      <div class="intake-head">
+        {#if busy}
+          <!-- Un nivel por debajo de la cola: se dice, y se puede volver. -->
+          <nav class="sub-nivel" aria-label="Dónde está">
+            <button type="button" onclick={() => (agregando = false)}>
+              ← Procesos en curso ({procesos.length})
+            </button>
+            <span>› Agregar a la cola</span>
+          </nav>
+          <h2>Agregar otro proceso a la cola</h2>
+        {:else}
+          <h2>Cargar documentos</h2>
+        {/if}
+      </div>
+
+      <UploadPanel onfiles={handle} disabled={uploading} />
+    {/if}
 
     {#if uploading}
       <div class="progress">
@@ -280,7 +406,7 @@
     {/if}
 
     {#each errors as message}
-      <p class="error">{message}</p>
+      <p class="inline-error">{message}</p>
     {/each}
 
     {#if busy && inFlightBytes}
@@ -294,24 +420,28 @@
   {#if conAlgoQueVer}
     <section class="live">
       {#each liveRuns as run (run.id)}
-        <FolderRunMonitor {run} />
+        <div class="ancla" id={`proceso-carpeta-${run.id}`}><FolderRunMonitor {run} /></div>
       {/each}
 
       {#each activeBatches as [batchId, batchJobs] (batchId)}
-        <BatchMonitor
-          name={jobStore.batchNames[batchId] ?? `Lote de ${batchJobs.length} documentos`}
-          jobs={batchJobs}
-          {batchId}
-        />
+        <div class="ancla" id={`proceso-lote-${batchId}`}>
+          <BatchMonitor
+            name={jobStore.batchNames[batchId] ?? `Lote de ${batchJobs.length} documentos`}
+            jobs={batchJobs}
+            {batchId}
+          />
+        </div>
       {/each}
 
       {#if looseInFlight.length === 1}
         <!-- One document alone earns the full panel: with nothing to compare it
              against, the detail is what there is to look at. -->
-        <SingleDocumentMonitor job={looseInFlight[0]} />
+        <div class="ancla" id={`proceso-doc-${looseInFlight[0].id}`}>
+          <SingleDocumentMonitor job={looseInFlight[0]} />
+        </div>
       {:else if looseInFlight.length}
         {#each looseInFlight as job (job.id)}
-          <JobCard {job} />
+          <div class="ancla" id={`proceso-doc-${job.id}`}><JobCard {job} /></div>
         {/each}
       {/if}
 
@@ -319,12 +449,12 @@
         <section class="closed">
           <header>
             <h3>Carpetas terminadas ({closedRuns.length})</h3>
-            <button onclick={forgetClosedRuns} disabled={clearingRuns}>
-              {clearingRuns ? 'quitando…' : 'quitar todas'}
+            <button class="btn btn-sm btn-ghost" onclick={forgetClosedRuns} disabled={clearingRuns}>
+              {clearingRuns ? 'Quitando…' : 'Quitar todas'}
             </button>
           </header>
           {#if runsError}
-            <p class="runs-error">{runsError}</p>
+            <p class="inline-error">{runsError}</p>
           {/if}
           {#each closedRuns as run (run.id)}
             <FolderRunMonitor {run} />
@@ -334,26 +464,13 @@
     </section>
   {:else}
     <aside class="hint">
-      <ol>
-        <li>
-          <b>Carga individual</b>
-          <span>hasta cinco documentos, con la estadística completa de cada uno</span>
-        </li>
-        <li>
-          <b>Carga por lotes</b>
-          <span>sin límite de cantidad, con el peso neto y el avance del lote entero</span>
-        </li>
-        <li>
-          <b>Carpeta local</b>
-          <span>toma un PDF por vez de una carpeta y entrega las resoluciones en otra</span>
-        </li>
-      </ol>
       <p class="closing">
         Lo que termine se guarda en el <a href="/archivo">archivo</a>, con su fecha, y lo que
         necesite un ojo humano queda listado en <a href="/revision">revisión</a>.
       </p>
     </aside>
   {/if}
+</div>
 </div>
 
 <style>
@@ -376,51 +493,50 @@
   }
   .closed h3 {
     margin: 0;
-    font-size: 0.82rem;
+    font-size: var(--text-sm);
     font-weight: 600;
     letter-spacing: -0.01em;
     color: var(--ink-2);
   }
-  .closed header button {
-    border: 1px solid var(--hairline);
-    border-radius: 7px;
-    background: transparent;
-    padding: 0.2rem 0.55rem;
-    font-size: 0.72rem;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .closed header button:hover:not(:disabled) {
-    border-color: var(--axis);
-    color: var(--ink);
-  }
-  .closed header button:disabled {
-    cursor: default;
-    opacity: 0.55;
-  }
-  .runs-error {
+  /* Los fallos van en `.inline-error`; aquí sólo se le quita el margen, que
+     el hueco de la columna ya separa. */
+  .closed .inline-error,
+  .intake > .inline-error {
     margin: 0;
-    font-size: 0.75rem;
-    color: var(--critical);
   }
 
-  /* Idle: one column, centred, nothing but the intake. Busy: the work takes the
-     right-hand side and the intake stays put on the left. */
+  /* Idle: the intake takes the free width beside the console, so the options
+     of each step sit side by side instead of in one long column that has to be
+     scrolled. It was a centred 34rem column, and on a wide screen that left
+     more empty space than form. Busy: the work takes the right-hand side and
+     the intake stays put on the left.
+
+     Measured on the space actually left for the page, not on the window: the
+     console takes up to half of it, and a breakpoint on the viewport width
+     put two columns in a room that only fits one. */
+  .workspace-frame {
+    container: workspace / inline-size;
+  }
   .workspace {
     display: grid;
     justify-content: center;
-    gap: 1.75rem;
-    grid-template-columns: minmax(0, 34rem);
-    padding-top: 2rem;
+    gap: 1.5rem;
+    grid-template-columns: minmax(0, 72rem);
   }
   .workspace.busy {
     justify-content: stretch;
-    padding-top: 0;
   }
-  @media (min-width: 1280px) {
+  .cabecera {
+    grid-column: 1 / -1;
+  }
+  /* El hueco de la rejilla ya separa el encabezado de lo que sigue. */
+  .cabecera :global(.encabezado) {
+    margin-bottom: 0;
+  }
+  @container workspace (min-width: 62rem) {
     .workspace.busy {
       align-items: start;
-      grid-template-columns: minmax(0, 25rem) minmax(0, 1fr);
+      grid-template-columns: minmax(0, 26rem) minmax(0, 1fr);
     }
   }
 
@@ -434,27 +550,43 @@
     top: 5.75rem;
   }
 
-  .intake-head h2 {
-    margin: 0;
-    font-size: 1.15rem;
-    font-weight: 650;
-    letter-spacing: -0.015em;
+  /* Lo que salta a un monitor desde la cola queda debajo de la barra fija. */
+  .ancla {
+    scroll-margin-top: 5.5rem;
   }
-  .intake-head p {
-    margin: 0.35rem 0 0;
-    max-width: 52ch;
-    font-size: 0.84rem;
-    line-height: 1.5;
+
+  .sub-nivel {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.4rem;
+    font-size: var(--text-sm);
     color: var(--muted);
   }
-  .busy .intake-head p {
-    display: none;
+  .sub-nivel button {
+    border: 0;
+    background: none;
+    padding: 0;
+    font: inherit;
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .sub-nivel button:hover {
+    text-decoration: underline;
+  }
+
+  .intake-head h2 {
+    margin: 0;
+    font-size: var(--text-lg);
+    font-weight: 650;
+    letter-spacing: -0.015em;
   }
 
   .progress .track {
     height: 6px;
     overflow: hidden;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--grid);
   }
   .progress .fill {
@@ -465,22 +597,13 @@
   }
   .progress p {
     margin: 0.45rem 0 0;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     color: var(--muted);
-  }
-
-  .error {
-    margin: 0;
-    border-left: 2px solid var(--critical);
-    padding-left: 0.65rem;
-    font-size: 0.82rem;
-    color: var(--critical);
   }
 
   .weighing {
     margin: 0;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -491,36 +614,9 @@
     gap: 1.1rem;
   }
 
-  .hint ol {
-    display: flex;
-    flex-direction: column;
-    gap: 0.55rem;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-  .hint li {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    border-left: 2px solid var(--rule);
-    padding-left: 0.8rem;
-  }
-  .hint b {
-    font-size: 0.82rem;
-    font-weight: 600;
-  }
-  .hint span {
-    font-size: 0.78rem;
-    line-height: 1.45;
-    color: var(--muted);
-  }
-
   .closing {
-    margin: 1.1rem 0 0;
-    border-top: 1px solid var(--rule);
-    padding-top: 0.9rem;
-    font-size: 0.8rem;
+    margin: 0;
+    font-size: var(--text-sm);
     color: var(--muted);
   }
   .closing a {

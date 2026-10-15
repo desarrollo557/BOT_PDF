@@ -297,6 +297,19 @@ class Job:
     #: motores distintos, y el informe tiene que poder decir con cuál, porque
     #: una lectura de pago y una gratis no producen el mismo inventario.
     lectura: str = "local"
+    #: Con qué señal se cortó este libro de diplomas: por el folio de la
+    #: esquina o por el número de cédula. Va con el trabajo y no con los
+    #: ajustes del servicio porque es una decisión sobre **este papel**, y dos
+    #: libros de la misma caja pueden necesitar criterios distintos.
+    corte: str = "pagina"
+    #: Qué se entrega como un archivo en una caja de correspondencia: cada
+    #: documento del corte, o todos los de un mismo mes juntos. Va con el
+    #: trabajo por lo mismo que el corte: es una decisión sobre este papel.
+    agrupar: str = "documento"
+    #: La territorial de una caja de correspondencia («CESAR»), que el operador
+    #: escribe al cargarla: va al encabezado del Índice Electrónico y no está en
+    #: el papel. Vacía en las demás rutas, que no la usan.
+    territorial: str | None = None
     #: Qué clase de documento declaró el operador estar cargando, o "auto" para
     #: que lo averigüe el sistema. Se guarda con el trabajo porque cambia a qué
     #: habilidad fue, y el informe tiene que poder decir por qué se cortó como
@@ -308,6 +321,14 @@ class Job:
     #: corrida: sin esto, su columna "Carpeta de destino" salía vacía justo en
     #: el único caso en que hay un destino que declarar.
     destination: str | None = None
+    #: De qué corrida salió, cuando no se cargó suelto: la carpeta local o el
+    #: lote que lo trajo, con el nombre con que el operador lo reconoce
+    #: («UPD3859771», no «1N°22-17 DE DICIEMBRE.pdf»). Es lo que permite al
+    #: Archivo dibujar la carpeta como una sola tarjeta con sus PDF dentro, en
+    #: vez de una tarjeta por PDF con el nombre del archivo donde iba el de la
+    #: carpeta. Claves: ``id``, ``nombre``, ``tipo`` («carpeta» o «lote») y, en
+    #: una carpeta, ``inventario``: dónde queda su Excel general.
+    origen: dict | None = None
     state: JobState = JobState.QUEUED
     created_at: str = field(default_factory=_now)
     started_at: str | None = None
@@ -328,7 +349,11 @@ class Job:
             "task": self.task,
             "oracle": self.oracle,
             "lectura": self.lectura,
+            "corte": self.corte,
+            "agrupar": self.agrupar,
+            "territorial": self.territorial,
             "tipo": self.tipo,
+            "origen": self.origen,
             "state": str(self.state),
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -431,8 +456,12 @@ class JobRegistry:
         task: str = "split",
         oracle: str = "auto",
         lectura: str = "local",
+        corte: str = "pagina",
         tipo: str = "auto",
         destination: str | None = None,
+        agrupar: str = "documento",
+        origen: dict | None = None,
+        territorial: str | None = None,
     ) -> Job:
         job = Job(
             id=uuid4().hex,
@@ -445,8 +474,12 @@ class JobRegistry:
             task=task,
             oracle=oracle,
             lectura=lectura,
+            corte=corte,
+            agrupar=agrupar,
+            territorial=territorial,
             tipo=tipo,
             destination=destination,
+            origen=origen,
         )
         self._jobs[job.id] = job
         self._revision += 1

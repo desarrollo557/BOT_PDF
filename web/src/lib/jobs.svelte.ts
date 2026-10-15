@@ -10,7 +10,9 @@ import {
   stopFolderRun,
   streamEvents
 } from './api';
+import { avisos } from './avisos.svelte';
 import { consoleLog } from './console.svelte';
+import type { AgruparChoice, CorteChoice } from './habilidades';
 import type { LecturaChoice } from './lectura';
 import type { TipoPedido } from './tipos';
 import type { OracleChoice } from './oracles';
@@ -152,18 +154,28 @@ class JobStore {
 
   #open(): void {
     consoleLog.push('SYS', 'conectando al flujo de eventos…', 'sys');
-    listJobs().then((initial) => {
-      this.jobs = initial;
-      for (const job of initial) consoleLog.ingest(job);
-    });
-    listBatches().then((batches) => {
-      // Names come from the API rather than from whoever happened to upload, so
-      // a reload or a second tab labels the same batches the same way.
-      this.batchNames = Object.fromEntries(batches.map((batch) => [batch.id, batch.name]));
-    });
+    // Si el servicio no contesta se dice una vez, con qué se intentaba; el
+    // flujo de eventos vuelve a mandar el estado entero cuando reconecta.
+    const sinCargar = (problema: unknown) =>
+      avisos.error(problema, 'No se pudo cargar el trabajo en curso');
+    listJobs()
+      .then((initial) => {
+        this.jobs = initial;
+        for (const job of initial) consoleLog.ingest(job);
+      })
+      .catch(sinCargar);
+    listBatches()
+      .then((batches) => {
+        // Names come from the API rather than from whoever happened to upload, so
+        // a reload or a second tab labels the same batches the same way.
+        this.batchNames = Object.fromEntries(batches.map((batch) => [batch.id, batch.name]));
+      })
+      .catch(sinCargar);
     // The stream replays current state on connect, so a reconnect after a
     // dropped socket resynchronises without any extra request.
-    listFolderRuns().then((runs) => (this.runs = runs));
+    listFolderRuns()
+      .then((runs) => (this.runs = runs))
+      .catch(sinCargar);
     this.#close = streamEvents({
       job: (job) => this.#upsert(job),
       folderRun: (run) => this.#upsertRun(run)
@@ -207,6 +219,12 @@ class JobStore {
     oracle?: OracleChoice;
     /** Y con qué motor leer el papel de esta carpeta. */
     lectura?: LecturaChoice;
+    /** Y por dónde partir cada libro de diplomas que traiga. */
+    corte?: CorteChoice;
+    /** Y qué va en cada archivo de una caja de correspondencia. */
+    agrupar?: AgruparChoice;
+    /** Y la territorial de sus cajas, para el encabezado del Índice Electrónico. */
+    territorial?: string;
     /** Y qué clase de documento trae, cuando el operador lo sabe. */
     tipo?: TipoPedido;
   }): Promise<FolderRun> {

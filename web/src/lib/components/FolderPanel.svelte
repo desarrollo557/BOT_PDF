@@ -1,6 +1,9 @@
 <script lang="ts">
   import FolderPicker from '$lib/components/FolderPicker.svelte';
+  import SugerenciaDeTipo from '$lib/components/wizard/SugerenciaDeTipo.svelte';
+  import { reconocerCarpeta, type SugerenciaDeCarpeta } from '$lib/api';
   import { jobStore } from '$lib/jobs.svelte';
+  import type { AgruparChoice, CorteChoice } from '$lib/habilidades';
   import type { LecturaChoice } from '$lib/lectura';
   import type { TipoPedido } from '$lib/tipos';
   import type { OracleChoice } from '$lib/oracles';
@@ -29,18 +32,41 @@
      */
     lectura?: LecturaChoice;
     /**
+     * Y por dónde partir cada libro de diplomas que traiga: por el folio de
+     * la esquina o por el número de cédula. Como el motor, vale para toda la
+     * corrida porque una estantería suele ser homogénea.
+     */
+    corte?: CorteChoice;
+    /**
+     * Y qué va en cada archivo cuando la carpeta trae cajas de correspondencia:
+     * cada documento, o todos los de un mismo mes juntos. Vale para toda la
+     * corrida, como el corte.
+     */
+    agrupar?: AgruparChoice;
+    /** Y la territorial de sus cajas de correspondencia, para su Índice Electrónico. */
+    territorial?: string;
+    /**
      * Y qué clase de documento trae la carpeta. Una estantería suele ser
      * homogénea -- veinte libros de diplomas --, así que declararlo una vez
      * vale para todos sus archivos.
      */
     tipo?: TipoPedido;
+    /** La habilidad elegida, para decir si lo que trae la carpeta coincide. */
+    habilidadId?: string;
+    /** Cambiar a la habilidad que sugiere lo reconocido. */
+    onusarHabilidad?: (id: string) => void;
   }
 
   let {
     task = 'split',
     oracle = 'auto',
     lectura = 'local',
-    tipo = 'auto'
+    tipo = 'auto',
+    corte = 'pagina',
+    agrupar = 'documento',
+    territorial = '',
+    habilidadId = 'auto',
+    onusarHabilidad
   }: Props = $props();
 
   /**
@@ -62,6 +88,40 @@
   }
 
   let source = $state('');
+
+  /* -- qué trae la carpeta ----------------------------------------------------
+     En cuanto la ruta de origen se asienta, el bot recorre la carpeta y sus
+     subcarpetas y dice qué parece cada PDF: sólo su capa de texto y su nombre,
+     sin gastar nada. Una caja grande tarda unos segundos; se avisa mientras. */
+  let analisis = $state<SugerenciaDeCarpeta | null>(null);
+  let analizando = $state(false);
+  let errorDeAnalisis = $state<string | null>(null);
+  let pedidoDeAnalisis: AbortController | null = null;
+
+  $effect(() => {
+    const ruta = cleanPath(source);
+    pedidoDeAnalisis?.abort();
+    analisis = null;
+    errorDeAnalisis = null;
+    if (!ruta) return;
+    const pedido = new AbortController();
+    pedidoDeAnalisis = pedido;
+    const espera = setTimeout(async () => {
+      analizando = true;
+      try {
+        const respuesta = await reconocerCarpeta(ruta, pedido.signal);
+        if (!pedido.signal.aborted) analisis = respuesta;
+      } catch (problema) {
+        if (!pedido.signal.aborted) errorDeAnalisis = (problema as Error).message;
+      } finally {
+        if (pedidoDeAnalisis === pedido) analizando = false;
+      }
+    }, 600);
+    return () => {
+      clearTimeout(espera);
+      pedido.abort();
+    };
+  });
   let destination = $state('');
   let disposition = $state<SourceDisposition>('leave');
   let watch = $state(false);
@@ -110,9 +170,9 @@
   }
 
   const DISPOSITIONS: { id: SourceDisposition; label: string; hint: string }[] = [
-    { id: 'leave', label: 'Dejarlo', hint: 'el original no se toca' },
-    { id: 'move', label: 'Apartarlo', hint: 'se mueve a _procesados' },
-    { id: 'delete', label: 'Borrarlo', hint: 'se elimina del origen' }
+    { id: 'leave', label: 'Dejarlo', hint: 'El original no se toca' },
+    { id: 'move', label: 'Apartarlo', hint: 'Se mueve a _procesados' },
+    { id: 'delete', label: 'Borrarlo', hint: 'Se elimina del origen' }
   ];
 
   const ready = $derived(cleanPath(source).length > 0 && cleanPath(destination).length > 0);
@@ -129,7 +189,10 @@
         task,
         oracle,
         lectura,
-        tipo
+        tipo,
+        corte,
+        agrupar,
+        ...(territorial.trim() ? { territorial: territorial.trim() } : {})
       });
     } catch (problem) {
       error = (problem as Error).message;
@@ -139,7 +202,7 @@
   }
 </script>
 
-<div class="panel">
+<div class="carpeta">
   <p class="lead">
     El servicio lee y escribe carpetas de <b>esta máquina</b>. No se sube nada: toma un PDF por
     vez, lo separa y deja las resoluciones en el destino.
@@ -149,6 +212,7 @@
     <span class="label">Carpeta de origen</span>
     <div class="control">
       <input
+        class="input mono"
         type="text"
         spellcheck="false"
         placeholder={String.raw`C:\Users\usuario\Desktop\ENTRADA`}
@@ -176,10 +240,26 @@
     <small>Elíjala con el icono, o pegue la ruta. Si trae comillas, se quitan solas.</small>
   </div>
 
+  {#if analizando || analisis || errorDeAnalisis}
+    <div class="analisis">
+      <SugerenciaDeTipo
+        {habilidadId}
+        carpeta={analisis}
+        cargando={analizando}
+        error={errorDeAnalisis}
+        onusar={(id) => onusarHabilidad?.(id)}
+      />
+      {#if analisis && analisis.mirados < analisis.total}
+        <small>Se miraron {analisis.mirados} de {analisis.total} PDF.</small>
+      {/if}
+    </div>
+  {/if}
+
   <div class="field">
     <span class="label">Carpeta de destino</span>
     <div class="control">
       <input
+        class="input mono"
         type="text"
         spellcheck="false"
         placeholder={String.raw`C:\Users\usuario\Desktop\SALIDA`}
@@ -227,16 +307,16 @@
     <input type="checkbox" bind:checked={watch} />
     <span>
       <b>Vigilar la carpeta</b>
-      <small>seguir esperando archivos nuevos en vez de terminar al vaciarla</small>
+      <small>Seguir esperando archivos nuevos en vez de terminar al vaciarla.</small>
     </span>
   </label>
 
   {#if error}
-    <p class="error">{error}</p>
+    <p class="inline-error">{error}</p>
   {/if}
 
-  <button class="start" onclick={start} disabled={!ready || starting}>
-    {starting ? 'iniciando…' : watch ? 'vigilar carpeta' : 'procesar carpeta'}
+  <button class="btn btn-primary btn-block" onclick={start} disabled={!ready || starting}>
+    {starting ? 'Iniciando…' : watch ? 'Vigilar carpeta' : 'Procesar carpeta'}
   </button>
 </div>
 
@@ -254,19 +334,21 @@
 {/if}
 
 <style>
-  .panel {
+  /* No se llama `.panel`: ésa es la superficie común de app.css, y le ponía
+     una sombra que esta caja, dentro de la tarjeta del asistente, no lleva. */
+  .carpeta {
     display: flex;
     flex-direction: column;
     gap: 0.85rem;
     border: 1px solid color-mix(in oklab, var(--s4) 30%, var(--hairline));
-    border-radius: 14px;
+    border-radius: var(--radius-lg);
     background: var(--plane);
     padding: 1.1rem;
   }
 
   .lead {
     margin: 0;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     line-height: 1.5;
     color: var(--muted);
   }
@@ -282,25 +364,30 @@
   }
 
   /* El icono va dentro del recuadro, no al lado: la ruta y el botón que la
-     elige son un solo control, y así se lee como uno. */
+     elige son un solo control, y así se lee como uno. El campo es el `.input`
+     común sin su borde; el borde y el anillo de foco los lleva el recuadro. */
   .control {
     display: flex;
     align-items: stretch;
     border: 1px solid var(--hairline);
-    border-radius: 8px;
+    border-radius: var(--radius);
     background: var(--surface-2);
     overflow: hidden;
-    transition: border-color 0.15s;
+    transition:
+      border-color 0.12s ease,
+      box-shadow 0.12s ease;
   }
   .control:focus-within {
-    border-color: var(--s4);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--ring);
   }
-  .control input[type='text'] {
+  .control .input {
     flex: 1;
     min-width: 0;
     border: 0;
     border-radius: 0;
     background: transparent;
+    box-shadow: none;
   }
   .pick {
     display: grid;
@@ -327,29 +414,15 @@
   }
 
   .label {
-    font-size: 0.62rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    letter-spacing: 0.055em;
+    letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
     color: var(--muted);
   }
 
-  input[type='text'] {
-    border: 1px solid var(--hairline);
-    border-radius: 8px;
-    background: var(--surface-2);
-    padding: 0.45rem 0.65rem;
-    font-family: var(--font-mono);
-    font-size: 0.78rem;
-    color: inherit;
-    outline: none;
-  }
-  input[type='text']:focus {
-    border-color: var(--s4);
-  }
-
   small {
-    font-size: 0.7rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -373,7 +446,7 @@
     flex-direction: column;
     gap: 1px;
     border: 1px solid var(--hairline);
-    border-radius: 8px;
+    border-radius: var(--radius);
     background: var(--surface-2);
     padding: 0.4rem 0.5rem;
     font: inherit;
@@ -385,7 +458,7 @@
       color 0.15s;
   }
   .choices button b {
-    font-size: 0.78rem;
+    font-size: var(--text-sm);
     font-weight: 600;
   }
   .choices button.current {
@@ -408,36 +481,22 @@
     flex-direction: column;
   }
   .toggle b {
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     font-weight: 600;
   }
 
-  .error {
+  .carpeta > .inline-error {
     margin: 0;
-    border-left: 2px solid var(--critical);
-    padding-left: 0.6rem;
-    font-size: 0.8rem;
-    color: var(--critical);
   }
 
-  .start {
-    border: 1px solid var(--s4);
-    border-radius: 9px;
-    background: color-mix(in oklab, var(--s4) 12%, transparent);
-    padding: 0.55rem;
-    font-family: var(--font-mono);
-    font-size: 0.78rem;
-    color: var(--ink);
-    cursor: pointer;
-    transition:
-      background 0.15s,
-      opacity 0.15s;
+  .analisis {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin: -0.25rem 0 0.5rem;
   }
-  .start:hover:not(:disabled) {
-    background: color-mix(in oklab, var(--s4) 22%, transparent);
-  }
-  .start:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
+  .analisis small {
+    font-size: var(--text-xs);
+    color: var(--muted);
   }
 </style>

@@ -69,6 +69,14 @@ CATALOGO: tuple[TipoDocumental, ...] = (
             "DECLARACION CON FINES EXTRA PROCESALES",
         ),
     ),
+    #: Actas de grado de la Universidad de Cartagena (Facultad de Enfermería)
+    TipoDocumental(
+        "ACTA DE GRADO",
+        (
+            "ACTA DE GRADO",
+            "ACTA DE GRADO N",
+        ),
+    ),
     TipoDocumental("AJUSTE DE CARGOS VARIOS", ("AJUSTE DE CARGOS VARIOS",)),
     TipoDocumental("AMPLIACION DE TERMINOS", ("AMPLIACION DE TERMINOS",)),
     TipoDocumental("ANEXO A RECLAMO", ("ANEXO A RECLAMO",)),

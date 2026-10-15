@@ -26,6 +26,7 @@ Trabaja en dos pasos.
 PASO 1 - de qué trata cada página.
 Con `t` y `z`, decide el tema de cada hoja. En una caja de correspondencia de un
 servicio público el repertorio es corto:
+  derecho de petición
   factura o liquidación de consumo
   acta de visita, de revisión o de irregularidad
   constancia
@@ -36,6 +37,16 @@ servicio público el repertorio es corto:
   anexo, soporte o comprobante
 Si una hoja no encaja en ninguno, su tema es "otro". No inventes un tipo que no
 esté en esa lista.
+
+Además, identifica si la página TERMINA CON UNA SECCIÓN ABIERTA (sin punto final):
+  - PETICIONES:
+  - HECHOS:
+  - FUNDAMENTOS:
+  - SOLICITO:
+  - CONSIDERANDO:
+  - ANTECEDENTES:
+Si una página termina con una de estas secciones, la siguiente página que NO empiece
+con "Señores:" o un nuevo destino es CONTINUACIÓN del mismo documento.
 
 PASO 2 - las costuras.
 SOLO para las costuras que te listo, decide si la segunda página empieza un
@@ -49,7 +60,10 @@ documento NUEVO o CONTINUA el anterior. Pesa la evidencia en este orden:
      acta seguida de una factura son dos cosas aunque compartan el membrete.
   4. La frase cortada: si `z` de la izquierda queda a media oración y `t` de la
      derecha la retoma en minúscula, es la misma hoja partida por el escáner.
-  5. La apertura: ciudad y fecha, o destinatario, en la derecha, después de una
+  5. La sección abierta: si la página izquierda termina con PETICIONES:, HECHOS:,
+     FUNDAMENTOS:, SOLICITO:, CONSIDERANDO: o ANTECEDENTES: y la derecha NO
+     empieza con "Señores:" o fórmula de apertura, NO es un corte.
+  6. La apertura: ciudad y fecha, o destinatario, en la derecha, después de una
      despedida (`fin`) en la izquierda.
 
 Cuidado con tres trampas, las tres medidas sobre cajas reales:
@@ -61,6 +75,8 @@ Cuidado con tres trampas, las tres medidas sobre cajas reales:
   - No uses el número de reclamación ni el NIC para decidir: identifican el
     expediente completo, no la hoja. Todas las páginas de la caja los comparten,
     y leerlos como continuidad suelda la caja entera en un solo documento.
+    EXCEPCIÓN: Si dos páginas consecutivas tienen el MISMO NIC y el MISMO
+    remitente (nombre de persona), SÍ son parte del mismo documento.
 
   - El texto viene de un OCR con errores: el nombre de la empresa aparece
     deformado (afinia, arinia, ahnia, aPinia, aMnia). Ignora esa deformación, y
@@ -72,18 +88,18 @@ convierte en un corte equivocado que nadie va a notar nunca. Preferir "baja" mil
 veces es mejor que inventar una vez.
 
 Responde SOLO un JSON con esta forma:
-{"cortes": [
-  {"costura": "12|13", "nuevo": true,
-   "razon": "cambia de acta de visita a factura",
-   "confianza": "alta"}
+{\"cortes\": [
+  {\"costura\": \"12|13\", \"nuevo\": true,
+   \"razon\": \"cambia de acta de visita a factura\",
+   \"confianza\": \"alta\"}
 ]}
 
-`confianza` es "alta", "media" o "baja". Lo que marques "baja" no se usa para
+`confianza` es \"alta\", \"media\" o \"baja\". Lo que marques \"baja\" no se usa para
 cortar: va a revisión humana, así que úsala sin culpa cada vez que dudes.
 `razon` en pocas palabras, diciendo en qué evidencia te apoyaste.
 
 Puedes omitir una costura que no puedas juzgar: omitirla es lo mismo que
-marcarla "baja". Nunca completes con una respuesta inventada para que la lista
+marcarla \"baja\". Nunca completes con una respuesta inventada para que la lista
 quede llena."""
 
 
@@ -182,7 +198,7 @@ def describe_failure(error: BaseException) -> str:
 
     Los tres adaptadores degradan igual ante un fallo -- las costuras dudosas van
     a revisión y la caja no se cae -- y eso está bien. Lo que estaba mal era el
-    aviso: decir sólo "no respondió" hace que un 429, un 401 y un plazo vencido se
+    aviso: decir solo "no respondió" hace que un 429, un 401 y un plazo vencido se
     lean idénticos, y son tres problemas con tres arreglos distintos. Esperar,
     cambiar la llave, subir el plazo.
 

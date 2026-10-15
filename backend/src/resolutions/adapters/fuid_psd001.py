@@ -16,6 +16,7 @@ lo que no aplica se escribe N/A y nunca se deja en blanco.
 
 from __future__ import annotations
 
+import logging
 from copy import copy
 from datetime import date
 from pathlib import Path
@@ -30,6 +31,9 @@ from ..application.progress import (
     ProgressReporter,
     Stage,
 )
+
+logger = logging.getLogger(__name__)
+
 
 #: La hoja se llama como el código del formato. La segunda, "CONTROL DE
 #: CAMBIOS", es del documento de calidad y no se toca.
@@ -144,7 +148,9 @@ class FuidPsd001:
                 )
             )
         except Exception:  # noqa: BLE001 - la telemetría nunca rompe el trabajo
-            pass
+            # Se traga, pero deja rastro: un aviso que falla en silencio hace
+            # que la barra se quede quieta sin que nadie sepa por qué.
+            logger.debug("no se pudo anunciar el avance del FUID", exc_info=True)
 
     @staticmethod
     def _estilos_de_fila(hoja: Worksheet) -> list[dict]:
@@ -172,6 +178,7 @@ class FuidPsd001:
         inventariado: date,
     ) -> None:
         for indice, valor in enumerate(celdas_de(fila, cabecera, inventariado=inventariado)):
+
             celda = hoja.cell(row=numero, column=indice + 1, value=valor)
             estilo = estilos[indice]
             celda.font = copy(estilo["font"])
