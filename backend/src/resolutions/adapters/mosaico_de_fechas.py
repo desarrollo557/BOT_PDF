@@ -137,7 +137,7 @@ class MosaicoDeFechas:
     def _leer_protegido(self, imagen: bytes, cuantas: int) -> str | None:
         try:
             return self._leer(imagen)
-        except Exception:
+        except Exception:  # noqa: BLE001 - sin mosaico se lee cada fecha por su cuenta
             logger.warning("falló el mosaico de %d caras", cuantas, exc_info=True)
             return None
 
@@ -179,7 +179,7 @@ class MosaicoDeFechas:
     def _armar(self, source, tanda: Sequence[int], bandas: dict[int, Band]) -> bytes | None:
         try:
             import pymupdf
-        except Exception:
+        except Exception:  # noqa: BLE001 - sin pymupdf no hay mosaico, y no es un error
             logger.debug("no se pudo importar pymupdf para el mosaico", exc_info=True)
             return None
 
@@ -214,7 +214,7 @@ class MosaicoDeFechas:
                 )
                 y += pix.height + _SEPARACION
             return hoja.get_pixmap(alpha=False).tobytes("jpeg", jpg_quality=88)
-        except Exception:
+        except Exception:  # noqa: BLE001 - un mosaico que no se arma no tumba la lectura
             logger.warning("no se pudo armar el mosaico de fechas", exc_info=True)
             return None
         finally:
