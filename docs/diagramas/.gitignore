@@ -1,0 +1,9 @@
+# Recibos de verificación de Archify: llevan rutas del disco de quien los
+# generó y se rehacen con `finalize`. Se versionan la fuente (candidate.json)
+# y el diagrama (<nombre>.html).
+*.finalize.json
+*.finalize-summary.json
+*.delivery.json
+*.browser-check.json
+review-*/
+.archify-*

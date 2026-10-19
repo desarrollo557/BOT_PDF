@@ -422,16 +422,18 @@ backend/
   src/resolutions/
     domain/       reglas puras, cero dependencias   (anchor, extraction, scoring,
                   grouping, doctype, legibility, validation, naming,
-                  perfil, usuario)
+                  perfil, usuario, plantilla_de_pagina, conciliacion)
     application/  casos de uso y puertos            (pipeline, process_document,
                   inventory_document, fuid, task, control)
     adapters/     uno por proveedor                 (PyMuPDF, Tesseract, Claude,
                   MySQL, openpyxl, archivos)
-    api/          FastAPI, pool de workers, SSE
-  tests/          1463 pruebas; el dominio corre en menos de un segundo
-web/              SvelteKit 5 + Tailwind 4; 126 pruebas sobre los stores
+    api/          FastAPI, pool de workers, SSE, corridas de carpeta,
+                  reintentos y constancia de entrega
+  tests/          2572 pruebas; el dominio corre en menos de un segundo
+web/              SvelteKit 5 + Tailwind 4; 188 pruebas sobre los stores
 db/               esquema MySQL: 7 tablas, 4 vistas, 11 claves foráneas
-docs/             arquitectura y flujo de ramas
+docs/             arquitectura, flujo de ramas y diagramas
+  diagramas/      diagramas interactivos (abrir index.html en el navegador)
 scripts/          verificación local y andamios de medición
 ```
 

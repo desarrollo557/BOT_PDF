@@ -1,0 +1,478 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Procesar un documento: de la subida a las descargas",
+    "output": "docs/diagramas/procesar-un-documento/procesar-un-documento.html",
+    "locale": "es",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/desarrollo557/BOT_PDF.git",
+      "revision": "62e30ce0ff3ebc486b88c968f534a6f60606236b"
+    }
+  },
+  "participants": [
+    {
+      "id": "operador",
+      "type": "external",
+      "label": "Operador",
+      "sublabel": "pantalla Procesar",
+      "icon": "person",
+      "sources": [
+        {
+          "path": "web/src/routes/+page.svelte",
+          "line": 365,
+          "end_line": 397,
+          "label": "pantalla Procesar"
+        }
+      ]
+    },
+    {
+      "id": "asistente",
+      "type": "frontend",
+      "label": "UploadPanel",
+      "sublabel": "asistente por pasos",
+      "sources": [
+        {
+          "path": "web/src/lib/components/UploadPanel.svelte",
+          "line": 143,
+          "end_line": 170,
+          "label": "pasos del asistente"
+        },
+        {
+          "path": "web/src/lib/components/UploadPanel.svelte",
+          "line": 207,
+          "end_line": 230,
+          "label": "recibirArchivos → onfiles"
+        }
+      ]
+    },
+    {
+      "id": "front",
+      "type": "frontend",
+      "label": "Front web",
+      "sublabel": "api.ts · jobStore",
+      "sources": [
+        {
+          "path": "web/src/lib/api.ts",
+          "line": 162,
+          "end_line": 243,
+          "label": "uploadDocument y streamEvents"
+        },
+        {
+          "path": "web/src/lib/jobs.svelte.ts",
+          "line": 142,
+          "end_line": 196,
+          "label": "jobStore.connect y upsert"
+        },
+        {
+          "path": "web/src/routes/+page.svelte",
+          "line": 198,
+          "end_line": 252,
+          "label": "informe al asentarse"
+        }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "API FastAPI",
+      "sublabel": "routers y _run",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/routers/trabajos.py",
+          "line": 32,
+          "end_line": 108,
+          "label": "POST /api/jobs"
+        },
+        {
+          "path": "backend/src/resolutions/api/ejecucion.py",
+          "line": 67,
+          "end_line": 169,
+          "label": "_run y _correr"
+        },
+        {
+          "path": "backend/src/resolutions/api/routers/salidas.py",
+          "line": 191,
+          "end_line": 307,
+          "label": "descargas"
+        }
+      ]
+    },
+    {
+      "id": "registro",
+      "type": "messagebus",
+      "label": "JobRegistry",
+      "sublabel": "memoria + SSE",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/jobs.py",
+          "line": 376,
+          "end_line": 541,
+          "label": "create y mark_*"
+        },
+        {
+          "path": "backend/src/resolutions/api/jobs.py",
+          "line": 578,
+          "end_line": 646,
+          "label": "apply_progress, flush, latido"
+        },
+        {
+          "path": "backend/src/resolutions/api/routers/eventos.py",
+          "line": 18,
+          "end_line": 47,
+          "label": "GET /api/events"
+        }
+      ]
+    },
+    {
+      "id": "planificador",
+      "type": "backend",
+      "label": "Planificador",
+      "sublabel": "hilos de OCR",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/planificador.py",
+          "line": 33,
+          "end_line": 73,
+          "label": "Planificador"
+        },
+        {
+          "path": "backend/src/resolutions/api/main.py",
+          "line": 123,
+          "end_line": 149,
+          "label": "pool, Manager y controles"
+        }
+      ]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "Proceso worker",
+      "sublabel": "process_document_job",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/worker/__init__.py",
+          "line": 61,
+          "end_line": 93,
+          "label": "despachador"
+        },
+        {
+          "path": "backend/src/resolutions/api/worker/taller.py",
+          "line": 380,
+          "end_line": 416,
+          "label": "control y reportero"
+        },
+        {
+          "path": "backend/src/resolutions/application/control.py",
+          "line": 75,
+          "end_line": 107,
+          "label": "control.check()"
+        }
+      ]
+    },
+    {
+      "id": "disco",
+      "type": "database",
+      "label": "Disco",
+      "sublabel": "output_dir/{job_id}",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/application/entrega.py",
+          "line": 108,
+          "end_line": 161,
+          "label": "entregar()"
+        },
+        {
+          "path": "backend/src/resolutions/api/worker/resoluciones.py",
+          "line": 23,
+          "end_line": 78,
+          "label": "PDF, FUID y planilla"
+        }
+      ]
+    }
+  ],
+  "segments": [
+    {
+      "from": 150,
+      "to": 245,
+      "label": "Conexión en vivo"
+    },
+    {
+      "from": 250,
+      "to": 588,
+      "label": "Elegir y subir"
+    },
+    {
+      "from": 592,
+      "to": 870,
+      "label": "Despacho al worker"
+    },
+    {
+      "from": 874,
+      "to": 1186,
+      "label": "Leer, cortar y avisar"
+    },
+    {
+      "from": 1190,
+      "to": 1576,
+      "label": "Cierre y descargas"
+    }
+  ],
+  "messages": [
+    {
+      "id": "abrir-sse",
+      "from": "front",
+      "to": "registro",
+      "y": 170,
+      "label": "GET /api/events",
+      "variant": "dashed",
+      "note": "jobStore.connect() en +layout; al conectar repite el estado entero"
+    },
+    {
+      "id": "elegir",
+      "from": "operador",
+      "to": "asistente",
+      "y": 275,
+      "label": "elige habilidad y lectura",
+      "note": "Tipo → Lectura → pasos de la habilidad → Origen"
+    },
+    {
+      "id": "onfiles",
+      "from": "asistente",
+      "to": "front",
+      "y": 355,
+      "label": "onfiles(files, task, lectura…)",
+      "note": "en lote, antes POST /api/batches"
+    },
+    {
+      "id": "subir",
+      "from": "front",
+      "to": "api",
+      "y": 425,
+      "label": "POST /api/jobs",
+      "variant": "emphasis",
+      "note": "opciones en la consulta; 415/422/404/429 antes de escribir"
+    },
+    {
+      "id": "crear",
+      "from": "api",
+      "to": "registro",
+      "y": 515,
+      "label": "create() + publish",
+      "note": "nace en estado queued"
+    },
+    {
+      "id": "aceptado",
+      "from": "api",
+      "to": "front",
+      "y": 572,
+      "label": "202 {id, state: queued}",
+      "variant": "return"
+    },
+    {
+      "id": "turno",
+      "from": "api",
+      "to": "planificador",
+      "y": 615,
+      "label": "_run → documento()",
+      "note": "si ya se canceló en cola: mark_cancelled y no empieza"
+    },
+    {
+      "id": "hilos",
+      "from": "planificador",
+      "to": "api",
+      "y": 695,
+      "label": "hilos de OCR",
+      "variant": "return"
+    },
+    {
+      "id": "corriendo",
+      "from": "api",
+      "to": "registro",
+      "y": 725,
+      "label": "mark_running",
+      "note": "controls[job_id] = running"
+    },
+    {
+      "id": "despachar",
+      "from": "api",
+      "to": "worker",
+      "y": 792,
+      "label": "run_in_executor(pool)",
+      "variant": "emphasis",
+      "note": "payload con lo elegido, controles y cola de progreso"
+    },
+    {
+      "id": "eventos",
+      "from": "worker",
+      "to": "registro",
+      "y": 895,
+      "label": "ProgressEvent",
+      "variant": "dashed",
+      "note": "put_nowait a la cola del Manager; _drain_progress → apply_progress"
+    },
+    {
+      "id": "escribir",
+      "from": "worker",
+      "to": "disco",
+      "y": 985,
+      "label": "PDF por unidad + planilla",
+      "note": "entregar(): describir, comprobar, escribir, inventariar"
+    },
+    {
+      "id": "tramas",
+      "from": "registro",
+      "to": "front",
+      "y": 1065,
+      "label": "data: {job} vía SSE",
+      "variant": "dashed",
+      "note": "flush cada 0,25 s; latido cada 2 s"
+    },
+    {
+      "id": "monitor",
+      "from": "front",
+      "to": "operador",
+      "y": 1133,
+      "label": "monitor en vivo",
+      "note": "etapa, cinta de páginas, % y reloj"
+    },
+    {
+      "id": "informe",
+      "from": "worker",
+      "to": "api",
+      "y": 1210,
+      "label": "report",
+      "variant": "return"
+    },
+    {
+      "id": "terminado",
+      "from": "api",
+      "to": "registro",
+      "y": 1240,
+      "label": "mark_done(report)",
+      "note": "o mark_failed; ledger.record al libro mayor"
+    },
+    {
+      "id": "trama-final",
+      "from": "registro",
+      "to": "front",
+      "y": 1320,
+      "label": "state: done",
+      "variant": "dashed"
+    },
+    {
+      "id": "cierre",
+      "from": "front",
+      "to": "operador",
+      "y": 1350,
+      "label": "CompletionReport",
+      "variant": "return",
+      "note": "sólo lo que esta pestaña vio correr, cuando nada se mueve"
+    },
+    {
+      "id": "pedir",
+      "from": "operador",
+      "to": "front",
+      "y": 1430,
+      "label": "pide las descargas"
+    },
+    {
+      "id": "descargar",
+      "from": "front",
+      "to": "api",
+      "y": 1460,
+      "label": "GET …/outputs/{name}",
+      "variant": "emphasis",
+      "note": "también /inventory.xlsx y /archivos.zip"
+    },
+    {
+      "id": "leer",
+      "from": "api",
+      "to": "disco",
+      "y": 1528,
+      "label": "lee output_dir/{job_id}"
+    },
+    {
+      "id": "archivo",
+      "from": "api",
+      "to": "front",
+      "y": 1558,
+      "label": "FileResponse",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "front",
+      "from": 165,
+      "to": 1564,
+      "type": "frontend"
+    },
+    {
+      "participant": "registro",
+      "from": 165,
+      "to": 1326,
+      "type": "messagebus"
+    },
+    {
+      "participant": "api",
+      "from": 420,
+      "to": 798,
+      "type": "backend"
+    },
+    {
+      "participant": "planificador",
+      "from": 610,
+      "to": 701,
+      "type": "backend"
+    },
+    {
+      "participant": "worker",
+      "from": 787,
+      "to": 1216,
+      "type": "backend"
+    },
+    {
+      "participant": "api",
+      "from": 1205,
+      "to": 1246,
+      "type": "backend"
+    },
+    {
+      "participant": "api",
+      "from": 1455,
+      "to": 1564,
+      "type": "backend"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Un solo camino",
+      "items": [
+        "ejecucion._run procesa igual un PDF subido que uno de una corrida de carpeta",
+        "El pool de procesos ejecuta el documento; el planificador sólo dice cuántos hilos de OCR le tocan",
+        "Si el trabajo es de un lote, al terminar se rehacen los inventarios generales del lote"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Progreso en vivo",
+      "items": [
+        "Cada página emite un evento; la API los pliega y empuja cuadros agrupados cuatro veces por segundo",
+        "El latido de 2 s evita que una fase sin eventos parezca un cuelgue",
+        "SingleDocumentMonitor, BatchMonitor y FolderRunMonitor pintan las tramas; cada una lleva kind (job o folder_run)"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Parar sin romper",
+      "items": [
+        "Pausar, reanudar y cancelar cambian controls[job_id]; el worker lo lee entre páginas con control.check()",
+        "Entre páginas no hay nada a medio escribir: reanudar continúa, no empieza de nuevo",
+        "Cancelar marca el trabajo en el acto; si el worker termina después, el trabajo se queda cancelado"
+      ]
+    }
+  ]
+}

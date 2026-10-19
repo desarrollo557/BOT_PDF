@@ -1,0 +1,264 @@
+{
+  "schema_version": 3,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Estados de un trabajo",
+    "output": "docs/diagramas/estados-de-un-trabajo/estados-de-un-trabajo.html",
+    "locale": "es",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/desarrollo557/BOT_PDF.git",
+      "revision": "62e30ce0ff3ebc486b88c968f534a6f60606236b"
+    }
+  },
+  "mainPath": [
+    "queued",
+    "running",
+    "done"
+  ],
+  "states": [
+    {
+      "id": "queued",
+      "type": "start",
+      "label": "En cola",
+      "sublabel": "JobState.QUEUED",
+      "tag": "queued",
+      "step": "01",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/jobs.py",
+          "line": 18,
+          "end_line": 33,
+          "label": "JobState e IN_FLIGHT"
+        },
+        {
+          "path": "backend/src/resolutions/api/routers/trabajos.py",
+          "line": 77,
+          "end_line": 95,
+          "label": "create y _run"
+        },
+        {
+          "path": "backend/src/resolutions/api/ejecucion.py",
+          "line": 67,
+          "end_line": 84,
+          "label": "_run"
+        }
+      ]
+    },
+    {
+      "id": "running",
+      "type": "active",
+      "label": "Procesando",
+      "sublabel": "control: running",
+      "tag": "running",
+      "step": "02",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/jobs.py",
+          "line": 500,
+          "end_line": 504,
+          "label": "mark_running"
+        },
+        {
+          "path": "backend/src/resolutions/api/ejecucion.py",
+          "line": 87,
+          "end_line": 160,
+          "label": "_correr"
+        },
+        {
+          "path": "backend/src/resolutions/application/control.py",
+          "line": 87,
+          "end_line": 94,
+          "label": "control.check()"
+        }
+      ]
+    },
+    {
+      "id": "done",
+      "type": "success",
+      "label": "Terminado",
+      "sublabel": "con su informe",
+      "tag": "done",
+      "step": "03",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/jobs.py",
+          "line": 506,
+          "end_line": 512,
+          "label": "mark_done"
+        },
+        {
+          "path": "backend/src/resolutions/api/ejecucion.py",
+          "line": 136,
+          "end_line": 148,
+          "label": "informe y libro mayor"
+        }
+      ]
+    },
+    {
+      "id": "paused",
+      "type": "waiting",
+      "label": "En pausa",
+      "sublabel": "control: paused",
+      "tag": "paused",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/jobs.py",
+          "line": 530,
+          "end_line": 540,
+          "label": "mark_paused y mark_resumed"
+        },
+        {
+          "path": "backend/src/resolutions/api/routers/trabajos.py",
+          "line": 233,
+          "end_line": 251,
+          "label": "pause y resume"
+        },
+        {
+          "path": "backend/src/resolutions/application/control.py",
+          "line": 87,
+          "end_line": 94,
+          "label": "espera cada 0,1 s"
+        }
+      ]
+    },
+    {
+      "id": "failed",
+      "type": "failure",
+      "label": "Fallido",
+      "sublabel": "error explicado",
+      "tag": "failed",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/jobs.py",
+          "line": 514,
+          "end_line": 520,
+          "label": "mark_failed"
+        },
+        {
+          "path": "backend/src/resolutions/api/ejecucion.py",
+          "line": 155,
+          "end_line": 160,
+          "label": "explicar_fallo"
+        }
+      ]
+    },
+    {
+      "id": "cancelled",
+      "type": "neutral",
+      "label": "Cancelado",
+      "sublabel": "decisión, no fallo",
+      "tag": "cancelled",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/jobs.py",
+          "line": 522,
+          "end_line": 528,
+          "label": "mark_cancelled"
+        },
+        {
+          "path": "backend/src/resolutions/api/routers/trabajos.py",
+          "line": 253,
+          "end_line": 263,
+          "label": "cancel en el acto"
+        },
+        {
+          "path": "backend/src/resolutions/api/ejecucion.py",
+          "line": 124,
+          "end_line": 154,
+          "label": "Cancelled y CancelledError"
+        }
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "id": "queued-running",
+      "from": "queued",
+      "to": "running",
+      "label": "toma turno",
+      "note": "_correr: controls[job_id] = running, mark_running y run_in_executor al pool"
+    },
+    {
+      "id": "running-done",
+      "from": "running",
+      "to": "done",
+      "label": "worker entrega",
+      "variant": "emphasis",
+      "note": "mark_done(report) y ledger.record al libro mayor"
+    },
+    {
+      "id": "running-paused",
+      "from": "running",
+      "to": "paused",
+      "label": "operador: pausar",
+      "note": "en el siguiente check()"
+    },
+    {
+      "id": "paused-running",
+      "from": "paused",
+      "to": "running",
+      "label": "operador: reanudar",
+      "note": "sigue por donde iba"
+    },
+    {
+      "id": "running-failed",
+      "from": "running",
+      "to": "failed",
+      "label": "excepción",
+      "variant": "security",
+      "note": "mark_failed(explicar_fallo(error)); el lote sigue"
+    },
+    {
+      "id": "queued-cancelled",
+      "from": "queued",
+      "to": "cancelled",
+      "label": "operador: cancelar",
+      "note": "_run lo ve cancelado y no llega a empezar"
+    },
+    {
+      "id": "running-cancelled",
+      "from": "running",
+      "to": "cancelled",
+      "label": "operador: cancelar",
+      "note": "en el acto; también al detener una carpeta"
+    },
+    {
+      "id": "paused-cancelled",
+      "from": "paused",
+      "to": "cancelled",
+      "label": "operador: cancelar",
+      "note": "check() en pausa ve cancelled y levanta Cancelled"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "Quién mueve cada estado",
+      "items": [
+        "El operador, con RunControls: pausar, reanudar y cancelar llaman a POST /api/jobs/{id}/pause, /resume y /cancel (o a los del lote) y escriben RunState en controls[job_id]",
+        "El worker lee ese RunState entre páginas con control.check(): sigue, espera en pausa o levanta Cancelled en décimas",
+        "La API marca terminado o fallido cuando el worker devuelve el informe o una excepción"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Reglas que el código impone",
+      "items": [
+        "Sólo un trabajo en cola, procesando o en pausa admite órdenes; si ya terminó contesta 409",
+        "Pausar sólo cambia el estado de un trabajo que ya está procesando",
+        "Si el worker termina después de cancelar, el trabajo se queda cancelado",
+        "Sólo lo terminado, fallido o cancelado se puede quitar de la pantalla"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Lote y corrida de carpeta",
+      "items": [
+        "Un lote no tiene estado propio: batch_summary cuenta sus trabajos por estado",
+        "POST /api/batches/{id}/{action} aplica pausar, reanudar o cancelar a cada trabajo en vuelo del lote",
+        "Una corrida de carpeta pasa por scanning, processing y watching (si vigila) hasta done; stopped si el operador la detiene, failed si la corrida falla"
+      ]
+    }
+  ]
+}

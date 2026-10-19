@@ -1,0 +1,314 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Cómo se parte una caja de correspondencia",
+    "locale": "es",
+    "output": "docs/diagramas/caja-de-correspondencia/caja-de-correspondencia.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/desarrollo557/BOT_PDF.git",
+      "revision": "62e30ce0ff3ebc486b88c968f534a6f60606236b"
+    },
+    "legend": {
+      "entries": {
+        "external": { "label": "Entrada: la caja escaneada" },
+        "cloud": { "label": "Paso donde puede entrar IA de pago (solo «OCR + IA»)" },
+        "backend": { "label": "Filtro local, sin IA" },
+        "security": { "label": "Decisión" },
+        "database": { "label": "Salida en disco" },
+        "frontend": { "label": "Para el operador" }
+      }
+    }
+  },
+  "lanes": [
+    { "id": "lectura", "label": "Lectura · L1–L3" },
+    { "id": "corte", "label": "Corte · F1–F2b" },
+    { "id": "anexos", "label": "Anexos · F3–F4b" },
+    { "id": "tramite", "label": "Trámite · F5–F5c" },
+    { "id": "cierre", "label": "Cierre · F6" },
+    { "id": "revision", "label": "Revisión", "variant": "exception" }
+  ],
+  "groups": [
+    { "id": "g-sello", "label": "F2 · manda el sello", "lane": "corte", "fromCol": 1, "toCol": 2, "variant": "emphasis" },
+    { "id": "g-re", "label": "F5 · manda el sello", "lane": "tramite", "fromCol": 1, "toCol": 1, "variant": "emphasis" }
+  ],
+  "nodes": [
+    {
+      "id": "caja", "lane": "lectura", "col": 0, "type": "external", "icon": "start",
+      "label": "Caja de correspondencia", "sublabel": "un PDF escaneado: UPD…",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 24, "end_line": 30, "label": "_segment_job" },
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 96, "end_line": 120, "label": "carpeta: se unen sus PDF" }
+      ]
+    },
+    {
+      "id": "l1", "lane": "lectura", "col": 1, "type": "cloud",
+      "label": "L1 · Texto de cada hoja", "sublabel": "su capa de texto; si no, OCR", "tag": "evita «DOCUMENTO» y «S.F.»",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 161, "end_line": 188, "label": "L1" },
+        { "path": "backend/src/resolutions/application/agrupacion.py", "line": 162, "end_line": 260, "label": "leer_paginas" },
+        { "path": "backend/src/resolutions/api/worker/taller.py", "line": 110, "end_line": 140, "label": "OCR local o en cascada" }
+      ]
+    },
+    {
+      "id": "l2", "lane": "lectura", "col": 2, "type": "cloud",
+      "label": "L2 · Sello de radicación", "sublabel": "recorte a 400 ppp donde puede ir", "tag": "UPD2320047 p8: RE recuperado",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 189, "end_line": 217, "label": "L2" },
+        { "path": "backend/src/resolutions/application/sellos.py", "line": 240, "end_line": 401, "label": "leer_sellos" },
+        { "path": "backend/src/resolutions/domain/sello.py", "line": 262, "end_line": 281, "label": "leer_sello" }
+      ]
+    },
+    {
+      "id": "l2b", "lane": "lectura", "col": 3, "type": "backend",
+      "label": "Relectura del renglón", "sublabel": "600 ppp, dos lecturas iguales", "tag": "UPD2326336 p1: no inventa",
+      "sources": [
+        { "path": "backend/src/resolutions/application/sellos.py", "line": 202, "end_line": 223, "label": "releer_el_renglon" },
+        { "path": "backend/src/resolutions/application/sellos.py", "line": 387, "end_line": 391, "label": "solo si nada dio el RE" }
+      ]
+    },
+    {
+      "id": "l3", "lane": "lectura", "col": 4, "type": "backend",
+      "label": "L3 · Fecha de la guía", "sublabel": "casillas de LECTA marcadas con X", "tag": "UPD2320047 → 26/01/2022",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 218, "end_line": 232, "label": "L3" },
+        { "path": "backend/src/resolutions/adapters/casillas_de_la_guia.py", "line": 167, "end_line": 175, "label": "fecha_de_la_guia" }
+      ]
+    },
+    {
+      "id": "f1", "lane": "corte", "col": 0, "type": "cloud",
+      "label": "F1 · Continuidad", "sublabel": "hoja contra hoja; la duda une", "tag": "base de los demás filtros",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 144, "end_line": 155, "label": "F1" },
+        { "path": "backend/src/resolutions/api/worker/taller.py", "line": 180, "end_line": 192, "label": "oraculo_de_bordes" }
+      ]
+    },
+    {
+      "id": "f2", "lane": "corte", "col": 1, "type": "security", "icon": "decision",
+      "label": "¿Trae sello o etiqueta?", "sublabel": "de radicación o de envío LECTA",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 256, "end_line": 270, "label": "F2" },
+        { "path": "backend/src/resolutions/domain/sello.py", "line": 303, "end_line": 312, "label": "guía y etiqueta" }
+      ]
+    },
+    {
+      "id": "abre", "lane": "corte", "col": 2, "yOffset": -48, "type": "backend",
+      "label": "Abre documento", "sublabel": "la guía va con la carta de su envío", "tag": "UPD2326502: [1-2] [3-7] [8-11]",
+      "sources": [
+        { "path": "backend/src/resolutions/application/sellos.py", "line": 404, "end_line": 482, "label": "cortar_por_sellos" },
+        { "path": "backend/src/resolutions/domain/sello.py", "line": 367, "end_line": 378, "label": "claves_del_envio" }
+      ]
+    },
+    {
+      "id": "sigue", "lane": "corte", "col": 2, "yOffset": 48, "type": "backend",
+      "label": "Queda el corte de F1", "sublabel": "ninguna hoja abre por sí sola",
+      "sources": [
+        { "path": "backend/src/resolutions/application/sellos.py", "line": 483, "end_line": 491, "label": "sin inicios nuevos" }
+      ]
+    },
+    {
+      "id": "f2c", "lane": "corte", "col": 3, "type": "backend",
+      "label": "F2c · Actas de suspensión", "sublabel": "cada número impreso, un acta", "tag": "UPD2326309: 3 actas, 3 PDF",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 271, "end_line": 277, "label": "F2c" },
+        { "path": "backend/src/resolutions/application/sellos.py", "line": 770, "end_line": 812, "label": "separar_las_actas" },
+        { "path": "backend/src/resolutions/domain/sello.py", "line": 387, "end_line": 397, "label": "número del acta" }
+      ]
+    },
+    {
+      "id": "f2b", "lane": "corte", "col": 4, "type": "backend",
+      "label": "F2b · Folios del sello", "sublabel": "«Folios: N» es del escrito", "tag": "UPD2326399 p1-9",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 278, "end_line": 281, "label": "F2b" },
+        { "path": "backend/src/resolutions/application/sellos.py", "line": 529, "end_line": 572, "label": "retener_los_folios" }
+      ]
+    },
+    {
+      "id": "f3", "lane": "anexos", "col": 0, "type": "backend",
+      "label": "F3 · Lista de ANEXOS", "sublabel": "retiene lo que nombra; no parte", "tag": "UPD2326319 p3 vuelve a p1-7",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 282, "end_line": 284, "label": "F3" },
+        { "path": "backend/src/resolutions/application/anexos_declarados.py", "line": 242, "end_line": 261, "label": "retener_anexos" },
+        { "path": "backend/src/resolutions/domain/anexos_declarados.py", "line": 418, "end_line": 425, "label": "leer_lista_de_anexos" }
+      ]
+    },
+    {
+      "id": "f4", "lane": "anexos", "col": 1, "type": "backend",
+      "label": "F4 · Cédula y factura", "sublabel": "nunca solas: con la hoja anterior", "tag": "también su reverso mudo",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 285, "end_line": 288, "label": "F4" },
+        { "path": "backend/src/resolutions/application/anexos_declarados.py", "line": 493, "end_line": 513, "label": "unir_soportes" }
+      ]
+    },
+    {
+      "id": "f4b", "lane": "anexos", "col": 2, "type": "backend",
+      "label": "F4b · Acuerdo de pago", "sublabel": "un solo documento, sin RE", "tag": "UPD2326302 p5-13",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 289, "end_line": 291, "label": "F4b" },
+        { "path": "backend/src/resolutions/application/anexos_declarados.py", "line": 650, "end_line": 667, "label": "unir_el_acuerdo_de_pago" }
+      ]
+    },
+    {
+      "id": "f5", "lane": "tramite", "col": 0, "type": "security", "icon": "decision",
+      "label": "¿El sello dio su RE?", "sublabel": "RE propio = el de su sello", "tag": "solo «Por trámite»",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 421, "end_line": 450, "label": "F5" },
+        { "path": "backend/src/resolutions/application/agrupacion.py", "line": 631, "end_line": 674, "label": "agrupar_por_tramite" }
+      ]
+    },
+    {
+      "id": "mismo", "lane": "tramite", "col": 1, "yOffset": -48, "type": "backend",
+      "label": "Mismo RE, mismo trámite", "sublabel": "un RE nuevo corta", "tag": "UPD2320047: 2 → 4 archivos",
+      "sources": [
+        { "path": "backend/src/resolutions/application/sellos.py", "line": 639, "end_line": 733, "label": "dividir_por_tramite" }
+      ]
+    },
+    {
+      "id": "ilegible", "lane": "tramite", "col": 1, "yOffset": 48, "type": "backend",
+      "label": "Corta hasta el próximo", "sublabel": "sello o RE; no hereda el RE anterior", "tag": "UPD2326316 p8, sello de tinta",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 454, "end_line": 472, "label": "sin_re_ajeno" },
+        { "path": "backend/src/resolutions/application/agrupacion.py", "line": 644, "end_line": 647, "label": "sello ilegible abre igual" }
+      ]
+    },
+    {
+      "id": "f5b", "lane": "tramite", "col": 2, "type": "backend",
+      "label": "F5b · Última hoja sola", "sublabel": "si trae sello; manda sobre el trámite", "tag": "UPD2321099 p9-10, con su guía",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 497, "end_line": 499, "label": "F5b" },
+        { "path": "backend/src/resolutions/application/sellos.py", "line": 575, "end_line": 636, "label": "la_ultima_hoja_sola" }
+      ]
+    },
+    {
+      "id": "f5c", "lane": "tramite", "col": 3, "type": "backend",
+      "label": "F5c · No abre: se une", "sublabel": "sin sello, título ni RE propio", "tag": "UPD2326299 p5",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 508, "end_line": 534, "label": "F5c" },
+        { "path": "backend/src/resolutions/application/sellos.py", "line": 736, "end_line": 767, "label": "unir_lo_que_no_abre" }
+      ]
+    },
+    {
+      "id": "verif", "lane": "cierre", "col": 0, "type": "backend",
+      "label": "Verificar los ANEXOS", "sublabel": "contra el PDF final", "tag": "UPD2326310: el contrato sí estaba",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 535, "end_line": 537, "label": "verificación" },
+        { "path": "backend/src/resolutions/application/anexos_declarados.py", "line": 717, "end_line": 736, "label": "verificar_en_el_documento" }
+      ]
+    },
+    {
+      "id": "filtro", "lane": "cierre", "col": 1, "type": "security", "icon": "decision",
+      "label": "Filtro de revisión", "sublabel": "¿hay algo que mirar?", "tag": "108C000033: ~30 → 5 avisos",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 547, "end_line": 575, "label": "filtro del trámite" },
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 671, "end_line": 694, "label": "review_queue" }
+      ]
+    },
+    {
+      "id": "f6", "lane": "cierre", "col": 2, "type": "backend",
+      "label": "F6 · Nombre del archivo", "sublabel": "título directo, RE y fecha", "tag": "todo en MAYÚSCULAS",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 577, "end_line": 598, "label": "F6" },
+        { "path": "backend/src/resolutions/domain/asunto_del_documento.py", "line": 385, "end_line": 400, "label": "titulo_del_documento" },
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 631, "end_line": 652, "label": "entregar, mayusculas=True" }
+      ]
+    },
+    {
+      "id": "salida", "lane": "cierre", "col": 3, "type": "database",
+      "label": "PDF + índice electrónico", "sublabel": "en la subcarpeta UPD…", "tag": "01-RE…_DERECHO-DE-PETICION.pdf",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 86, "end_line": 91, "label": "carpeta con el nombre de la caja" },
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 732, "end_line": 736, "label": "índice electrónico" }
+      ]
+    },
+    {
+      "id": "cola", "lane": "revision", "col": 1, "type": "frontend", "icon": "flag",
+      "label": "Cola de revisión", "sublabel": "hoja a hoja, con su motivo", "tag": "UPD2326468: el anexo que falta",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 667, "end_line": 694, "label": "review_queue" }
+      ]
+    }
+  ],
+  "edges": [
+    { "id": "e-caja-l1", "from": "caja", "to": "l1", "label": "páginas", "variant": "emphasis" },
+    { "id": "e-l1-l2", "from": "l1", "to": "l2", "label": "textos", "variant": "emphasis" },
+    { "id": "e-l2-l2b", "from": "l2", "to": "l2b", "label": "RE sin leer", "variant": "dashed" },
+    { "id": "e-l2b-l3", "from": "l2b", "to": "l3", "variant": "emphasis" },
+    { "id": "e-l3-f1", "from": "l3", "to": "f1", "label": "texto y sellos por hoja", "variant": "emphasis", "fromSide": "bottom", "toSide": "top" },
+    { "id": "e-f1-f2", "from": "f1", "to": "f2", "variant": "emphasis" },
+    { "id": "e-f2-abre", "from": "f2", "to": "abre", "label": "sí", "variant": "emphasis" },
+    { "id": "e-f2-sigue", "from": "f2", "to": "sigue", "label": "no", "variant": "default", "role": "branch" },
+    { "id": "e-abre-f2c", "from": "abre", "to": "f2c", "variant": "emphasis" },
+    { "id": "e-sigue-f2c", "from": "sigue", "to": "f2c", "variant": "default" },
+    { "id": "e-f2c-f2b", "from": "f2c", "to": "f2b", "variant": "emphasis" },
+    { "id": "e-f2b-f3", "from": "f2b", "to": "f3", "label": "documentos cortados", "variant": "emphasis", "fromSide": "bottom", "toSide": "top" },
+    { "id": "e-f3-f4", "from": "f3", "to": "f4", "variant": "emphasis" },
+    { "id": "e-f4-f4b", "from": "f4", "to": "f4b", "variant": "emphasis" },
+    { "id": "e-f4b-f5", "from": "f4b", "to": "f5", "label": "documentos completos", "variant": "emphasis", "fromSide": "bottom", "toSide": "top" },
+    { "id": "e-f5-mismo", "from": "f5", "to": "mismo", "label": "sí", "variant": "emphasis", "fromSide": "right", "toSide": "left" },
+    { "id": "e-f5-ilegible", "from": "f5", "to": "ilegible", "label": "no", "variant": "default", "role": "branch", "fromSide": "bottom", "toSide": "left" },
+    { "id": "e-mismo-f5b", "from": "mismo", "to": "f5b", "variant": "emphasis" },
+    { "id": "e-ilegible-f5b", "from": "ilegible", "to": "f5b", "variant": "default" },
+    { "id": "e-f5b-f5c", "from": "f5b", "to": "f5c", "variant": "emphasis" },
+    { "id": "e-f5c-verif", "from": "f5c", "to": "verif", "label": "PDF final de cada uno", "variant": "emphasis", "fromSide": "bottom", "toSide": "top" },
+    { "id": "e-verif-filtro", "from": "verif", "to": "filtro", "variant": "emphasis" },
+    { "id": "e-filtro-f6", "from": "filtro", "to": "f6", "variant": "emphasis" },
+    { "id": "e-filtro-cola", "from": "filtro", "to": "cola", "label": "solo lo accionable", "variant": "dashed", "role": "branch" },
+    { "id": "e-f6-salida", "from": "f6", "to": "salida", "label": "escribir", "variant": "emphasis" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "El orden manda",
+      "items": [
+        "Lo pidió el operador: «agrégales un orden de ejecución lógico». Cada hoja se lee una sola vez y los filtros van del indicio más fuerte al más débil; ninguno deshace lo que decidió uno anterior.",
+        "Debajo de todos vale «ante la duda se une»: lo que ninguna regla resuelve se une y se declara.",
+        "Las hojas que abren algo sí o sí (sello, etiqueta de LECTA, acta de suspensión) quedan protegidas: ningún filtro posterior las vuelve a unir."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Manda el sello",
+      "items": [
+        "«Cada vez que encuentres un sello nuevo es un nuevo documento.» Un sello abre documento aunque la continuidad lo hubiera dejado a mitad de otro.",
+        "La guía de entrega de LECTA va con la carta de su envío —por número de guía o por fecha y hora de admisión—, antes o después de ella; nunca va sola.",
+        "El sello de tinta (RE a mano) corta pero no da RE; el de la SSPD abre documento y nunca pide RE."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Dónde puede entrar la IA de pago",
+      "items": [
+        "Solo con «OCR + IA». L1: la OCR en cascada pregunta a Mistral solo por la hoja que Tesseract dejó vacía.",
+        "L2: el número de cada etiqueta con sello, una página facturada por sello (7 de 7 frente a 4-5 de 7 de Tesseract).",
+        "F1: las costuras dudosas las juzga el oráculo de bordes. Con «Solo OCR» todo es Tesseract local y la costura dudosa se une."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Por trámite, por documento o por mes",
+      "items": [
+        "F5 solo corre con «Por trámite», la opción por omisión: el RE propio de una hoja con sello es el de su sello, no el que cita su texto (UPD2326324 p8).",
+        "El acta, la autorización, la solicitud, el contrato y el certificado no se nombran con el RE de nadie.",
+        "«Por documento» entrega el corte tal cual; «Por mes» une las páginas del mismo mes y ahí el sello no decide."
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Qué llega a la cola de revisión",
+      "items": [
+        "Por documento, la costura que nadie pudo decidir; por trámite, la hoja que abre un documento final sin sello propio con RE y cuyo trámite no se pudo probar; siempre, el anexo declarado que no aparece.",
+        "No se avisa lo del acuerdo de pago ni el formato sin RE ajeno. El aviso de anexos dice de qué documento es: «en el documento de las págs. 1-6 (RE…)».",
+        "Avisos que deben quedar: el anexo que de verdad falta, el RE cortado al borde, el RE a mano de un sello de tinta y las lecturas que no coinciden."
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Pendiente según la bóveda",
+      "items": [
+        "UPD2326301: ¿el contrato de transacción dentro del acuerdo de pago va aparte?",
+        "Los RE manuscritos de los sellos de tinta y el acta de suspensión suelta sin número siguen sin decidir."
+      ]
+    }
+  ]
+}
