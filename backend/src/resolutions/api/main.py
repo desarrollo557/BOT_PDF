@@ -11,9 +11,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import multiprocessing
+import os
 import time
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
+from pathlib import Path
 from uuid import uuid4
 
 from pathlib import Path
@@ -298,7 +300,28 @@ for router in (
 ):
     app.include_router(router)
 
-frontend_root = Path(__file__).resolve().parents[4] / "web" / "build"
+def _frontend_root() -> Path:
+    """La carpeta del front compilado en el contenedor.
+
+    En el entorno de desarrollo el código vive en la raíz del repo; en Docker se
+    instala como paquete Python y el acceso a ``__file__`` cambia. Por eso el
+    punto de verdad es una ruta explícita del contenedor y un override por
+    variable de entorno, que es lo que deja el servicio funcionando igual con
+    código fuente o con una imagen ya preparada.
+    """
+    candidates = [
+        Path(os.environ.get("BOTPDF_WEB_ROOT", "/app/web/build")),
+        Path(__file__).resolve().parents[4] / "web" / "build",
+        Path("/app/web/build"),
+        Path.cwd() / "web" / "build",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+frontend_root = _frontend_root()
 if frontend_root.exists():
     app.mount("/", StaticFiles(directory=str(frontend_root), html=True), name="frontend")
 
