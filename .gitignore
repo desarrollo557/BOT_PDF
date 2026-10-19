@@ -35,3 +35,5 @@ vite.config.ts.timestamp-*
 
 # Docker: el montaje de los discos lo genera el instalador para cada equipo.
 docker-compose.override.yml
+# El informe que deja diagnosticar-docker: es de cada equipo.
+diagnostico-docker.txt
