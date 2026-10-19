@@ -141,5 +141,7 @@ class TestLosArchivosDeDocker:
             texto = (RAIZ.parent / archivo).read_text(encoding="utf-8")
             # Las ${...} las interpreta Docker Compose (el puerto), no el servicio.
             texto = re.sub(r"\$\{[^}]*\}", "", texto)
+            # Y los comentarios sólo explican.
+            texto = re.sub(r"(?m)^\s*#.*$", "", texto)
             for variable in set(re.findall(r"\b((?:RESOLUTIONS|BOTPDF)_[A-Z_]+)\b", texto)):
                 assert f'"{variable}"' in codigo or f"'{variable}'" in codigo, f"{archivo}: {variable} no la lee nadie"
