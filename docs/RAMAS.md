@@ -65,6 +65,41 @@ gh pr create --base produccion --fill
 gh pr create --base main --head hotfix/inventario-no-carga --fill
 ```
 
+## Dejar las tres ramas en el mismo commit
+
+Las ramas exigen historial lineal, así que no hay merge commits: un PR
+mergeado con *squash* deja en el destino un commit nuevo, y las otras dos
+ramas quedan con el mismo código pero «N commits ahead». Para que las tres
+apunten al **mismo** commit, un administrador las avanza por fast-forward,
+sin `--force`, una vez que ese commit pasó la CI:
+
+```powershell
+git fetch origin
+$sha = git rev-parse <commit-probado>
+# Las tres tienen que ser ancestros del commit: si no, no es un fast-forward.
+foreach ($r in 'develop','main','produccion') { git merge-base --is-ancestor "origin/$r" $sha; if ($?) { "$r ok" } }
+git push origin "${sha}:refs/heads/develop" "${sha}:refs/heads/main" "${sha}:refs/heads/produccion"
+```
+
+GitHub marca solos como mergeados los PR cuyo contenido queda en la rama.
+Mover `produccion` es desplegar.
+
+### La CI se lanza a mano
+
+En este repositorio los workflows no se disparan con los push ni con los PR
+(el último disparo automático fue el 2026-09-07), así que las comprobaciones
+obligatorias de un PR se quedan en «Waiting for status to be reported». La CI
+se lanza sobre la rama y se espera en verde:
+
+```powershell
+gh workflow run CI --ref <rama>
+gh run list --branch <rama> --limit 1
+gh run watch <id> --exit-status
+```
+
+«Rama, título y descripción» (`pr-guard.yml`) sólo corre con eventos de PR, y
+por lo mismo tampoco llega nunca.
+
 ## Qué protege cada rama
 
 Configurado en GitHub (Settings → Rules), y explicado en
