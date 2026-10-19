@@ -13,7 +13,8 @@ services:
     image: botpdf:latest
     container_name: botpdf
     ports:
-      - "8000:8000"
+      # El del equipo: 8000, u otro con BOTPDF_PUERTO en el .env (instalar-docker -Puerto).
+      - "${BOTPDF_PUERTO:-8000}:8000"
     # Las llaves de la IA (MISTRAL_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY) y
     # los ajustes RESOLUTIONS_* opcionales, del .env de la raíz si existe.
     env_file:

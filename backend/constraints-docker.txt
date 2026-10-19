@@ -1,0 +1,18 @@
+# Las versiones con las que se probó el servicio, fijas para la imagen de Docker.
+#
+# pyproject.toml pide mínimos («pymupdf>=1.24»), y sin esto la imagen instalaba
+# lo último que hubiera ese día: el 2026-10-19 salía PyMuPDF 2.0 y Pillow 13,
+# versiones que ninguna prueba había visto. Con esto el contenedor corre
+# exactamente el motor de PDF y de imagen que pasa la suite.
+#
+# Para subirlas: cambiar la versión aquí y en el entorno local, pasar
+# scripts/verificar y reconstruir (instalar-docker).
+pymupdf==1.28.2
+pillow==12.3.0
+fastapi==0.141.1
+starlette==1.6.0
+uvicorn==0.52.4
+openpyxl==3.1.5
+anthropic==1.3.0
+pymysql==1.2.0
+python-multipart==0.0.32

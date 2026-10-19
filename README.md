@@ -481,6 +481,10 @@ espera a que el servicio conteste y abre `http://localhost:8000`.
 - **Las llaves de la IA**, en el `.env` de la raíz (`MISTRAL_API_KEY`,
   `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`). Se leen al arrancar: tras cambiarlas,
   `docker compose up -d`.
+- **El puerto** es el 8000. Si en ese equipo ya está ocupado, `.\instalar-docker.cmd -Puerto 8100`:
+  queda guardado en el `.env` (`BOTPDF_PUERTO`) y las siguientes veces se usa solo.
+- **Las versiones** de PyMuPDF, Pillow, FastAPI y demás son las mismas con que pasa la
+  suite (`backend/constraints-docker.txt`), no lo último publicado ese día.
 - **Los datos** (salidas, libro mayor, usuarios, registro diario) viven en el
   volumen `bot_pdf_botpdf_data`: sobreviven a detener, reconstruir y volver a
   clonar.

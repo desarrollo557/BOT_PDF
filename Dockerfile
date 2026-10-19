@@ -30,10 +30,12 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# El servicio como paquete Python, con sus plantillas (pyproject: package-data).
-COPY backend/pyproject.toml /app/backend/pyproject.toml
+# El servicio como paquete Python, con sus plantillas (pyproject: package-data) y
+# las mismas versiones con que pasa la suite (constraints-docker.txt): sin ellas
+# entraba lo último publicado, que ninguna prueba había visto.
+COPY backend/pyproject.toml backend/constraints-docker.txt /app/backend/
 COPY backend/src /app/backend/src
-RUN pip install --upgrade pip && pip install /app/backend
+RUN pip install --upgrade pip && pip install -c /app/backend/constraints-docker.txt /app/backend
 
 # El front ya compilado; lo sirve el propio servicio en el puerto 8000.
 COPY --from=frontend-builder /workspace/web/build /app/web/build

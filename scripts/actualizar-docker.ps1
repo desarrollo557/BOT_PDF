@@ -7,6 +7,8 @@
 #
 # Equivale a: docker compose down; git pull; .\scripts\instalar-escritorio.ps1
 
+param([int]$Puerto = 0)
+
 $ErrorActionPreference = "Stop"
 
 $raiz = Split-Path -Parent $PSScriptRoot
@@ -34,4 +36,4 @@ if (Test-Path (Join-Path $raiz ".git")) {
     }
 }
 
-& (Join-Path $PSScriptRoot "instalar-escritorio.ps1")
+& (Join-Path $PSScriptRoot "instalar-escritorio.ps1") -Puerto $Puerto

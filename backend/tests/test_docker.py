@@ -139,5 +139,7 @@ class TestLosArchivosDeDocker:
         codigo = "\n".join(p.read_text(encoding="utf-8") for p in (RAIZ / "src").rglob("*.py"))
         for archivo in ("Dockerfile", "docker-compose.yml"):
             texto = (RAIZ.parent / archivo).read_text(encoding="utf-8")
+            # Las ${...} las interpreta Docker Compose (el puerto), no el servicio.
+            texto = re.sub(r"\$\{[^}]*\}", "", texto)
             for variable in set(re.findall(r"\b((?:RESOLUTIONS|BOTPDF)_[A-Z_]+)\b", texto)):
                 assert f'"{variable}"' in codigo or f"'{variable}'" in codigo, f"{archivo}: {variable} no la lee nadie"

@@ -12,7 +12,13 @@ $ErrorActionPreference = "Continue"
 $raiz = Split-Path -Parent $PSScriptRoot
 Set-Location $raiz
 $salida = Join-Path $raiz "diagnostico-docker.txt"
-$url = "http://localhost:8000"
+$puerto = 8000
+$rutaEnv = Join-Path $raiz ".env"
+if (Test-Path $rutaEnv) {
+    $linea = Get-Content $rutaEnv | Where-Object { $_ -match '^\s*BOTPDF_PUERTO\s*=\s*(\d+)' } | Select-Object -Last 1
+    if ($linea -and ($linea -match '(\d+)\s*$')) { $puerto = [int]$Matches[1] }
+}
+$url = "http://localhost:$puerto"
 
 function Seccion($titulo) { "`n===== $titulo =====" }
 function Correr($bloque) { try { & $bloque 2>&1 | Out-String } catch { "ERROR: $_" } }
@@ -33,7 +39,11 @@ $informe += Seccion "Contenedor"
 $informe += Correr { docker compose ps }
 $informe += Correr { docker inspect botpdf --format "estado={{.State.Status}} reinicios={{.RestartCount}} sin_memoria(OOMKilled)={{.State.OOMKilled}} ultimo_codigo_de_salida={{.State.ExitCode}} inicio={{.State.StartedAt}} salud={{if .State.Health}}{{.State.Health.Status}}{{end}}" }
 $informe += Correr { docker stats --no-stream --format "CPU {{.CPUPerc}}  memoria {{.MemUsage}} ({{.MemPerc}})" botpdf }
-$informe += Correr { docker exec botpdf sh -c "df -h /data /tmp | tail -n +1; echo; tesseract --version 2>&1 | head -1; tesseract --list-langs 2>&1 | tail -n +2 | tr '\n' ' '; echo; python -c 'import pymupdf; print(\"pymupdf\", pymupdf.VersionBind)'" }
+$informe += Correr { docker exec botpdf df -h /data /tmp }
+$informe += Correr { docker exec botpdf tesseract --version }
+$informe += Correr { docker exec botpdf tesseract --list-langs }
+$informe += Correr { docker exec botpdf python -c "import pymupdf; print('pymupdf', pymupdf.VersionBind)" }
+$informe += Correr { docker exec botpdf python -c "import resolutions, pathlib; a = pathlib.Path(resolutions.__file__).parent / 'assets'; print('plantillas:', sorted(p.name for p in a.rglob('*') if p.is_file()))" }
 $informe += Correr { docker exec botpdf sh -c "env | grep -E '^(BOTPDF|RESOLUTIONS)_' | sort; echo; env | grep -E '_API_KEY=' | sed -E 's/=(.{4}).*/=\1... (presente)/'" }
 $informe += Correr { docker exec botpdf sh -c "ls /equipo 2>/dev/null && echo '(discos montados)' || echo 'sin /equipo: los discos del equipo no estan montados'" }
 
