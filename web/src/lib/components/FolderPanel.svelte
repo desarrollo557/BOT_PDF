@@ -7,7 +7,7 @@
   import type { LecturaChoice } from '$lib/lectura';
   import type { TipoPedido } from '$lib/tipos';
   import type { OracleChoice } from '$lib/oracles';
-  import type { SourceDisposition, TaskKind } from '$lib/types';
+  import type { RetomarChoice, SourceDisposition, TaskKind } from '$lib/types';
 
   interface Props {
     /**
@@ -55,6 +55,8 @@
     habilidadId?: string;
     /** Cambiar a la habilidad que sugiere lo reconocido. */
     onusarHabilidad?: (id: string) => void;
+    /** Cuántos PDF a la vez; sin él, el automático del servicio. */
+    paralelo?: number;
   }
 
   let {
@@ -66,7 +68,8 @@
     agrupar = 'documento',
     territorial = '',
     habilidadId = 'auto',
-    onusarHabilidad
+    onusarHabilidad,
+    paralelo
   }: Props = $props();
 
   /**
@@ -125,6 +128,43 @@
   let destination = $state('');
   let disposition = $state<SourceDisposition>('leave');
   let watch = $state(false);
+  const RETOMAR: { id: RetomarChoice; label: string; hint: string }[] = [
+    {
+      id: 'no',
+      label: 'Saltar lo ya entregado',
+      hint: 'Procesa lo nuevo y rehace lo que quedó a medias; lo entregado entero no se vuelve a leer'
+    },
+    {
+      id: 'faltantes',
+      label: 'Retomar lo que falta',
+      hint: 'Salta lo que ya está completo en el destino y lee sólo las páginas que faltan'
+    },
+    {
+      id: 'revisar',
+      label: 'Sólo revisar',
+      hint: 'No procesa nada: dice qué está entregado y qué falta'
+    },
+    {
+      id: 'todo',
+      label: 'Procesar todo otra vez',
+      hint: 'Vuelve a procesar cada PDF; lo entregado antes se aparta en _reemplazados'
+    }
+  ];
+
+  /**
+   * Qué hacer con lo que ya está en el destino. Para cualquier tipo: saltar lo
+   * entregado entero (lo normal) o volver a procesarlo todo. Los libros de
+   * diplomas además se pueden retomar página a página o sólo revisar.
+   */
+  let retomar = $state<RetomarChoice>('no');
+  const opcionesDeRetomar = $derived(
+    tipo === 'diploma' ? RETOMAR : RETOMAR.filter((option) => option.id === 'no' || option.id === 'todo')
+  );
+  const modoRetomar = $derived<RetomarChoice>(
+    opcionesDeRetomar.some((option) => option.id === retomar) ? retomar : 'no'
+  );
+  /** Vigilar sólo tiene sentido cuando se procesa: no al retomar ni al revisar. */
+  const puedeVigilar = $derived(modoRetomar === 'no' || modoRetomar === 'todo');
   let starting = $state(false);
   let error = $state<string | null>(null);
 
@@ -150,6 +190,7 @@
     destination = '';
     disposition = 'leave';
     watch = false;
+    retomar = 'no';
     error = null;
     picking = null;
   });
@@ -185,14 +226,16 @@
         source: cleanPath(source),
         destination: cleanPath(destination),
         disposition,
-        watch,
+        watch: puedeVigilar && watch,
         task,
         oracle,
         lectura,
         tipo,
         corte,
         agrupar,
-        ...(territorial.trim() ? { territorial: territorial.trim() } : {})
+        ...(territorial.trim() ? { territorial: territorial.trim() } : {}),
+        ...(modoRetomar !== 'no' ? { retomar: modoRetomar } : {}),
+        ...(paralelo ? { paralelo } : {})
       });
     } catch (problem) {
       error = (problem as Error).message;
@@ -204,8 +247,9 @@
 
 <div class="carpeta">
   <p class="lead">
-    El servicio lee y escribe carpetas de <b>esta máquina</b>. No se sube nada: toma un PDF por
-    vez, lo separa y deja las resoluciones en el destino.
+    El servicio lee y escribe carpetas de <b>esta máquina</b>. No se sube nada: toma los PDF
+    de la carpeta —tantos a la vez como diga <b>Archivos en paralelo</b>—, los procesa y deja
+    lo que sale de cada uno en el destino.
   </p>
 
   <div class="field">
@@ -303,20 +347,54 @@
     </div>
   </fieldset>
 
-  <label class="toggle">
-    <input type="checkbox" bind:checked={watch} />
-    <span>
-      <b>Vigilar la carpeta</b>
-      <small>Seguir esperando archivos nuevos en vez de terminar al vaciarla.</small>
-    </span>
-  </label>
+  <fieldset>
+    <legend class="label">Lo que ya está en el destino</legend>
+    <div class="choices">
+      {#each opcionesDeRetomar as option (option.id)}
+        <button
+          type="button"
+          class:current={modoRetomar === option.id}
+          onclick={() => (retomar = option.id)}
+        >
+          <b>{option.label}</b>
+          <small>{option.hint}</small>
+        </button>
+      {/each}
+    </div>
+    {#if modoRetomar === 'faltantes' || modoRetomar === 'revisar'}
+      <small>
+        Se compara cada página del origen con los PDF del destino. Queda un
+        <b>00.CONTROL DE ENTREGA.xlsx</b> en la raíz del destino.
+      </small>
+    {/if}
+  </fieldset>
+
+  {#if puedeVigilar}
+    <label class="toggle">
+      <input type="checkbox" bind:checked={watch} />
+      <span>
+        <b>Vigilar la carpeta</b>
+        <small>Seguir esperando archivos nuevos en vez de terminar al vaciarla.</small>
+      </span>
+    </label>
+  {/if}
 
   {#if error}
     <p class="inline-error">{error}</p>
   {/if}
 
   <button class="btn btn-primary btn-block" onclick={start} disabled={!ready || starting}>
-    {starting ? 'Iniciando…' : watch ? 'Vigilar carpeta' : 'Procesar carpeta'}
+    {starting
+      ? 'Iniciando…'
+      : modoRetomar === 'faltantes'
+        ? 'Retomar carpeta'
+        : modoRetomar === 'revisar'
+          ? 'Revisar destino'
+          : modoRetomar === 'todo'
+            ? 'Procesar todo otra vez'
+            : watch
+            ? 'Vigilar carpeta'
+            : 'Procesar carpeta'}
   </button>
 </div>
 

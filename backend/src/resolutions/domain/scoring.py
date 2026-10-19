@@ -79,7 +79,13 @@ HEADER_TOP_LIMIT = 0.30
 #: Los propios documentos lo dicen. La 00080 llama a la suya "Resolución de
 #: Rectoría No. 02234"; la 00087 dice "el decano de la FACULTAD... mediante
 #: resolución N° 002-2023 solicitó a este despacho".
-_HOUSE_NUMBER = re.compile(r"^\d{3,6}$")
+#:
+#: Rectoría numera siempre con cinco cifras («00316», «02852»). La facultad que
+#: no lleva el año numera con tres: la 00316 de 2025 dice «Que el decano de la
+#: FACULTAD DE CIENCIAS SOCIALES Y EDUCACION mediante resolución N° 006 ...
+#: solicitó a este despacho», y con tres cifras contando como de la casa la 006
+#: no se absorbía y se quedaba con 192 de las 200 páginas del PDF.
+_HOUSE_NUMBER = re.compile(r"^\d{5,6}$")
 
 #: Y dónde puede estar su centro horizontal. Los mismos 145 encabezados caen
 #: entre 0,464 y 0,612 -- centrados, como se imprimen --; la frase del acta de
@@ -273,11 +279,13 @@ def _nothing_but_a_date_after(candidate: RawCandidate) -> bool:
     cita de arriba, "SE" queda a una edición de "DE" y pasa, pero "EXCLUYE" no
     se parece a nada de la lista y cierra la puerta igual.
     """
-    for token in candidate.context_after.split():
-        limpio = token.strip(_EDGE_PUNCTUATION)
-        if not limpio or not any(character.isalpha() for character in limpio):
-            continue
-        if not _acompana_a_un_numero(limpio):
+    # Palabra a palabra, y una palabra es una racha de letras: en
+    # «NO.00204 DE 2025» el número va pegado a su partícula, y leído como un
+    # solo token «NO.00204» no se parecía a nada y cerraba la puerta. La 00204
+    # de 2025 -- un formulario de comisión con el encabezado debajo del título
+    # -- se archivaba dentro de la 00203.
+    for palabra in re.findall(r"[^\W\d_]+", candidate.context_after):
+        if not _acompana_a_un_numero(palabra.upper()):
             return False
     return True
 

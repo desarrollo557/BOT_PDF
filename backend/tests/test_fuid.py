@@ -117,12 +117,24 @@ class TestFilas:
         filas = filas_del_libro(registros, nombre_del_archivo=LIBRO, desde=398)
         assert filas[0].orden == 398
 
-    def test_el_folio_de_registro_va_en_notas(self):
+    def test_el_asiento_va_en_otro_con_su_libro(self):
+        """«folio-libro», como el inventario de referencia del archivo (728-8)."""
         fila = filas_del_libro([REGISTRO], nombre_del_archivo=LIBRO)[0]
-        assert fila.notas == "Registrado a folio No. 336BIS"
+        assert fila.otro == "336BIS-8"
+        assert fila.notas == ""
 
-    def test_el_libro_empastado_va_en_tomo(self):
-        assert filas_del_libro([REGISTRO], nombre_del_archivo=LIBRO)[0].tomo == "8"
+    def test_tomo_queda_en_n_a_porque_el_libro_ya_va_en_otro(self):
+        assert filas_del_libro([REGISTRO], nombre_del_archivo=LIBRO)[0].tomo == NO_APLICA
+
+    def test_la_cedula_va_en_los_dos_consecutivos(self):
+        fila = filas_del_libro([REGISTRO], nombre_del_archivo=LIBRO)[0]
+        assert fila.consecutivo_inicial == fila.consecutivo_final == "22793650"
+
+    def test_el_asunto_es_nombre_y_titulo_sin_el_folio(self):
+        assert asunto(REGISTRO) == (
+            "ALIX JOSEFINA MARIN RODRIGUEZ - "
+            "ESPECIALISTA EN GESTION DE LA CALIDAD Y AUDITORIA EN SALUD"
+        )
 
     def test_la_cedula_va_en_el_consecutivo_inicial(self):
         fila = filas_del_libro([REGISTRO], nombre_del_archivo=LIBRO)[0]
@@ -323,12 +335,12 @@ class TestElInventarioDiceComoSeLlamaSuArchivo:
         assert "Archivo: 7882907_DIPLOMA.pdf" in conNombre[0].notas
         assert "Archivo: 9089958_DIPLOMA.pdf" in conNombre[1].notas
 
-    def test_la_nota_conserva_el_folio_de_registro(self):
-        """El nombre se suma a lo que ya decía la nota, no lo sustituye."""
+    def test_el_asiento_va_en_otro_y_el_archivo_en_notas(self):
+        """Cada dato en su columna: el asiento en «Otro», el archivo en Notas."""
         filas = filas_del_libro(self.libro(), nombre_del_archivo="UPD3859766.pdf")
         conNombre = con_los_archivos(filas, {1: "7882907_DIPLOMA.pdf"})
-        assert "Registrado a folio No. 1" in conNombre[0].notas
-        assert "Archivo: 7882907_DIPLOMA.pdf" in conNombre[0].notas
+        assert conNombre[0].otro.startswith("1")
+        assert conNombre[0].notas == "Archivo: 7882907_DIPLOMA.pdf"
 
     def test_una_unidad_sin_archivo_no_hereda_el_del_vecino(self):
         """El caso que obliga a emparejar por página y no por posición.

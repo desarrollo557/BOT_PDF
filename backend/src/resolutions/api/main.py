@@ -114,6 +114,28 @@ def _arrancar() -> Contexto:
 contexto = _arrancar()
 
 
+def _nuevo_pool(settings: Settings) -> ProcessPoolExecutor:
+    """El pool de procesos, con cada proceso cambiado tras ``documentos_por_proceso``.
+
+    En días de corrida, la memoria que el código nativo no devuelve se
+    acumula en los mismos pocos procesos; uno nuevo empieza limpio. Reciclar
+    exige arrancar los procesos con «spawn», que es lo que Windows hace siempre.
+    """
+    reciclar = max(0, int(getattr(settings, "documentos_por_proceso", 0) or 0))
+    return ProcessPoolExecutor(
+        max_workers=settings.document_workers,
+        # Cada proceso hijo configura su propio registro al nacer: en Windows
+        # no hereda los manejadores del padre, y es en los hijos donde ocurre
+        # todo lo que interesa ver.
+        initializer=configurar_worker,
+        **(
+            {"max_tasks_per_child": reciclar, "mp_context": multiprocessing.get_context("spawn")}
+            if reciclar
+            else {}
+        ),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ctx: Contexto = app.state.contexto
@@ -134,13 +156,26 @@ async def lifespan(app: FastAPI):
 
     # One process per document. Sized at cores-1 so the event loop always has a
     # core left to accept uploads while the pool is saturated.
-    ctx.pool = ProcessPoolExecutor(
-        max_workers=ctx.settings.document_workers,
-        # Cada proceso hijo configura su propio registro al nacer: en Windows
-        # no hereda los manejadores del padre, y es en los hijos donde ocurre
-        # todo lo que interesa ver.
-        initializer=configurar_worker,
-    )
+    ctx.pool = _nuevo_pool(ctx.settings)
+
+    def rehacer_pool(roto) -> None:
+        """Otro pool en lugar del que se rompió, una sola vez aunque fallen varios.
+
+        Un proceso que muere -- memoria, un fallo nativo de MuPDF -- deja el
+        pool entero inservible, y antes todos los PDF que quedaban en la
+        carpeta fallaban en segundos hasta reiniciar el servicio. Quien llega
+        con el pool ya cambiado no hace nada: otro trabajo lo rehízo antes.
+        """
+        if ctx.pool is not roto:
+            return
+        logger.error("el pool de procesos se rompió; se levanta otro")
+        ctx.pool = _nuevo_pool(ctx.settings)
+        try:
+            roto.shutdown(wait=False, cancel_futures=True)
+        except Exception:  # noqa: BLE001 - ya estaba roto
+            logger.debug("no se pudo cerrar el pool roto", exc_info=True)
+
+    ctx.rehacer_pool = rehacer_pool
     ctx.manager = multiprocessing.Manager()
     ctx.progress_queue = ctx.manager.Queue(maxsize=PROGRESS_QUEUE_SIZE)
     # Lo que el worker consulta entre página y página para saber si sigue. Vive

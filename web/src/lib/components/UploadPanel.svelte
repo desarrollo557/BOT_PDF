@@ -35,7 +35,8 @@
       tipo: TipoPedido,
       corte: CorteChoice,
       agrupar: AgruparChoice,
-      territorial: string
+      territorial: string,
+      paralelo: number
     ) => void;
     disabled?: boolean;
   }
@@ -58,6 +59,8 @@
   let agrupar = $state<AgruparChoice>('documento');
   /** La territorial de una caja de correspondencia, para su Índice Electrónico. */
   let territorial = $state('');
+  /** Cuántos archivos a la vez. Cero es el automático del servicio. */
+  let paralelo = $state(0);
   let health = $state<Health | null>(null);
   /** Files dropped and waiting for "Confirmar y subir". */
   let pendientes = $state<File[]>([]);
@@ -219,14 +222,14 @@
       return;
     }
     if (mode === 'batch') {
-      onfiles(files, true, task, oracle, lectura, tipo, corteElegido, agruparElegido, territorial);
+      onfiles(files, true, task, oracle, lectura, tipo, corteElegido, agruparElegido, territorial, paralelo);
       return;
     }
     if (files.length > SINGLE_LIMIT) {
       notice = `La carga individual admite ${SINGLE_LIMIT} documentos. Cambie a carga por lote para subir los ${files.length}.`;
       return;
     }
-    onfiles(files, false, task, oracle, lectura, tipo, corteElegido, agruparElegido, territorial);
+    onfiles(files, false, task, oracle, lectura, tipo, corteElegido, agruparElegido, territorial, paralelo);
   }
 
   /**
@@ -477,6 +480,10 @@
               numero={pasoActual}
               {habilidadId}
               onusarHabilidad={usarSugerencia}
+              {paralelo}
+              onParalelo={(valor) => (paralelo = valor)}
+              maximoEnParalelo={health?.document_workers ?? 0}
+              automaticoEnParalelo={health?.folder_documents ?? 0}
             />
             {#if mode !== 'folder' && (reconociendo || sugerencias.length || errorDeReconocer)}
               <div class="sugerencia">

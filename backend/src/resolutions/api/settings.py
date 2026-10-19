@@ -77,6 +77,50 @@ class Settings:
     #: proveedor contesta 429 si se le pisa: este tope común marca el paso.
     ia_a_la_vez: int = 8
 
+    #: Cuántas veces más se intenta un documento cuyo fallo no dice nada del
+    #: papel -- la red que se cayó, el proceso del pool que murió, un tiempo
+    #: agotado -- (ver `reintentos.py`). Cero lo apaga.
+    reintentos: int = 2
+    #: Cuántos segundos se espera antes del segundo intento; el tercero espera
+    #: el triple. Da tiempo a que vuelva la red sin dejar la carpeta parada.
+    espera_de_reintento: float = 15.0
+    #: Cuántos minutos puede pasar un documento sin avanzar una página antes de
+    #: darlo por atascado: se le ordena parar y se marca fallido, y la carpeta
+    #: sigue. Generoso a propósito: escribir trescientos PDF o esperar a la IA
+    #: tampoco produce avisos. Cero lo apaga.
+    minutos_sin_avance: float = 30.0
+    #: Cuántos documentos procesa cada proceso del pool antes de cambiarlo por
+    #: uno nuevo. MuPDF y Tesseract son código nativo y en días de corrida la
+    #: memoria que no devuelven se acumula; un proceso nuevo empieza limpio.
+    #: Cero lo apaga.
+    documentos_por_proceso: int = 25
+    #: Cuántos documentos seguidos pueden fallar en una carpeta antes de
+    #: pausarla. Diez seguidos casi nunca son diez papeles malos: es la red,
+    #: el disco o la cuenta del proveedor, y seguir quemaría la carpeta entera
+    #: en minutos. No la detiene: la pausa, sigue de uno en uno y los fallidos
+    #: vuelven al final (ver `folders.py`). Cero lo apaga.
+    fallos_seguidos: int = 10
+    #: Cuántos segundos dura la primera pausa; cada pausa seguida dobla la
+    #: anterior, hasta quince minutos.
+    pausa_tras_fallos: float = 60.0
+    #: Cuántas vueltas más se dan, al final de la carpeta, a los documentos que
+    #: fallaron por algo que no dice nada del papel. Cero lo apaga.
+    vueltas_de_reintento: int = 1
+    #: Cuántos minutos se espera a que vuelva la carpeta de origen -- la unidad
+    #: de red que se desconectó -- antes de dar la corrida por fallida.
+    minutos_de_espera_del_origen: float = 30.0
+    #: Cuántos documentos terminados de una carpeta se guardan enteros en la
+    #: pantalla. Los más viejos salen del registro -- su fila sigue en los
+    #: inventarios, que la corrida guarda aparte -- para que una carpeta de
+    #: veinte mil PDF no se quede con el informe de cada uno en memoria.
+    trabajos_en_memoria: int = 300
+    #: Si, tras entregar un documento de carpeta, se borran sus PDF de la
+    #: carpeta de salidas. La copia buena está en el destino; la de salidas
+    #: duplica el disco (un millón de páginas son cientos de GB) pero es la que
+    #: usa el Archivo para descargar o corregir un archivo suelto. Apagado por
+    #: omisión.
+    liberar_salidas: bool = False
+
     #: Documents in flight before the API pushes back. Not a limit on how much
     #: can be processed -- the pool drains it steadily -- only on how much may be
     #: accepted and not yet started, since each waiting job holds its upload on
@@ -149,9 +193,10 @@ class Settings:
     #: todas las filas de un lote. Lo que no se conoce va como N/A, que es lo
     #: que manda el instructivo del formato.
     #:
-    #: La caja es la excepción: la lleva la caja física que se está procesando
-    #: ahora mismo, y se cambia con RESOLUTIONS_FUID_CAJA cuando se pase a otra.
-    fuid_caja: str = "3269"
+    #: La caja la dice la ruta del PDF en una corrida de carpeta («3220\\UPD…»).
+    #: RESOLUTIONS_FUID_CAJA la fija para todo, cuando el archivo llega suelto.
+    #: Valía «3269» por omisión, y esa caja de diplomas se colaba en todas.
+    fuid_caja: str = ""
     fuid_otro: str = "N/A"
     fuid_codigo_trd: str = "N/A"
     fuid_oficina: str | None = None
@@ -178,6 +223,17 @@ class Settings:
             folder_documents=_int("RESOLUTIONS_FOLDER_DOCUMENTS", 0),
             ia_a_la_vez=_int("RESOLUTIONS_IA_A_LA_VEZ", 8),
             queue_limit=_int("RESOLUTIONS_QUEUE_LIMIT", 10_000),
+            reintentos=_int("RESOLUTIONS_REINTENTOS", 2),
+            espera_de_reintento=_float("RESOLUTIONS_ESPERA_REINTENTO", 15.0),
+            minutos_sin_avance=_float("RESOLUTIONS_MINUTOS_SIN_AVANCE", 30.0),
+            documentos_por_proceso=_int("RESOLUTIONS_DOCUMENTOS_POR_PROCESO", 25),
+            fallos_seguidos=_int("RESOLUTIONS_FALLOS_SEGUIDOS", 10),
+            pausa_tras_fallos=_float("RESOLUTIONS_PAUSA_TRAS_FALLOS", 60.0),
+            vueltas_de_reintento=_int("RESOLUTIONS_VUELTAS_DE_REINTENTO", 1),
+            minutos_de_espera_del_origen=_float("RESOLUTIONS_ESPERA_DEL_ORIGEN", 30.0),
+            trabajos_en_memoria=_int("RESOLUTIONS_TRABAJOS_EN_MEMORIA", 300),
+            liberar_salidas=os.environ.get("RESOLUTIONS_LIBERAR_SALIDAS", "").strip().lower()
+            in ("1", "si", "sí", "true", "yes"),
             ocr_language=os.environ.get("RESOLUTIONS_OCR_LANG", "spa"),
             mosaic_size=_int("RESOLUTIONS_MOSAIC_SIZE", 12),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
@@ -195,7 +251,7 @@ class Settings:
             ),
             sweep_seconds=_float("RESOLUTIONS_SWEEP_SECONDS", 30.0),
             fuid_template=os.environ.get("RESOLUTIONS_FUID_TEMPLATE") or None,
-            fuid_caja=os.environ.get("RESOLUTIONS_FUID_CAJA", "3269"),
+            fuid_caja=os.environ.get("RESOLUTIONS_FUID_CAJA", ""),
             fuid_otro=os.environ.get("RESOLUTIONS_FUID_OTRO", "N/A"),
             fuid_codigo_trd=os.environ.get("RESOLUTIONS_FUID_TRD", "N/A"),
             fuid_oficina=os.environ.get("RESOLUTIONS_FUID_OFICINA") or None,

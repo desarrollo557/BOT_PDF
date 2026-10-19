@@ -277,7 +277,7 @@ class TestLaEntregaEnCarpeta:
 
         runner._deliver(run, job, run.source / "libro.pdf")
 
-        entregados = sorted(p.relative_to(run.destination).as_posix() for p in run.destination.rglob("*.*"))
+        entregados = sorted(p.relative_to(run.destination).as_posix() for p in run.destination.rglob("*.*") if ".bot-" not in p.as_posix())
         # Espejo de la fuente: la carpeta elegida delante, el libro dividido
         # dentro y el Excel de la carpeta junto a él.
         assert entregados == [
@@ -305,7 +305,7 @@ class TestLaEntregaEnCarpeta:
 
         runner._deliver(run, job, sub / "acta.pdf")
 
-        entregados = sorted(p.relative_to(run.destination).as_posix() for p in run.destination.rglob("*.*"))
+        entregados = sorted(p.relative_to(run.destination).as_posix() for p in run.destination.rglob("*.*") if ".bot-" not in p.as_posix())
         assert entregados == [
             "UPD/ACTAS UPD__inventario.xlsx",
             "UPD/UPD2/ACTAS UPD2__inventario.xlsx",

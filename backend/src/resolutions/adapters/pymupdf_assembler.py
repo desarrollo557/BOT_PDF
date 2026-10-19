@@ -88,6 +88,25 @@ def name_budget(destination: Path) -> int:
     return max(room, 24)
 
 
+def _sin_pisar(nombre: str, pagina: int, usados: set[str]) -> str:
+    """El nombre, o uno con su página delante de la extensión si ya se usó.
+
+    Con la página y no con un «(2)»: dice de dónde salió el archivo, que es lo
+    que hace falta para encontrarlo en el libro.
+    """
+    if nombre.lower() not in usados:
+        return nombre
+    raiz, punto, extension = nombre.rpartition(".")
+    if not punto:
+        raiz, extension = nombre, ""
+    candidato = f"{raiz}-P{pagina}{punto}{extension}"
+    vuelta = 2
+    while candidato.lower() in usados:
+        candidato = f"{raiz}-P{pagina}-{vuelta}{punto}{extension}"
+        vuelta += 1
+    return candidato
+
+
 def _runs(page_numbers: list[int]) -> Iterator[tuple[int, int]]:
     """Collapse page numbers into consecutive ranges.
 
@@ -312,6 +331,9 @@ class PyMuPDFAssembler:
         names: dict[str, str] = {}
         unwritable: dict[int, str] = {}
         budget = name_budget(destination)
+        #: Los nombres ya escritos en esta entrega, sin distinguir mayúsculas:
+        #: Windows no las distingue.
+        usados: set[str] = set()
 
         total = len(result.groups) + (1 if result.quarantine else 0)
         self._announce(0, total, "preparando el documento de origen")
@@ -339,7 +361,15 @@ class PyMuPDFAssembler:
                     mayusculas=self._mayusculas,
                     kind=group.kind,
                 )
+                # Dos unidades distintas nunca comparten archivo. El nombre se
+                # recorta para caber en la ruta, y dos graduados leídos con el
+                # mismo nombre largo perdían con el recorte lo que los
+                # distinguía: el segundo pisaba al primero sin decir nada, y la
+                # cara 44 del libro 3858081 desapareció de la entrega.
+                name = _sin_pisar(name, group.page_numbers[0], usados)
+                usados.add(name.lower())
                 target = destination / name
+                self._announce(index - 1, total, f"escribiendo {name} ({index}/{total})")
                 if self._write_guarded(origin, group.page_numbers, target, unwritable):
                     written.append(target)
                     names[group.code.value] = name

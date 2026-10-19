@@ -173,8 +173,14 @@ def _folios_creibles(
 def group_by_record(
     records: Sequence[DiplomaRecord],
     criterio: CriterioDeCorte = CriterioDeCorte.PAGINA,
+    *,
+    por_pagina: bool = False,
 ) -> GroupingResult:
     """Un archivo por registro, con las páginas que ese registro se lleve.
+
+    ``por_pagina`` nombra por su página, y no por su consecutivo, el registro
+    que no trae cédula, nombre ni folio: es lo que hace falta al retomar una
+    entrega a medias, que sólo lee las caras que faltan.
 
     Lo que decide dónde empieza cada registro es el folio escrito a mano en la
     esquina superior derecha, con su "v" al lado. El archivo de la Universidad
@@ -222,9 +228,11 @@ def group_by_record(
             abiertos[-1][1].append(record.page_number)
             continue
 
-        identity = _identity(
-            record, taken, len(abiertos) + 1, creibles.get(record.page_number)
-        )
+        # El último recurso es el consecutivo dentro del libro. Al retomar una
+        # entrega a medias sólo se leen unas caras, y su posición en esa lista
+        # no es su consecutivo: ahí se nombra por la página, que no cambia.
+        orden = record.page_number if por_pagina else len(abiertos) + 1
+        identity = _identity(record, taken, orden, creibles.get(record.page_number))
         abiertos.append((identity, [record.page_number], _subject(record), record))
     return GroupingResult(
         groups=[

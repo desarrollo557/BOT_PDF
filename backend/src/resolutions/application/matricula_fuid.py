@@ -90,7 +90,7 @@ def filas_de_expedientes(
             consecutivo_final=NO_APLICA,
             fecha_inicial=registro.fecha_inicial or NO_APLICA,
             fecha_final=registro.fecha_final or NO_APLICA,
-            caja=donde.caja,
+            caja=donde.caja_de(nombre_del_archivo),
             carpeta=upd,
             # Estos expedientes no van empastados en tomos: son hojas sueltas en
             # carpeta, así que la columna que el instructivo reserva a los

@@ -13,6 +13,7 @@ import type {
   Job,
   InventoryRow,
   ProcessedDocument,
+  RetomarChoice,
   SourceDisposition,
   UsuarioApi,
   FuidTabla
@@ -168,7 +169,8 @@ export async function uploadDocument(
   tipo: TipoPedido = 'auto',
   corte: CorteChoice = 'pagina',
   agrupar: AgruparChoice = 'documento',
-  territorial = ''
+  territorial = '',
+  paralelo = 0
 ): Promise<{ id: string }> {
   const body = new FormData();
   body.append('file', file);
@@ -197,6 +199,8 @@ export async function uploadDocument(
   // Y la territorial de una caja de correspondencia, para el encabezado de su
   // Índice Electrónico. Sólo viaja si se escribió.
   if (territorial.trim()) query.set('territorial', territorial.trim());
+  // Y cuántos archivos del lote a la vez. Cero es el automático y no viaja.
+  if (paralelo > 0) query.set('paralelo', String(paralelo));
   const suffix = query.toString();
 
   const url = suffix ? `${BASE}/jobs?${suffix}` : `${BASE}/jobs`;
@@ -528,6 +532,8 @@ export interface Health {
   features?: string[];
   document_workers: number;
   page_workers: number;
+  /** Cuántos documentos de carpeta van a la vez en automático. */
+  folder_documents?: number;
   vision: 'claude' | 'disabled';
   /**
    * De cada modelo, si el servicio tiene llave para pedirlo.
@@ -678,6 +684,10 @@ export function startFolderRun(options: {
   territorial?: string;
   /** Y qué clase de documento trae, cuando el operador lo sabe. */
   tipo?: TipoPedido;
+  /** Y si retoma una entrega anterior (sólo libros de diplomas). */
+  retomar?: RetomarChoice;
+  /** Y cuántos PDF a la vez. Ausente es el automático. */
+  paralelo?: number;
 }): Promise<FolderRun> {
   return send(`${BASE}/folder-runs`, 'POST', options);
 }

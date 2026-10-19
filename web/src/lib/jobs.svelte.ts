@@ -16,7 +16,7 @@ import type { AgruparChoice, CorteChoice } from './habilidades';
 import type { LecturaChoice } from './lectura';
 import type { TipoPedido } from './tipos';
 import type { OracleChoice } from './oracles';
-import type { FolderRun, Job, SourceDisposition, TaskKind } from './types';
+import type { FolderRun, Job, RetomarChoice, SourceDisposition, TaskKind } from './types';
 
 /**
  * The live workspace, shared by every route.
@@ -204,7 +204,11 @@ class JobStore {
   /** Folder runs still consuming or watching a folder. */
   get activeRuns(): FolderRun[] {
     return this.runs.filter(
-      (run) => run.state === 'scanning' || run.state === 'processing' || run.state === 'watching'
+      (run) =>
+        run.state === 'scanning' ||
+        run.state === 'processing' ||
+        run.state === 'watching' ||
+        run.state === 'recovering'
     );
   }
 
@@ -227,6 +231,10 @@ class JobStore {
     territorial?: string;
     /** Y qué clase de documento trae, cuando el operador lo sabe. */
     tipo?: TipoPedido;
+    /** Y si retoma una entrega anterior (sólo libros de diplomas). */
+    retomar?: RetomarChoice;
+    /** Y cuántos PDF a la vez. Ausente es el automático. */
+    paralelo?: number;
   }): Promise<FolderRun> {
     const run = await startFolderRun(options);
     this.#upsertRun(run);

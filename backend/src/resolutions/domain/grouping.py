@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field, replace
 
 from .errors import IntegrityError
@@ -55,12 +55,18 @@ class GroupingResult:
     def page_count(self) -> int:
         return sum(group.size for group in self.groups) + len(self.quarantine)
 
-    def verify_integrity(self, total_pages: int) -> None:
+    def verify_integrity(
+        self, total_pages: int, paginas: Collection[int] | None = None
+    ) -> None:
         """Fail loudly unless every input page landed in exactly one bucket.
 
         Called before a single output file is written. A split that silently
         drops or duplicates pages is indistinguishable from a correct one at a
         glance, which is exactly why it has to be impossible.
+
+        ``paginas`` son las páginas que se leyeron cuando no fue el documento
+        entero -- al retomar una entrega a medias --; entonces cuadran ésas, y
+        una página de fuera es tan error como una que falte.
         """
         seen: set[int] = set()
         duplicated: set[int] = set()
@@ -77,7 +83,7 @@ class GroupingResult:
         if duplicated:
             raise IntegrityError(f"pages assigned more than once: {sorted(duplicated)}")
 
-        expected = set(range(1, total_pages + 1))
+        expected = set(paginas) if paginas is not None else set(range(1, total_pages + 1))
         if seen != expected:
             missing = sorted(expected - seen)
             unexpected = sorted(seen - expected)

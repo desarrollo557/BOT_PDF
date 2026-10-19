@@ -210,3 +210,84 @@ def fecha_del_encabezado(texto: str, *, hoy: date | None = None) -> date | None:
         if declaradas:
             return declaradas[0]
     return None
+
+
+# -- la fecha de expedición de una resolución ------------------------------------
+
+#: Cómo cierra una resolución: «Dada en Cartagena de Indias, a los dieciséis
+#: (16) días del mes de enero del año 2025». Es la fecha del documento, y no
+#: la más reciente que lleve: detrás vienen sus soportes -- el listado del
+#: sistema presupuestal, la resolución del decano, el oficio --, cada uno con
+#: sus fechas, y la más reciente de todas fechaba la resolución por un anexo.
+_DADA = re.compile(
+    r"\b(?:DADA|EXPEDIDA)\s+EN\b.{0,90}?\bA\s+LOS\s+(?P<dia>.{1,45}?)\s+D[I1]AS?\s+DEL?\s+MES\s+DE\s+"
+    r"(?P<mes>[A-Z]+)(?P<cola>.{0,40})"
+)
+_DIA_EN_CIFRAS = re.compile(r"\(\s*(\d{1,2})\s*\)|\b(\d{1,2})\b")
+_ANIO = re.compile(r"\b((?:19|20)\d{2})\b")
+#: El año del encabezado: «RESOLUCIÓN No. 00004 de 2025». Va impreso, así que
+#: suple al de la fecha cuando el OCR lo rompe -- «del añe^lOlS» --.
+_ANIO_DEL_ENCABEZADO = re.compile(
+    r"\bRESOLUCI[O0]N\s*N\W{0,3}[O0]?\W{0,3}\s*[\d ]{3,8}\s+DE\s+((?:19|20)\d{2})\b"
+)
+_DIAS_EN_LETRA = {
+    "UNO": 1, "UN": 1, "PRIMERO": 1, "DOS": 2, "TRES": 3, "CUATRO": 4, "CINCO": 5,
+    "SEIS": 6, "SIETE": 7, "OCHO": 8, "NUEVE": 9, "DIEZ": 10, "ONCE": 11, "DOCE": 12,
+    "TRECE": 13, "CATORCE": 14, "QUINCE": 15, "DIECISEIS": 16, "DIECISIETE": 17,
+    "DIECIOCHO": 18, "DIECINUEVE": 19, "VEINTE": 20, "VEINTIUNO": 21, "VEINTIUN": 21,
+    "VEINTIDOS": 22, "VEINTITRES": 23, "VEINTICUATRO": 24, "VEINTICINCO": 25,
+    "VEINTISEIS": 26, "VEINTISIETE": 27, "VEINTIOCHO": 28, "VEINTINUEVE": 29,
+    "TREINTA": 30, "TREINTA Y UNO": 31, "TREINTA Y UN": 31,
+}
+
+
+def _plegada(texto: str) -> str:
+    import unicodedata
+
+    sin_tildes = unicodedata.normalize("NFD", texto)
+    plano = "".join(c for c in sin_tildes if unicodedata.category(c) != "Mn").upper()
+    return " ".join(plano.split())
+
+
+def _dia(trozo: str) -> int | None:
+    cifras = _DIA_EN_CIFRAS.search(trozo)
+    if cifras:
+        return int(cifras.group(1) or cifras.group(2))
+    palabras = re.sub(r"[^A-Z ]", " ", trozo).split()
+    for largo in (3, 1):
+        for inicio in range(len(palabras) - largo + 1):
+            dia = _DIAS_EN_LETRA.get(" ".join(palabras[inicio : inicio + largo]))
+            if dia:
+                return dia
+    return None
+
+
+def fecha_de_expedicion(paginas: list[str], *, hoy: date | None = None) -> date | None:
+    """La fecha en que se expidió la resolución, de su fórmula de cierre.
+
+    La primera que aparece, que es la suya: lo que viene detrás son sus
+    soportes. El día y el mes salen de la fórmula; el año también, y si el OCR
+    lo rompió, del encabezado de la propia resolución, que lo lleva impreso.
+    Sin la fórmula no hay fecha de expedición, y quien llama decide qué otra
+    usar.
+    """
+    anio_del_encabezado: int | None = None
+    for pagina in paginas:
+        plano = _plegada(pagina)
+        if anio_del_encabezado is None:
+            encabezado = _ANIO_DEL_ENCABEZADO.search(plano)
+            if encabezado:
+                anio_del_encabezado = int(encabezado.group(1))
+        for hallazgo in _DADA.finditer(plano):
+            mes = MESES.get(hallazgo.group("mes").lower())
+            dia = _dia(hallazgo.group("dia"))
+            if mes is None or dia is None:
+                continue
+            anio = _ANIO.search(hallazgo.group("cola"))
+            for candidato in ([int(anio.group(1))] if anio else []) + (
+                [anio_del_encabezado] if anio_del_encabezado else []
+            ):
+                fecha = _valida(dia, mes, candidato, hoy)
+                if fecha is not None:
+                    return fecha
+    return None

@@ -80,6 +80,26 @@ def break_insert(monkeypatch, fails):
 
 
 class TestBlockFallback:
+    def test_anuncia_la_resolucion_antes_de_copiarla(self, source, tmp_path, monkeypatch):
+        eventos = []
+
+        class Reporter:
+            def emit(self, evento):
+                eventos.append(evento)
+
+        assembler = PyMuPDFAssembler(progress=Reporter())
+        escribir = assembler._write_guarded
+
+        def comprobar_aviso(origin, page_numbers, target, unwritable):
+            assert eventos[-1].detail.startswith("escribiendo ")
+            return escribir(origin, page_numbers, target, unwritable)
+
+        monkeypatch.setattr(assembler, "_write_guarded", comprobar_aviso)
+        assembly = assembler.write(source, one_group([1, 2, 3]), tmp_path / "out")
+
+        assert len(assembly.outputs) == 1
+        assert any(event.detail.startswith("escribiendo ") for event in eventos)
+
     def test_a_block_copy_that_fails_is_retried_page_by_page(self, source, tmp_path, monkeypatch):
         # A six-page run copies as one block; when that raises, every page still
         # has to arrive.
@@ -549,3 +569,28 @@ class TestPathLength:
             prefix=None,
         )
         assert name.startswith("00072")
+
+
+class TestNingunArchivoPisaAOtro:
+    """Dos unidades con el mismo nombre de archivo salen las dos.
+
+    El nombre se recorta para caber en la ruta, y dos graduados leídos con el
+    mismo nombre largo perdían con el recorte lo que los distinguía: la cara
+    44 del libro 3858081 desapareció de la entrega, pisada por la 43.
+    """
+
+    def test_el_segundo_lleva_su_pagina(self, source, tmp_path):
+        mismo = ResolutionCode(value="MISMO", raw="MISMO")
+        agrupacion = GroupingResult(
+            groups=[
+                PageGroup(code=mismo, page_numbers=[1], title="ANA"),
+                PageGroup(code=ResolutionCode(value="mismo", raw="mismo"), page_numbers=[2], title="ANA"),
+            ]
+        )
+        salida = tmp_path / "salida"
+        resultado = PyMuPDFAssembler(naming_prefix=None).write(source, agrupacion, salida)
+
+        archivos = sorted(p.name for p in salida.glob("*.pdf"))
+        assert len(archivos) == 2
+        assert any("-P2" in nombre for nombre in archivos)
+        assert len(resultado.outputs) == 2

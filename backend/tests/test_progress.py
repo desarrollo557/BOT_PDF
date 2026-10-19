@@ -464,6 +464,22 @@ class TestCadaEtapaCuentaLoSuyo:
         assert progreso.as_dict()["stage"] == "analysing"
 
 
+class TestEstadoDeSalud:
+    def test_un_trabajo_activo_sigue_en_salud_ok(self):
+        progreso = _abierto()
+        progreso.apply({"stage": "page", "page_number": 1, "provenance": "text_layer"})
+        estado = progreso.as_dict()
+        assert estado["health"] == "ok"
+        assert estado["warnings"] == []
+
+    def test_un_silencio_largo_pasa_a_stalled(self):
+        progreso = _abierto()
+        progreso.last_event_monotonic = _time.monotonic() - 25
+        estado = progreso.as_dict()
+        assert estado["health"] == "stalled"
+        assert "sin novedades" in estado["warnings"][0].lower()
+
+
 class TestElSilencio:
     def test_se_mide_desde_la_ultima_noticia(self):
         progreso = _abierto()

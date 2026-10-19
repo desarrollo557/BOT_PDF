@@ -67,6 +67,9 @@ async def start_folder_run(
     _require_identity_reader(tipo_choice, lectura_choice)
     corte_choice = _corte_choice(payload.get("corte"))
     agrupar_choice = _agrupar_choice(payload.get("agrupar"))
+    from .trabajos import _paralelo
+
+    a_la_vez = _paralelo(ctx, payload.get("paralelo"))
 
     try:
         run = ctx.folders.start(
@@ -82,6 +85,11 @@ async def start_folder_run(
             agrupar=str(agrupar_choice),
             territorial=_territorial(payload.get("territorial")),
             tipo=str(tipo_choice),
+            # Retomar una entrega anterior: procesar sólo lo que falta en el
+            # destino, o sólo revisarlo. Sólo para libros de diplomas.
+            retomar=str(payload.get("retomar") or "no"),
+            # Cuántos PDF de la carpeta a la vez; sin él, los del planificador.
+            paralelo=a_la_vez,
         )
     except FolderError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None

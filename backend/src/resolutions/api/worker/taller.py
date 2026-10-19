@@ -74,6 +74,10 @@ class Taller:
     #: El tope común de llamadas a la IA de todo el servicio: un semáforo del
     #: Manager que comparten los procesos del pool. ``None`` fuera del servicio.
     turnos_de_ia: Any = None
+    #: Las páginas que hay que leer, cuando no es el documento entero: al
+    #: retomar una entrega a medias, las que faltan en el destino. Sólo la
+    #: habilidad de libros de diplomas sabe leer así.
+    paginas: tuple[int, ...] | None = None
 
     @classmethod
     def desde(cls, payload: dict) -> Taller:
@@ -94,6 +98,7 @@ class Taller:
             delivered_to=payload.get("destination"),
             operator=payload.get("operator"),
             turnos_de_ia=payload.get("turnos_de_ia"),
+            paginas=tuple(int(n) for n in payload["paginas"]) if payload.get("paginas") else None,
             # El despachador lo crea antes de elegir ruta y lo deja en el
             # payload, para poder adjuntarlo al informe cuando la ruta vuelva.
             consumo=(

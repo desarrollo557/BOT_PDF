@@ -156,7 +156,7 @@ export const HABILIDADES: Habilidad[] = [
           id: 'pagina',
           label: 'Cada cara es un diploma',
           agrupa:
-            'No se agrupa nada: una página, un archivo. El trabajo está en nombrarlo, por la cédula si se lee bien y si no por el nombre.',
+            'Cada encabezado del libro abre un diploma: una página, un archivo. Sirve para las tres plantillas (mecanografiada, posgrados antigua y manuscrita). La cara sin encabezado ni leyenda del formulario se une a la anterior y se avisa. El archivo se nombra por la cédula si se lee bien y si no por el nombre.',
           cuesta:
             'Se lee cada cara en tanda y después se repesca en franjas ampliadas lo que quedó sin cédula o sin nombre (diez caras por página facturada). Con «OCR + IA (ahorro)» va sólo la franja, nunca la hoja entera.'
         },

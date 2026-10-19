@@ -33,7 +33,7 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
-from ..domain.fechas import ultima_fecha
+from ..domain.fechas import fecha_de_expedicion, ultima_fecha
 from ..domain.grouping import GroupingResult, PageGroup
 from ..domain.tipo_documental import PAGINAS_MIRADAS, identificar_documento
 
@@ -132,7 +132,11 @@ def fechar(
             logger.debug("no se pudo leer %s para fecharlo", group.code.value)
             grupos.append(group)
             continue
-        fecha = ultima_fecha(paginas)
+        # La fecha de expedición cuando la unidad la declara -- «Dada en
+        # Cartagena de Indias, a los dieciséis (16) días del mes de enero del
+        # año 2025» --: es la suya. La más reciente de todas sus páginas la
+        # ponía un soporte que viene detrás, con sus propias fechas.
+        fecha = fecha_de_expedicion(paginas) or ultima_fecha(paginas)
         grupos.append(group if fecha is None else replace(group, fecha=fecha.isoformat()))
 
     return replace(result, groups=grupos)

@@ -93,6 +93,8 @@ API_FEATURES = (
     # El patrón de cada tipo: sugerir qué es un PDF o una carpeta antes de
     # procesarla, y desviar a su habilidad lo que no es lo declarado.
     "reconocer",
+    # Elegir cuántos archivos a la vez, al subir y al lanzar una carpeta.
+    "paralelo",
 )
 
 @router.get("/api/health")

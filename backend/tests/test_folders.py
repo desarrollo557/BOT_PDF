@@ -37,6 +37,8 @@ def workspace(tmp_path):
         upload_dir=tmp_path / "uploads",
         output_dir=tmp_path / "outputs",
         ledger_path=tmp_path / "inventory.jsonl",
+        # Las pausas y vueltas de reintento, en centésimas y no en minutos.
+        pausa_tras_fallos=0.01,
     )
     settings.ensure_directories()
     (tmp_path / "origen").mkdir()
@@ -124,6 +126,43 @@ class TestConsuming:
         assert sorted(processed) == ["a.pdf", "b.pdf", "c.pdf"]
         assert run.processed == 3
         assert run.state is RunState.DONE
+
+    def test_a_second_run_skips_delivered_documents_and_processes_new_ones(
+        self, workspace, tmp_path
+    ):
+        put(tmp_path / "origen", "a.pdf", "b.pdf")
+        first_engine, first_processed = runner(workspace, JobRegistry())
+        drain(first_engine, tmp_path / "origen", tmp_path / "destino")
+
+        put(tmp_path / "origen", "c.pdf")
+        second_engine, second_processed = runner(workspace, JobRegistry())
+
+        run = drain(second_engine, tmp_path / "origen", tmp_path / "destino")
+
+        assert first_processed == ["a.pdf", "b.pdf"]
+        assert second_processed == ["c.pdf"]
+        assert run.processed == 1
+        assert run.ya_entregados == 2
+        assert run.discovered == 3
+
+    def test_the_same_name_in_another_subfolder_is_tracked_separately(
+        self, workspace, tmp_path
+    ):
+        (tmp_path / "origen" / "caja-a").mkdir()
+        (tmp_path / "origen" / "caja-b").mkdir()
+        put(tmp_path / "origen" / "caja-a", "expediente.pdf")
+        put(tmp_path / "origen" / "caja-b", "expediente.pdf")
+        first_engine, _ = runner(workspace, JobRegistry())
+        drain(first_engine, tmp_path / "origen", tmp_path / "destino")
+
+        put(tmp_path / "origen" / "caja-b", "nuevo.pdf")
+        second_engine, processed = runner(workspace, JobRegistry())
+
+        drain(second_engine, tmp_path / "origen", tmp_path / "destino")
+
+        assert processed == [str(Path("caja-b") / "nuevo.pdf")]
+        assert (tmp_path / "destino" / "caja-a" / "expediente" / "00086__acta.pdf").is_file()
+        assert (tmp_path / "destino" / "caja-b" / "expediente" / "00086__acta.pdf").is_file()
 
     def test_files_are_taken_in_name_order(self, workspace, tmp_path):
         put(tmp_path / "origen", "c.pdf", "a.pdf", "b.pdf")

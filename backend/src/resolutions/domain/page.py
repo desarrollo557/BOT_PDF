@@ -32,4 +32,7 @@ class PageClassification:
     ambiguous: bool = False
     #: The document's own name, read from the page that declares the code.
     title: str | None = None
+    #: Qué plantilla mostró la página -- «resolución de rectoría», «oficio»,
+    #: «tabla»... -- por lo que trae impreso (``plantilla_de_pagina``).
+    plantilla: str | None = None
 

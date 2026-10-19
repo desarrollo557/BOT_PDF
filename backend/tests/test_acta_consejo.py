@@ -811,7 +811,7 @@ class TestElExcelDeLaCarpeta:
         # La carpeta de cada fila es su ruta desde la raíz elegida.
         assert primera["Carpeta"] == "2012"
         # Sólo inventariar: el Excel en su carpeta espejo, sin ningún PDF.
-        assert sorted(p.relative_to(run.destination).as_posix() for p in run.destination.rglob("*.*")) == [
+        assert sorted(p.relative_to(run.destination).as_posix() for p in run.destination.rglob("*.*") if ".bot-" not in p.as_posix()) == [
             "2012/ACTAS 2012__inventario.xlsx"
         ]
         assert run.as_dict()["inventario"] == "ACTAS 2012__inventario.xlsx"

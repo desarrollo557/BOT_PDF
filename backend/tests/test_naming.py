@@ -51,6 +51,27 @@ class TestSinPrefijo:
         assert name.endswith(".pdf")
 
 
+class TestElNombreNoSeRepite:
+    def test_un_diploma_archivado_por_el_nombre_no_lo_dice_dos_veces(self):
+        codigo = ResolutionCode(value="MARTHA MARIA SOLANO VARGAS", raw="MARTHA MARIA SOLANO VARGAS")
+        nombre = output_filename(
+            codigo,
+            "MARTHA MARIA SOLANO VARGAS - DOCTOR EN DERECHO",
+            prefix=None,
+            con_titulo=True,
+            mayusculas=True,
+            kind="DIPLOMA",
+        )
+        assert nombre == "MARTHA-MARIA-SOLANO-VARGAS_DOCTOR-EN-DERECHO_DIPLOMA.pdf"
+
+    def test_por_la_cedula_el_nombre_sigue_en_el_titulo(self):
+        codigo = ResolutionCode(value="1020743211", raw="1020743211")
+        nombre = output_filename(
+            codigo, "DIANA GIL - ESPECIALISTA", prefix=None, con_titulo=True, mayusculas=True, kind="DIPLOMA"
+        )
+        assert nombre == "1020743211_DIANA-GIL-ESPECIALISTA_DIPLOMA.pdf"
+
+
 class TestNombreDeLaPlanilla:
     """El acta que acompaña a un documento, sin pasarse del límite de Windows.
 
@@ -62,6 +83,12 @@ class TestNombreDeLaPlanilla:
 
     def test_usa_el_nombre_del_documento_sin_su_extension(self):
         assert sheet_filename("acta 2013.pdf", "__FUID.xlsx") == "acta 2013__FUID.xlsx"
+
+    def test_sin_la_carpeta_de_la_que_vino_el_documento(self):
+        """Con la barra dentro, el FUID se guardaba en una subcarpeta que no existe."""
+        nombre = sheet_filename("00C003269\\1. 3858079 REGISTRO.pdf", "__FUID.xlsx")
+        assert nombre == "1. 3858079 REGISTRO__FUID.xlsx"
+        assert sheet_filename("caja/UPD1.pdf", "__inventario.xlsx") == "UPD1__inventario.xlsx"
 
     def test_respeta_un_nombre_que_cabe(self):
         nombre = sheet_filename("libro 8", "__FUID.xlsx", directory_length=60)

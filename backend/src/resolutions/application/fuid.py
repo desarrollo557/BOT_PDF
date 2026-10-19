@@ -145,13 +145,34 @@ class Cabecera:
 #: en la carpeta. Va en el nombre del archivo digitalizado -- "4. 3858082
 #: REGISTRO DE DIPLOMAS..." -- porque dentro del PDF no consta en ninguna parte.
 #: Se escribe pelado, sin anteponerle "UPD": la columna ya se llama así.
-_UPD_EN_EL_NOMBRE = re.compile(r"\b(\d{7})\b")
+#: Siete cifras sueltas, también pegadas a «UPD»: «UPD3859348» no tiene límite
+#: de palabra entre la D y el 3, y con ``\b`` la carpeta salía N/A en las
+#: corridas de carpeta, donde el UPD va en la subcarpeta del PDF.
+_UPD_EN_EL_NOMBRE = re.compile(r"(?<!\d)(\d{7})(?!\d)")
+
+#: Una carpeta que es una caja: «00C003269», o el número pelado «3220».
+_CAJA_EN_LA_RUTA = re.compile(r"^(?:\d{2,3}C\d{6}|\d{3,6})$", re.IGNORECASE)
 
 
 def upd_del_archivo(nombre: str) -> str:
-    """El UPD que anuncia el nombre del archivo, o N/A si no lo anuncia."""
+    """El UPD que anuncia el nombre del archivo o su ruta, o N/A si no lo anuncia."""
     encontrado = _UPD_EN_EL_NOMBRE.search(nombre)
     return encontrado.group(1) if encontrado else NO_APLICA
+
+
+def caja_de_la_ruta(nombre: str) -> str:
+    """La caja que dice la ruta del PDF -- «3220\\UPD3859348\\…» --, o N/A.
+
+    En una corrida de carpeta el archivo se entrega en cajas: una carpeta por
+    caja, con el número de su sticker. Es lo único que dice dónde está el
+    papel, y vale más que un número fijo en los ajustes, que se colaba en
+    cajas que no eran la suya (la 3269 de los diplomas en las resoluciones de
+    la 3220).
+    """
+    for parte in re.split(r"[\\/]", nombre)[:-1]:
+        if _CAJA_EN_LA_RUTA.match(parte.strip()):
+            return parte.strip()
+    return NO_APLICA
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,3 +192,9 @@ class Ubicacion:
 
     def carpeta_de(self, nombre_del_archivo: str) -> str:
         return self.carpeta or upd_del_archivo(nombre_del_archivo)
+
+    def caja_de(self, nombre_del_archivo: str) -> str:
+        """La caja que indicó el operador, o la que dice la ruta del PDF."""
+        if self.caja and self.caja != NO_APLICA:
+            return self.caja
+        return caja_de_la_ruta(nombre_del_archivo)

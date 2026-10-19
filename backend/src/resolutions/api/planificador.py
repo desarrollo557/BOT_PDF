@@ -25,9 +25,9 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-#: Por debajo de esto un documento lee demasiado despacio: dos hilos mantienen
-#: ocupado un núcleo mientras el otro rasteriza.
-HILOS_MINIMOS = 2
+#: El servicio conserva un núcleo para atender la API mientras se lee.
+HILOS_MINIMOS = 1
+HILOS_RESERVADOS_PARA_SERVICIO = 1
 
 
 class Planificador:
@@ -40,6 +40,9 @@ class Planificador:
         hilos_de_la_maquina: int | None = None,
     ) -> None:
         self.documentos_de_carpeta = max(1, documentos_de_carpeta)
+        #: Los de una carpeta que no eligió cuántos: lo configurado, aunque
+        #: otra haya ampliado las ranuras.
+        self.por_omision = self.documentos_de_carpeta
         self._hilos_por_documento = max(1, hilos_por_documento)
         self._procesos = max(1, procesos)
         self._hilos_de_la_maquina = max(1, hilos_de_la_maquina or os.cpu_count() or 4)
@@ -53,6 +56,20 @@ class Planificador:
             self._ranuras = asyncio.Semaphore(self.documentos_de_carpeta)
         return self._ranuras
 
+    def ampliar(self, documentos: int) -> None:
+        """Más ranuras, si una carpeta pide más documentos a la vez que los que hay.
+
+        Nunca menos: quitar ranuras a un semáforo en uso no es seguro, y una
+        carpeta que pidió pocos ya se limita sola con sus trabajadores.
+        """
+        extra = documentos - self.documentos_de_carpeta
+        if extra <= 0:
+            return
+        self.documentos_de_carpeta = documentos
+        if self._ranuras is not None:
+            for _ in range(extra):
+                self._ranuras.release()
+
     def hilos_para(self, documentos: int) -> int:
         """Cuántos hilos de OCR le tocan a cada uno con ``documentos`` corriendo.
 
@@ -60,7 +77,11 @@ class Planificador:
         están leyendo, y contarlos dejaba a los que sí con dos hilos.
         """
         activos = max(1, min(documentos, self._procesos))
-        reparto = self._hilos_de_la_maquina // activos
+        presupuesto = max(
+            HILOS_MINIMOS,
+            self._hilos_de_la_maquina - HILOS_RESERVADOS_PARA_SERVICIO,
+        )
+        reparto = presupuesto // activos
         return max(HILOS_MINIMOS, min(self._hilos_por_documento, reparto))
 
     @contextmanager

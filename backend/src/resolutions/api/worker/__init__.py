@@ -20,6 +20,7 @@ lo que está impreso en una muestra de páginas, nunca el nombre del archivo.
 from __future__ import annotations
 
 import logging
+import pickle
 from pathlib import Path
 
 from ...application.progress import Stage
@@ -58,7 +59,40 @@ logger = logging.getLogger(__name__)
 _SIN_RECONOCER = object()
 
 
+class ErrorDelWorker(RuntimeError):
+    """Un fallo del worker que no podía viajar tal cual al proceso principal.
+
+    El resultado de un proceso del pool vuelve serializado, y las excepciones
+    nativas de MuPDF no se dejan serializar: «cannot pickle SwigPyObject». El
+    trabajo fallaba con ese TypeError y el motivo de verdad -- «FzErrorFormat:
+    cannot find startxref» -- se perdía. Aquí viaja su clase y su texto.
+    """
+
+    para_el_operador = True
+
+
+def _viaja(error: BaseException) -> bool:
+    try:
+        pickle.loads(pickle.dumps(error))
+    except Exception:  # noqa: BLE001 - lo que sea que impida el viaje
+        return False
+    return True
+
+
 def process_document_job(payload: dict) -> dict:
+    """El trabajo de un PDF en el worker, con su fallo siempre legible al volver."""
+    try:
+        return _process_document_job(payload)
+    except Exception as error:
+        if _viaja(error):
+            raise
+        detalle = " ".join(str(error).split())[:300] or "sin detalle"
+        raise ErrorDelWorker(
+            f"El lector del PDF falló ({type(error).__name__}): {detalle}"
+        ) from None
+
+
+def _process_document_job(payload: dict) -> dict:
     """Do what was asked of one PDF, and say what it cost.
 
     El contador de consumo se crea aquí, antes de elegir ruta, y vive en el

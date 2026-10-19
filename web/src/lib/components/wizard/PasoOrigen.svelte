@@ -44,6 +44,13 @@
     onusarHabilidad?: (id: string) => void;
     blockedLectura: string | null;
     numero?: number;
+    /** Cuántos archivos a la vez; cero es el automático. */
+    paralelo?: number;
+    onParalelo?: (valor: number) => void;
+    /** El tope: los procesos del servicio. Cero si aún no se sabe. */
+    maximoEnParalelo?: number;
+    /** Cuántos van a la vez en automático. */
+    automaticoEnParalelo?: number;
   }
 
   let {
@@ -62,10 +69,31 @@
     blockedLectura,
     numero = 2,
     habilidadId = 'auto',
-    onusarHabilidad
+    onusarHabilidad,
+    paralelo = 0,
+    onParalelo,
+    maximoEnParalelo = 0,
+    automaticoEnParalelo = 0
   }: Props = $props();
 
   const SINGLE_LIMIT = 5;
+
+  /**
+   * Las cifras que se ofrecen: de uno al tope del servicio, y en la carga
+   * individual no más que los documentos que admite.
+   */
+  const tope = $derived(mode === 'single' ? Math.min(maximoEnParalelo, SINGLE_LIMIT) : maximoEnParalelo);
+  const cifras = $derived(Array.from({ length: Math.max(0, tope) }, (_, i) => i + 1));
+  /** Una cifra que deja de caber al cambiar de modo vuelve al automático. */
+  $effect(() => {
+    if (paralelo > tope && tope > 0) onParalelo?.(0);
+  });
+  const ayudaParalelo = $derived(
+    paralelo > 0
+      ? `${paralelo} ${paralelo === 1 ? 'archivo' : 'archivos'} a la vez. Más a la vez termina antes, pero carga más el equipo y la IA.`
+      : `Lo decide el servicio${automaticoEnParalelo ? ` (${automaticoEnParalelo} a la vez en una carpeta)` : ''}.`
+  );
+
 
   const MODES: { id: Mode; label: string; hint: string }[] = [
     { id: 'single', label: 'Carga individual', hint: `Hasta ${SINGLE_LIMIT} documentos` },
@@ -101,9 +129,56 @@
     {/each}
   </div>
 
+  {#if cifras.length > 1}
+    <!-- Cuántos archivos a la vez: lo elige el operador antes de procesar, para
+         cualquier habilidad. El tope son los procesos del servicio: más no lee
+         más rápido, sólo deja archivos esperando. -->
+    <div class="paralelo">
+      <div class="paralelo-texto">
+        <span class="paralelo-titulo" id="paralelo-titulo">Archivos en paralelo</span>
+        <small>{ayudaParalelo}</small>
+      </div>
+      <div class="segmented" role="radiogroup" aria-labelledby="paralelo-titulo">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={paralelo === 0}
+          class:current={paralelo === 0}
+          onclick={() => onParalelo?.(0)}
+        >
+          Auto
+        </button>
+        {#each cifras as cifra (cifra)}
+          <button
+            type="button"
+            role="radio"
+            class="cifra tabular"
+            aria-checked={paralelo === cifra}
+            aria-label={`${cifra} a la vez`}
+            class:current={paralelo === cifra}
+            onclick={() => onParalelo?.(cifra)}
+          >
+            {cifra}
+          </button>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
   <div class="origen" role="tabpanel">
     {#if mode === 'folder'}
-      <FolderPanel {task} {oracle} {lectura} {tipo} {corte} {agrupar} {territorial} {habilidadId} {onusarHabilidad} />
+      <FolderPanel
+        {task}
+        {oracle}
+        {lectura}
+        {tipo}
+        {corte}
+        {agrupar}
+        {territorial}
+        {habilidadId}
+        {onusarHabilidad}
+        paralelo={paralelo > 0 ? paralelo : undefined}
+      />
     {:else}
       <Dropzone
         onfiles={recibirArchivos}
@@ -133,5 +208,51 @@
      contenido de la pestaña quedaba metido en una caja con sombra. */
   .origen {
     min-width: 0;
+  }
+
+  /* Una franja con el mismo borde que las tarjetas de arriba: a la izquierda
+     qué es, a la derecha la cifra. Botones y no un desplegable: el menú
+     nativo se pinta claro sobre el tema oscuro y esconde las opciones. */
+  .paralelo {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2) var(--space-3);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-lg);
+    background: var(--surface-2);
+    padding: 0.6rem 0.75rem;
+  }
+
+  .paralelo-texto {
+    display: grid;
+    gap: 0.15rem;
+    min-width: 12rem;
+    flex: 1 1 14rem;
+  }
+
+  .paralelo-titulo {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  .paralelo-texto small {
+    font-size: var(--text-xs, 0.75rem);
+    color: var(--muted);
+  }
+
+  /* Las cifras, cuadradas y del mismo ancho: «1» y «11» no bailan. */
+  .paralelo .segmented > .cifra {
+    min-width: 2rem;
+    padding-inline: 0.45rem;
+    text-align: center;
+  }
+
+  .paralelo .segmented > button:is(.current, [aria-checked='true']) {
+    background: var(--accent-soft);
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--ring);
   }
 </style>

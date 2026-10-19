@@ -20,6 +20,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from ..application.fuid import FuidRow
 from .fuid_inventory import (
     COLUMNA_CABECERA,
     COLUMNAS,
@@ -210,3 +211,44 @@ def leer_fuid(ruta: Path) -> PlanillaLeida:
         )
     finally:
         libro.close()
+
+
+def _entero(valor: str, por_omision: int = 1) -> int:
+    try:
+        return int(float(valor))
+    except (TypeError, ValueError):
+        return por_omision
+
+
+def filas_de_fuid(ruta: Path) -> tuple[list[FuidRow], str]:
+    """Las filas de un FUID ya escrito, listas para volver a escribirse, y su oficina.
+
+    Es lo que hace falta para juntar planillas -- los libros de una carpeta en
+    un FUID general, o lo ya entregado de un libro con lo que se retomó --
+    sin volver a leer el papel: lo que se junta es lo que ya se entregó.
+    """
+    planilla = leer_fuid(ruta)
+    filas = []
+    for celdas in planilla.filas:
+        c = [*celdas, *[""] * COLUMNAS][:COLUMNAS]
+        filas.append(
+            FuidRow(
+                orden=_entero(c[0], len(filas) + 1),
+                codigo_trd=c[1],
+                asunto=c[2],
+                consecutivo_inicial=c[3],
+                consecutivo_final=c[4],
+                fecha_inicial=c[5],
+                fecha_final=c[6],
+                caja=c[7],
+                carpeta=c[8],
+                tomo=c[9],
+                otro=c[10],
+                folios=_entero(c[11]),
+                folios_siar=_entero(c[12]),
+                soporte=c[13],
+                frecuencia=c[14],
+                notas=c[15],
+            )
+        )
+    return filas, planilla.oficina_productora
