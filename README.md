@@ -459,8 +459,13 @@ front compilado, el servicio, Tesseract con español y las plantillas oficiales.
 ```powershell
 git clone https://github.com/desarrollo557/BOT_PDF.git
 cd BOT_PDF
-.\scripts\instalar-escritorio.ps1
+instalar-docker
 ```
+
+`instalar-docker.cmd` y `actualizar-docker.cmd` están en la raíz: se abren con
+doble clic o se escriben en CMD o PowerShell. Lanzan los scripts de `scripts/`
+con permiso para ejecutarse; un `.ps1` escrito directamente en CMD, o abierto
+con doble clic, se abre en el Bloc de notas en vez de ejecutarse.
 
 El instalador enciende Docker si está apagado, crea el `.env` si falta, monta
 **todos los discos del equipo** dentro del contenedor, construye la imagen,
@@ -482,7 +487,7 @@ espera a que el servicio conteste y abre `http://localhost:8000`.
 Para actualizar a la última versión:
 
 ```powershell
-.\scripts\actualizar-docker.ps1
+actualizar-docker
 ```
 
 que es `docker compose down`, `git pull` y volver a instalar. También vale borrar

@@ -2,7 +2,8 @@
 # detiene el contenedor, trae los cambios y vuelve a construir y arrancar.
 # Los datos (volumen bot_pdf_botpdf_data) y el .env se conservan.
 #
-#   .\scripts\actualizar-docker.ps1
+#   actualizar-docker            (el .cmd de la raiz: doble clic, CMD o PowerShell)
+#   .\scripts\actualizar-docker.ps1   (desde PowerShell)
 #
 # Equivale a: docker compose down; git pull; .\scripts\instalar-escritorio.ps1
 
