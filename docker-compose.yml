@@ -7,11 +7,15 @@ services:
     ports:
       - "8000:8000"
     environment:
+      BOTPDF_WEB_ROOT: /app/web/build
       RESOLUTIONS_DATA_DIR: /data
       RESOLUTIONS_UPLOAD_DIR: /data/uploads
       RESOLUTIONS_OUTPUT_DIR: /data/outputs
       RESOLUTIONS_LEDGER_PATH: /data/inventory.jsonl
       RESOLUTIONS_USERS_PATH: /data/usuarios.jsonl
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     volumes:
       - botpdf_data:/data
     restart: unless-stopped

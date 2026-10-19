@@ -25,7 +25,8 @@ ENV RESOLUTIONS_DATA_DIR=/data \
     RESOLUTIONS_UPLOAD_DIR=/data/uploads \
     RESOLUTIONS_OUTPUT_DIR=/data/outputs \
     RESOLUTIONS_LEDGER_PATH=/data/inventory.jsonl \
-    RESOLUTIONS_USERS_PATH=/data/usuarios.jsonl
+    RESOLUTIONS_USERS_PATH=/data/usuarios.jsonl \
+    BOTPDF_WEB_ROOT=/app/web/build
 
 EXPOSE 8000
 VOLUME ["/data"]
