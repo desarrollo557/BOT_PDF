@@ -499,7 +499,7 @@ la carpeta, clonar de nuevo y ejecutar el instalador: los datos siguen en su
 volumen. En Linux, `./scripts/instalar-escritorio.sh` (monta `/home`, `/mnt` y
 `/media` en la misma ruta). Registro en vivo: `docker compose logs -f`.
 
-Si algo falla, `diagnosticar-docker.cmd` (o `-Archivo "C:utarchivo.pdf"` para
+Si algo falla, `diagnosticar-docker.cmd` (o `-Archivo "C:\ruta\archivo.pdf"` para
 probar con un PDF real) deja en `diagnostico-docker.txt` el estado y los reinicios
 del contenedor, la memoria, la salud, una prueba de subida que no crea trabajos y
 el registro.
