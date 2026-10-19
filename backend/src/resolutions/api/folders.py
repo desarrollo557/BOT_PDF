@@ -24,6 +24,7 @@ from .jobs import Job, JobRegistry, JobState
 from .planificador import Planificador
 from .reintentos import merece_otra_vuelta
 from .retomar import ControlDeUnLibro, HuellasDelOrigen, Retomar
+from .rutas_del_equipo import al_operador, al_servicio
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -122,7 +123,7 @@ class Delivery:
         return {
             "file_name": self.file_name,
             "source_document": self.source_document,
-            "destination": self.destination,
+            "destination": al_operador(self.destination),
             "at": self.at,
         }
 
@@ -326,8 +327,10 @@ class FolderRun:
         return {
             "kind": "folder_run",
             "id": self.id,
-            "source": str(self.source),
-            "destination": str(self.destination),
+            # Como las reconoce el operador, también cuando el servicio corre
+            # en Docker y las ve montadas en otra ruta.
+            "source": al_operador(self.source),
+            "destination": al_operador(self.destination),
             "disposition": str(self.disposition),
             "watch": self.watch,
             "task": self.task,
@@ -349,7 +352,7 @@ class FolderRun:
             "avisos": self.avisos[-AVISOS_EN_PANTALLA:],
             "retirados": self.retirados,
             "control": Path(self.control).name if self.control else None,
-            "control_ruta": self.control,
+            "control_ruta": al_operador(self.control) if self.control else None,
             "controles": [control.as_dict() for control in islice(self.controles.values(), 500)],
             "operator": self.operator,
             "state": str(self.state),
@@ -378,7 +381,7 @@ class FolderRun:
             # El Excel de las actas de la carpeta, por su nombre: la ruta
             # completa es del disco del servicio y la pantalla sólo la enseña.
             "inventario": Path(self.inventario).name if self.inventario else None,
-            "inventario_ruta": self.inventario,
+            "inventario_ruta": al_operador(self.inventario) if self.inventario else None,
             "inventario_filas": len(self.inventario_filas),
             "inventario_error": self.inventario_error,
             "inventario_validacion": self.inventario_validacion,
@@ -422,6 +425,10 @@ def validate_folders(source: str, destination: str) -> tuple[Path, Path]:
     destination = clean_path(destination)
     if not source or not destination:
         raise FolderError("Indique la carpeta de origen y la de destino")
+    # En Docker, «C:\…» del operador está montada en otra ruta del contenedor
+    # (ver `rutas_del_equipo.py`). Fuera de Docker no cambia nada.
+    source = al_servicio(source)
+    destination = al_servicio(destination)
 
     origin = Path(source).expanduser()
     target = Path(destination).expanduser()
@@ -1027,7 +1034,7 @@ class FolderRunner:
             # el nombre del origen, y la entrega lo recalcula después con el
             # NIC si el expediente lo trae: lo que va en la planilla es dónde
             # quedará, que es lo que el operador necesita saber.
-            destination=str(self._output_dir(run, path)),
+            destination=al_operador(self._output_dir(run, path)),
             # La carpeta raíz, que es como el operador la reconoce en el
             # Archivo: sin esto cada PDF salía como una carpeta con su propio
             # nombre de archivo.
@@ -1623,7 +1630,7 @@ class FolderRunner:
             ExcelInventory().write(
                 job.report,
                 en or destino,
-                delivered_to=str(destino),
+                delivered_to=al_operador(destino),
                 operator=run.operator,
                 processed_at=job.finished_at,
             )
@@ -1686,7 +1693,7 @@ class FolderRunner:
             ExcelRunInventory().write(
                 run.manifest,
                 run.destination,
-                source=str(run.source),
+                source=al_operador(run.source),
                 operator=run.operator,
                 started_at=run.started_at,
                 finished_at=run.finished_at or _now(),
@@ -1937,7 +1944,7 @@ class FolderRunner:
                 destino = unique_path(destino.parent, destino.name)
                 return escribir_fuid_de_actas_de_grado(filas, destino)
         opciones = {
-            "carpeta": str(run.source),
+            "carpeta": al_operador(run.source),
             "nota": SIN_IA if run.lectura == "local" else None,
             "titulo": perfil.titulo,
             "con_resumen": perfil.con_resumen,

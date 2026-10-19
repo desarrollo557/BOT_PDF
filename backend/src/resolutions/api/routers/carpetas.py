@@ -17,6 +17,7 @@ from .. import native_picker
 from ..contexto import Ctx
 from ..folders import FolderError, SourceDisposition, clean_path
 from ..indices import carpeta_del_lote, libro_de_indices
+from ..rutas_del_equipo import al_operador, al_servicio, raices
 from .salidas import XLSX_MEDIA
 from .trabajos import (
     _agrupar_choice,
@@ -272,7 +273,7 @@ async def browse(ctx: Ctx, path: str | None = None) -> dict[str, object]:
         return {"path": None, "parent": None, "drives": _drives(), "folders": []}
 
     try:
-        current = Path(clean_path(path)).expanduser().resolve(strict=True)
+        current = Path(al_servicio(clean_path(path))).expanduser().resolve(strict=True)
     except (OSError, ValueError):
         raise HTTPException(status_code=404, detail=f"La carpeta no existe: {path}") from None
     if not current.is_dir():
@@ -286,7 +287,7 @@ async def browse(ctx: Ctx, path: str | None = None) -> dict[str, object]:
                 continue
             try:
                 if entry.is_dir():
-                    subcarpetas.append({"name": entry.name, "path": str(entry)})
+                    subcarpetas.append({"name": entry.name, "path": al_operador(entry)})
             except OSError:
                 continue
     except PermissionError:
@@ -296,9 +297,12 @@ async def browse(ctx: Ctx, path: str | None = None) -> dict[str, object]:
     except OSError as error:
         raise HTTPException(status_code=422, detail=f"No se pudo leer: {error}") from None
 
-    parent = str(current.parent) if current.parent != current else None
+    parent = al_operador(current.parent) if current.parent != current else None
+    if al_operador(current).endswith(":\\"):
+        # La raíz de una unidad montada: arriba de ella sólo está el contenedor.
+        parent = None
     return {
-        "path": str(current),
+        "path": al_operador(current),
         "parent": parent,
         "drives": _drives(),
         "folders": subcarpetas,
@@ -329,7 +333,14 @@ async def pick_folder(ctx: Ctx, payload: dict | None = None) -> dict[str, object
     return {"path": chosen, "cancelled": chosen is None}
 
 def _drives() -> list[dict[str, str]]:
-    """Puntos de partida: las unidades en Windows, la raíz y el hogar fuera."""
+    """Puntos de partida: las unidades en Windows, la raíz y el hogar fuera.
+
+    En Docker, las unidades del equipo que el instalador montó: el hogar y la
+    raíz del contenedor no le dicen nada al operador.
+    """
+    montadas = raices()
+    if montadas:
+        return montadas
     home = Path.home()
     roots: list[dict[str, str]] = [{"name": "Escritorio", "path": str(home / "Desktop")}]
     roots.append({"name": "Carpeta personal", "path": str(home)})

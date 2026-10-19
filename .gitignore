@@ -32,3 +32,6 @@ vite.config.ts.timestamp-*
 # Índices de herramientas externas de asistencia. Apuntan a rutas de la máquina
 # de quien las corrió, así que en otro puesto no significan nada.
 .atl/
+
+# Docker: el montaje de los discos lo genera el instalador para cada equipo.
+docker-compose.override.yml

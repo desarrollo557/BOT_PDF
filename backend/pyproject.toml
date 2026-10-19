@@ -29,6 +29,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Las plantillas oficiales (FUID, Índice Electrónico) y la lista de nombres
+# viajan con el paquete: instalado con `pip install` -- como en la imagen de
+# Docker -- sin esto no se podía escribir ningún FUID.
+[tool.setuptools.package-data]
+resolutions = ["assets/*.xlsx", "assets/*.txt", "assets/plantillas/*.xlsx"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # «.» para que las pruebas compartan ayudantes con «from tests.fakes import …»

@@ -1,14 +1,30 @@
+# Lo que no entra al contexto de la imagen. La imagen sólo copia web/ y
+# backend/src + pyproject.toml, pero el contexto entero viaja al motor de Docker
+# en cada build: sin esto, las salidas de backend/data (gigas de PDF) viajaban
+# también, y el .env con las llaves.
+.git
+.gitignore
+.env
+.env.*
+!.env.example
 **/.venv
 **/__pycache__
 **/.pytest_cache
+**/.ruff_cache
 **/.mypy_cache
 **/node_modules
 **/.svelte-kit
 **/dist
 **/build
-.git
-.gitignore
+backend/data
+data
+smoke-data
+docs
+backend/tests
+.atl
 .vscode
+docker-compose.override.yml
+*.pdf
 *.pyc
 *.pyo
 *.pyd

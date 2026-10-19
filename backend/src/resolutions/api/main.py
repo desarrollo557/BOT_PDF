@@ -18,13 +18,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
-from pathlib import Path
-
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ..adapters.ledger import InventoryLedger
 from ..adapters.mysql_inventory import (
@@ -321,9 +320,28 @@ def _frontend_root() -> Path:
     return candidates[0]
 
 
+class _Pantalla(StaticFiles):
+    """El front compilado, con la página única para cualquier ruta suya.
+
+    La pantalla es una aplicación de una sola página: «/archivo» o
+    «/revision» no son archivos del disco sino rutas que resuelve el navegador.
+    Recargarlas devolvía un 404; ahora devuelven ``index.html`` y la pantalla
+    sigue donde estaba. Lo que va a ``/api`` nunca cae aquí: un endpoint que no
+    existe sigue siendo un 404 de la API.
+    """
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as error:
+            if error.status_code != 404 or path.startswith("api"):
+                raise
+            return await super().get_response("index.html", scope)
+
+
 frontend_root = _frontend_root()
-if frontend_root.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_root), html=True), name="frontend")
+if (frontend_root / "index.html").exists():
+    app.mount("/", _Pantalla(directory=str(frontend_root), html=True), name="frontend")
 
 
 async def _drain_progress(ctx: Contexto) -> None:

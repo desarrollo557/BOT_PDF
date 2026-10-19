@@ -434,7 +434,9 @@ web/              SvelteKit 5 + Tailwind 4; 188 pruebas sobre los stores
 db/               esquema MySQL: 7 tablas, 4 vistas, 11 claves foráneas
 docs/             arquitectura, flujo de ramas y diagramas
   diagramas/      diagramas interactivos (abrir index.html en el navegador)
-scripts/          verificación local y andamios de medición
+scripts/          verificación local, instaladores de Docker y andamios de medición
+Dockerfile        la imagen: front compilado + servicio + Tesseract
+docker-compose.yml el servicio en Docker; el instalador añade los discos del equipo
 ```
 
 La interfaz, sus mensajes y los motivos de revisión están en español. Los
@@ -449,7 +451,46 @@ dependencias apunten hacia adentro.
 
 ## Cómo se corre
 
-### Requisitos
+### Con Docker (lo más simple)
+
+Sólo hace falta **Docker Desktop** y el repositorio. La imagen trae todo: el
+front compilado, el servicio, Tesseract con español y las plantillas oficiales.
+
+```powershell
+git clone https://github.com/desarrollo557/BOT_PDF.git
+cd BOT_PDF
+.\scripts\instalar-escritorio.ps1
+```
+
+El instalador enciende Docker si está apagado, crea el `.env` si falta, monta
+**todos los discos del equipo** dentro del contenedor, construye la imagen,
+espera a que el servicio conteste y abre `http://localhost:8000`.
+
+- **Rutas locales como siempre.** Se pega `C:\Users\…\ENTRADA` o
+  `Z:\Shared with Me\…`, o se elige en el explorador de la pantalla, y el
+  servicio lo encuentra: cada disco va montado en `/equipo/<letra>` y el
+  servicio traduce las rutas en los dos sentidos (`api/rutas_del_equipo.py`).
+  Si una unidad de red o de la nube (WorkDrive, OneDrive) no se deja montar, el
+  instalador sigue con los discos locales y dice cuál quedó fuera.
+- **Las llaves de la IA**, en el `.env` de la raíz (`MISTRAL_API_KEY`,
+  `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`). Se leen al arrancar: tras cambiarlas,
+  `docker compose up -d`.
+- **Los datos** (salidas, libro mayor, usuarios, registro diario) viven en el
+  volumen `bot_pdf_botpdf_data`: sobreviven a detener, reconstruir y volver a
+  clonar.
+
+Para actualizar a la última versión:
+
+```powershell
+.\scripts\actualizar-docker.ps1
+```
+
+que es `docker compose down`, `git pull` y volver a instalar. También vale borrar
+la carpeta, clonar de nuevo y ejecutar el instalador: los datos siguen en su
+volumen. En Linux, `./scripts/instalar-escritorio.sh` (monta `/home`, `/mnt` y
+`/media` en la misma ruta). Registro en vivo: `docker compose logs -f`.
+
+### Requisitos (sin Docker)
 
 - **Python 3.12+**
 - **Node 20+**

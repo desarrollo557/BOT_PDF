@@ -1,24 +1,41 @@
+# BOT_PDF con Docker. Se arranca con scripts/instalar-escritorio.ps1 (Windows)
+# o scripts/instalar-escritorio.sh (Linux), que además montan los discos del
+# equipo en docker-compose.override.yml: con eso las rutas locales -- pegar
+# «C:\Users\...\ENTRADA» o elegirla en el explorador de la pantalla -- funcionan
+# igual que sin Docker. Ver la sección «Con Docker» del README.
+name: botpdf
+
 services:
   botpdf:
     build:
       context: .
       dockerfile: Dockerfile
+    image: botpdf:latest
     container_name: botpdf
     ports:
       - "8000:8000"
+    # Las llaves de la IA (MISTRAL_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY) y
+    # los ajustes RESOLUTIONS_* opcionales, del .env de la raíz si existe.
+    env_file:
+      - path: .env
+        required: false
+    # Lo propio del contenedor manda sobre el .env: una ruta de Windows ahí
+    # (la de Tesseract, las carpetas de datos) dentro de Linux no existe.
     environment:
-      BOTPDF_WEB_ROOT: /app/web/build
       RESOLUTIONS_DATA_DIR: /data
       RESOLUTIONS_UPLOAD_DIR: /data/uploads
       RESOLUTIONS_OUTPUT_DIR: /data/outputs
-      RESOLUTIONS_LEDGER_PATH: /data/inventory.jsonl
-      RESOLUTIONS_USERS_PATH: /data/usuarios.jsonl
-      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      RESOLUTIONS_LEDGER: /data/inventory.jsonl
+      RESOLUTIONS_USERS: /data/usuarios.jsonl
+      RESOLUTIONS_LOG_DIR: /data/logs
+      RESOLUTIONS_TESSERACT_CMD: tesseract
+      BOTPDF_WEB_ROOT: /app/web/build
     volumes:
       - botpdf_data:/data
     restart: unless-stopped
 
 volumes:
   botpdf_data:
+    # Con nombre fijo: sobrevive a parar, reconstruir y volver a clonar el repo
+    # en otra carpeta. Es el nombre que ya tenía en un clon llamado BOT_PDF.
+    name: bot_pdf_botpdf_data
