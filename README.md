@@ -646,6 +646,28 @@ Toda por variable de entorno. Ninguna credencial vive en el repositorio.
 | `RESOLUTIONS_MAX_UPLOAD_BYTES` | 4 GB | PDF más grande aceptado; acota disco, no memoria |
 | `RESOLUTIONS_SWEEP_SECONDS` | 30 | cada cuánto busca sobras el janitor ocioso |
 | `RESOLUTIONS_USERS` | `<data>/usuarios.jsonl` | quién está dado de alta y con qué perfil |
+| `RESOLUTIONS_FOLDER_DOCUMENTS` | un cuarto de los hilos | PDF de carpeta a la vez en «Automático»; en pantalla se elige otra cifra con «Archivos en paralelo» |
+| `RESOLUTIONS_IA_A_LA_VEZ` | 8 | llamadas a la IA de pago a la vez, sumando todos los documentos |
+| `RESOLUTIONS_LOG_DIR` | `<data>/logs` | registro diario `bot-AAAA-MM-DD.log` (30 días); vacío lo apaga |
+
+### Corridas largas y recuperación
+
+Un fallo no tumba la corrida: se para lo que falla, se anota, la carpeta se
+acomoda y lo reintenta. Lo entregado entero tiene su constancia
+(`.bot-entrega.json`, oculta) y no se vuelve a procesar.
+
+| Variable | Por defecto | Para qué |
+|---|---|---|
+| `RESOLUTIONS_REINTENTOS` | 2 | intentos más de un documento que falló por algo pasajero (red, proceso caído, tiempo agotado) |
+| `RESOLUTIONS_ESPERA_REINTENTO` | 15 | segundos antes del segundo intento; el tercero espera el triple |
+| `RESOLUTIONS_MINUTOS_SIN_AVANCE` | 30 | minutos sin avanzar una página para dar un documento por atascado |
+| `RESOLUTIONS_DOCUMENTOS_POR_PROCESO` | 25 | documentos por proceso del pool antes de cambiarlo por uno limpio |
+| `RESOLUTIONS_FALLOS_SEGUIDOS` | 10 | fallos seguidos que **pausan** la carpeta (no la detienen) |
+| `RESOLUTIONS_PAUSA_TRAS_FALLOS` | 60 | segundos de la primera pausa; cada una seguida dobla la anterior, hasta 15 min |
+| `RESOLUTIONS_VUELTAS_DE_REINTENTO` | 1 | vueltas al final de la carpeta para lo que falló por algo pasajero |
+| `RESOLUTIONS_ESPERA_DEL_ORIGEN` | 30 | minutos esperando a que vuelva la carpeta de origen (red, WorkDrive) |
+| `RESOLUTIONS_TRABAJOS_EN_MEMORIA` | 300 | documentos terminados de una carpeta que se guardan enteros en pantalla |
+| `RESOLUTIONS_LIBERAR_SALIDAS` | no | `1` borra de salidas los PDF ya entregados al destino (ahorra disco; el Archivo deja de poder corregirlos) |
 
 ### Lectura
 
@@ -663,7 +685,7 @@ Toda por variable de entorno. Ninguna credencial vive en el repositorio.
 |---|---|---|
 | `RESOLUTIONS_LEDGER` | `<data>/inventory.jsonl` | el libro mayor durable |
 | `RESOLUTIONS_FUID_TEMPLATE` | la que viaja con el programa | plantilla FUID alternativa |
-| `RESOLUTIONS_FUID_CAJA` | `3269` | caja que se estampa en el FUID |
+| `RESOLUTIONS_FUID_CAJA` | — | caja para todo el FUID; sin ella sale de la ruta del PDF («3220\UPD…») |
 | `RESOLUTIONS_FUID_OTRO` | `N/A` | columna «otro» del FUID |
 | `RESOLUTIONS_FUID_TRD` | `N/A` | código TRD |
 | `RESOLUTIONS_FUID_OFICINA` | — | oficina productora |

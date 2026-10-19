@@ -166,13 +166,41 @@ Cada página emite un evento por una cola compartida. La API los pliega y empuja
 cuadros agrupados cuatro veces por segundo: un documento de 400 páginas produce
 400 eventos y nunca 400 cuadros en el navegador.
 
+Cuántos documentos van a la vez lo reparte el planificador (`api/planificador.py`):
+ranuras compartidas por todas las carpetas, los hilos de OCR de la máquina
+repartidos entre los que corren y un tope común de llamadas a la IA. El operador
+puede fijar la cifra antes de procesar con «Archivos en paralelo», de 1 al número
+de procesos del servicio, para una subida, un lote o una carpeta.
+
+Para corridas de un millón de páginas, lo que crece con la carpeta no se
+reescribe tras cada PDF: los inventarios generales los escribe una tarea de
+fondo, fuera del hilo que atiende la pantalla, y los documentos terminados más
+viejos salen del registro en memoria (la corrida guarda su fila y lo que
+sumaban).
+
 ## Aislamiento de fallas
 
-Tres niveles, para que nada se propague:
+Ningún fallo tumba la corrida entera: se para lo que falla, se anota, se acomoda
+y se reintenta.
 
 - una **página** ilegible se marca y va a revisión; las otras 399 se procesan
-- un **documento** que falla no detiene su lote
+- una **llamada a la IA** que falla se reintenta con espera; el turno común no se
+  queda retenido si un proceso muere con él
+- un **documento** que falla por algo pasajero —la red, la unidad de WorkDrive sin
+  conexión, un proceso del pool que murió, un tiempo agotado— se reintenta con
+  espera, y con un pool nuevo si se rompió; uno que no avanza en 30 minutos se da
+  por atascado. Lo que dice algo del papel (dañado, con contraseña) no se reintenta
+- una **racha** de fallos pausa la carpeta y la deja de uno en uno hasta que un
+  documento sale bien; al final de la cola, lo que falló por algo pasajero vuelve
+  a intentarse
+- el **origen** que se desconecta se espera; un error del propio bucle de la
+  carpeta se anota y se reanuda
 - la **telemetría** que se rompe nunca interrumpe el trabajo que describía
+
+Lo ya entregado no se repite: cada PDF deja una constancia de entrega junto a lo
+suyo (`api/constancia.py`). Una corrida nueva salta lo entregado entero sin abrir
+nada, y rehace lo que quedó cortado o cuyo original cambió. Las copias al destino
+van a `.part` y sólo se renombran completas.
 
 ## El inventario
 
