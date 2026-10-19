@@ -1,0 +1,564 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Qué habilidad atiende cada documento",
+    "locale": "es",
+    "quality_profile": "standard",
+    "output": "docs/diagramas/las-habilidades/las-habilidades.html",
+    "repository": {
+      "url": "https://github.com/desarrollo557/BOT_PDF.git",
+      "revision": "62e30ce0ff3ebc486b88c968f534a6f60606236b"
+    },
+    "views": [
+      {
+        "id": "declarado",
+        "label": "Lo que declara el operador",
+        "focus": [
+          "elegir",
+          "lectura",
+          "despacho",
+          "archivo",
+          "consejo",
+          "grado",
+          "diplomas",
+          "correspondencia"
+        ],
+        "note": "El tipo declarado manda: va directo a su habilidad sin gastar la muestra de reconocimiento."
+      },
+      {
+        "id": "automatico",
+        "label": "Detectar automáticamente",
+        "focus": [
+          "despacho",
+          "marcadores",
+          "validan",
+          "entera"
+        ],
+        "note": "Tres preguntas con Tesseract, y se detiene en la primera que tenga respuesta. Reconocer nunca paga."
+      },
+      {
+        "id": "rutas",
+        "label": "A qué habilidad va lo reconocido",
+        "focus": [
+          "despacho",
+          "resoluciones",
+          "matricula",
+          "diplomas",
+          "correspondencia",
+          "consejo",
+          "grado"
+        ],
+        "note": "Sin tipo reconocible y con «Dividir en documentos», se separa por continuidad."
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "op",
+      "label": "Operador"
+    },
+    {
+      "id": "orq",
+      "label": "Orquestador · gratis"
+    },
+    {
+      "id": "desp",
+      "label": "Despachador"
+    },
+    {
+      "id": "parten",
+      "label": "Parten el PDF"
+    },
+    {
+      "id": "actas",
+      "label": "Inventarían"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "elegir",
+      "lane": "op",
+      "col": 0,
+      "type": "frontend",
+      "icon": "person",
+      "label": "Elige la habilidad",
+      "sublabel": "declara tipo y acción",
+      "sources": [
+        {
+          "path": "web/src/lib/habilidades.ts",
+          "line": 138,
+          "end_line": 347,
+          "label": "HABILIDADES"
+        },
+        {
+          "path": "backend/src/resolutions/application/tipo_pedido.py",
+          "line": 30,
+          "end_line": 59,
+          "label": "TipoPedido"
+        }
+      ]
+    },
+    {
+      "id": "lectura",
+      "lane": "op",
+      "col": 1,
+      "type": "frontend",
+      "label": "Elige la lectura",
+      "sublabel": "Solo OCR · OCR + IA · ahorro",
+      "sources": [
+        {
+          "path": "web/src/lib/lectura.ts",
+          "line": 39,
+          "end_line": 55,
+          "label": "Las tres lecturas"
+        },
+        {
+          "path": "backend/src/resolutions/api/worker/taller.py",
+          "line": 194,
+          "end_line": 205,
+          "label": "con_ia()"
+        }
+      ]
+    },
+    {
+      "id": "despacho",
+      "lane": "desp",
+      "col": 3,
+      "type": "backend",
+      "icon": "decision",
+      "label": "¿Qué se declaró?",
+      "sublabel": "lo declarado manda; si no, reconoce",
+      "width": 200,
+      "height": 76,
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/worker/__init__.py",
+          "line": 109,
+          "end_line": 214,
+          "label": "_despachar: lo declarado"
+        },
+        {
+          "path": "backend/src/resolutions/api/worker/__init__.py",
+          "line": 224,
+          "end_line": 282,
+          "label": "_despachar: lo reconocido"
+        },
+        {
+          "path": "backend/src/resolutions/api/worker/__init__.py",
+          "line": 285,
+          "end_line": 342,
+          "label": "_recognise"
+        }
+      ]
+    },
+    {
+      "id": "marcadores",
+      "lane": "orq",
+      "col": 2,
+      "type": "backend",
+      "label": "1 · Marcadores y patrón",
+      "sublabel": "muestra de 12 páginas",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/application/orquestador.py",
+          "line": 209,
+          "end_line": 235,
+          "label": "Primera pregunta"
+        },
+        {
+          "path": "backend/src/resolutions/domain/doctype.py",
+          "line": 331,
+          "end_line": 378,
+          "label": "classify_pages"
+        }
+      ]
+    },
+    {
+      "id": "validan",
+      "lane": "orq",
+      "col": 3,
+      "type": "backend",
+      "label": "2 · Todas las habilidades",
+      "sublabel": "gana la única que valida",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/application/orquestador.py",
+          "line": 237,
+          "end_line": 250,
+          "label": "validar_todas + ganadora"
+        }
+      ]
+    },
+    {
+      "id": "entera",
+      "lane": "orq",
+      "col": 4,
+      "type": "backend",
+      "label": "3 · Página entera y nombre",
+      "sublabel": "4 hojas sin capa de texto",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/application/orquestador.py",
+          "line": 252,
+          "end_line": 341,
+          "label": "Segunda mirada y _nadie"
+        }
+      ]
+    },
+    {
+      "id": "correspondencia",
+      "lane": "parten",
+      "col": 0,
+      "type": "backend",
+      "label": "Caja de correspondencia",
+      "sublabel": "continuidad, sello y trámite RE",
+      "tag": "00.INDICE ELECTRONICO",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/worker/correspondencia.py",
+          "line": 415,
+          "end_line": 500,
+          "label": "Por trámite, documento o mes"
+        },
+        {
+          "path": "backend/src/resolutions/api/worker/correspondencia.py",
+          "line": 732,
+          "end_line": 739,
+          "label": "_escribir_indice"
+        },
+        {
+          "path": "web/src/lib/habilidades.ts",
+          "line": 214,
+          "end_line": 260,
+          "label": "Tarjeta correspondencia"
+        }
+      ]
+    },
+    {
+      "id": "diplomas",
+      "lane": "parten",
+      "col": 1,
+      "type": "backend",
+      "label": "Libro de diplomas",
+      "sublabel": "cada cara; o folio o cédula",
+      "tag": "FUID de diplomas",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/worker/registros.py",
+          "line": 23,
+          "end_line": 161,
+          "label": "_record_split_job"
+        },
+        {
+          "path": "web/src/lib/habilidades.ts",
+          "line": 139,
+          "end_line": 202,
+          "label": "Tarjeta y criterios de corte"
+        },
+        {
+          "path": "backend/src/resolutions/application/inventory_document.py",
+          "line": 529,
+          "end_line": 536,
+          "label": "Plantilla por tipo"
+        }
+      ]
+    },
+    {
+      "id": "matricula",
+      "lane": "parten",
+      "col": 4,
+      "type": "backend",
+      "label": "Registros de matrícula",
+      "sublabel": "una persona por carátula",
+      "tag": "FUID FO-GD-008",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/worker/registros.py",
+          "line": 23,
+          "end_line": 161,
+          "label": "_record_split_job"
+        },
+        {
+          "path": "web/src/lib/habilidades.ts",
+          "line": 397,
+          "end_line": 408,
+          "label": "Sin tarjeta propia"
+        },
+        {
+          "path": "backend/src/resolutions/domain/doctype.py",
+          "line": 112,
+          "end_line": 133,
+          "label": "Marcadores de matrícula"
+        }
+      ]
+    },
+    {
+      "id": "resoluciones",
+      "lane": "parten",
+      "col": 5,
+      "type": "backend",
+      "label": "Legajo de resoluciones",
+      "sublabel": "el número impreso manda",
+      "tag": "FUID FO-GD-008",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/worker/resoluciones.py",
+          "line": 16,
+          "end_line": 78,
+          "label": "_split_job"
+        },
+        {
+          "path": "web/src/lib/habilidades.ts",
+          "line": 203,
+          "end_line": 213,
+          "label": "Tarjeta: tipo auto"
+        }
+      ]
+    },
+    {
+      "id": "consejo",
+      "lane": "actas",
+      "col": 2,
+      "type": "backend",
+      "label": "Actas de consejo",
+      "sublabel": "un acta por PDF; o por sesión",
+      "tag": "Excel de actas",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/worker/inventario.py",
+          "line": 125,
+          "end_line": 275,
+          "label": "_acta_consejo_job"
+        },
+        {
+          "path": "web/src/lib/habilidades.ts",
+          "line": 261,
+          "end_line": 293,
+          "label": "Tarjeta actas de consejo"
+        }
+      ]
+    },
+    {
+      "id": "archivo",
+      "lane": "actas",
+      "col": 3,
+      "type": "backend",
+      "label": "Inventariar sin dividir",
+      "sublabel": "el PDF entero es la unidad",
+      "tag": "FUID F-PSD-001",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/worker/inventario.py",
+          "line": 334,
+          "end_line": 372,
+          "label": "_inventory_file_job"
+        },
+        {
+          "path": "backend/src/resolutions/application/task.py",
+          "line": 50,
+          "end_line": 60,
+          "label": "INVENTORY_FILE"
+        },
+        {
+          "path": "web/src/lib/habilidades.ts",
+          "line": 327,
+          "end_line": 336,
+          "label": "Archivos ya separados"
+        }
+      ]
+    },
+    {
+      "id": "grado",
+      "lane": "actas",
+      "col": 4,
+      "type": "backend",
+      "label": "Actas de grado",
+      "sublabel": "un PDF por graduado si divide",
+      "tag": "FUID FO-GD-008",
+      "sources": [
+        {
+          "path": "backend/src/resolutions/api/worker/__init__.py",
+          "line": 345,
+          "end_line": 353,
+          "label": "_actas_de_grado"
+        },
+        {
+          "path": "backend/src/resolutions/api/worker/inventario.py",
+          "line": 257,
+          "end_line": 270,
+          "label": "FUID de actas de grado"
+        },
+        {
+          "path": "web/src/lib/habilidades.ts",
+          "line": 294,
+          "end_line": 326,
+          "label": "Tarjeta actas de grado"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-elegir-lectura",
+      "from": "elegir",
+      "to": "lectura",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-auto",
+      "from": "despacho",
+      "to": "marcadores",
+      "label": "auto",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "e-lectura-despacho",
+      "from": "lectura",
+      "to": "despacho",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "e-no-deciden",
+      "from": "marcadores",
+      "to": "validan",
+      "label": "no deciden",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-nadie-valida",
+      "from": "validan",
+      "to": "entera",
+      "label": "nadie valida",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-marcadores-despacho",
+      "from": "marcadores",
+      "to": "despacho",
+      "label": "deciden",
+      "role": "return"
+    },
+    {
+      "id": "e-validan-despacho",
+      "from": "validan",
+      "to": "despacho",
+      "label": "una valida",
+      "role": "return"
+    },
+    {
+      "id": "e-entera-despacho",
+      "from": "entera",
+      "to": "despacho",
+      "label": "tipo, nombre o nada",
+      "role": "return",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-correspondencia",
+      "from": "despacho",
+      "to": "correspondencia",
+      "label": "segment o desconocido",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e-diplomas",
+      "from": "despacho",
+      "to": "diplomas",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e-consejo",
+      "from": "despacho",
+      "to": "consejo",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e-archivo",
+      "from": "despacho",
+      "to": "archivo",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight"
+    },
+    {
+      "id": "e-grado",
+      "from": "despacho",
+      "to": "grado",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e-matricula",
+      "from": "despacho",
+      "to": "matricula",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e-resoluciones",
+      "from": "despacho",
+      "to": "resoluciones",
+      "label": "resolución u omisión",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "La lectura: Solo OCR es cero IA",
+      "items": [
+        "Solo OCR: Tesseract y ninguna IA; la costura dudosa se une y va a revisión.",
+        "OCR + IA: Tesseract primero y la IA de pago sólo donde no alcanza; cobra por página.",
+        "OCR + IA (ahorro): diez caras por página facturada; lee sólo el nombre.",
+        "Reconocer el tipo nunca paga: el orquestador sólo conoce el OCR local."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Lo declarado manda, pero se comprueba",
+      "items": [
+        "Actas de consejo y diplomas declarados: una mirada gratis a la capa de texto; si otro tipo tiene el triple de páginas de núcleo, va a la habilidad de lo que es y se avisa.",
+        "Diplomas con «separar por continuidad»: gana el tipo, va a la habilidad de diplomas y se avisa.",
+        "Caja de correspondencia (acción segment): si el papel dice ser otra cosa, se avisa y se respeta la elección.",
+        "«Legajo de resoluciones» y «No estoy seguro» declaran auto: pasan por el orquestador."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "El orquestador, en orden",
+      "items": [
+        "1 · Marcadores impresos (puntaje mínimo y 1,6× sobre el segundo) y el patrón por núcleo, que puede vetarlos.",
+        "2 · Cada habilidad lee la misma muestra con su propio lector; gana la única con evidencia positiva, ninguna por descarte.",
+        "3 · Hasta 4 páginas sin capa de texto se leen enteras y se repiten las dos preguntas; si nadie valida, el nombre del archivo («conviene revisarlo») o desconocido."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Qué inventario deja cada una",
+      "items": [
+        "Resoluciones, diplomas y matrícula: la planilla del documento siempre y el FUID cuando se pide inventario (FO-GD-008; los diplomas, su plantilla propia).",
+        "Actas de consejo: Excel de actas, una fila por acta; con IA, folios manuscritos y resumen.",
+        "Actas de grado: FUID FO-GD-008, una fila por graduado. Inventariar sin dividir: F-PSD-001, una fila por PDF.",
+        "Correspondencia: sólo 00.INDICE ELECTRONICO.xlsx. En lotes y carpetas, además, el general de la habilidad y 00.INVENTARIO GENERAL DE PROCESOS.xlsx."
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "«Solo el inventario» va por otro camino",
+      "items": [
+        "Con la acción inventory y tipo auto no pasa por el orquestador: InventoryDocument reconoce y deja sólo el FUID, con el original intacto.",
+        "Si el patrón dice acta de grado, va a su habilidad; si no reconoce ningún registro, cae a Inventariar sin dividir."
+      ]
+    }
+  ]
+}

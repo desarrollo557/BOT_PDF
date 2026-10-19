@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Del PDF al inventario",
+    "locale": "es",
+    "output": "docs/diagramas/del-pdf-al-inventario/del-pdf-al-inventario.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/desarrollo557/BOT_PDF.git",
+      "revision": "62e30ce0ff3ebc486b88c968f534a6f60606236b"
+    },
+    "legend": {
+      "entries": {
+        "default": { "label": "Local, sin costo" },
+        "emphasis": { "label": "Camino principal" },
+        "security": { "label": "IA de pago" },
+        "dashed": { "label": "Se rehace por PDF" },
+        "database": { "label": "Lo que queda" }
+      }
+    }
+  },
+  "stages": [
+    { "label": "Origen" },
+    { "label": "Lectura" },
+    { "label": "Corte" },
+    { "label": "Carpeta de destino" },
+    { "label": "Registro y pantalla" }
+  ],
+  "nodes": [
+    {
+      "id": "pdf", "type": "frontend", "label": "PDF de origen", "sublabel": "subida, lote o carpeta", "stage": 0, "row": 1, "tag": "caja UPD…",
+      "sources": [
+        { "path": "backend/src/resolutions/api/routers/trabajos.py", "line": 32, "end_line": 40, "label": "subida (y lote con batch_id)" },
+        { "path": "backend/src/resolutions/api/routers/lotes.py", "line": 14, "end_line": 18, "label": "crear lote" },
+        { "path": "backend/src/resolutions/api/routers/carpetas.py", "line": 34, "end_line": 42, "label": "corrida sobre carpeta" }
+      ]
+    },
+    {
+      "id": "capa", "type": "backend", "label": "Capa de texto", "sublabel": "si la hoja la trae", "stage": 1, "row": 0, "tag": "sin OCR",
+      "sources": [
+        { "path": "backend/src/resolutions/application/agrupacion.py", "line": 199, "end_line": 206, "label": "capa antes que OCR" }
+      ]
+    },
+    {
+      "id": "tess", "type": "backend", "label": "Tesseract local", "sublabel": "OCR de casa y sellos", "stage": 1, "row": 1, "tag": "gratis",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/taller.py", "line": 110, "end_line": 126, "label": "OCR local" },
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 189, "end_line": 217, "label": "sellos con Tesseract" }
+      ]
+    },
+    {
+      "id": "mistral", "type": "cloud", "label": "Mistral OCR", "sublabel": "solo con «OCR + IA»", "stage": 1, "row": 2, "tag": "cobra por página",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/taller.py", "line": 128, "end_line": 140, "label": "OCR en cascada" },
+        { "path": "backend/src/resolutions/adapters/ocr_cascada.py", "line": 1, "end_line": 16, "label": "Tesseract primero" },
+        { "path": "backend/src/resolutions/application/sellos.py", "line": 330, "end_line": 343, "label": "número del sello" }
+      ]
+    },
+    {
+      "id": "oraculo", "type": "cloud", "label": "Modelo de bordes", "sublabel": "solo con «OCR + IA»", "stage": 1, "row": 3, "tag": "proveedor elegido",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/taller.py", "line": 180, "end_line": 192, "label": "oraculo_de_bordes" },
+        { "path": "backend/src/resolutions/api/worker/taller.py", "line": 465, "end_line": 512, "label": "elección del proveedor" }
+      ]
+    },
+    {
+      "id": "hojas", "type": "backend", "label": "Texto y sellos", "sublabel": "por hoja: L1, L2 y L3", "stage": 2, "row": 1, "tag": "cada hoja, una vez",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 161, "end_line": 188, "label": "L1" },
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 189, "end_line": 241, "label": "L2, L3 y fechas" }
+      ]
+    },
+    {
+      "id": "docs", "type": "backend", "label": "Documentos", "sublabel": "cortados: F1 a F6", "stage": 2, "row": 2, "tag": "en MAYÚSCULAS",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 122, "end_line": 139, "label": "orden de filtros" },
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 256, "end_line": 598, "label": "F2 a F6" }
+      ]
+    },
+    {
+      "id": "pdfs", "type": "database", "label": "PDF nombrados", "sublabel": "DESTINO/…/UPD…/", "stage": 3, "row": 0, "tag": "01-RE…_TÍTULO.pdf",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/correspondencia.py", "line": 626, "end_line": 652, "label": "entregar, mayusculas=True" },
+        { "path": "backend/src/resolutions/api/folders.py", "line": 723, "end_line": 745, "label": "subcarpeta = nombre del PDF" },
+        { "path": "backend/src/resolutions/api/folders.py", "line": 815, "end_line": 833, "label": "copia a destino" }
+      ]
+    },
+    {
+      "id": "indice", "type": "database", "label": "Índice de la caja", "sublabel": "00.INDICE ELECTRONICO", "stage": 3, "row": 1, "tag": "en la carpeta UPD",
+      "sources": [
+        { "path": "backend/src/resolutions/api/worker/planillas.py", "line": 192, "end_line": 251, "label": "_escribir_indice" },
+        { "path": "backend/src/resolutions/adapters/indice_electronico.py", "line": 76, "end_line": 99, "label": "plantilla del cliente" },
+        { "path": "backend/src/resolutions/api/folders.py", "line": 798, "end_line": 808, "label": "viaja con sus PDF" }
+      ]
+    },
+    {
+      "id": "general", "type": "database", "label": "Índice general", "sublabel": "raíz: hoja por PDF", "stage": 3, "row": 2, "tag": "lote o carpeta",
+      "sources": [
+        { "path": "backend/src/resolutions/adapters/indice_electronico.py", "line": 165, "end_line": 203, "label": "escribir_indices_por_hoja" },
+        { "path": "backend/src/resolutions/api/indices.py", "line": 41, "end_line": 68, "label": "libro_de_indices" },
+        { "path": "backend/src/resolutions/api/ejecucion.py", "line": 27, "end_line": 64, "label": "lote: al terminar cada PDF" }
+      ]
+    },
+    {
+      "id": "procesos", "type": "database", "label": "Procesos del bot", "sublabel": "raíz: fila por PDF", "stage": 3, "row": 3, "tag": "páginas pagadas",
+      "sources": [
+        { "path": "backend/src/resolutions/adapters/excel_inventory.py", "line": 640, "end_line": 671, "label": "00.INVENTARIO GENERAL DE PROCESOS" },
+        { "path": "backend/src/resolutions/api/indices.py", "line": 139, "end_line": 161, "label": "inventario_de_procesos" },
+        { "path": "backend/src/resolutions/api/folders.py", "line": 682, "end_line": 713, "label": "carpeta: los dos generales" }
+      ]
+    },
+    {
+      "id": "ledger", "type": "database", "label": "Libro mayor", "sublabel": "JSONL o MySQL", "stage": 4, "row": 0, "tag": "solo se añade",
+      "sources": [
+        { "path": "backend/src/resolutions/api/ejecucion.py", "line": 140, "end_line": 148, "label": "record al terminar" },
+        { "path": "backend/src/resolutions/api/main.py", "line": 73, "end_line": 93, "label": "MySQL o archivo" },
+        { "path": "backend/src/resolutions/adapters/ledger.py", "line": 169, "end_line": 180, "label": "InventoryLedger" }
+      ]
+    },
+    {
+      "id": "archivo", "type": "frontend", "label": "Archivo", "sublabel": "pantalla y descargas", "stage": 4, "row": 2, "tag": "sirve tras reiniciar",
+      "sources": [
+        { "path": "backend/src/resolutions/api/routers/archivo.py", "line": 264, "end_line": 298, "label": "/api/inventory.xlsx" },
+        { "path": "backend/src/resolutions/api/routers/carpetas.py", "line": 144, "end_line": 175, "label": "/api/origenes/…" }
+      ]
+    }
+  ],
+  "flows": [
+    { "id": "f-pdf-capa", "from": "pdf", "to": "capa", "label": "capa de texto", "variant": "default" },
+    { "id": "f-pdf-tess", "from": "pdf", "to": "tess", "label": "imagen por hoja", "variant": "emphasis" },
+    { "id": "f-pdf-oraculo", "from": "pdf", "to": "oraculo", "label": "costura dudosa", "variant": "security" },
+    { "id": "f-tess-mistral", "from": "tess", "to": "mistral", "label": "lo que no alcanzó", "variant": "security" },
+    { "id": "f-capa-hojas", "from": "capa", "to": "hojas", "label": "texto", "variant": "default" },
+    { "id": "f-tess-hojas", "from": "tess", "to": "hojas", "label": "texto y sellos", "variant": "emphasis" },
+    { "id": "f-mistral-hojas", "from": "mistral", "to": "hojas", "label": "texto y RE", "variant": "security" },
+    { "id": "f-oraculo-docs", "from": "oraculo", "to": "docs", "label": "veredicto", "variant": "security" },
+    { "id": "f-hojas-docs", "from": "hojas", "to": "docs", "label": "filtros en orden", "variant": "emphasis" },
+    { "id": "f-docs-pdfs", "from": "docs", "to": "pdfs", "label": "PDF por grupo", "variant": "emphasis" },
+    { "id": "f-docs-indice", "from": "docs", "to": "indice", "label": "fila por archivo", "variant": "emphasis" },
+    { "id": "f-indice-general", "from": "indice", "to": "general", "label": "hoja por PDF", "variant": "dashed" },
+    { "id": "f-docs-procesos", "from": "docs", "to": "procesos", "label": "fila por PDF", "variant": "dashed" },
+    { "id": "f-pdfs-ledger", "from": "pdfs", "to": "ledger", "label": "fila por archivo", "variant": "default" },
+    { "id": "f-ledger-archivo", "from": "ledger", "to": "archivo", "label": "filas", "variant": "default" },
+    { "id": "f-general-archivo", "from": "general", "to": "archivo", "label": "descarga", "variant": "default" },
+    { "id": "f-procesos-archivo", "from": "procesos", "to": "archivo", "label": "descarga", "variant": "default" }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "La frontera de lo que cuesta",
+      "items": [
+        "Con «Solo OCR» todo se queda en la máquina: capa de texto y Tesseract. Cero IA, aunque haya llaves cargadas.",
+        "Con «OCR + IA», Mistral solo lee la hoja que Tesseract dejó vacía y la etiqueta de cada sello; cobra por página, no por petición.",
+        "Con «OCR + IA», el modelo de bordes juzga las costuras dudosas; con «Solo OCR» se unen y van a revisión.",
+        "Cuántas páginas se pagaron queda por PDF en el inventario de procesos."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Dos inventarios generales",
+      "items": [
+        "Dentro de la carpeta de cada PDF, el de su habilidad: para correspondencia, solo «00.INDICE ELECTRONICO.xlsx», la plantilla del cliente sin columnas añadidas.",
+        "En la raíz de un lote o una carpeta: el índice general con una hoja por PDF, copiada de los índices ya entregados, y «00.INVENTARIO GENERAL DE PROCESOS.xlsx», una fila por PDF aunque haya fallado.",
+        "El PDF suelto lleva solo el de su habilidad."
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "La carpeta de destino",
+      "items": [
+        "DESTINO / carpeta relativa / UPD2320047: la subcarpeta se llama como el PDF de origen, nunca con el NIC.",
+        "Los nombres van enteros en mayúsculas, RE incluido: 01-RE3110202043677_DERECHO-DE-PETICION.pdf."
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "El libro mayor",
+      "items": [
+        "Una línea por archivo escrito, solo añadida. MySQL si está configurada y responde; si no, el archivo JSONL.",
+        "Sobrevive a limpiar la pantalla: por él la pantalla de Archivo sigue sirviendo las descargas de lotes y carpetas tras un reinicio."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,787 @@
+{
+  "schema_version": 1,
+  "diagram_type": "erd",
+  "meta": {
+    "title": "Base de datos robotpdf (MySQL)",
+    "subtitle": "Opcional: sin RESOLUTIONS_DB_PASSWORD el libro mayor va a data/inventory.jsonl y el servicio arranca igual",
+    "locale": "es",
+    "output": "docs/diagramas/base-de-datos/base-de-datos.html",
+    "quality_profile": "standard",
+    "repository": {
+      "url": "https://github.com/desarrollo557/BOT_PDF.git",
+      "revision": "62e30ce0ff3ebc486b88c968f534a6f60606236b"
+    },
+    "legend": {
+      "entries": {
+        "pk": {
+          "label": "Clave primaria (BIGINT o SMALLINT autoincremental)"
+        },
+        "fk": {
+          "label": "Clave foránea"
+        },
+        "uk": {
+          "label": "Clave única, sola o parte de una compuesta"
+        },
+        "optional": {
+          "label": "FK que admite NULL (ON DELETE SET NULL)"
+        }
+      }
+    },
+    "views": [
+      {
+        "id": "quien",
+        "label": "Quién y cuándo",
+        "focus": [
+          "operador",
+          "corrida"
+        ],
+        "note": "El operador es atribución, nunca autorización; la corrida agrupa un lote, una carpeta o una carga suelta."
+      },
+      {
+        "id": "producto",
+        "label": "Qué se procesó",
+        "focus": [
+          "documento",
+          "resolucion",
+          "entrega"
+        ],
+        "note": "Un PDF de origen, las unidades que produjo y su copia a una carpeta de destino."
+      },
+      {
+        "id": "mirar",
+        "label": "Lo que hay que mirar",
+        "focus": [
+          "revision",
+          "correccion",
+          "documento"
+        ],
+        "note": "Sólo la excepción: la página que fue a revisión y la lectura de OCR que se corrigió."
+      }
+    ]
+  },
+  "layout": {
+    "mode": "grid",
+    "gapX": 80,
+    "gapY": 64
+  },
+  "entities": [
+    {
+      "id": "corrida",
+      "label": "corrida",
+      "sublabel": "un lote, una carpeta vigilada o una carga suelta",
+      "tag": "Quién y cuándo",
+      "row": 0,
+      "col": 0,
+      "width": 360,
+      "sources": [
+        {
+          "path": "db/schema.sql",
+          "line": 70,
+          "end_line": 106,
+          "label": "CREATE TABLE corrida"
+        },
+        {
+          "path": "backend/src/resolutions/adapters/mysql_inventory.py",
+          "line": 268,
+          "end_line": 281,
+          "label": "INSERT INTO corrida"
+        }
+      ],
+      "attributes": [
+        {
+          "name": "id",
+          "type": "BIGINT UNSIGNED",
+          "key": "pk"
+        },
+        {
+          "name": "uuid",
+          "type": "CHAR(32) ascii",
+          "key": "uk"
+        },
+        {
+          "name": "tipo",
+          "type": "ENUM(individual,lote,carpeta)"
+        },
+        {
+          "name": "nombre",
+          "type": "VARCHAR(160)"
+        },
+        {
+          "name": "operador_id",
+          "type": "SMALLINT UNSIGNED",
+          "key": "fk",
+          "references": "operador.id"
+        },
+        {
+          "name": "origen",
+          "type": "VARCHAR(500)"
+        },
+        {
+          "name": "destino",
+          "type": "VARCHAR(500)"
+        },
+        {
+          "name": "destino_original",
+          "type": "ENUM(dejar,apartar,borrar)"
+        },
+        {
+          "name": "vigila",
+          "type": "TINYINT(1)"
+        },
+        {
+          "name": "estado",
+          "type": "ENUM(en_curso,terminada,detenida,fallida)"
+        },
+        {
+          "name": "iniciada_en",
+          "type": "DATETIME(3)"
+        },
+        {
+          "name": "terminada_en",
+          "type": "DATETIME(3)"
+        },
+        {
+          "name": "error",
+          "type": "VARCHAR(500)"
+        },
+        {
+          "name": "documentos",
+          "type": "INT UNSIGNED"
+        },
+        {
+          "name": "documentos_fallidos",
+          "type": "INT UNSIGNED"
+        },
+        {
+          "name": "resoluciones",
+          "type": "INT UNSIGNED"
+        },
+        {
+          "name": "paginas",
+          "type": "INT UNSIGNED"
+        },
+        {
+          "name": "bytes_origen",
+          "type": "BIGINT UNSIGNED"
+        },
+        {
+          "name": "entregados",
+          "type": "INT UNSIGNED"
+        }
+      ]
+    },
+    {
+      "id": "operador",
+      "label": "operador",
+      "sublabel": "quién estaba en la consola",
+      "tag": "Quién y cuándo",
+      "row": 1,
+      "col": 0,
+      "width": 300,
+      "sources": [
+        {
+          "path": "db/schema.sql",
+          "line": 50,
+          "end_line": 59,
+          "label": "CREATE TABLE operador"
+        },
+        {
+          "path": "backend/src/resolutions/adapters/mysql_inventory.py",
+          "line": 256,
+          "end_line": 266,
+          "label": "INSERT … ON DUPLICATE KEY"
+        }
+      ],
+      "attributes": [
+        {
+          "name": "id",
+          "type": "SMALLINT UNSIGNED",
+          "key": "pk"
+        },
+        {
+          "name": "nombre",
+          "type": "VARCHAR(60)",
+          "key": "uk"
+        },
+        {
+          "name": "puesto",
+          "type": "VARCHAR(60)"
+        },
+        {
+          "name": "visto_primero",
+          "type": "DATETIME(3)"
+        },
+        {
+          "name": "visto_ultimo",
+          "type": "DATETIME(3)"
+        }
+      ]
+    },
+    {
+      "id": "documento",
+      "label": "documento",
+      "sublabel": "un PDF de origen, procesado una vez",
+      "tag": "Qué se procesó",
+      "row": 0,
+      "col": 1,
+      "width": 370,
+      "sources": [
+        {
+          "path": "db/schema.sql",
+          "line": 116,
+          "end_line": 168,
+          "label": "CREATE TABLE documento"
+        },
+        {
+          "path": "backend/src/resolutions/adapters/mysql_inventory.py",
+          "line": 283,
+          "end_line": 320,
+          "label": "INSERT INTO documento"
+        }
+      ],
+      "attributes": [
+        {
+          "name": "id",
+          "type": "BIGINT UNSIGNED",
+          "key": "pk"
+        },
+        {
+          "name": "uuid",
+          "type": "CHAR(32) ascii",
+          "key": "uk"
+        },
+        {
+          "name": "corrida_id",
+          "type": "BIGINT UNSIGNED",
+          "key": "fk",
+          "references": "corrida.id"
+        },
+        {
+          "name": "operador_id",
+          "type": "SMALLINT UNSIGNED",
+          "key": "fk",
+          "references": "operador.id"
+        },
+        {
+          "name": "nombre",
+          "type": "VARCHAR(255)"
+        },
+        {
+          "name": "bytes",
+          "type": "BIGINT UNSIGNED"
+        },
+        {
+          "name": "estado",
+          "type": "ENUM(en_cola,procesando,terminado,fallido)"
+        },
+        {
+          "name": "error",
+          "type": "VARCHAR(1000)"
+        },
+        {
+          "name": "iniciado_en",
+          "type": "DATETIME(3)"
+        },
+        {
+          "name": "terminado_en",
+          "type": "DATETIME(3)"
+        },
+        {
+          "name": "fecha",
+          "type": "DATE generada STORED"
+        },
+        {
+          "name": "paginas",
+          "type": "INT UNSIGNED"
+        },
+        {
+          "name": "resoluciones",
+          "type": "INT UNSIGNED"
+        },
+        {
+          "name": "en_revision",
+          "type": "INT UNSIGNED"
+        },
+        {
+          "name": "en_cuarentena",
+          "type": "INT UNSIGNED"
+        },
+        {
+          "name": "correcciones",
+          "type": "INT UNSIGNED"
+        },
+        {
+          "name": "pag_capa_texto",
+          "type": "INT UNSIGNED"
+        },
+        {
+          "name": "pag_ocr_banda",
+          "type": "INT UNSIGNED"
+        },
+        {
+          "name": "pag_ocr_total",
+          "type": "INT UNSIGNED"
+        },
+        {
+          "name": "pag_vision",
+          "type": "INT UNSIGNED"
+        },
+        {
+          "name": "pag_ilegible",
+          "type": "INT UNSIGNED"
+        },
+        {
+          "name": "consultas_vision",
+          "type": "INT UNSIGNED"
+        }
+      ]
+    },
+    {
+      "id": "resolucion",
+      "label": "resolucion",
+      "sublabel": "cada PDF generado: el producto del sistema",
+      "tag": "Qué se procesó",
+      "row": 0,
+      "col": 2,
+      "width": 550,
+      "sources": [
+        {
+          "path": "db/schema.sql",
+          "line": 178,
+          "end_line": 231,
+          "label": "CREATE TABLE resolucion"
+        },
+        {
+          "path": "db/migraciones/001-tipo-documental.sql",
+          "line": 30,
+          "end_line": 33,
+          "label": "tipo y rango_anexos"
+        },
+        {
+          "path": "backend/src/resolutions/adapters/mysql_inventory.py",
+          "line": 224,
+          "end_line": 247,
+          "label": "INSERT IGNORE INTO resolucion"
+        }
+      ],
+      "attributes": [
+        {
+          "name": "id",
+          "type": "BIGINT UNSIGNED",
+          "key": "pk"
+        },
+        {
+          "name": "documento_id",
+          "type": "BIGINT UNSIGNED",
+          "key": [
+            "fk",
+            "uk"
+          ],
+          "references": "documento.id"
+        },
+        {
+          "name": "codigo",
+          "type": "VARCHAR(32) ascii"
+        },
+        {
+          "name": "codigo_crudo",
+          "type": "VARCHAR(64) ascii"
+        },
+        {
+          "name": "titulo",
+          "type": "VARCHAR(400) FULLTEXT"
+        },
+        {
+          "name": "tipo",
+          "type": "VARCHAR(80)"
+        },
+        {
+          "name": "archivo",
+          "type": "VARCHAR(255)",
+          "key": "uk"
+        },
+        {
+          "name": "paginas",
+          "type": "SMALLINT UNSIGNED"
+        },
+        {
+          "name": "pagina_desde",
+          "type": "SMALLINT UNSIGNED"
+        },
+        {
+          "name": "pagina_hasta",
+          "type": "SMALLINT UNSIGNED"
+        },
+        {
+          "name": "rango_paginas",
+          "type": "VARCHAR(255)"
+        },
+        {
+          "name": "rango_anexos",
+          "type": "VARCHAR(255)"
+        },
+        {
+          "name": "origen_lectura",
+          "type": "ENUM(capa_texto,ocr_banda,ocr_total,vision,contexto,manual)"
+        },
+        {
+          "name": "confianza",
+          "type": "DECIMAL(4,3)"
+        },
+        {
+          "name": "corregida",
+          "type": "TINYINT(1)"
+        },
+        {
+          "name": "creada_en",
+          "type": "DATETIME(3)"
+        },
+        {
+          "name": "fecha",
+          "type": "DATE generada STORED"
+        }
+      ]
+    },
+    {
+      "id": "entrega",
+      "label": "entrega",
+      "sublabel": "una unidad copiada a una carpeta de destino",
+      "tag": "Qué se procesó",
+      "row": 0,
+      "col": 3,
+      "width": 260,
+      "sources": [
+        {
+          "path": "db/schema.sql",
+          "line": 302,
+          "end_line": 318,
+          "label": "CREATE TABLE entrega"
+        }
+      ],
+      "attributes": [
+        {
+          "name": "id",
+          "type": "BIGINT UNSIGNED",
+          "key": "pk"
+        },
+        {
+          "name": "resolucion_id",
+          "type": "BIGINT UNSIGNED",
+          "key": "fk",
+          "references": "resolucion.id"
+        },
+        {
+          "name": "corrida_id",
+          "type": "BIGINT UNSIGNED",
+          "key": "fk",
+          "references": "corrida.id"
+        },
+        {
+          "name": "destino",
+          "type": "VARCHAR(500)"
+        },
+        {
+          "name": "archivo",
+          "type": "VARCHAR(255)"
+        },
+        {
+          "name": "bytes",
+          "type": "BIGINT UNSIGNED"
+        },
+        {
+          "name": "entregada_en",
+          "type": "DATETIME(3)"
+        }
+      ]
+    },
+    {
+      "id": "correccion",
+      "label": "correccion",
+      "sublabel": "el ruido de OCR absorbido, y registrado",
+      "tag": "Lo que hay que mirar",
+      "row": 1,
+      "col": 1,
+      "width": 300,
+      "sources": [
+        {
+          "path": "db/schema.sql",
+          "line": 275,
+          "end_line": 292,
+          "label": "CREATE TABLE correccion"
+        }
+      ],
+      "attributes": [
+        {
+          "name": "id",
+          "type": "BIGINT UNSIGNED",
+          "key": "pk"
+        },
+        {
+          "name": "documento_id",
+          "type": "BIGINT UNSIGNED",
+          "key": "fk",
+          "references": "documento.id"
+        },
+        {
+          "name": "pagina",
+          "type": "SMALLINT UNSIGNED"
+        },
+        {
+          "name": "leido",
+          "type": "VARCHAR(64) ascii"
+        },
+        {
+          "name": "aplicado",
+          "type": "VARCHAR(64) ascii"
+        },
+        {
+          "name": "distancia",
+          "type": "TINYINT UNSIGNED"
+        },
+        {
+          "name": "origen",
+          "type": "ENUM(automatica,manual)"
+        },
+        {
+          "name": "operador_id",
+          "type": "SMALLINT UNSIGNED",
+          "key": "fk",
+          "references": "operador.id"
+        },
+        {
+          "name": "creada_en",
+          "type": "DATETIME(3)"
+        }
+      ]
+    },
+    {
+      "id": "revision",
+      "label": "revision",
+      "sublabel": "la página que la máquina se negó a adivinar",
+      "tag": "Lo que hay que mirar",
+      "row": 1,
+      "col": 2,
+      "width": 445,
+      "sources": [
+        {
+          "path": "db/schema.sql",
+          "line": 240,
+          "end_line": 266,
+          "label": "CREATE TABLE revision"
+        },
+        {
+          "path": "db/schema.sql",
+          "line": 366,
+          "end_line": 379,
+          "label": "v_revision_pendiente"
+        }
+      ],
+      "attributes": [
+        {
+          "name": "id",
+          "type": "BIGINT UNSIGNED",
+          "key": "pk"
+        },
+        {
+          "name": "documento_id",
+          "type": "BIGINT UNSIGNED",
+          "key": [
+            "fk",
+            "uk"
+          ],
+          "references": "documento.id"
+        },
+        {
+          "name": "pagina",
+          "type": "SMALLINT UNSIGNED",
+          "key": "uk"
+        },
+        {
+          "name": "motivo",
+          "type": "ENUM(sin_codigo,conflicto,no_copiada,no_leida,otro)"
+        },
+        {
+          "name": "detalle",
+          "type": "VARCHAR(1000)"
+        },
+        {
+          "name": "resuelta",
+          "type": "TINYINT(1)"
+        },
+        {
+          "name": "resuelta_en",
+          "type": "DATETIME(3)"
+        },
+        {
+          "name": "resuelta_por",
+          "type": "SMALLINT UNSIGNED",
+          "key": "fk",
+          "references": "operador.id"
+        },
+        {
+          "name": "resolucion_id",
+          "type": "BIGINT UNSIGNED",
+          "key": "fk",
+          "references": "resolucion.id"
+        },
+        {
+          "name": "creada_en",
+          "type": "DATETIME(3)"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "id": "corrida_operador",
+      "from": "corrida",
+      "to": "operador",
+      "label": "la lanzó",
+      "fromCardinality": "many",
+      "fromOptional": true,
+      "toCardinality": "one",
+      "toOptional": true,
+      "identifying": false,
+      "variant": "dashed"
+    },
+    {
+      "id": "documento_corrida",
+      "from": "documento",
+      "to": "corrida",
+      "label": "en la corrida",
+      "fromCardinality": "many",
+      "toCardinality": "one"
+    },
+    {
+      "id": "documento_operador",
+      "from": "documento",
+      "to": "operador",
+      "label": "lo subió",
+      "fromCardinality": "many",
+      "fromOptional": true,
+      "toCardinality": "one",
+      "toOptional": true,
+      "identifying": false,
+      "variant": "dashed"
+    },
+    {
+      "id": "resolucion_documento",
+      "from": "resolucion",
+      "to": "documento",
+      "label": "salió de",
+      "fromCardinality": "many",
+      "fromOptional": true,
+      "toCardinality": "one"
+    },
+    {
+      "id": "entrega_resolucion",
+      "from": "entrega",
+      "to": "resolucion",
+      "label": "copia de",
+      "fromCardinality": "many",
+      "fromOptional": true,
+      "toCardinality": "one"
+    },
+    {
+      "id": "entrega_corrida",
+      "from": "entrega",
+      "to": "corrida",
+      "label": "en la corrida",
+      "fromCardinality": "many",
+      "fromOptional": true,
+      "toCardinality": "one"
+    },
+    {
+      "id": "correccion_documento",
+      "from": "correccion",
+      "to": "documento",
+      "label": "en el documento",
+      "fromCardinality": "many",
+      "fromOptional": true,
+      "toCardinality": "one"
+    },
+    {
+      "id": "correccion_operador",
+      "from": "correccion",
+      "to": "operador",
+      "label": "si fue manual",
+      "fromCardinality": "many",
+      "fromOptional": true,
+      "toCardinality": "one",
+      "toOptional": true,
+      "identifying": false,
+      "variant": "dashed"
+    },
+    {
+      "id": "revision_documento",
+      "from": "revision",
+      "to": "documento",
+      "label": "página de",
+      "fromCardinality": "many",
+      "fromOptional": true,
+      "toCardinality": "one"
+    },
+    {
+      "id": "revision_resolucion",
+      "from": "revision",
+      "to": "resolucion",
+      "label": "acabó en",
+      "fromCardinality": "many",
+      "fromOptional": true,
+      "toCardinality": "one",
+      "toOptional": true,
+      "identifying": false,
+      "variant": "dashed"
+    },
+    {
+      "id": "revision_operador",
+      "from": "revision",
+      "to": "operador",
+      "label": "la resolvió",
+      "fromCardinality": "many",
+      "fromOptional": true,
+      "toCardinality": "one",
+      "toOptional": true,
+      "identifying": false,
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "La base es opcional",
+      "items": [
+        "Manda RESOLUTIONS_DB_PASSWORD (o MYSQL_PWD): sin ella no se intenta conectar y el libro mayor se escribe en data/inventory.jsonl.",
+        "Si hay configuración pero MySQL no responde al arrancar, el servicio sigue con el archivo y lo dice: «archivo (MySQL no respondió)».",
+        "db/cargar_ledger.py vuelca el JSONL a la base de forma idempotente; cada documento entra como su propia corrida individual."
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Quién escribe hoy",
+      "items": [
+        "MySQLInventory inserta operador, corrida, documento y resolucion al anotar cada trabajo terminado.",
+        "revision, correccion y entrega existen en el esquema, pero el código del servicio no les hace INSERT en esta revisión.",
+        "resolucion guarda cualquier unidad producida, no sólo resoluciones: un folio de diplomas, un expediente o un documento de una caja."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Claves y borrado",
+      "items": [
+        "Once claves foráneas. Las seis NOT NULL borran en cascada; las cinco que admiten NULL (las que apuntan a operador y revision.resolucion_id) quedan en NULL.",
+        "UNIQUE (documento_id, archivo) en resolucion y UNIQUE (documento_id, pagina) en revision: un archivo no se repite y una página no entra dos veces en la cola.",
+        "La PK es BIGINT autoincremental y el uuid vive como clave única: es el identificador que usa la API."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Vistas y lo que no es tabla",
+      "items": [
+        "Cuatro vistas: v_archivo_documentos, v_inventario, v_revision_pendiente y v_produccion_diaria (se omiten en el dibujo).",
+        "No hay fila por página: los cinco contadores pag_* de documento son el histograma de la cascada. pagina_leida queda comentada al final del esquema.",
+        "fecha es una columna generada STORED e indexada en documento y en resolucion; titulo y nombre llevan FULLTEXT."
+      ]
+    }
+  ]
+}
