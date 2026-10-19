@@ -3,7 +3,8 @@
 # rutas locales funcionen igual que sin Docker: pegar "C:\Users\...\ENTRADA" o
 # elegirla en el explorador de la pantalla.
 #
-#   .\scripts\instalar-escritorio.ps1
+#   instalar-docker            (el .cmd de la raiz: doble clic, CMD o PowerShell)
+#   .\scripts\instalar-escritorio.ps1   (desde PowerShell)
 #
 # Los datos (salidas, libro mayor, usuarios, registro) viven en el volumen
 # "bot_pdf_botpdf_data" y sobreviven a reconstruir la imagen o volver a clonar.
