@@ -21,11 +21,12 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
 from ..application.consumo import Consumo, anotar_uso_json
 from ..application.ports import ResumenNoDisponible
+from .turnos import turno
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,7 @@ class MistralResumidor:
             },
         )
         with (
-            self._turnos or nullcontext(),
+            turno(self._turnos),
             urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as respuesta,
         ):
             return json.load(respuesta)

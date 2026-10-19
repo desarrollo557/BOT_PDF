@@ -77,7 +77,7 @@ def fila_del_archivo(
         consecutivo_final=ficha.consecutivo_final or NO_APLICA,
         fecha_inicial=fecha_fuid(ficha.fecha_inicial),
         fecha_final=fecha_fuid(ficha.fecha_final),
-        caja=donde.caja,
+        caja=donde.caja_de(nombre_del_archivo),
         carpeta=donde.carpeta_de(nombre_del_archivo),
         tomo=NO_APLICA,
         otro=donde.otro,

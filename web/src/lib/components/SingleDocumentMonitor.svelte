@@ -60,6 +60,23 @@
    */
   const silence = $derived(progress.silent_seconds ?? 0);
   const unitLabel = $derived(unitFor(job.report?.stats, units ?? 0));
+  const warnings = $derived((progress.warnings ?? []).slice(0, 3));
+  const healthLabel = $derived.by(() => {
+    switch (progress.health) {
+      case 'stalled':
+        return 'Bloqueado';
+      case 'slow':
+        return 'Lento';
+      case 'warning':
+        return 'Requiere atención';
+      case 'done':
+        return 'Listo';
+      case 'failed':
+        return 'Falló';
+      default:
+        return 'OK';
+    }
+  });
 </script>
 
 <section class="monitor" class:running>
@@ -82,7 +99,20 @@
     </p>
   {/if}
 
-  {#if running && silence >= SILENCE_THRESHOLD_SECONDS}
+  {#if progress.health || warnings.length}
+    <div class="health-strip" data-health={progress.health ?? 'ok'}>
+      <span class="health-badge">{healthLabel}</span>
+      {#if warnings.length}
+        <ul class="warnings">
+          {#each warnings as warning (warning)}
+            <li>{warning}</li>
+          {/each}
+        </ul>
+      {:else if running && silence >= SILENCE_THRESHOLD_SECONDS}
+        <span class="silence">Sin novedades desde hace {Math.round(silence)} s</span>
+      {/if}
+    </div>
+  {:else if running && silence >= SILENCE_THRESHOLD_SECONDS}
     <p class="silence">Sin novedades desde hace {Math.round(silence)} s</p>
   {/if}
 
@@ -184,6 +214,52 @@
   .stage-detail b {
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
+  }
+  .health-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.85rem;
+    padding: 0.5rem 0.7rem;
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--surface-3) 80%, transparent);
+  }
+  .health-strip[data-health='stalled'] {
+    border-color: color-mix(in oklab, var(--critical) 52%, var(--hairline));
+  }
+  .health-strip[data-health='slow'] {
+    border-color: color-mix(in oklab, var(--warning) 60%, var(--hairline));
+  }
+  .health-strip[data-health='warning'] {
+    border-color: color-mix(in oklab, var(--s2) 48%, var(--hairline));
+  }
+  .health-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--ink-2);
+    background: var(--surface-4);
+  }
+  .warnings {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    color: var(--ink-2);
+    font-size: var(--text-xs);
+  }
+  .warnings li {
+    padding: 0.2rem 0.45rem;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--surface-4) 80%, transparent);
   }
   .silence {
     margin: 0;

@@ -12,15 +12,22 @@ from __future__ import annotations
 import inspect
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
 from ..domain.diploma import (
     CriterioDeCorte,
     DiplomaRecord,
+    FormaDeLaCara,
+    asientos_en_progresion,
+    con_lo_que_dice_el_libro,
+    continuaciones,
     extract_diploma,
     extract_diploma_warnings,
+    forma_de_la_cara,
     lines_from_text,
     merge,
+    plantilla_antigua,
     sin_avisos_de_costura,
     vueltas_por_la_tinta,
 )
@@ -269,33 +276,50 @@ class ReadDiplomaBook:
         #: fuente sabe elegirlo. Se decide al abrir el libro.
         self._formato_de_pago: str | None = None
 
-    def execute(self, source) -> tuple[list[DiplomaRecord], BookReadingStats]:
-        stats = BookReadingStats(pages=source.page_count)
+    def execute(
+        self, source, paginas: Sequence[int] | None = None
+    ) -> tuple[list[DiplomaRecord], BookReadingStats]:
+        """Lee el libro entero o, con ``paginas``, sólo esas caras.
+
+        Leer sólo unas caras es retomar una entrega a medias: las demás ya
+        están en el destino y volver a leerlas -- y a pagarlas -- no aporta
+        nada. Cada registro conserva su número de página del libro, que es el
+        que nombra el archivo cuando no hay cédula ni nombre y el que ordena
+        el FUID junto a lo ya entregado.
+        """
+        numeros = (
+            sorted({n for n in paginas if 1 <= n <= source.page_count})
+            if paginas
+            else list(range(1, source.page_count + 1))
+        )
+        stats = BookReadingStats(pages=len(numeros))
         #: Que caras traian capa de texto. Se llena durante la primera
         #: pasada, que las lee de todos modos.
         self._con_texto: set[int] = set()
+        #: Qué parte del formulario trae cada cara, de su capa de texto.
+        self._formas: dict[int, FormaDeLaCara] = {}
         self._formato_de_pago = _formato_para_la_red(source)
-        self._report(ProgressEvent(stage=Stage.OPENED, page_count=source.page_count))
+        self._report(ProgressEvent(stage=Stage.OPENED, page_count=len(numeros)))
 
         # Primero lo que no espera a nadie: la esquina y la capa de texto de
         # cada página, que juntas cuestan una centésima de segundo. De aquí sale
         # ya el reparto del libro; lo que falta después es sólo ponerle nombre a
         # cada documento.
         records: list[DiplomaRecord] = []
-        for page_number in range(1, source.page_count + 1):
+        for hechas, page_number in enumerate(numeros, start=1):
             self._control.check()
             records.append(self._de_la_capa(source, page_number, stats))
             # Esta pasada dura cuatro segundos en un libro de cuatrocientas
             # páginas, pero callarla dejaba la pantalla diciendo "reconociendo"
             # sin un solo número mientras el trabajo ya estaba midiendo folios.
-            if page_number % _CADA_CUANTAS_SE_AVISA == 0 or page_number == source.page_count:
+            if hechas % _CADA_CUANTAS_SE_AVISA == 0 or hechas == len(numeros):
                 self._report(
                     ProgressEvent(
                         stage=Stage.IDENTIFYING,
-                        page_count=source.page_count,
+                        page_count=len(numeros),
                         detail="midiendo el folio de cada esquina",
-                        done=page_number,
-                        total=source.page_count,
+                        done=hechas,
+                        total=len(numeros),
                     )
                 )
 
@@ -325,11 +349,22 @@ class ReadDiplomaBook:
         # folio suelto no se puede contrastar con nada, y la progresión sí.
         records = self._folios_de_las_esquinas(source, records, stats)
 
+        # Y lo que sólo el libro entero confirma: el número de libro de la cara
+        # que no lo dejó leer y el título mal leído que se repite bien en otras.
+        records = con_lo_que_dice_el_libro(records)
+        if self._criterio is CriterioDeCorte.PAGINA:
+            records = asientos_en_progresion(records)
+
         # Cortando cara a cara no se une nada, así que los avisos que hablan
         # de unir esta hoja a la anterior no describen ninguna decisión: son
         # de otro criterio, y mandaban a revisión hojas que salieron bien.
         if self._criterio is CriterioDeCorte.PAGINA:
             records = [sin_avisos_de_costura(record) for record in records]
+
+        # Dónde empieza cada diploma, por lo impreso: la cara que no trae nada
+        # que abra un formulario continúa el anterior. Va al final, después de
+        # cualquier relectura, para que ninguna mezcla de lecturas lo borre.
+        records = self._marcar_continuaciones(records)
 
         # Y lo último, con el libro entero leído: cuántas unidades se quedaron
         # sin cédula y sin nombre. No cambia nada de lo leído; lo declara.
@@ -338,6 +373,36 @@ class ReadDiplomaBook:
         # Sin DONE: leer no es terminar. Quien anuncia el final es quien sabe
         # qué queda por hacer después, que es el trabajo y no el lector.
         return records, stats
+
+    def _marcar_continuaciones(self, records: list[DiplomaRecord]) -> list[DiplomaRecord]:
+        """Las caras que continúan el diploma anterior, marcadas y declaradas.
+
+        Lo dictó el operador: el encabezado abre diploma, y la cara sin él es
+        un diploma dividido. Se declara en revisión porque juntar dos caras es
+        la decisión que, si se equivoca, mete dos graduados en un archivo.
+        """
+        if self._criterio is not CriterioDeCorte.PAGINA:
+            # Los otros criterios deciden la unión por su propia señal.
+            return records
+        sin_forma = FormaDeLaCara(con_texto=False, abre=False, cuerpo=False, cierra=False)
+        formas = [self._formas.get(record.page_number, sin_forma) for record in records]
+        siguen = continuaciones(formas)
+        if not siguen:
+            return records
+        return [
+            replace(
+                record,
+                continuacion=True,
+                warnings=[
+                    *record.warnings,
+                    "no trae el encabezado ni ninguna leyenda que abra un diploma: "
+                    "se unió al diploma anterior como su continuación; revísela",
+                ],
+            )
+            if indice in siguen
+            else record
+            for indice, record in enumerate(records)
+        ]
 
     def _en_ritmo(self, records: list[DiplomaRecord]) -> list[DiplomaRecord]:
         """Los mismos registros, con las caras que rompen el compás unidas.
@@ -390,7 +455,14 @@ class ReadDiplomaBook:
             # cara -- tres minutos de reloj sobre un libro de cuatrocientas.
             if renglones:
                 self._con_texto.add(page_number)
+            # Qué parte del formulario trae: decide, con el libro entero
+            # leído, si esta cara abre diploma o continúa el anterior.
+            self._formas[page_number] = forma_de_la_cara(renglones)
             record = extract_diploma(renglones, page_number)
+            # En las plantillas antiguas el asiento va escrito a mano y la capa
+            # sólo devuelve ruido: se deja vacío para quien lo sepa leer.
+            if plantilla_antigua(renglones):
+                record = replace(record, folio=None, registered_folio=None)
         except Exception as error:  # noqa: BLE001 - contained to this page
             logger.warning("no se pudo leer la página %s", page_number, exc_info=True)
             stats.failures[page_number] = explicar(error)

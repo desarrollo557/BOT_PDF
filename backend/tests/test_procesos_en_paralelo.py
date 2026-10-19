@@ -32,6 +32,8 @@ def ajustes(tmp_path):
         upload_dir=tmp_path / "uploads",
         output_dir=tmp_path / "outputs",
         ledger_path=tmp_path / "inventory.jsonl",
+        # Las pausas y vueltas de reintento, en centésimas y no en minutos.
+        pausa_tras_fallos=0.01,
     )
     settings.ensure_directories()
     return settings
@@ -78,6 +80,30 @@ def _esperar(corridas, tope=600):
 
 
 class TestLasCarpetasVanEnParalelo:
+    def test_el_escaneo_no_bloquea_el_bucle_de_eventos(self, ajustes, tmp_path, monkeypatch):
+        (tmp_path / "origen").mkdir()
+        registry = JobRegistry()
+        medidor = _Medidor(registry, ajustes)
+        motor = FolderRunner(registry, ajustes, medidor)
+        hilo_del_bucle = threading.get_ident()
+        hilos_de_escaneo: list[int] = []
+        descubrir = motor._discover
+
+        def registrar_hilo(run):
+            hilos_de_escaneo.append(threading.get_ident())
+            return descubrir(run)
+
+        monkeypatch.setattr(motor, "_discover", registrar_hilo)
+
+        async def ir():
+            run = motor.start(str(tmp_path / "origen"), str(tmp_path / "destino"))
+            await _esperar(lambda: [run])
+
+        asyncio.run(ir())
+
+        assert hilos_de_escaneo
+        assert hilos_de_escaneo[0] != hilo_del_bucle
+
     def test_una_carpeta_procesa_varios_a_la_vez_sin_pasar_del_tope(self, ajustes, tmp_path):
         _pdfs(tmp_path / "origen", 9)
         registry = JobRegistry()
@@ -147,10 +173,10 @@ class TestLasCarpetasVanEnParalelo:
         )
         original = motor._deliver
 
-        def entrega(run, job, origen):
+        def entrega(run, job, origen, *resto):
             if origen.name == "001.pdf":
                 raise PermissionError(13, "Permission denied", str(origen))
-            return original(run, job, origen)
+            return original(run, job, origen, *resto)
 
         monkeypatch.setattr(motor, "_deliver", entrega)
 
@@ -235,22 +261,22 @@ class TestElPlanificador:
 
     def test_varios_se_reparten_la_maquina(self):
         p = Planificador(documentos_de_carpeta=3, hilos_por_documento=8, procesos=11, hilos_de_la_maquina=12)
-        assert p.hilos_para(3) == 4
+        assert p.hilos_para(3) == 3
 
     def test_nunca_baja_del_minimo(self):
         p = Planificador(documentos_de_carpeta=3, hilos_por_documento=8, procesos=11, hilos_de_la_maquina=12)
-        assert p.hilos_para(40) == HILOS_MINIMOS
+        assert p.hilos_para(40) == HILOS_MINIMOS == 1
 
     def test_los_que_esperan_en_el_pool_no_cuentan(self):
         # Con un pool de 3, el cuarto espera turno y no le quita hilos a nadie.
         p = Planificador(documentos_de_carpeta=3, hilos_por_documento=8, procesos=3, hilos_de_la_maquina=12)
-        assert p.hilos_para(10) == p.hilos_para(3) == 4
+        assert p.hilos_para(10) == p.hilos_para(3) == 3
 
     def test_cuenta_los_que_entran_y_salen(self):
         p = Planificador(documentos_de_carpeta=3, hilos_por_documento=8, procesos=11, hilos_de_la_maquina=12)
         with p.documento() as primero, p.documento() as segundo:
             assert p.en_curso == 2
-        assert (primero, segundo) == (8, 6)
+        assert (primero, segundo) == (8, 5)
         assert p.en_curso == 0
 
 

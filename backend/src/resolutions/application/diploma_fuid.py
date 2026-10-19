@@ -69,21 +69,34 @@ def folio_confiable(registro: DiplomaRecord) -> tuple[str, bool]:
 
 
 def asunto(registro: DiplomaRecord) -> str:
-    """El nombre del graduando y la carrera en mayúsculas: NOMBRE - CARRERA."""
+    """El nombre del graduando y el título en mayúsculas: NOMBRE - TÍTULO.
+
+    Como lo escribe el inventario de referencia del archivo
+    («ANGELICA MARIA CUELLO SALCEDO - ESPECIALISTA EN GERENCIA EN SALUD»,
+    REGISTROS DE DIPLOMAS 3269 - 3291). El asiento ya no va aquí entre
+    paréntesis: tiene su columna, «Otro».
+    """
     nombre = (registro.name or "").strip()
     carrera = (registro.degree or "").strip().upper()
-    folio = (registro.trusted_folio or "").strip()
     if nombre and carrera:
-        base = f"{nombre} - {carrera}"
-        return f"{base} ({folio})" if folio else base
-    if nombre:
-        return f"{nombre} ({folio})" if folio else nombre
-    if carrera:
-        return f"{carrera} ({folio})" if folio else carrera
-    return NO_APLICA
+        return f"{nombre} - {carrera}"
+    return nombre or carrera or NO_APLICA
 
 
-def _notas(folio: str, archivo: str | None) -> str:
+def asiento(registro: DiplomaRecord) -> str:
+    """Dónde quedó registrado el diploma: «folio-libro», como «728-8».
+
+    Es la columna «Otro» del inventario de referencia del archivo. Sin libro
+    legible se escribe sólo el folio; sin folio no hay asiento.
+    """
+    folio, _ = folio_confiable(registro)
+    if folio == NO_APLICA:
+        return NO_APLICA
+    libro = (registro.book or "").strip()
+    return f"{folio}-{libro}" if libro else folio
+
+
+def _notas(archivo: str | None) -> str:
     """Lo relevante de esta fila que no cabe en ninguna columna del formato.
 
     El nombre del archivo va aquí porque la planilla y la carpeta de salida son
@@ -92,17 +105,13 @@ def _notas(folio: str, archivo: str | None) -> str:
     equivocado en medio. Escribirlo convierte esa correspondencia en algo
     comprobable -- quien recibe la caja lee la fila y sabe qué abrir --, y de
     paso deja constancia de cuáles se nombraron por su folio o por su orden
-    porque la cédula no se dejó leer.
+    porque la cédula no se dejó leer. El folio de registro ya no va aquí: tiene
+    su columna, «Otro» (``asiento``).
 
     Se escribe sólo lo que hay. Una nota que dijera "Archivo: N/A" gastaría la
     única columna libre del formato en decir que no sabe nada.
     """
-    partes = []
-    if folio != NO_APLICA:
-        partes.append(f"Registrado a folio No. {folio}")
-    if archivo:
-        partes.append(f"Archivo: {archivo}")
-    return "; ".join(partes)
+    return f"Archivo: {archivo}" if archivo else ""
 
 
 def filas_del_libro(
@@ -152,8 +161,8 @@ def filas_del_libro(
             )
             continue
         padres.append(registro)
-        folio, _ = folio_confiable(registro)
         fecha = fecha_fuid(registro.graduation_date)
+        cedula = registro.identity_number if registro.identity_creible else NO_APLICA
         filas.append(
             FuidRow(
                 orden=desde + len(filas),
@@ -166,21 +175,20 @@ def filas_del_libro(
                 # "30761" en la columna de identificación es peor que uno con
                 # N/A, porque N/A se puede filtrar y buscar, y un número
                 # incompleto se da por bueno y nadie vuelve a mirarlo.
-                consecutivo_inicial=(
-                    registro.identity_number if registro.identity_creible else NO_APLICA
-                ),
-                # El código del estudiante. Los libros de diplomas no lo
-                # imprimen, así que aquí no se rellena nunca desde el papel.
-                consecutivo_final=NO_APLICA,
+                consecutivo_inicial=cedula,
+                # La misma cédula: el inventario de referencia del archivo la
+                # escribe en las dos columnas del consecutivo.
+                consecutivo_final=cedula,
                 fecha_inicial=fecha,
                 fecha_final=fecha,
-                caja=donde.caja,
+                caja=donde.caja_de(nombre_del_archivo),
                 carpeta=upd,
-                # El libro empastado. Va en Tomo porque el instructivo reserva
-                # esa columna justamente para los empastes, y porque cada página
-                # lo dice de su puño: "libro No. 8".
-                tomo=registro.book or NO_APLICA,
-                otro=donde.otro,
+                # El libro va en «Otro», junto a su folio de registro --
+                # «728-8» --, como en el inventario de referencia del archivo;
+                # Tomo queda en N/A. Si el operador dio un «Otro» para toda la
+                # caja, manda el suyo.
+                tomo=NO_APLICA,
+                otro=donde.otro if donde.otro != NO_APLICA else asiento(registro),
                 # Un folio por graduando. No es una constante cómoda: es lo
                 # que hay. Sube sólo si detrás vienen caras sin identificador,
                 # que son la vuelta de esta misma hoja.
@@ -188,13 +196,13 @@ def filas_del_libro(
                 folios_siar=1,
                 soporte=NO_APLICA,
                 frecuencia=NO_APLICA,
-                # El folio de registro y el nombre del archivo, que son los dos
-                # datos relevantes sin columna propia en el formato. El
+                # El nombre del archivo, el dato relevante sin columna propia
+                # en el formato (el folio de registro ya va en «Otro»). El
                 # instructivo reserva Notas exactamente para eso -- "los datos
                 # que sean relevantes y no se hayan registrado en las columnas
                 # anteriores" --, y añadirle al FUID una columna decimoséptima
                 # rompería la plantilla que se firma.
-                notas=_notas(folio, nombres.get(registro.page_number)),
+                notas=_notas(nombres.get(registro.page_number)),
                 pagina_inicial=registro.page_number,
             )
         )

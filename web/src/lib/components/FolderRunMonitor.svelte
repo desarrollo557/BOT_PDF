@@ -40,12 +40,13 @@
     scanning: 'Explorando la carpeta',
     processing: 'Procesando',
     watching: 'Vigilando — esperando archivos nuevos',
+    recovering: 'Recuperándose — en pausa tras unos fallos, sigue sola',
     done: 'Terminado',
     stopped: 'Detenido',
     failed: 'Falló'
   };
 
-  const active = $derived(['scanning', 'processing', 'watching'].includes(run.state));
+  const active = $derived(['scanning', 'processing', 'watching', 'recovering'].includes(run.state));
 
   /**
    * Cuántos documentos esperan turno. Lo cuenta el servicio, porque `run.queue`
@@ -136,6 +137,28 @@
    * entonces no hay inventario de actas que enseñar.
    */
   const actasDelInventario = $derived(run.inventario_filas ?? 0);
+
+  /*
+   * Al retomar una carpeta de libros de diplomas: qué había de cada PDF en el
+   * destino y cómo quedó, contado página a página por el servicio.
+   */
+  const retomando = $derived(run.retomar === 'faltantes' || run.retomar === 'revisar');
+  /** Lo que la corrida saltó, rehízo o no pudo entregar entero, y sus avisos. */
+  const entrega = $derived({
+    ya: run.ya_entregados ?? 0,
+    sinConstancia: run.sin_constancia ?? 0,
+    rehechos: run.rehechos ?? 0,
+    incompletas: run.entregas_incompletas ?? 0,
+    avisos: run.avisos ?? []
+  });
+  const controles = $derived(run.controles ?? []);
+  const estadoDe = (control: (typeof controles)[number]) =>
+    (control.despues ?? control.antes)?.estado ?? null;
+  const completos = $derived(controles.filter((c) => estadoDe(c) === 'completo').length);
+  const porEntregar = $derived(
+    controles.filter((c) => estadoDe(c) && estadoDe(c) !== 'completo')
+  );
+  const conAvisos = $derived(controles.filter((c) => c.observaciones));
   const validacion = $derived(run.inventario_validacion ?? null);
 
   /**
@@ -294,6 +317,73 @@
     </div>
   {/if}
 
+  {#if retomando && controles.length}
+    <div class="inventario control" data-listo={porEntregar.length ? 'no' : 'si'}>
+      <div class="texto">
+        <b>{run.retomar === 'revisar' ? 'Revisión del destino' : 'Control de entrega'}</b>
+        <small>
+          {controles.length}
+          {controles.length === 1 ? 'PDF mirado' : 'PDF mirados'}{active ? ' hasta ahora' : ''}
+          · {completos} {completos === 1 ? 'completo' : 'completos'} en el destino
+          {#if run.ya_entregados}· {run.ya_entregados} ya {run.ya_entregados === 1 ? 'estaba' : 'estaban'}
+            y no se {run.ya_entregados === 1 ? 'volvió' : 'volvieron'} a procesar{/if}
+          {#if run.control}
+            · quedó en la carpeta de destino como
+            <code title={run.control_ruta ?? run.control}>{run.control}</code>
+          {/if}
+        </small>
+        {#each porEntregar.slice(0, 8) as control (control.pdf)}
+          {@const ultima = control.despues ?? control.antes}
+          <small class="validacion" data-pendientes="si">
+            {control.pdf}: {ultima?.estado}{ultima?.faltantes_rangos
+              ? ` — faltan las páginas ${ultima.faltantes_rangos}`
+              : ''}
+          </small>
+        {/each}
+        {#if porEntregar.length > 8}
+          <small>y {porEntregar.length - 8} más: el control los lista todos.</small>
+        {/if}
+        {#each conAvisos.slice(0, 5) as control (control.pdf)}
+          <small class="validacion" data-pendientes="si">{control.pdf}: {control.observaciones}</small>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
+  {#if !retomando && (entrega.ya || entrega.rehechos || entrega.incompletas || entrega.avisos.length || run.recuperados || run.por_reintentar)}
+    <div class="inventario control" data-listo={entrega.incompletas || entrega.avisos.length ? 'no' : 'si'}>
+      <div class="texto">
+        <b>{run.state === 'recovering' ? 'Recuperándose: la carpeta sigue sola' : 'Entrega y recuperación'}</b>
+        <small>
+          {#if entrega.ya}
+            {entrega.ya} {entrega.ya === 1 ? 'PDF ya estaba entregado' : 'PDF ya estaban entregados'} y no se
+            {entrega.ya === 1 ? 'volvió' : 'volvieron'} a leer{#if entrega.sinConstancia}
+              ({entrega.sinConstancia} de una corrida anterior, sin constancia de entrega){/if}
+          {/if}
+          {#if entrega.rehechos}
+            · {entrega.rehechos} {entrega.rehechos === 1 ? 'se rehízo' : 'se rehicieron'}: la entrega se había
+            cortado o el original cambió (lo anterior quedó en <code>_reemplazados</code>)
+          {/if}
+          {#if run.recuperados}
+            · {run.recuperados} {run.recuperados === 1 ? 'falló y salió bien' : 'fallaron y salieron bien'} al
+            reintentarse
+          {/if}
+          {#if run.por_reintentar}
+            · {run.por_reintentar} {run.por_reintentar === 1 ? 'espera' : 'esperan'} la vuelta de reintento del final
+          {/if}
+          {#if entrega.incompletas}
+            · {entrega.incompletas}
+            {entrega.incompletas === 1 ? 'no se pudo copiar entero' : 'no se pudieron copiar enteros'} al destino:
+            al volver a lanzar la carpeta se rehacen
+          {/if}
+        </small>
+        {#each entrega.avisos.slice(-5) as aviso (aviso)}
+          <small class="validacion" data-pendientes="si">{aviso}</small>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
   {#if descargas.length}
     <div class="descargas"><Descargas grupos={descargas} /></div>
   {/if}
@@ -318,16 +408,24 @@
     velocidad={rate}
     segundos={elapsedSeconds}
     etapas={active ? abiertos.map((item) => item.job?.progress.stage) : []}
-    procedencias={trabajos.map((trabajo) => trabajo.progress.by_provenance)}
-    revision={trabajos.reduce((suma, trabajo) => suma + marcadasEnCinta(trabajo.progress.ribbon), 0)}
-    fallidas={trabajos.reduce((suma, trabajo) => suma + trabajo.progress.failed_pages, 0)}
+    procedencias={[
+      ...trabajos.map((trabajo) => trabajo.progress.by_provenance),
+      ...(run.retirados ? [run.retirados.procedencias] : [])
+    ]}
+    revision={trabajos.reduce((suma, trabajo) => suma + marcadasEnCinta(trabajo.progress.ribbon), 0) +
+      (run.retirados?.revision ?? 0)}
+    fallidas={trabajos.reduce((suma, trabajo) => suma + trabajo.progress.failed_pages, 0) +
+      (run.retirados?.fallidas ?? 0)}
     documentos={{
       hechos: run.processed,
       fallidos: run.failed,
       enCola: enCola,
       total: run.watch ? null : run.discovered
     }}
-    consumo={sumarConsumos(trabajos.map((trabajo) => trabajo.progress.consumo ?? trabajo.report?.consumo))}
+    consumo={sumarConsumos([
+      ...trabajos.map((trabajo) => trabajo.progress.consumo ?? trabajo.report?.consumo),
+      run.retirados?.consumo
+    ])}
     vivo={active}
   />
 
@@ -453,6 +551,10 @@
     background: var(--s4);
     box-shadow: 0 0 0 3px color-mix(in oklab, var(--s4) 18%, transparent);
     animation: breathe 1.6s ease-in-out infinite;
+  }
+  [data-state='recovering'] .lamp {
+    background: var(--warning, var(--s4));
+    animation: breathe 2.4s ease-in-out infinite;
   }
   [data-state='watching'] .lamp {
     background: var(--s4);

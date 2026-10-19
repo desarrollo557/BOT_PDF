@@ -244,7 +244,39 @@ class JobProgress:
         self.stage_total = total
         self.stage_started_monotonic = time.monotonic()
 
+    def _health_summary(self) -> tuple[str, list[str]]:
+        """El estado operativa del trabajo;
+
+        No es el mismo que el estado del documento ni que la etapa. Aquí se
+        responde a "¿sigue vivo, va lento o parece bloqueado?" sin depender de
+        que el worker haya publicado una nueva página desde hace unos segundos.
+        """
+        if self.finished_monotonic is not None:
+            if self.stage == "failed":
+                return "failed", []
+            return "done", []
+
+        warnings: list[str] = []
+        if self.review:
+            warnings.append(f"{len(self.review)} páginas requieren revisión")
+        if self.failed_pages:
+            warnings.append(f"{self.failed_pages} páginas marcadas para comprobar")
+
+        silent = self.silent_seconds
+        if silent >= 20:
+            detalle = f"sin novedades desde hace {silent:.0f} s; el proceso parece bloqueado"
+            warnings.insert(0, detalle)
+            return "stalled", warnings
+        if silent >= 8:
+            detalle = f"sin novedades desde hace {silent:.0f} s; el proceso va lento"
+            warnings.insert(0, detalle)
+            return "slow", warnings
+        if warnings:
+            return "warning", warnings
+        return "ok", warnings
+
     def as_dict(self) -> dict[str, object]:
+        health, warnings = self._health_summary()
         return {
             "stage": self.stage,
             "page_count": self.page_count,
@@ -261,6 +293,8 @@ class JobProgress:
             "stage_total": self.stage_total,
             "stage_elapsed_seconds": round(self.stage_elapsed_seconds, 2),
             "silent_seconds": round(self.silent_seconds, 2),
+            "health": health,
+            "warnings": warnings,
             "consumo": self.consumo,
         }
 
@@ -329,6 +363,20 @@ class Job:
     #: carpeta. Claves: ``id``, ``nombre``, ``tipo`` («carpeta» o «lote») y, en
     #: una carpeta, ``inventario``: dónde queda su Excel general.
     origen: dict | None = None
+    #: Las páginas que hay que leer, cuando no es el documento entero: al
+    #: retomar en una carpeta un libro de diplomas entregado a medias, las que
+    #: faltan en el destino. ``None`` es el documento entero.
+    paginas: list[int] | None = None
+    #: Qué intento va: más de uno cuando el anterior falló por algo que no
+    #: dice nada del papel -- la red, un proceso que murió -- (ver
+    #: `reintentos.py`).
+    intentos: int = 0
+    #: Cuántos archivos de su lote (o de las cargas sueltas) pidió el operador
+    #: que se procesen a la vez. ``None`` es el automático: los del pool.
+    paralelo: int | None = None
+    #: Si, habiendo fallado, merece otra vuelta al final de la carpeta (ver
+    #: `reintentos.merece_otra_vuelta`).
+    reintentable: bool = False
     state: JobState = JobState.QUEUED
     created_at: str = field(default_factory=_now)
     started_at: str | None = None
@@ -354,6 +402,9 @@ class Job:
             "territorial": self.territorial,
             "tipo": self.tipo,
             "origen": self.origen,
+            **({"paginas": list(self.paginas)} if self.paginas else {}),
+            "intentos": self.intentos,
+            "paralelo": self.paralelo,
             "state": str(self.state),
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -462,6 +513,8 @@ class JobRegistry:
         agrupar: str = "documento",
         origen: dict | None = None,
         territorial: str | None = None,
+        paginas: list[int] | None = None,
+        paralelo: int | None = None,
     ) -> Job:
         job = Job(
             id=uuid4().hex,
@@ -480,6 +533,8 @@ class JobRegistry:
             tipo=tipo,
             destination=destination,
             origen=origen,
+            paginas=list(paginas) if paginas else None,
+            paralelo=paralelo,
         )
         self._jobs[job.id] = job
         self._revision += 1

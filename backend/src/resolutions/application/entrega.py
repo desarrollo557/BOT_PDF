@@ -23,7 +23,7 @@ Cada arreglo había que acordarse de hacerlo cuatro veces.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -118,6 +118,7 @@ def entregar(
     estadisticas: dict[str, object] | None = None,
     anexos: dict[str, list[int]] | None = None,
     heredar_tipo: bool = True,
+    paginas_leidas: Sequence[int] | None = None,
 ) -> Entregado:
     """Describe, comprueba, escribe e inventaría una agrupación ya decidida.
 
@@ -134,7 +135,9 @@ def entregar(
        el escritor puso en el disco.
     """
     descrita = describir(agrupacion, texto_de, heredar=heredar_tipo)
-    descrita.verify_integrity(total_pages=paginas)
+    # Al retomar una entrega a medias sólo se leyeron las páginas que faltaban,
+    # y el cuadre es contra ésas: el resto ya está en el destino.
+    descrita.verify_integrity(total_pages=paginas, paginas=paginas_leidas)
 
     assembly = assembler.write(origen, descrita, destino.directorio)
 
@@ -145,7 +148,7 @@ def entregar(
 
     inventario = build_inventory(
         source_document=nombre,
-        source_pages=paginas,
+        source_pages=len(paginas_leidas) if paginas_leidas else paginas,
         result=descrita,
         review_pages=revision,
         stats=estadisticas or {},

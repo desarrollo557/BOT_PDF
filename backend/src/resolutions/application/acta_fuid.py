@@ -44,7 +44,7 @@ def filas_de_actas(
             consecutivo_final=folio,
             fecha_inicial=acta.fecha if acta.fecha and acta.fecha != "SIN FECHA" else NO_APLICA,
             fecha_final=acta.fecha if acta.fecha and acta.fecha != "SIN FECHA" else NO_APLICA,
-            caja=ubicacion.caja if ubicacion else NO_APLICA,
+            caja=ubicacion.caja_de(nombre_del_archivo) if ubicacion else NO_APLICA,
             carpeta=ubicacion.carpeta_de(nombre_del_archivo) if ubicacion else NO_APLICA,
             tomo=NO_APLICA,
             otro=ubicacion.otro if ubicacion else NO_APLICA,

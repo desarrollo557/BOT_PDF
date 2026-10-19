@@ -179,7 +179,10 @@ class TestEntregaEnCarpeta:
 
         runner._entregar(run, job, origen / "UPD2320043.pdf")
 
-        entregados = {ruta.name for ruta in run.destination.rglob("*") if ruta.is_file()}
+        # La constancia de entrega es del bot, no del cliente.
+        entregados = {
+            ruta.name for ruta in run.destination.rglob("*") if ruta.is_file() and not ruta.name.startswith(".bot-")
+        }
         assert entregados == {"01_SOLICITUD-DE-SERVICIO.pdf", indice_electronico.NOMBRE_DEL_INDICE}
         assert not any(nombre.endswith(SUFFIX) for nombre in entregados)
         # Entregado cuenta documentos, y el índice no es uno.

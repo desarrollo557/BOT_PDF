@@ -768,3 +768,127 @@ class ExcelInventarioDeProcesos:
         target = destino / nombre
         book.save(target)
         return target
+
+
+# -- el control de una entrega retomada ----------------------------------------
+
+NOMBRE_DEL_CONTROL_DE_ENTREGA = "00.CONTROL DE ENTREGA.xlsx"
+
+
+@dataclass(frozen=True, slots=True)
+class FilaDeControl:
+    """Lo que había de un PDF en el destino, qué se hizo y cómo quedó."""
+
+    pdf: str
+    destino: str
+    paginas: int
+    estado_antes: str
+    entregadas_antes: int
+    faltaban: str
+    accion: str
+    estado_despues: str
+    faltan: str
+    observaciones: str = ""
+
+
+class ExcelControlDeEntrega:
+    """Qué llegó del origen al destino, PDF por PDF, contado en el disco.
+
+    Lo pidió el operador el 2026-10-15: si una corrida se corta, el bot tiene
+    que poder decir qué se entregó y qué no, y retomar sólo lo que falta. Las
+    cuentas salen de cruzar las páginas del origen con las de los PDF del
+    destino (``domain/conciliacion.py``), no de lo que el bot recuerda.
+    """
+
+    COLUMNAS = [
+        ("#", 5),
+        ("PDF de origen", 34),
+        ("Carpeta de destino", 34),
+        ("Páginas", 9),
+        ("Estado antes", 13),
+        ("Entregadas antes", 11),
+        ("Faltaban", 22),
+        ("Qué se hizo", 38),
+        ("Estado ahora", 13),
+        ("Faltan ahora", 22),
+        ("Observaciones", 44),
+    ]
+    CENTRADAS = ("#", "Páginas", "Estado antes", "Entregadas antes", "Estado ahora")
+    ARRIBA = ("PDF de origen", "Carpeta de destino", "Faltaban", "Qué se hizo", "Faltan ahora", "Observaciones")
+
+    def write(
+        self,
+        filas: list[FilaDeControl],
+        destino: Path,
+        *,
+        origen: str,
+        operador: str | None = None,
+        nombre: str = NOMBRE_DEL_CONTROL_DE_ENTREGA,
+    ) -> Path:
+        destino.mkdir(parents=True, exist_ok=True)
+        book = Workbook()
+
+        sheet = book.active
+        sheet.title = "Resumen"
+        span = 6
+        _ancho(sheet, [30, 20, 20, 20, 20, 20])
+        row = _portada(
+            sheet, span, "CONTROL DE ENTREGA", "Qué llegó del origen al destino, y qué falta"
+        )
+        row = _seccion(sheet, row, span, "Identificación")
+        row = _campo(sheet, row, span, "Carpeta de origen", origen or "—")
+        row = _campo(sheet, row, span, "Carpeta de destino", str(destino))
+        row = _campo(sheet, row, span, "Operador", operador or "no registrado")
+        row = _campo(sheet, row, span, "Generado", datetime.now().strftime("%d/%m/%Y  %H:%M:%S"))
+        row += 1
+        completos = sum(1 for f in filas if f.estado_despues == "completo")
+        pendientes = len(filas) - completos
+        row = _seccion(sheet, row, span, "Totales")
+        row = _campo(sheet, row, span, "PDF del origen", len(filas))
+        row = _campo(
+            sheet, row, span, "Completos en el destino", completos,
+            relleno=_CUADRA if filas and not pendientes else None,
+        )
+        row = _campo(
+            sheet, row, span, "Con páginas por entregar", pendientes,
+            relleno=_NO_CUADRA if pendientes else None,
+        )
+        row = _campo(sheet, row, span, "Páginas del origen", sum(f.paginas for f in filas))
+        con_avisos = sum(1 for f in filas if f.observaciones)
+        row = _campo(
+            sheet, row, span, "Con algo que revisar", con_avisos,
+            relleno=_PENDIENTE if con_avisos else None,
+        )
+        _firma(sheet, row, span)
+        _imprimible(sheet, span)
+
+        detalle = book.create_sheet("PDF")
+        _tabla(
+            detalle,
+            self.COLUMNAS,
+            [
+                [
+                    indice,
+                    f.pdf,
+                    f.destino,
+                    f.paginas,
+                    f.estado_antes,
+                    f.entregadas_antes,
+                    f.faltaban or None,
+                    f.accion,
+                    f.estado_despues,
+                    f.faltan or None,
+                    f.observaciones or None,
+                ]
+                for indice, f in enumerate(filas, start=1)
+            ],
+            titulo="CONTROL DE ENTREGA",
+            subtitulo=f"Carpeta: {origen}",
+            centradas=self.CENTRADAS,
+            arriba=self.ARRIBA,
+            columna_total="Páginas",
+        )
+
+        target = destino / nombre
+        book.save(target)
+        return target

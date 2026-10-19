@@ -4,10 +4,17 @@ import logging
 from collections import Counter
 from dataclasses import dataclass, field, replace
 
+from ..domain.anchor import normalized_lines
 from ..domain.doctype import DocumentType, TypeVerdict, classify_pages
-from ..domain.extraction import RawCandidate, extract_candidates
+from ..domain.extraction import (
+    RENGLONES_DE_LA_CABECERA,
+    RawCandidate,
+    extract_candidates,
+    siguiente_en_la_cabecera,
+)
 from ..domain.legibility import garble_score, is_garbled
 from ..domain.page import PageClassification, Provenance
+from ..domain.plantilla_de_pagina import Evidencia, plantilla_de
 from ..domain.resolution_code import ResolutionCode
 from ..domain.scoring import Selection, select_best
 from ..domain.title import extract_title
@@ -82,6 +89,10 @@ class PageAnalysis:
     #: de origen, no un incidente del proceso, y quien vuelva a este material
     #: tiene que saber que llegó así.
     mis_decoded: bool = False
+    #: Qué plantilla muestra la página, por lo que trae impreso. Decide qué
+    #: componente la atiende: una resolución de facultad o un oficio detrás de
+    #: una resolución abierta son su soporte y no abren nada.
+    plantilla: Evidencia | None = None
 
     def is_degraded(self, config: PipelineConfig) -> bool:
         """Whether "no code found" might mean "we could not read the page".
@@ -128,6 +139,14 @@ class PipelineStats:
     #: page number -> what went wrong. A page that blows up is isolated, never
     #: allowed to take the other 399 with it.
     failures: dict[int, str] = field(default_factory=dict)
+    #: Cuántas páginas mostró cada plantilla.
+    plantillas: Counter[str] = field(default_factory=Counter)
+    #: Página -> la plantilla por la que se archivó como soporte de la
+    #: resolución abierta en vez de abrir una propia.
+    soportes: dict[int, str] = field(default_factory=dict)
+    #: Páginas que abrieron la resolución siguiente de la serie por su número,
+    #: con la palabra «resolución» destrozada por el OCR.
+    por_secuencia: list[int] = field(default_factory=list)
 
     @property
     def mis_decoded(self) -> int:
@@ -158,6 +177,9 @@ class PipelineStats:
             },
             "vision_page_ratio": round(self.vision_page_ratio, 4),
             "failed_pages": {str(page): error for page, error in sorted(self.failures.items())},
+            "plantillas": dict(self.plantillas),
+            "soportes": {str(page): cual for page, cual in sorted(self.soportes.items())},
+            "por_secuencia": sorted(self.por_secuencia),
         }
 
 
@@ -231,7 +253,8 @@ class PageAnalyzer:
                 provenance=Provenance.TEXT_LAYER,
                 text_length=len(text),
                 text=text[: config.sample_chars],
-                title=extract_title(text),
+                title=extract_title(text, titulo_encima=True),
+                plantilla=plantilla_de(text),
             )
 
         if mal_decodificada:
@@ -252,8 +275,9 @@ class PageAnalyzer:
                 provenance=Provenance.OCR_REGION,
                 text_length=len(band.text),
                 text=band.text[: config.sample_chars],
-                title=extract_title(band.text),
+                title=extract_title(band.text, titulo_encima=True),
                 mis_decoded=mal_decodificada,
+                plantilla=plantilla_de(band.text),
             )
 
         # The header crop came back empty. Either the number is somewhere else on
@@ -266,8 +290,9 @@ class PageAnalyzer:
             provenance=Provenance.OCR_FULL_PAGE,
             text_length=len(full.text),
             text=full.text[: config.sample_chars],
-            title=extract_title(full.text),
+            title=extract_title(full.text, titulo_encima=True),
             mis_decoded=mal_decodificada,
+            plantilla=plantilla_de(full.text),
         )
 
 
@@ -413,9 +438,40 @@ class ClassificationPipeline:
         #: sobre el papel se ven exactamente igual. Se vacía al abrir una unidad
         #: nueva: lo que anunció la anterior no dice nada de la siguiente.
         anunciados: set[str] = set()
+        #: Los números de los soportes que la resolución abierta lleva detrás
+        #: -- la 006 del decano en la 00316 --: sus hojas siguientes repiten
+        #: su encabezado sin decir ya quién la expide, y tampoco abren nada.
+        soportes_del_abierto: set[str] = set()
 
         for analysis in analyses:
             stats.by_provenance[str(analysis.provenance)] += 1
+            if analysis.plantilla is not None:
+                stats.plantillas[str(analysis.plantilla.plantilla)] += 1
+            if previous is not None and self._es_soporte(analysis, previous, soportes_del_abierto):
+                # Lo que la página trae de «RESOLUCIÓN No.» es la resolución
+                # con que un decano pidió algo, o lo que cita un oficio: es el
+                # soporte de la resolución abierta y va en su archivo. Ni abre
+                # una unidad ni sube a la IA, que no tiene nada que decidir.
+                soportes_del_abierto.update(
+                    candidate.code.value
+                    for candidate in analysis.candidates
+                    if candidate.code != previous
+                )
+                cual = (
+                    analysis.plantilla.plantilla
+                    if analysis.plantilla is not None and analysis.plantilla.es_soporte
+                    else "hoja de un soporte"
+                )
+                stats.soportes[analysis.page_number] = str(cual)
+                classifications.append(
+                    PageClassification(
+                        page_number=analysis.page_number,
+                        code=None,
+                        provenance=analysis.provenance,
+                        plantilla=str(cual),
+                    )
+                )
+                continue
             if analysis.mis_decoded:
                 stats.mis_decoded_pages.append(analysis.page_number)
             if analysis.failed:
@@ -425,6 +481,26 @@ class ClassificationPipeline:
                 previous_code=previous,
                 announced_by_open_unit=anunciados,
             )
+
+            siguiente = self._siguiente_de_la_serie(analysis, selection, previous)
+            if siguiente is not None:
+                # Peldaño de la secuencia: la cabecera trae el número que sigue
+                # al de la abierta junto a lo que fue «resolución», aunque el OCR
+                # destrozara esa palabra. Gratis, y sin preguntarle a nadie.
+                stats.por_secuencia.append(analysis.page_number)
+                classifications.append(
+                    PageClassification(
+                        page_number=analysis.page_number,
+                        code=siguiente,
+                        provenance=analysis.provenance,
+                        title=analysis.title,
+                        plantilla=str(analysis.plantilla.plantilla) if analysis.plantilla else None,
+                    )
+                )
+                anunciados = set()
+                soportes_del_abierto = set()
+                previous = siguiente
+                continue
 
             if selection is None:
                 if analysis.is_degraded(self._config):
@@ -463,11 +539,13 @@ class ClassificationPipeline:
                     provenance=analysis.provenance,
                     ambiguous=selection.ambiguous,
                     title=analysis.title,
+                    plantilla=str(analysis.plantilla.plantilla) if analysis.plantilla else None,
                 )
             )
             if selection.code != previous:
                 # Unidad nueva: lo que anunciaba la anterior deja de contar.
                 anunciados = set()
+                soportes_del_abierto = set()
             previous = selection.code
             # Y lo que esta página nombra queda anotado a cuenta de la unidad
             # abierta. La página que abre una resolución es la que trae su
@@ -480,6 +558,43 @@ class ClassificationPipeline:
 
         stats.escalated = len(unresolved)
         return classifications, stats, unresolved
+
+    @staticmethod
+    def _siguiente_de_la_serie(
+        analysis: PageAnalysis, selection: Selection | None, abierta: ResolutionCode | None
+    ) -> ResolutionCode | None:
+        """La resolución que sigue a la abierta, si esta página la encabeza y nada más la abrió.
+
+        Sólo cuando la página no abrió nada por sí misma -- o continuaba la
+        abierta --, no es un soporte y su cabecera no repite el número de la
+        abierta, que es lo que llevan sus hojas siguientes.
+        """
+        if abierta is None or (selection is not None and selection.code != abierta):
+            return None
+        if analysis.plantilla is not None and analysis.plantilla.es_soporte:
+            return None
+        cabecera = normalized_lines(analysis.text)[:RENGLONES_DE_LA_CABECERA]
+        if any(abierta.value in renglon for renglon in cabecera):
+            return None
+        return siguiente_en_la_cabecera(analysis.text, abierta)
+
+    @staticmethod
+    def _es_soporte(
+        analysis: PageAnalysis, abierta: ResolutionCode, soportes: set[str]
+    ) -> bool:
+        """Si esta página es soporte de la resolución abierta y no puede abrir nada.
+
+        Lo es cuando su plantilla lo dice -- una resolución de facultad, un
+        oficio -- o cuando sólo trae el número de un soporte que ya va dentro.
+        Una página que repite el número de la abierta nunca es soporte: es la
+        resolución misma, que sigue.
+        """
+        numeros = {candidate.code.value for candidate in analysis.candidates}
+        if abierta.value in numeros:
+            return False
+        if analysis.plantilla is not None and analysis.plantilla.es_soporte:
+            return True
+        return bool(numeros) and numeros <= soportes
 
     @staticmethod
     def _used_context(

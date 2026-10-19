@@ -266,6 +266,143 @@ def abre_formulario(lines: Sequence[TextLine]) -> bool:
             return True
     return False
 
+# -- dónde empieza cada diploma, por lo impreso -------------------------------
+#
+# Lo dictó el operador mirando las tres plantillas de la carpeta REGISTROS DE
+# DIPLOMAS 3269 - 3291: «cada vez que veas un [encabezado] también es un pdf
+# nuevo, o un diploma dividido». El membrete abre diploma; la cara que no trae
+# nada del formulario es la continuación del anterior.
+#
+# El membrete solo no alcanza: en los libros antiguos va en letra decorativa y
+# la capa lo deja como «^.OOIÜEKSIDHO oe CePIRSEOñ» -- se reconoció en 223 de
+# las 396 caras del libro 3858080 --. Las leyendas impresas del formulario sí
+# salen, y con ellas se reconocen las 4.143 caras de los once libros de la
+# carpeta, sin una sola lectura de pago. Van en tres grupos porque no dicen lo
+# mismo: las de **apertura** sólo están en la cara que empieza un diploma; las
+# del **cuerpo** y las del **cierre** también estarían en la mitad de abajo de
+# un diploma partido en dos caras, y por eso solas no abren.
+
+#: Lo que sólo trae la cara donde empieza un diploma, en cualquiera de las tres
+#: plantillas: la mecanografiada (2011 en adelante) y las dos manuscritas.
+LEYENDAS_DE_APERTURA = tuple(
+    _fold(leyenda)
+    for leyenda in (
+        "Y EN SU NOMBRE LA",
+        "EN ATENCION A QUE EL SEÑOR",
+        "NOMBRES Y APELLIDOS DEL GRADUANDO",
+        "IDENTIFICADO CON",
+        "TITULO RECIBIDO",
+        "HA COMPLETADO TODOS LOS ESTUDIOS",
+    )
+)
+#: El cuerpo del formulario.
+LEYENDAS_DEL_CUERPO = tuple(
+    _fold(leyenda)
+    for leyenda in (
+        "EXIGEN PARA OPTAR EL TITULO",
+        "LE EXPIDE EL PRESENTE DIPLOMA",
+        "FECHA DE GRADUACION",
+        "FUNCIONARIOS QUE FIRMAN",
+    )
+)
+#: El pie: el registro en el libro y las firmas.
+LEYENDAS_DE_CIERRE = tuple(
+    _fold(leyenda)
+    for leyenda in (
+        "REGISTRADO AL FOLIO",
+        "REGISTRADO A FOLIO",
+        "EN TESTIMONIO DE ELLO",
+        "PARA CONSTANCIA ES FIRMADO",
+        "DE REGISTRO DE DIPLOMA",
+    )
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FormaDeLaCara:
+    """Qué parte del formulario de un diploma trae una cara, leída de lo impreso."""
+
+    #: Si la cara trae capa de texto: sin ella no se sabe nada de su forma.
+    con_texto: bool
+    #: El membrete o una leyenda de apertura.
+    abre: bool
+    #: Alguna leyenda del cuerpo.
+    cuerpo: bool
+    #: Alguna leyenda del pie.
+    cierra: bool
+
+
+def _trae(lines: Sequence[TextLine], leyendas: Sequence[str]) -> bool:
+    return any(
+        _has_caption_folded(_fold(linea.text).split(), leyenda)
+        for linea in lines
+        for leyenda in leyendas
+    )
+
+
+def forma_de_la_cara(lines: Sequence[TextLine]) -> FormaDeLaCara:
+    """Qué parte del formulario trae esta cara."""
+    return FormaDeLaCara(
+        con_texto=any(linea.text.strip() for linea in lines),
+        abre=abre_formulario(lines) or _trae(lines, LEYENDAS_DE_APERTURA),
+        cuerpo=_trae(lines, LEYENDAS_DEL_CUERPO),
+        cierra=_trae(lines, LEYENDAS_DE_CIERRE),
+    )
+
+
+def continuaciones(formas: Sequence[FormaDeLaCara]) -> set[int]:
+    """Qué caras -- por su posición, desde 0 -- continúan el diploma anterior.
+
+    Abre diploma la cara que:
+
+    1. trae el membrete o una leyenda de apertura;
+    2. trae el cuerpo o el pie **y la anterior ya cerró el suyo**: el membrete
+       y la apertura se leyeron mal, pero esto no puede ser la mitad de abajo de
+       un diploma que ya terminó (UPD3858080 p117, escaneo oscuro);
+    3. no trae capa de texto: no hay con qué decir otra cosa, y en estos libros
+       cada cara es un diploma;
+    4. es la primera.
+
+    Las demás continúan el anterior: la cara con texto que no trae nada del
+    formulario -- un anexo, una vuelta escrita -- y la mitad de abajo de un
+    diploma partido en dos caras.
+    """
+    siguen: set[int] = set()
+    for i, forma in enumerate(formas):
+        if i == 0 or not forma.con_texto or forma.abre:
+            continue
+        if (forma.cuerpo or forma.cierra) and formas[i - 1].cierra:
+            continue
+        siguen.add(i)
+    return siguen
+
+
+#: Lo que sólo imprimen las plantillas antiguas -- la de posgrados sin cédula y
+#: la manuscrita de 1981-85 --: el diploma redactado en prosa, con los datos
+#: escritos a mano en los huecos. La mecanografiada de 2011-13 es un formulario
+#: de rótulos («Nombres y apellidos del graduando», «Folio 21») y no trae
+#: ninguna de estas frases.
+LEYENDAS_DE_LA_PLANTILLA_ANTIGUA = (
+    "EN ATENCION A QUE EL",
+    "HA COMPLETADO TODOS LOS ESTUDIOS",
+    "LE EXPIDE EL PRESENTE DIPLOMA",
+    "EN TESTIMONIO DE ELLO",
+)
+
+
+def plantilla_antigua(lines: Sequence[TextLine]) -> bool:
+    """Si esta cara es de una plantilla antigua, con los datos escritos a mano.
+
+    Importa por el asiento. En la mecanografiada «Folio 21» está impreso y la
+    capa de texto lo lee bien; en las antiguas va escrito a mano en el hueco de
+    «Registrado al folio No.», y lo que la capa devuelve ahí es ruido: «2»
+    donde dice 1036, «7» donde dice 1082 (UPD3858080). Un asiento así en el
+    inventario es peor que un N/A, y el de verdad lo lee quien sepa leer letra
+    a mano.
+    """
+    return _trae(lines, LEYENDAS_DE_LA_PLANTILLA_ANTIGUA)
+
+
 #: La fórmula con que los libros antiguos presentan al graduando. Ahí el nombre
 #: va *debajo* de la leyenda y no encima, porque el impreso es el diploma mismo
 #: y no una ficha de registro: la frase corre y el nombre se escribió a mano en
@@ -675,6 +812,11 @@ class DiplomaRecord:
     #: sobre el formulario en los libros antiguos. Por eso el criterio que
     #: la usa no necesita pagar ninguna lectura.
     encabezado: bool = False
+    #: Si esta cara es la continuación del diploma anterior: trae capa de texto
+    #: pero nada que abra un formulario (ver ``continuaciones``). Sólo se marca
+    #: con esa evidencia; sin ella la cara abre diploma, que es lo que pasa en
+    #: estos libros.
+    continuacion: bool = False
     degree: str | None = None
     graduation_date: str | None = None
     annulled: bool = False
@@ -881,6 +1023,7 @@ class DiplomaRecord:
             # lo que explica que un archivo lleve su folio en vez de su cédula.
             "identity_creible": self.identity_creible,
             "encabezado": self.encabezado,
+            "continuacion": self.continuacion,
             "degree": self.degree,
             "graduation_date": self.graduation_date,
             "annulled": self.annulled,
@@ -1210,6 +1353,7 @@ def _resolve_doubts(primary: DiplomaRecord, fallback: DiplomaRecord) -> DiplomaR
         identity_kind=primary.identity_kind,
         identity_number=cedula,
         encabezado=primary.encabezado,
+        continuacion=primary.continuacion,
         degree=primary.degree,
         graduation_date=primary.graduation_date,
         annulled=primary.annulled,
@@ -1272,10 +1416,12 @@ def pertenece_al_anterior(
     if criterio is CriterioDeCorte.ENCABEZADO:
         return _pertenece_por_encabezado(record, padre)
     if criterio is CriterioDeCorte.PAGINA:
-        # Nunca. Una cara es un documento, y la que repite el folio y la cédula
-        # de la anterior -- una hoja fotografiada dos veces -- se archiva aparte
-        # con su página en el nombre, que es como el nombrado ya lo resuelve.
-        return False
+        # Cada diploma empieza en su encabezado: sólo la cara que no trae nada
+        # que abra un formulario -- la mitad de abajo de un diploma partido, un
+        # anexo -- va con el anterior. La que repite el folio y la cédula de la
+        # anterior -- una hoja fotografiada dos veces -- trae su encabezado y se
+        # archiva aparte con su página en el nombre.
+        return record.continuacion
     if criterio is CriterioDeCorte.FOLIO:
         # Por folio escrito a mano en la esquina: la cara que lo lleva abre
         # registro; la que llega con la esquina limpia es su vuelta y va en el
@@ -1522,6 +1668,7 @@ def merge(primary: DiplomaRecord, fallback: DiplomaRecord) -> DiplomaRecord:
         # está impreso en el papel, y que una lectura no lo reconociera no
         # lo borra de la hoja.
         encabezado=primary.encabezado or fallback.encabezado,
+        continuacion=primary.continuacion,
         degree=pick("degree"),
         graduation_date=pick("graduation_date"),
         annulled=primary.annulled or fallback.annulled,
@@ -1580,6 +1727,7 @@ def sin_avisos_de_costura(record: DiplomaRecord) -> DiplomaRecord:
         identity_kind=record.identity_kind,
         identity_number=record.identity_number,
         encabezado=record.encabezado,
+        continuacion=record.continuacion,
         degree=record.degree,
         graduation_date=record.graduation_date,
         annulled=record.annulled,
@@ -1587,6 +1735,194 @@ def sin_avisos_de_costura(record: DiplomaRecord) -> DiplomaRecord:
         folio_manuscrito=record.folio_manuscrito,
         warnings=limpios,
     )
+
+
+#: Cuántas veces tiene que repetirse un título en el libro para servir de
+#: referencia a sus variantes rotas.
+VECES_DE_UN_TITULO_DE_REFERENCIA = 3
+#: Cuántas letras puede diferir una variante de su título de referencia, sin
+#: contar los espacios: «OCUPACIQNAL», «OCUF ACIONAL» frente a «OCUPACIONAL».
+ERRATAS_DE_UN_TITULO = 2
+#: Qué parte de las caras con libro tiene que decir el mismo número para que
+#: ése sea el del libro y llene las que no lo trajeron.
+MAYORIA_DEL_LIBRO = 0.8
+
+
+def con_lo_que_dice_el_libro(records: Sequence[DiplomaRecord]) -> list[DiplomaRecord]:
+    """Los registros, con lo que el libro entero confirma y la cara suelta no.
+
+    Se mira al final, con todas las caras leídas, porque lo que se corrige aquí
+    sólo se sabe comparando unas con otras:
+
+    - **El número de libro.** Un empaste es un libro: si la gran mayoría de sus
+      caras dicen «libro No. 8», la que no lo dejó leer es del 8. Sólo se
+      rellena lo que falta, nunca se cambia uno leído (en el libro 3858079,
+      cinco caras sin libro dejaban su asiento en «868-N/A»).
+    - **El título.** Los títulos de un libro se repiten: cuarenta
+      «ESPECIALISTA EN SALUD OCUPACIONAL» y uno «… OCUPACIQNAL». Un título que
+      aparece una sola vez y se parece letra por letra a uno frecuente es ese
+      mismo título mal leído. Uno raro y distinto -- otra especialidad -- se
+      queda como está.
+
+    No se toca el nombre ni la cédula: dos graduados distintos pueden parecerse
+    tanto como un nombre y su errata, y ahí el libro no sabe cuál es cuál.
+
+    El asiento no se mira aquí: su progresión sólo vale cortando cara a cara
+    (ver ``asientos_en_progresion``).
+    """
+    from collections import Counter
+    from dataclasses import replace
+
+    libros = Counter(r.book for r in records if r.book)
+    del_libro = None
+    if libros:
+        libro, veces = libros.most_common(1)[0]
+        if veces / sum(libros.values()) >= MAYORIA_DEL_LIBRO:
+            del_libro = libro
+
+    titulos = Counter(r.degree for r in records if r.degree)
+    frecuentes = [t for t, n in titulos.items() if n >= VECES_DE_UN_TITULO_DE_REFERENCIA]
+
+    def el_frecuente(titulo: str) -> str | None:
+        if titulos[titulo] > 1 or titulo in frecuentes:
+            return None
+        pegado = titulo.replace(" ", "")
+        cercanos = [
+            f for f in frecuentes
+            if damerau_levenshtein(pegado, f.replace(" ", "")) <= ERRATAS_DE_UN_TITULO
+        ]
+        return cercanos[0] if len(cercanos) == 1 else None
+
+    salida: list[DiplomaRecord] = []
+    for record in records:
+        cambios: dict[str, str] = {}
+        if not record.book and del_libro:
+            cambios["book"] = del_libro
+        if record.degree and (corregido := el_frecuente(record.degree)):
+            cambios["degree"] = corregido
+        salida.append(replace(record, **cambios) if cambios else record)
+    return salida
+
+
+#: Hasta cuántas caras a cada lado se busca una vecina que confirme un asiento.
+VECINAS_DE_UN_ASIENTO = 6
+#: Cuánto puede apartarse el desfase de un tramo del desfase típico del libro.
+#: Más lejos es una lectura que perdió cifras en varias caras seguidas.
+DESVIO_DE_UN_TRAMO = 50
+#: Desde cuántas caras un tramo con su propio desfase es un salto real de la
+#: numeración, y no ruido, aunque se aparte del resto.
+TRAMO_LARGO = 10
+
+
+def _asiento_numerico(record: DiplomaRecord) -> int | None:
+    folio = record.trusted_folio
+    return int(folio) if folio and folio.isdigit() else None
+
+
+def _leido_dos_veces(record: DiplomaRecord) -> bool:
+    """Si el encabezado y el pie dicen el mismo asiento.
+
+    También cuando una lectura es el comienzo de la otra: el OCR se come
+    dígitos y no los inventa, y «Folio 21 o» arriba con «210» al pie es el
+    210 leído dos veces (UPD3858083 p207, una hoja fuera de su sitio que la
+    recta no sostiene).
+    """
+    arriba, abajo = record.folio, record.registered_folio
+    if not arriba or not abajo:
+        return False
+    corto, largo = sorted((arriba, abajo), key=len)
+    return len(corto) >= 2 and largo.startswith(corto)
+
+
+def asientos_en_progresion(records: Sequence[DiplomaRecord]) -> list[DiplomaRecord]:
+    """Los asientos que la progresión del libro sostiene, y los que deduce.
+
+    En un libro de registro el asiento -- «Registrado al folio No. N» -- sube
+    de uno en uno por cara: la página 10 del libro 7 de 1982 es el asiento 10,
+    la 11 el 11. Eso da dos cosas sin leer nada más:
+
+    - **Validar.** Un asiento se cree si alguna cara cercana tiene el mismo
+      desfase (asiento menos página): dos lecturas independientes que caen en la
+      misma recta no son casualidad. El que no encaja con ninguna vecina se
+      descarta: en los libros manuscritos la capa de texto devuelve «1», «7» o
+      «03» donde va escrito a mano «1036» (UPD3858080, UPD3859768), y un asiento
+      equivocado en el inventario es peor que un N/A.
+    - **Deducir.** Entre dos asientos validados con el mismo desfase, cada cara
+      sin asiento tiene el suyo por la cuenta exacta de páginas. Sólo entre dos
+      anclas que coinciden, nunca hacia fuera de ellas: un salto -- un folio
+      que falta, una hoja escaneada dos veces, un BIS -- cambia el desfase, y
+      ahí no se deduce nada.
+
+    Los asientos con letras («336BIS») no entran en la cuenta y se quedan como
+    se leyeron.
+
+    Sólo vale cuando cada cara es un diploma. Un libro foliado hoja a hoja
+    sube uno cada dos caras, y ahí esta recta descartaría todos los folios.
+    """
+    from collections import Counter
+    from dataclasses import replace
+
+    numeros = [_asiento_numerico(r) for r in records]
+    desfases = [
+        n - r.page_number if n is not None else None for n, r in zip(numeros, records, strict=True)
+    ]
+
+    def confirmado(i: int) -> bool:
+        # Impreso dos veces y las dos lecturas iguales -- «Folio 728» arriba y
+        # «Registrado a folio No. 728» al pie, en los libros mecanografiados --
+        # ya está confirmado: no necesita vecina. Así no se pierde el asiento
+        # de una hoja escaneada dos veces o de un BIS, que rompen la recta.
+        if _leido_dos_veces(records[i]):
+            return True
+        desde = max(0, i - VECINAS_DE_UN_ASIENTO)
+        hasta = min(len(records), i + VECINAS_DE_UN_ASIENTO + 1)
+        return any(desfases[j] == desfases[i] for j in range(desde, hasta) if j != i)
+
+    validos = [d is not None and confirmado(i) for i, d in enumerate(desfases)]
+
+    # Y un tramo coherente pero lejos de todo lo demás no es el libro: la capa
+    # del libro 3859768 leyó «3, 4, 5…» donde va escrito «203, 204, 205…» en
+    # seis caras seguidas, que se confirmaban entre sí. Se mide contra el
+    # desfase típico del libro, salvo que el tramo sea largo.
+    aceptados = sorted(d for d, ok in zip(desfases, validos, strict=True) if ok)
+    if aceptados:
+        tipico = aceptados[len(aceptados) // 2]
+        cuantos = Counter(d for d, ok in zip(desfases, validos, strict=True) if ok)
+        for i, d in enumerate(desfases):
+            if (
+                validos[i]
+                and d is not None
+                and abs(d - tipico) > DESVIO_DE_UN_TRAMO
+                and cuantos[d] < TRAMO_LARGO
+                and not _leido_dos_veces(records[i])
+            ):
+                validos[i] = False
+    salida: list[DiplomaRecord] = []
+    for i, record in enumerate(records):
+        if desfases[i] is not None and not validos[i]:
+            salida.append(
+                replace(
+                    record,
+                    folio=None,
+                    registered_folio=None,
+                    folio_manuscrito=None,
+                    warnings=[
+                        *record.warnings,
+                        f"el asiento leído ({numeros[i]}) no encaja con la progresión del libro: "
+                        "se deja sin asiento",
+                    ],
+                )
+            )
+            continue
+        if record.trusted_folio is None:
+            antes = next((j for j in range(i - 1, -1, -1) if validos[j]), None)
+            despues = next((j for j in range(i + 1, len(records)) if validos[j]), None)
+            if antes is not None and despues is not None and desfases[antes] == desfases[despues]:
+                deducido = record.page_number + desfases[antes]
+                salida.append(replace(record, registered_folio=str(deducido)))
+                continue
+        salida.append(record)
+    return salida
 
 
 def extract_diploma_warnings(record: DiplomaRecord) -> DiplomaRecord:
@@ -1635,6 +1971,7 @@ def extract_diploma_warnings(record: DiplomaRecord) -> DiplomaRecord:
         identity_kind=record.identity_kind,
         identity_number=record.identity_number,
         encabezado=record.encabezado,
+        continuacion=record.continuacion,
         degree=record.degree,
         graduation_date=record.graduation_date,
         annulled=record.annulled,

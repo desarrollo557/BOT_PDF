@@ -35,7 +35,7 @@ import os
 import time
 import urllib.error
 import urllib.request
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from io import BytesIO
 
@@ -44,6 +44,7 @@ from PIL import Image
 from ..application.consumo import Consumo
 from ..application.ports import OcrResult
 from .pymupdf_source import CALIDAD_JPEG
+from .turnos import turno
 
 logger = logging.getLogger(__name__)
 
@@ -276,7 +277,7 @@ class MistralOcr:
             )
             try:
                 with (
-                    self._turnos or nullcontext(),
+                    turno(self._turnos),
                     urllib.request.urlopen(
                         peticion, timeout=self._config.timeout_seconds
                     ) as conexion,

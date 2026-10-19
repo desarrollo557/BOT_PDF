@@ -52,7 +52,8 @@
       .filter((job): job is Job => job !== undefined)
   );
 
-  const olvidados = $derived((run.job_ids ?? []).length - documentos.length);
+  // Del total de la corrida: `job_ids` trae sólo los últimos.
+  const olvidados = $derived((run.job_count ?? (run.job_ids ?? []).length) - documentos.length);
 
   function alternar(clave: string) {
     const siguiente = new Set(abiertos);

@@ -51,6 +51,9 @@ class Contexto:
     #: Lo que sólo existe con la aplicación arrancada.
     folders: FolderRunner | None = None
     pool: Any = None
+    #: Cambia el pool roto por uno nuevo (ver `main.rehacer_pool`). Sin él --
+    #: en las pruebas --, un pool roto sigue roto.
+    rehacer_pool: Callable[[Any], None] | None = None
     manager: Any = None
     progress_queue: Any = None
     #: Órdenes de pausa, reanudación y cancelación por trabajo, compartidas

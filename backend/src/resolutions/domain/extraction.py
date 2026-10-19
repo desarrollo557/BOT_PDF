@@ -16,6 +16,12 @@ _SEPARATOR_TOKENS = frozenset(
 )
 
 _CODE_SHAPE = re.compile(r"^[A-Z0-9º°#][A-Z0-9/\-.º°]*$")
+
+#: Cuántas cifras lleva un número de rectoría: «00185». Es lo que permite
+#: reconocer uno que el OCR partió en dos -- «RESOLUCIÓN No. 001 85 de 2025» --,
+#: que se leía «001» y se llevaba las páginas de la 00185 y de la 00187 (libro
+#: 00184-00210 de 2025) a un archivo que no era de nadie.
+_CIFRAS_DE_RECTORIA = 5
 _MIN_DIGITS = 2
 
 # El número tal como lo escribe un encabezado de verdad.
@@ -76,7 +82,8 @@ def _first_code(segment: str) -> tuple[ResolutionCode, bool] | None:
     the anchor and the number, which is half of what makes a header official.
     """
     numbered = False
-    for token in segment.split():
+    tokens = segment.split()
+    for indice, token in enumerate(tokens):
         # Los filetes que el escáner pega al número cuentan como puntuación de
         # borde, igual que un paréntesis. La resolución 00966 del libro
         # 00960-00979 está impresa sobre una raya y su capa de texto sale como
@@ -95,9 +102,14 @@ def _first_code(segment: str) -> tuple[ResolutionCode, bool] | None:
         cleaned = token.strip(",;()[]\"'_*?")
         if not cleaned:
             continue
-        if cleaned in _SEPARATOR_TOKENS:
+        # «N°.», «Nº.», «No:»: la partícula con su punto o sus dos puntos
+        # detrás. La 00191 de 2025 está impresa «RESOLUCIÓN N°. 00191», y sin
+        # esto su página no daba ni un candidato: la resolución entera se
+        # archivaba dentro de la 00190.
+        if cleaned in _SEPARATOR_TOKENS or cleaned.rstrip(".:") in _SEPARATOR_TOKENS:
             numbered = True
             continue
+        cleaned = _unido_si_el_ocr_lo_partio(cleaned, tokens[indice + 1 : indice + 2])
         if _looks_like_a_code(cleaned):
             code = ResolutionCode.try_parse(cleaned)
             if code is None:
@@ -108,6 +120,20 @@ def _first_code(segment: str) -> tuple[ResolutionCode, bool] | None:
             return code, announced
         return None
     return None
+
+
+def _unido_si_el_ocr_lo_partio(numero: str, siguiente: list[str]) -> str:
+    """«001» seguido de «85» es la 00185, si juntos dan las cifras de rectoría.
+
+    Sólo cifras con cifras y sólo si la primera parte trae los ceros de la
+    izquierda: así «No. 006 2025» -- un número y un año -- no se toca.
+    """
+    if not (numero.isdigit() and numero.startswith("0") and siguiente):
+        return numero
+    resto = siguiente[0].strip(",;()[]\"'_*?")
+    if resto.isdigit() and len(numero) + len(resto) == _CIFRAS_DE_RECTORIA:
+        return numero + resto
+    return numero
 
 
 def extract_candidates(
@@ -156,3 +182,55 @@ def extract_candidates(
             )
         )
     return candidates
+
+
+# -- el número que sigue en la serie ----------------------------------------------
+
+#: Cuántos renglones de arriba se miran: donde va un encabezado.
+RENGLONES_DE_LA_CABECERA = 12
+#: Qué parte de «RESOLUCION» tiene que conservar, en orden, la palabra que el
+#: OCR destrozó: «RHSOIAJCIÓN» conserva R-S-O-C-I-O-N, «^oLVcióa» O-L-C-I-O.
+PARECIDO_A_RESOLUCION = 0.5
+_PALABRA = "RESOLUCION"
+
+
+def _comun_en_orden(a: str, b: str) -> int:
+    """Cuántas letras de ``a`` aparecen en ``b`` en el mismo orden (subsecuencia común)."""
+    anterior = [0] * (len(b) + 1)
+    for letra in a:
+        actual = [0]
+        for j, otra in enumerate(b, start=1):
+            actual.append(anterior[j - 1] + 1 if letra == otra else max(anterior[j], actual[j - 1]))
+        anterior = actual
+    return anterior[-1]
+
+
+def _parece_resolucion(renglon: str) -> bool:
+    for palabra in re.findall(r"[A-ZÑ]{5,}", renglon):
+        if _comun_en_orden(_PALABRA, palabra) / len(_PALABRA) >= PARECIDO_A_RESOLUCION:
+            return True
+    return False
+
+
+def siguiente_en_la_cabecera(texto: str, abierta: ResolutionCode) -> ResolutionCode | None:
+    """La resolución que sigue a ``abierta``, si su encabezado está en esta cabecera.
+
+    Es el peldaño de la secuencia: un libro de rectoría va en orden -- 00591,
+    00592, 00593 -- y la página que trae arriba exactamente el número siguiente,
+    junto a algo que fue la palabra «resolución», es su encabezado aunque el
+    OCR haya destrozado esa palabra. Las dos que faltaban en la muestra de la
+    carpeta RESOLUCIONES DE RECTORIA 3220 - 3259 eran así: «RHSOIAJCIÓN No
+    00676 DE 2025» y «^oLVcióa^í^ 00592 <u lois» (letra decorativa de una
+    resolución de condolencias), cada una archivada dentro de la anterior.
+
+    Exigir el número exacto y la palabra parecida es lo que lo hace seguro: un
+    número cualquiera en la cabecera no abre nada.
+    """
+    if not (abierta.value.isdigit() and len(abierta.value) == 5):
+        return None
+    esperado = f"{int(abierta.value) + 1:05d}"
+    numero = re.compile(rf"(?<!\d){esperado}(?!\d)")
+    for renglon in normalized_lines(texto)[:RENGLONES_DE_LA_CABECERA]:
+        if numero.search(renglon) and _parece_resolucion(renglon):
+            return ResolutionCode.try_parse(esperado)
+    return None

@@ -285,6 +285,10 @@ export interface Progress {
   stage_elapsed_seconds?: number;
   /** Cuánto hace que no llega noticia del worker. */
   silent_seconds?: number;
+  /** Salud operativa del trabajo: ok, slow, stalled, warning, done, failed. */
+  health?: 'ok' | 'slow' | 'stalled' | 'warning' | 'done' | 'failed';
+  /** Avisos relevantes para el operador, sin forzar un fallo del documento. */
+  warnings?: string[];
 }
 
 /**
@@ -388,8 +392,46 @@ export interface InventoryPage {
   summary: InventorySummary;
 }
 
-export type RunState = 'scanning' | 'processing' | 'watching' | 'done' | 'stopped' | 'failed';
+export type RunState =
+  | 'scanning'
+  | 'processing'
+  | 'watching'
+  /** En pausa tras una racha de fallos, o esperando a que vuelva el origen: retoma sola. */
+  | 'recovering'
+  | 'done'
+  | 'stopped'
+  | 'failed';
 export type SourceDisposition = 'leave' | 'move' | 'delete';
+
+/**
+ * Qué hacer con lo que ya está en el destino, en una carpeta de libros de
+ * diplomas: procesar todo, retomar sólo lo que falta, o sólo revisarlo.
+ */
+export type RetomarChoice = 'no' | 'faltantes' | 'revisar' | 'todo';
+
+/** Lo que hay de un PDF de origen en el destino, contado página a página. */
+export interface ConciliacionDeLibro {
+  estado: 'sin procesar' | 'incompleto' | 'completo';
+  paginas_del_origen: number;
+  entregadas: number;
+  faltantes: number;
+  /** «1-206, 210». */
+  faltantes_rangos: string;
+  repetidas: string;
+  archivos: number;
+  ajenos: string[];
+  sin_partir: { archivo: string; paginas: number }[];
+}
+
+/** Un PDF de una carpeta retomada: qué había, qué se hizo y cómo quedó. */
+export interface ControlDeLibro {
+  pdf: string;
+  carpeta: string;
+  antes: ConciliacionDeLibro | null;
+  accion: string;
+  despues: ConciliacionDeLibro | null;
+  observaciones: string;
+}
 
 /** One generated PDF copied into the destination folder. */
 export interface Delivery {
@@ -429,8 +471,40 @@ export interface FolderRun {
    * `current`.
    */
   en_curso?: { job_id: string; nombre: string }[];
-  /** Every document the run created, in the order it took them. */
+  /**
+   * Los últimos documentos que la corrida creó, en el orden en que los tomó.
+   * Sólo los últimos: con veinte mil PDF mandarlos todos en cada aviso eran
+   * cientos de KB. El total va en `job_count`.
+   */
   job_ids: string[];
+  /** Cuántos documentos creó la corrida. Ausente en un servicio anterior. */
+  job_count?: number;
+  /**
+   * Lo que sumaban los documentos que ya salieron del registro de la pantalla,
+   * para que el panel de la carpeta no encoja sus cifras al sacarlos.
+   */
+  retirados?: {
+    procedencias: Record<string, number>;
+    revision: number;
+    fallidas: number;
+    consumo: Consumo | null;
+  };
+  /** Ya entregados por una corrida anterior sin constancia de entrega. */
+  sin_constancia?: number;
+  /** Los que tenían la entrega cortada o el origen cambiado y se rehicieron. */
+  rehechos?: number;
+  /** Los PDF cuya copia al destino no terminó (cuentan también como fallidos). */
+  entregas_incompletas?: number;
+  /** Lo que conviene saber de la corrida y no es el fallo de un documento. */
+  avisos?: string[];
+  /** Los que fallaron y salieron bien en una vuelta de reintento. */
+  recuperados?: number;
+  /** Los que fallaron y esperan la vuelta de reintento del final. */
+  por_reintentar?: number;
+  /** Cuántas veces se pausó por una racha de fallos. */
+  pausas?: number;
+  /** Cuántos PDF a la vez eligió el operador; ausente o null es el automático. */
+  paralelo?: number | null;
   discovered: number;
   processed: number;
   bytes_total: number;
@@ -465,6 +539,14 @@ export interface FolderRun {
     /** Nombres que las lecturas de la hoja no confirmaron del todo. */
     nombres_dudosos?: number;
   } | null;
+  /** Si la corrida retoma una entrega anterior. Ausente en un servicio anterior. */
+  retomar?: RetomarChoice;
+  /** Los PDF que ya estaban completos en el destino y no se volvieron a leer. */
+  ya_entregados?: number;
+  /** «00.CONTROL DE ENTREGA.xlsx», cuando ya se escribió. */
+  control?: string | null;
+  control_ruta?: string | null;
+  controles?: ControlDeLibro[];
 }
 
 /** One source document ever processed, folded back out of the ledger. */

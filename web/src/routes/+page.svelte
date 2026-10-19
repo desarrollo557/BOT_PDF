@@ -139,7 +139,12 @@
         ancla: `proceso-carpeta-${run.id}`,
         tipo: 'carpeta',
         nombre: run.source.split(/[\\/]/).filter(Boolean).at(-1) ?? run.source,
-        estado: run.state === 'watching' ? 'vigilando' : 'procesando',
+        estado:
+          run.state === 'watching'
+            ? 'vigilando'
+            : run.state === 'recovering'
+              ? 'en pausa'
+              : 'procesando',
         avance: run.discovered ? Math.min(100, (100 * tomados) / run.discovered) : null,
         detalle:
           `${tomados} de ${run.discovered} documentos` +
@@ -260,7 +265,9 @@
    * stating something untrue. The run carries its own totals for exactly this.
    */
   function fromRun(id: string, run: (typeof jobStore.runs)[number]) {
-    const jobs = jobStore.jobs.filter((job) => run.job_ids?.includes(job.id));
+    // Por su origen o por la lista de la corrida, que trae sólo los últimos.
+    const ids = new Set(run.job_ids ?? []);
+    const jobs = jobStore.jobs.filter((job) => ids.has(job.id) || job.origen?.id === run.id);
     // Con el nombre de la carpeta raíz, que es como se la reconoce; la ruta
     // entera va en la entrega.
     const nombre = run.source.split(/[\\/]/).filter(Boolean).at(-1) ?? run.source;
@@ -315,7 +322,8 @@
     tipo: TipoPedido = 'auto',
     corte: CorteChoice = 'folio',
     agrupar: AgruparChoice = 'documento',
-    territorial = ''
+    territorial = '',
+    paralelo = 0
   ) {
     errors = [];
     uploaded = 0;
@@ -346,7 +354,7 @@
 
     await withConcurrency(files, UPLOAD_CONCURRENCY, async (file) => {
       try {
-        await uploadDocument(file, batchId, task, oracle, lectura, tipo, corte, agrupar, territorial);
+        await uploadDocument(file, batchId, task, oracle, lectura, tipo, corte, agrupar, territorial, paralelo);
         consoleLog.push('UP', `${formatBytes(file.size)} subidos`, 'net', file.name);
       } catch (error) {
         errors = [...errors, `${file.name}: ${(error as Error).message}`];

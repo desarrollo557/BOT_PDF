@@ -123,7 +123,11 @@ def sheet_filename(
     y lo que lo encuentra el endpoint de descarga -- y lo que se recorta es el
     nombre del documento, hasta desaparecer si hace falta.
     """
-    stem = _sin_extension(document).strip() or fallback
+    # Sólo el nombre del PDF, sin la carpeta de la que vino. Un documento de
+    # una corrida con subcarpetas se llama «00C003269\1. 3858079 ...», y con
+    # la barra dentro la planilla se guardaba en una subcarpeta que no existe:
+    # once libros de diplomas se entregaron sin FUID y sin planilla.
+    stem = _sin_extension(re.split(r"[\\/]", document)[-1]).strip() or fallback
 
     room = WINDOWS_PATH_LIMIT - directory_length - len(suffix) - 1
     if room < MIN_DOCUMENT_STEM:
@@ -183,6 +187,11 @@ def output_filename(
         # hojas.
         etiqueta = kind_fragment(kind)
         quien = slugify(title or "", max_length=TITLE_SLUG_LENGTH) if con_titulo else ""
+        # Cuando el código ya es el nombre -- un diploma sin cédula se archiva
+        # por el graduado --, el título no lo repite: salía
+        # «MARTHA-MARIA-SOLANO-VARGAS_MARTHA-MARIA-SOLANO-VARGAS-DOCTOR-EN-...».
+        if quien and quien.lower().startswith(fragment.lower()):
+            quien = quien[len(fragment) :].strip("-_")
         if budget is not None:
             room = budget - len(fragment) - len(PREFIX_SEPARATOR) - len(extension)
             if room < MIN_KIND_FRAGMENT:

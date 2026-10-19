@@ -13,6 +13,7 @@ sobre lo que está impreso en las páginas, nunca sobre el nombre del archivo.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -80,6 +81,15 @@ class InventoryOutcome:
     #: cuenta en su lector, las resoluciones en la clasificación de cada página
     #: -- y esto es donde las tres formas se encuentran.
     provenance: dict[str, int] = field(default_factory=dict)
+    #: Las páginas que se leyeron, cuando no fue el documento entero: retomar
+    #: una entrega a medias lee sólo las que faltan en el destino. ``None`` es
+    #: el documento entero.
+    paginas: tuple[int, ...] | None = None
+
+    @property
+    def paginas_leidas(self) -> list[int]:
+        """Las páginas de las que esta lectura responde: las que cuadran la entrega."""
+        return list(self.paginas) if self.paginas else list(range(1, self.page_count + 1))
 
     @property
     def incidents(self) -> list[str]:
@@ -117,6 +127,7 @@ class InventoryOutcome:
         return {
             "document": self.document,
             "page_count": self.page_count,
+            **({"paginas": list(self.paginas)} if self.paginas else {}),
             "document_type": str(self.document_type),
             "document_type_label": self.document_type.label,
             "type_confidence": round(self.verdict.confidence, 4),
@@ -240,7 +251,16 @@ class InventoryDocument:
         ubicacion: Ubicacion | None = None,
         first_order: int = 1,
         declarado: DocumentType | None = None,
+        paginas: Sequence[int] | None = None,
     ) -> InventoryOutcome:
+        """Reconoce el documento y lo lee con la rama de su tipo.
+
+        ``paginas`` lee sólo esas páginas, conservando su número. Sólo lo sabe
+        hacer el libro de diplomas, que es la habilidad que retoma entregas a
+        medias; las demás leen siempre el documento entero.
+        """
+        if paginas and declarado is not DocumentType.DIPLOMA:
+            raise ValueError("sólo un libro de diplomas se puede leer por páginas sueltas")
         self._report(ProgressEvent(stage=Stage.OPENED, page_count=source.page_count))
         if declarado is not None:
             # Lo que el operador dijo que está cargando manda, y no se comprueba
@@ -284,7 +304,7 @@ class InventoryDocument:
 
         if verdict.document_type is DocumentType.DIPLOMA:
             return self._diplomas(
-                source, verdict, document_name, ubicacion, first_order
+                source, verdict, document_name, ubicacion, first_order, paginas
             )
         if verdict.document_type is DocumentType.RESOLUCION:
             return self._resoluciones(source, verdict, document_name, ubicacion, first_order)
@@ -335,6 +355,7 @@ class InventoryDocument:
         document_name: str,
         ubicacion: Ubicacion | None,
         first_order: int,
+        paginas: Sequence[int] | None = None,
     ) -> InventoryOutcome:
         lector = ReadDiplomaBook(
             ocr=self._ocr,
@@ -348,7 +369,7 @@ class InventoryDocument:
             mosaico_de_fechas=self._mosaico_de_fechas,
             lectura_de_ahorro=self._lectura_de_ahorro,
         )
-        records, stats = lector.execute(source)
+        records, stats = lector.execute(source, paginas)
 
         rows = filas_del_libro(
             records,
@@ -371,8 +392,9 @@ class InventoryDocument:
             # identificador, que es la vuelta de la hoja anterior y se archiva
             # con ella -- la misma decisión que toman las filas del FUID, para
             # que el inventario y la carpeta cuenten lo mismo.
-            grouping=group_by_record(records, self._criterio),
+            grouping=group_by_record(records, self._criterio, por_pagina=bool(paginas)),
             issues=validate_diplomas(records, self._criterio),
+            paginas=tuple(r.page_number for r in records) if paginas else None,
         )
 
     # -- expedientes académicos -----------------------------------------------

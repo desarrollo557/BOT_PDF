@@ -71,13 +71,51 @@ class PdfQueNoSeAbre(ValueError):
     para_el_operador = True
 
 
+class OrigenNoDisponible(OSError):
+    """El PDF está pero no se deja leer: la unidad, no el papel.
+
+    Lo de Z:, una unidad de Zoho WorkDrive TrueSync: el archivo dice su tamaño
+    pero, sin conexión con la nube, leerlo falla con «Invalid argument», y
+    MuPDF lo contaba como «está dañado». No se reintentaba, y se perdió así
+    media muestra de resoluciones el 2026-10-19 con los PDF intactos.
+    """
+
+    para_el_operador = True
+
+
+def _se_deja_leer(path: Path, nombre: str) -> None:
+    """Lee los primeros bytes: si eso falla, el problema es la unidad."""
+    try:
+        with open(path, "rb") as archivo:
+            archivo.read(1024)
+    except FileNotFoundError:
+        raise
+    except OSError as error:
+        raise OrigenNoDisponible(
+            f"«{nombre}» no se pudo leer de la unidad ({error.strerror or error}): la carpeta "
+            "de red o de la nube (WorkDrive, OneDrive…) no está entregando el archivo. Se "
+            "reintentará; si sigue, revise que la unidad esté conectada y sincronizando."
+        ) from error
+
+
 def _abrir(path: Path, nombre: str):
     try:
-        if path.stat().st_size == 0:
-            raise PdfQueNoSeAbre(f"«{nombre}» está vacío (0 bytes): el escaneo no se guardó entero")
+        tamano = path.stat().st_size
+    except FileNotFoundError:
+        raise PdfQueNoSeAbre(
+            f"«{nombre}» ya no está en su sitio: se movió o se borró antes de leerlo"
+        ) from None
+    except PermissionError:
+        raise PdfQueNoSeAbre(
+            f"«{nombre}» no se deja leer: otro programa lo tiene abierto o no hay permiso"
+        ) from None
+    # Cualquier otro OSError al mirarlo -- la unidad de red que se cayó un
+    # momento -- sube tal cual: no dice nada del PDF, se explica como lo que es
+    # y la corrida lo reintenta. Antes se contaba como «está dañado».
+    if tamano == 0:
+        raise PdfQueNoSeAbre(f"«{nombre}» está vacío (0 bytes): el escaneo no se guardó entero")
+    try:
         documento = pymupdf.open(path)
-    except PdfQueNoSeAbre:
-        raise
     except FileNotFoundError:
         raise PdfQueNoSeAbre(
             f"«{nombre}» ya no está en su sitio: se movió o se borró antes de leerlo"
@@ -87,6 +125,8 @@ def _abrir(path: Path, nombre: str):
             f"«{nombre}» no se deja leer: otro programa lo tiene abierto o no hay permiso"
         ) from None
     except Exception as error:  # noqa: BLE001 - MuPDF tiene sus propias excepciones
+        # Antes de llamarlo dañado: ¿se deja leer siquiera? Si no, es la unidad.
+        _se_deja_leer(path, nombre)
         raise PdfQueNoSeAbre(
             f"«{nombre}» está dañado y no se puede abrir como PDF ({type(error).__name__})"
         ) from error

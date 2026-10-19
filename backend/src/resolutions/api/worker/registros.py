@@ -63,7 +63,12 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
     source = PyMuPDFPageSource(taller.source, taller.name)
     try:
         outcome = use_case.execute(
-            source, document_name=taller.name, ubicacion=taller.ubicacion(), declarado=tipo
+            source,
+            document_name=taller.name,
+            ubicacion=taller.ubicacion(),
+            declarado=tipo,
+            # Al retomar una entrega a medias, sólo las páginas que faltan.
+            paginas=taller.paginas,
         )
         # Qué clase de papel es cada folio o expediente, con la fuente todavía
         # abierta. Lo hace `entregar` más abajo, pero necesita el texto y la
@@ -127,6 +132,7 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
             estadisticas=report.get("stats") or {},
             texto_de=textos.get,
             heredar_tipo=False,
+            paginas_leidas=outcome.paginas,
         )
         report["inventory"] = entregado.inventario.as_dict()
         report["outputs"] = entregado.salidas

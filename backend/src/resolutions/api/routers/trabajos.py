@@ -29,6 +29,9 @@ router = APIRouter()
 
 UPLOAD_CHUNK = 1024 * 1024
 
+#: Las tareas de las subidas en marcha.
+_EN_MARCHA: set[asyncio.Task] = set()
+
 @router.post("/api/jobs", status_code=202)
 async def enqueue(
     ctx: Ctx,
@@ -41,6 +44,7 @@ async def enqueue(
     corte: str | None = None,
     agrupar: str | None = None,
     territorial: str | None = None,
+    paralelo: str | None = None,
     x_operator: str | None = Header(default=None),
 ) -> dict[str, object]:
     if not (file.filename or "").lower().endswith(".pdf"):
@@ -58,6 +62,7 @@ async def enqueue(
     _require_identity_reader(tipo_choice, lectura_choice)
     corte_choice = _corte_choice(corte)
     agrupar_choice = _agrupar_choice(agrupar)
+    a_la_vez = _paralelo(ctx, paralelo)
     lote = ctx.registry.get_batch(batch_id) if batch_id else None
     if batch_id and lote is None:
         raise HTTPException(status_code=404, detail="El lote no existe")
@@ -90,9 +95,14 @@ async def enqueue(
         # El lote con su nombre, para que el Archivo lo muestre como una sola
         # tarjeta con sus documentos dentro.
         origen={"id": lote.id, "nombre": lote.name, "tipo": "lote"} if lote else None,
+        paralelo=a_la_vez,
     )
     ctx.registry.publish(job)
-    asyncio.create_task(_run(ctx, job))
+    # Con su referencia guardada: una tarea de la que nadie guarda nada la
+    # puede recoger el recolector a medias, y el trabajo quedaba «en curso».
+    tarea = asyncio.create_task(_run(ctx, job))
+    _EN_MARCHA.add(tarea)
+    tarea.add_done_callback(_EN_MARCHA.discard)
     return {
         "id": job.id,
         "batch_id": job.batch_id,
@@ -106,6 +116,30 @@ async def enqueue(
         "territorial": job.territorial,
         "bytes": written,
     }
+
+def _paralelo(ctx: Contexto, value: object) -> int | None:
+    """Cuántos archivos a la vez pidió el operador, o ``None`` para el automático.
+
+    El tope es el número de procesos del servicio: pedir más no lee más rápido,
+    sólo deja archivos esperando en el pool.
+    """
+    if value is None or str(value).strip().lower() in ("", "0", "auto"):
+        return None
+    tope = max(1, int(ctx.settings.document_workers))
+    try:
+        cuantos = int(str(value).strip())
+    except ValueError:
+        cuantos = 0
+    if not 1 <= cuantos <= tope:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Archivos en paralelo: elija entre 1 y {tope}. Este equipo procesa como "
+                f"mucho {tope} a la vez."
+            ),
+        )
+    return cuantos
+
 
 def _tipo_choice(value: str | None) -> TipoPedido:
     """Qué declaró el operador estar cargando.
