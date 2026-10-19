@@ -17,6 +17,16 @@ docker compose down
 if ($LASTEXITCODE -ne 0) { Write-Host "   (no estaba corriendo)" -ForegroundColor Yellow }
 
 if (Test-Path (Join-Path $raiz ".git")) {
+    # Cambios hechos a mano en este equipo (el Dockerfile, el compose...) impiden
+    # el pull. Se apartan con git stash -- no se borran: "git stash list" los
+    # muestra y "git stash pop" los recupera -- y se sigue con la version nueva.
+    $cambios = git status --porcelain --untracked-files=no
+    if ($cambios) {
+        Write-Host "==> Hay cambios locales; se guardan aparte con git stash:" -ForegroundColor Yellow
+        $cambios | ForEach-Object { Write-Host "   $_" -ForegroundColor Yellow }
+        git stash push -m "actualizar-docker: cambios locales antes de actualizar"
+        if ($LASTEXITCODE -ne 0) { throw "No se pudieron apartar los cambios locales. Revise con: git status" }
+    }
     Write-Host "==> Trayendo la ultima version del repositorio..." -ForegroundColor Cyan
     git pull --ff-only
     if ($LASTEXITCODE -ne 0) {
