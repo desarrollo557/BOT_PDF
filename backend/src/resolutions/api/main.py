@@ -16,10 +16,13 @@ from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from ..adapters.ledger import InventoryLedger
 from ..adapters.mysql_inventory import (
@@ -294,6 +297,10 @@ for router in (
     reconocer.router,
 ):
     app.include_router(router)
+
+frontend_root = Path(__file__).resolve().parents[4] / "web" / "build"
+if frontend_root.exists():
+    app.mount("/", StaticFiles(directory=str(frontend_root), html=True), name="frontend")
 
 
 async def _drain_progress(ctx: Contexto) -> None:

@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  botpdf:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: botpdf
+    ports:
+      - "8000:8000"
+    environment:
+      RESOLUTIONS_DATA_DIR: /data
+      RESOLUTIONS_UPLOAD_DIR: /data/uploads
+      RESOLUTIONS_OUTPUT_DIR: /data/outputs
+      RESOLUTIONS_LEDGER_PATH: /data/inventory.jsonl
+      RESOLUTIONS_USERS_PATH: /data/usuarios.jsonl
+    volumes:
+      - botpdf_data:/data
+    restart: unless-stopped
+
+volumes:
+  botpdf_data:
