@@ -244,9 +244,15 @@ def _escribir_indice(report: dict, destination: Path, payload: dict) -> None:
         escrito = escribir_indice(
             destination,
             filas,
-            # La de la ruta de la caja en el repositorio («…\AFINIA\BOLIVAR
-            # SUR\COMERCIAL\…»); si la ruta no la dice, la que escribió el operador.
-            territorial=territorial_de_la_ruta(str(payload.get("source") or ""))
+            # El municipio, la carpeta que contiene la caja («…\COMERCIAL\
+            # MAGANGUE\210847\UPD….pdf»). Sólo en una corrida de carpeta (con
+            # destino): un archivo subido vive en la carpeta de subidas, cuya
+            # ruta no dice nada. Si no, lo que escribió el operador.
+            territorial=(
+                territorial_de_la_ruta(str(payload.get("source") or ""))
+                if payload.get("destination")
+                else None
+            )
             or (payload.get("territorial") or "").strip()
             or None,
             nombre_del_expediente=report.get("expediente") or None,

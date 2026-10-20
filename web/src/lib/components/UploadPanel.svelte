@@ -92,8 +92,8 @@
   );
   const opcionDeAgrupar = $derived(agrupaciones.find((opcion) => opcion.id === agruparElegido));
   /* Una caja de correspondencia sale con su Índice Electrónico, y su encabezado
-     pide la territorial: el papel no la trae. Al subir archivos se escribe; en una
-     carpeta del repositorio el servicio la lee de la ruta («…\AFINIA\BOLIVAR SUR\…»),
+     pide la territorial -- el municipio --: el papel no la trae. Al subir archivos se
+     escribe; en una carpeta el servicio la toma de la ruta («…\MAGANGUE\210847\…»),
      así que sólo se exige al subir (ver `recibirArchivos`), no para avanzar de paso. */
   const faltaTerritorial = $derived(
     habilidad.agrupar && !territorial.trim()

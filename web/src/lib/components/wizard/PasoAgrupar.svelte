@@ -75,13 +75,14 @@
           onListo?.();
         }
       }}
-      placeholder="Ej.: CESAR"
+      placeholder="Ej.: MAGANGUE"
       maxlength="60"
       autocomplete="off"
     />
     <small>
-      Va en el encabezado del Índice Electrónico; el papel no la trae. Al procesar una carpeta del
-      repositorio (…\AFINIA\BOLIVAR SUR\COMERCIAL\…) se lee de la ruta y no hace falta escribirla.
+      Va en el encabezado del Índice Electrónico: el municipio de la caja. Al procesar una carpeta
+      (…\MAGANGUE\210847\UPD….pdf) se toma de la carpeta que contiene la caja y no hace falta
+      escribirlo.
     </small>
   </label>
 </StepFrame>
