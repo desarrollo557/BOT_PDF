@@ -109,6 +109,15 @@ class TestValidation:
         with pytest.raises(FolderError, match="dentro del origen"):
             validate_folders(str(source), str(source / "salida"))
 
+    def test_the_source_may_not_sit_inside_the_destination(self, tmp_path):
+        # Al revés tampoco (2026-10-20, «que actúe estrictamente según lo
+        # seleccionado»): la carpeta de un PDF entregado podía caer sobre el
+        # propio origen.
+        source = tmp_path / "salida" / "entrada"
+        source.mkdir(parents=True)
+        with pytest.raises(FolderError, match="origen no puede estar dentro del destino"):
+            validate_folders(str(source), str(tmp_path / "salida"))
+
     def test_a_file_is_not_a_folder(self, tmp_path):
         document = tmp_path / "a.pdf"
         document.write_bytes(b"x")

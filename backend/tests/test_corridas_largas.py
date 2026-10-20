@@ -475,6 +475,25 @@ class TestNoSeRepiteLoEntregado:
         assert any((carpeta / REEMPLAZADOS_DIR).rglob("01_X.pdf"))
         assert constancias.leer(carpeta / constancias.NOMBRE).estado == EstadoDeEntrega.COMPLETA
 
+    def test_rehacer_sin_constancia_no_toca_lo_que_no_es_del_bot(self, ajustes, tmp_path):
+        # «Que actúe estrictamente según lo seleccionado» (2026-10-20): de una
+        # entrega de antes de las constancias sólo se aparta lo que el bot
+        # produce; una nota que el operador dejó ahí se queda donde está.
+        _pon(tmp_path / "origen", "a.pdf")
+        carpeta = tmp_path / "destino" / "a"
+        carpeta.mkdir(parents=True)
+        (carpeta / "01_VIEJO.pdf").write_bytes(b"%PDF-1.4 de antes")
+        (carpeta / "MIS NOTAS.docx").write_bytes(b"del operador")
+
+        motor, hechos = _motor(ajustes, JobRegistry())
+        _vaciar(motor, tmp_path / "origen", tmp_path / "destino", retomar="todo")
+
+        assert hechos == ["a.pdf"]
+        assert (carpeta / "MIS NOTAS.docx").read_bytes() == b"del operador"
+        assert not (carpeta / "01_VIEJO.pdf").exists()
+        assert any((carpeta / REEMPLAZADOS_DIR).rglob("01_VIEJO.pdf"))
+        assert not any((carpeta / REEMPLAZADOS_DIR).rglob("MIS NOTAS.docx"))
+
     def test_un_origen_que_cambio_se_vuelve_a_procesar(self, ajustes, tmp_path):
         _pon(tmp_path / "origen", "a.pdf")
         motor, _ = _motor(ajustes, JobRegistry())
@@ -635,16 +654,17 @@ class TestUnFalloNoTumbaLaCarpeta:
         _pon(tmp_path / "origen", "a.pdf")
         monkeypatch.setattr(folders.asyncio, "sleep", _sueno_corto(folders.asyncio.sleep))
         motor, hechos = _motor(ajustes, JobRegistry())
-        original = motor._discover
+        # El recorrido va por lotes (2026-10-20): la red se cae al pedir el primero.
+        original = motor._lotes_del_origen
         caidas = [1]
 
-        def discover(run):
+        def lotes(run):
             if caidas:
                 caidas.pop()
                 raise OSError(errno.ENETDOWN, "la red no está")
-            return original(run)
+            yield from original(run)
 
-        monkeypatch.setattr(motor, "_discover", discover)
+        monkeypatch.setattr(motor, "_lotes_del_origen", lotes)
         run = _vaciar(motor, tmp_path / "origen", tmp_path / "destino")
 
         assert run.state is RunState.DONE
@@ -727,6 +747,31 @@ class TestElDescubrimiento:
         motor, hechos = _motor(ajustes, JobRegistry())
         _vaciar(motor, tmp_path / "origen", tmp_path / "destino")
         assert hechos == ["a.pdf", str(Path("b") / "1.pdf"), "c.pdf"]
+
+    def test_se_procesa_sin_esperar_a_recorrer_toda_la_carpeta(self, ajustes, tmp_path, monkeypatch):
+        # «La idea no es que hasta que no termine de explorar la carpeta no
+        # continúe» (2026-10-20): con lotes de dos, el primer PDF empieza con
+        # la carpeta todavía a medio recorrer, y todos salen en orden.
+        nombres = [f"{n:02d}.pdf" for n in range(1, 8)]
+        _pon(tmp_path / "origen", *nombres)
+        registro = JobRegistry()
+        motor, hechos = _motor(ajustes, registro)
+        monkeypatch.setattr(motor, "LOTE_DEL_ORIGEN", 2)
+        vistos_al_empezar: list[int] = []
+        procesar = motor._run_job
+
+        async def run_job(job):
+            corrida = next(iter(motor._runs.values()))
+            vistos_al_empezar.append(corrida.discovered)
+            await procesar(job)
+
+        motor._run_job = run_job
+        run = _vaciar(motor, tmp_path / "origen", tmp_path / "destino", paralelo=1)
+
+        assert run.state is RunState.DONE and run.processed == 7
+        assert hechos == nombres
+        assert vistos_al_empezar[0] < len(nombres)
+        assert run.discovered == len(nombres)
 
 
 class TestElRegistroEnDisco:

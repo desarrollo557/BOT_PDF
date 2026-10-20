@@ -29,7 +29,7 @@ import shutil
 import stat as stat_mod
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -155,6 +155,15 @@ def _traducir(error: Exception, p: Partes, *, con_usuario: bool) -> Exception:
     )
 
     estado = getattr(error, "ntstatus", None) or getattr(error, "status", None)
+    if _como_invitado(error):
+        # El servidor no reconoció la cuenta y la dejó entrar como invitado,
+        # que no se acepta: sin firma, cualquiera en la red podría hacerse
+        # pasar por el servidor (Windows 11 también lo bloquea).
+        return CredencialesDeRed(
+            p.raiz,
+            "El servidor no reconoció ese usuario (lo trató como invitado). Escríbalo con su "
+            "dominio, como entra a Windows: DOMINIO\\usuario",
+        )
     if isinstance(error, (SMBAuthenticationError, LogonFailure)) or estado in _CLAVE_MALA:
         motivo = "El usuario o la clave no son correctos" if con_usuario else "El servidor pide usuario y clave"
         return CredencialesDeRed(p.raiz, motivo)
@@ -169,7 +178,37 @@ def _traducir(error: Exception, p: Partes, *, con_usuario: bool) -> Exception:
         return RedNoDisponible(f"El recurso compartido no existe: {p.raiz}")
     if isinstance(error, (ValueError, ConnectionError, TimeoutError)):
         return RedNoDisponible(f"No se pudo conectar con el servidor {p.servidor}: {error}")
+    from smbprotocol.exceptions import SMBException
+
+    if isinstance(error, SMBException) and not isinstance(error, OSError):
+        # Cualquier otra negativa del protocolo se dice tal cual, no como un
+        # fallo del servicio sin explicación.
+        return RedNoDisponible(f"El servidor {p.servidor} no aceptó la conexión: {error}")
     return error
+
+
+def _como_invitado(error: Exception) -> bool:
+    """Si el servidor degradó la sesión a invitado («authenticated as a guest»)."""
+    texto = str(error).lower()
+    return "guest" in texto and ("signing" in texto or "encryption" in texto or "negotiate" in texto)
+
+
+#: El dominio del equipo, que el instalador pasa al contenedor (``USERDOMAIN``
+#: de Windows). No es un secreto: es el «SIAR» de «SIAR\usuario».
+VARIABLE_DE_DOMINIO = "BOTPDF_DOMINIO"
+
+
+def con_dominio(usuario: str) -> str:
+    """El usuario con el dominio del equipo delante, si se escribió sin él.
+
+    «desarrollo» → «SIAR\\desarrollo». Uno que ya lo trae («SIAR\\desarrollo»,
+    «desarrollo@siar.local») queda tal cual, y sin dominio conocido también.
+    """
+    usuario = usuario.strip()
+    dominio = os.environ.get(VARIABLE_DE_DOMINIO, "").strip()
+    if not usuario or not dominio or "\\" in usuario or "@" in usuario:
+        return usuario
+    return f"{dominio}\\{usuario}"
 
 
 def no_existe(error: BaseException) -> bool:
@@ -188,7 +227,7 @@ def conectar(ruta: str, usuario: str | None = None, clave: str | None = None) ->
     p = partes(ruta)
     if p is None:
         raise ValueError(f"No es una ruta de red: {ruta}")
-    usuario = (usuario or "").strip()
+    usuario = con_dominio(usuario or "")
     if NATIVA:
         _conectar_en_windows(p, usuario, clave or "")
     else:
@@ -280,7 +319,7 @@ def asegurar(ruta: str) -> None:
         with _cerrojo:
             _conectados[f"{p.servidor.lower()}/{p.recurso.lower()}"] = p.raiz
         return
-    with _cerrojo:
+    with _cerrojo:  # Linux: ya se entró en esta sesión del servicio
         ya = f"{p.servidor.lower()}/{p.recurso.lower()}" in _conectados
     if not ya:
         conectar(p.raiz)
@@ -345,6 +384,72 @@ class ArchivoDeRed:
     modificado_ns: int
 
 
+def iterar(
+    ruta: str,
+    *,
+    extension: str = ".pdf",
+    saltar: frozenset[str] = frozenset(),
+    al_fallar: Callable[[str, OSError], None] | None = None,
+) -> Iterator[ArchivoDeRed]:
+    """Los archivos de ``ruta`` y sus subcarpetas, con tamaño y fecha, a medida que se leen.
+
+    Carpeta por carpeta y en orden -- primero los archivos de una carpeta, luego
+    sus subcarpetas, por nombre --, sin juntar el árbol entero: con cientos de
+    miles de PDF en la red, quien los procesa empieza por el primer lote
+    mientras el resto todavía no se ha listado (lo pidió el operador el
+    2026-10-20: «hagámoslo por conteo por lotes»).
+
+    Un solo listado por carpeta: el tamaño y la fecha vienen en él, sin otra
+    pregunta al servidor por cada archivo. Una subcarpeta que no se deja leer
+    va a ``al_fallar`` y el recorrido sigue; la de arriba que no se deja leer,
+    o una sesión que se cae, es un error.
+    """
+    import smbclient
+    from smbprotocol.exceptions import SMBAuthenticationError, SMBConnectionClosed
+
+    p = partes(ruta)
+    if p is None:
+        raise ValueError(f"No es una ruta de red: {ruta}")
+    asegurar(p.raiz)
+    # Windows no distingue mayúsculas: «_procesados» y «_PROCESADOS» son la misma.
+    saltar = frozenset(nombre.lower() for nombre in saltar)
+
+    def nivel(carpeta: str, *, primera: bool) -> list:
+        cuenta = _cuenta(p.servidor)
+        try:
+            return sorted(smbclient.scandir(carpeta, **cuenta), key=lambda e: e.name.lower())
+        except Exception as error:  # noqa: BLE001 - se traduce o se avisa
+            if not primera and al_fallar is not None and isinstance(error, OSError):
+                al_fallar(partes(carpeta).del_servicio, error)  # type: ignore[union-attr]
+                return []
+            if isinstance(error, (SMBAuthenticationError, SMBConnectionClosed)):
+                # La próxima vez se vuelve a entrar con lo que ya se dio.
+                with _cerrojo:
+                    _conectados.pop(f"{p.servidor.lower()}/{p.recurso.lower()}", None)
+            raise _traducir(error, p, con_usuario=bool(cuenta)) from error
+
+    # En orden de ruta, como el disco local: archivos y subcarpetas mezclados
+    # por nombre, y cada subcarpeta se lista cuando le toca.
+    pila = [(p.unc, iter(nivel(p.unc, primera=True)))]
+    while pila:
+        carpeta, entradas = pila[-1]
+        entrada = next(entradas, None)
+        if entrada is None:
+            pila.pop()
+            continue
+        completa = f"{carpeta}\\{entrada.name}"
+        if entrada.is_dir():
+            if entrada.name.lower() not in saltar:
+                pila.append((completa, iter(nivel(completa, primera=False))))
+        elif entrada.name.lower().endswith(extension):
+            datos = entrada.stat()
+            yield ArchivoDeRed(
+                partes(completa).del_servicio,  # type: ignore[union-attr]
+                int(datos.st_size),
+                int(datos.st_mtime_ns),
+            )
+
+
 def recorrer(
     ruta: str,
     *,
@@ -352,50 +457,8 @@ def recorrer(
     saltar: frozenset[str] = frozenset(),
     al_fallar: Callable[[str, OSError], None] | None = None,
 ) -> list[ArchivoDeRed]:
-    """Los archivos de ``ruta`` y sus subcarpetas, con tamaño y fecha.
-
-    Un solo listado por carpeta: el tamaño y la fecha vienen en él, sin otra
-    pregunta al servidor por cada archivo. Una subcarpeta que no se deja leer
-    va a ``al_fallar`` y el recorrido sigue; la de arriba que no se deja leer
-    es un error.
-    """
-    import smbclient
-
-    # Windows no distingue mayúsculas: «_procesados» y «_PROCESADOS» son la misma.
-    saltar = frozenset(nombre.lower() for nombre in saltar)
-
-    def recorrer_desde(p: Partes, cuenta: dict) -> list[ArchivoDeRed]:
-        encontrados: list[ArchivoDeRed] = []
-        pendientes = [p.unc]
-        primera = True
-        while pendientes:
-            carpeta = pendientes.pop()
-            try:
-                entradas = list(smbclient.scandir(carpeta, **cuenta))
-            except OSError as error:
-                if primera or al_fallar is None:
-                    raise
-                al_fallar(partes(carpeta).del_servicio, error)  # type: ignore[union-attr]
-                continue
-            primera = False
-            for entrada in entradas:
-                completa = f"{carpeta}\\{entrada.name}"
-                if entrada.is_dir():
-                    if entrada.name.lower() not in saltar:
-                        pendientes.append(completa)
-                elif entrada.name.lower().endswith(extension):
-                    datos = entrada.stat()
-                    encontrados.append(
-                        ArchivoDeRed(
-                            partes(completa).del_servicio,  # type: ignore[union-attr]
-                            int(datos.st_size),
-                            int(datos.st_mtime_ns),
-                        )
-                    )
-        return encontrados
-
-    archivos = _llamar(ruta, recorrer_desde)
-    return sorted(archivos, key=lambda archivo: archivo.ruta.lower())  # type: ignore[arg-type]
+    """Todo ``iterar`` de una vez, para quien necesita la lista completa."""
+    return list(iterar(ruta, extension=extension, saltar=saltar, al_fallar=al_fallar))
 
 
 def huella(ruta: str) -> tuple[int, int]:

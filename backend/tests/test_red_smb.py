@@ -159,6 +159,39 @@ class TestLasCredenciales:
         with pytest.raises(red_smb.CredencialesDeRed):
             red_smb.asegurar(CARPETA)
 
+    def test_sin_dominio_se_le_pone_el_del_equipo(self, servidor, monkeypatch):
+        # Así lo escribió el operador el 2026-10-20 y el servidor lo trató
+        # como invitado: sin el dominio, la cuenta no existe.
+        monkeypatch.setenv(red_smb.VARIABLE_DE_DOMINIO, "SIAR")
+        assert red_smb.conectar(CARPETA, "desarrollo", CLAVE) == RAIZ
+        assert red_smb.con_dominio("desarrollo@siar.local") == "desarrollo@siar.local"
+        assert red_smb.con_dominio(r"OTRO\ana") == r"OTRO\ana"
+        monkeypatch.delenv(red_smb.VARIABLE_DE_DOMINIO)
+        assert red_smb.con_dominio("ana") == "ana"
+
+    def test_si_el_servidor_lo_trata_como_invitado_se_pregunta_otra_vez(self, servidor, monkeypatch):
+        from smbprotocol.exceptions import SMBException
+
+        def como_invitado(*_, **__):
+            raise SMBException(
+                "SMB encryption or signing was required but session was authenticated as a "
+                "guest which does not support encryption or signing"
+            )
+
+        monkeypatch.setattr(sys.modules["smbclient"], "register_session", como_invitado)
+        with pytest.raises(red_smb.CredencialesDeRed, match="no reconoció ese usuario"):
+            red_smb.conectar(CARPETA, "desarrollo", CLAVE)
+
+    def test_otra_negativa_del_protocolo_no_es_un_fallo_del_servicio(self, servidor, monkeypatch):
+        from smbprotocol.exceptions import SMBException
+
+        def rara(*_, **__):
+            raise SMBException("algo que el servidor no acepta")
+
+        monkeypatch.setattr(sys.modules["smbclient"], "register_session", rara)
+        with pytest.raises(red_smb.RedNoDisponible, match="no aceptó la conexión"):
+            red_smb.conectar(CARPETA, USUARIO, CLAVE)
+
     def test_si_la_sesion_cae_se_reconecta_sola(self, servidor):
         red_smb.conectar(CARPETA, USUARIO, CLAVE)
         servidor.sesiones.clear()  # el servidor se reinició

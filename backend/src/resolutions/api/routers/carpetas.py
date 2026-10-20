@@ -288,17 +288,25 @@ async def browse(ctx: Ctx, path: str | None = None) -> dict[str, object]:
     if not current.is_dir():
         raise HTTPException(status_code=422, detail="Eso no es una carpeta")
 
-    subcarpetas: list[dict[str, object]] = []
+    def listar() -> list[str]:
+        # Con `scandir`: si es carpeta viene en el mismo listado. Con
+        # `iterdir` + `is_dir` era una pregunta al disco por entrada, y en una
+        # unidad de red con cincuenta mil entradas eso eran minutos.
+        with os.scandir(current) as entradas:
+            nombres = []
+            for entrada in entradas:
+                # Las ocultas y las del sistema sólo estorban en un selector.
+                if entrada.name.startswith((".", "$")):
+                    continue
+                try:
+                    if entrada.is_dir():
+                        nombres.append(entrada.name)
+                except OSError:
+                    continue
+            return sorted(nombres, key=str.lower)
+
     try:
-        for entry in sorted(current.iterdir(), key=lambda item: item.name.lower()):
-            # Las ocultas y las del sistema sólo estorban en un selector.
-            if entry.name.startswith((".", "$")):
-                continue
-            try:
-                if entry.is_dir():
-                    subcarpetas.append({"name": entry.name, "path": al_operador(entry)})
-            except OSError:
-                continue
+        nombres = await asyncio.to_thread(listar)
     except PermissionError:
         raise HTTPException(
             status_code=403, detail="Sin permiso para leer esa carpeta"
@@ -315,7 +323,7 @@ async def browse(ctx: Ctx, path: str | None = None) -> dict[str, object]:
         "path": al_operador(current),
         "parent": parent,
         "drives": _drives(),
-        "folders": subcarpetas,
+        **_por_lotes(nombres, lambda nombre: al_operador(current / nombre)),
     }
 
 @router.post("/api/folders/pick")
@@ -389,11 +397,26 @@ def _explorar_la_red(ruta: str) -> dict[str, object]:
         "path": partes.unc if partes.resto else f"{partes.raiz}\\",
         "parent": padre,
         "drives": _drives(),
-        "folders": [
-            {"name": nombre, "path": f"{partes.unc}\\{nombre}"}
-            for nombre in nombres
-            if not nombre.startswith((".", "$"))
-        ],
+        **_por_lotes(
+            [nombre for nombre in nombres if not nombre.startswith((".", "$"))],
+            lambda nombre: f"{partes.unc}\\{nombre}",
+        ),
+    }
+
+
+#: Cuántas subcarpetas enseña el explorador de una vez. Una caja del
+#: repositorio puede tener decenas de miles: mandarlas todas dejaba la pantalla
+#: colgada pintándolas (2026-10-20, «hagámoslo por conteo por lotes»). Las
+#: demás se cuentan y se llega a ellas escribiendo la ruta.
+CARPETAS_EN_EL_EXPLORADOR = 500
+
+
+def _por_lotes(nombres: list[str], ruta_de) -> dict[str, object]:
+    """Las primeras subcarpetas, ya ordenadas, y cuántas quedaron fuera."""
+    primeras = nombres[:CARPETAS_EN_EL_EXPLORADOR]
+    return {
+        "folders": [{"name": nombre, "path": ruta_de(nombre)} for nombre in primeras],
+        "omitidas": len(nombres) - len(primeras),
     }
 
 

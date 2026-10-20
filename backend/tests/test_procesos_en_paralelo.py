@@ -87,13 +87,14 @@ class TestLasCarpetasVanEnParalelo:
         motor = FolderRunner(registry, ajustes, medidor)
         hilo_del_bucle = threading.get_ident()
         hilos_de_escaneo: list[int] = []
-        descubrir = motor._discover
+        # Por lotes (2026-10-20): cada lote se lee en el hilo que pide el siguiente.
+        descubrir = motor._lotes_del_origen
 
         def registrar_hilo(run):
             hilos_de_escaneo.append(threading.get_ident())
-            return descubrir(run)
+            yield from descubrir(run)
 
-        monkeypatch.setattr(motor, "_discover", registrar_hilo)
+        monkeypatch.setattr(motor, "_lotes_del_origen", registrar_hilo)
 
         async def ir():
             run = motor.start(str(tmp_path / "origen"), str(tmp_path / "destino"))

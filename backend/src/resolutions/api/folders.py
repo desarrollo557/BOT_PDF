@@ -85,6 +85,9 @@ AVISOS_EN_PANTALLA = 50
 #: entregó antes cuando hay que rehacerlo: una copia cortada o un origen que
 #: cambió. Apartar y no borrar: es trabajo entregado, y lo decide el operador.
 REEMPLAZADOS_DIR = "_reemplazados"
+#: Lo que el bot deja en la carpeta de un PDF entregado: sus PDF y sus Excel.
+#: Sin constancia, sólo eso se aparta al rehacer; lo demás no es suyo.
+EXTENSIONES_DEL_BOT = frozenset({".pdf", ".xlsx"})
 
 
 #: Cuántas veces se reanuda una corrida tras un fallo que no es de ningún
@@ -397,6 +400,42 @@ class FolderRun:
 _QUOTES = "\"'“”‘’«»"
 
 
+def en_orden_de_ruta(raiz: Path, al_fallar: Callable[[OSError], None] | None = None):
+    """Los PDF de ``raiz`` y sus subcarpetas, a medida que se leen, en orden de ruta.
+
+    Orden de ruta, como el de antes de los lotes: archivos y subcarpetas de una
+    carpeta mezclados por nombre -- «a.pdf», «b\\1.pdf», «c.pdf» --, que es lo
+    que mantiene juntos los documentos de una caja. Se lee una carpeta cada vez,
+    cuando le toca: nunca el árbol entero antes de empezar.
+
+    Cada nivel con ``os.walk`` y no con ``rglob``: ``rglob`` se salta en
+    silencio una subcarpeta que no se deja leer -- la red que parpadea, un
+    permiso --; ``os.walk`` se la cuenta a ``al_fallar``. ``_procesados`` no se
+    recorre: bajo MOVE los originales se apartan ahí.
+    """
+
+    def nivel(carpeta: str) -> list[tuple[str, bool]]:
+        for _, subcarpetas, archivos in os.walk(carpeta, onerror=al_fallar):
+            entradas = [(nombre, True) for nombre in subcarpetas if nombre != CONSUMED_DIR]
+            entradas += [(nombre, False) for nombre in archivos if nombre.lower().endswith(".pdf")]
+            return sorted(entradas, key=lambda entrada: entrada[0].lower())
+        return []
+
+    pila = [(str(raiz), iter(nivel(str(raiz))))]
+    while pila:
+        carpeta, entradas = pila[-1]
+        siguiente = next(entradas, None)
+        if siguiente is None:
+            pila.pop()
+            continue
+        nombre, es_carpeta = siguiente
+        ruta = os.path.join(carpeta, nombre)
+        if es_carpeta:
+            pila.append((ruta, iter(nivel(ruta))))
+        else:
+            yield Path(ruta)
+
+
 def clean_path(raw: str) -> str:
     """Take a path the way a person actually supplies one.
 
@@ -474,6 +513,14 @@ def validate_folders(source: str, destination: str) -> tuple[Path, Path]:
         raise FolderError(
             "El destino no puede estar dentro del origen: los PDF generados se "
             "volverían a procesar"
+        )
+    if not red_smb.por_smb(origin) and target in origin.parents:
+        # Al revés tampoco: con el origen dentro del destino, la carpeta de un
+        # PDF entregado podía caer sobre el propio origen, y el bot sólo
+        # escribe y aparta dentro del destino lo que él produjo.
+        raise FolderError(
+            "El origen no puede estar dentro del destino: elija una carpeta de destino "
+            "aparte (por ejemplo, junto al origen y no por encima de él)"
         )
     return origin, target
 
@@ -665,19 +712,10 @@ class FolderRunner:
     async def _drain(self, run: FolderRun) -> None:
         try:
             while True:
-                pending, entregados = await self._descubrir_con_paciencia(run)
-                for path, constancia in entregados:
-                    run.seen.add(str(path))
-                    self._contar_lo_ya_entregado(run, path, constancia)
-                run.ya_entregados += len(entregados)
-                run.discovered += len(pending) + len(entregados)
-                if entregados:
-                    self._pedir_generales(run)
-                if pending:
-                    run.state = RunState.PROCESSING
-                    run.queue = [str(self._relative(run, path)) for path in pending]
-                    self._publish(run)
-                    await self._consumir_en_paralelo(run, pending)
+                # En paralelo y por lotes: el recorrido llena la cola lote a
+                # lote mientras los trabajadores la vacían.
+                hubo = await self._procesar_por_lotes(run)
+                if hubo:
                     await self._otra_vuelta(run)
                 elif run.watch and run.active:
                     # A watching run never "finishes", so the sheet is refreshed
@@ -764,25 +802,40 @@ class FolderRunner:
         self._write_manifest(run)
         self._limpiar_las_copias(run)
 
-    async def _descubrir_con_paciencia(
-        self, run: FolderRun
-    ) -> tuple[list[Path], list[tuple[Path, Constancia | None]]]:
-        """Recorre el origen y, si no se deja, espera a que vuelva en vez de rendirse.
+    #: Cuántos PDF del origen se reparten y se ponen a procesar de una vez. Con
+    #: un millón en el árbol, juntar la lista entera antes de empezar el primero
+    #: eran minutos de recorrido y cientos de megas de memoria (lo pidió el
+    #: operador el 2026-10-20: «hagámoslo por conteo por lotes»).
+    LOTE_DEL_ORIGEN = 1000
+
+    async def _descubrir_por_lotes(self, run: FolderRun):
+        """Los lotes del origen, uno tras otro; si el origen no se deja, espera a que vuelva.
+
+        El recorrido avanza un lote cada vez que se pide el siguiente: mientras
+        se procesa el primero, el resto del árbol todavía no se ha leído.
 
         La carpeta de origen suele estar en una unidad de red, y una unidad de
         red se desconecta: la VPN que se cae, el servidor que se reinicia. Eso
         tumbaba la corrida entera. Ahora se espera -- treinta segundos, luego
         el doble, hasta cinco minutos entre intentos -- hasta
-        ``minutos_de_espera_del_origen``; sólo entonces la corrida falla.
+        ``minutos_de_espera_del_origen``; sólo entonces la corrida falla. Al
+        volver, el recorrido empieza otra vez y salta lo ya tomado.
         """
-        limite = time.monotonic() + 60 * float(
-            getattr(self._settings, "minutos_de_espera_del_origen", 0) or 0
-        )
-        espera = 30.0
+
+        def plazo() -> float:
+            return time.monotonic() + 60 * float(
+                getattr(self._settings, "minutos_de_espera_del_origen", 0) or 0
+            )
+
+        limite, espera = plazo(), 30.0
+        lotes = None
         while True:
             try:
-                resultado = await asyncio.to_thread(self._discover, run)
+                if lotes is None:
+                    lotes = self._lotes_del_origen(run)
+                lote = await asyncio.to_thread(next, lotes, None)
             except (FolderError, OSError) as error:
+                lotes = None
                 if not run.active or time.monotonic() + espera > limite:
                     raise
                 self._avisar(
@@ -797,28 +850,58 @@ class FolderRunner:
                 continue
             if run.state is RunState.RECOVERING:
                 run.state = RunState.PROCESSING
-            return resultado
+            if lote is None:
+                return
+            limite, espera = plazo(), 30.0
+            yield lote
 
     def _discover(self, run: FolderRun) -> tuple[list[Path], list[tuple[Path, Constancia | None]]]:
-        """Los PDF del árbol de origen que nadie ha tomado todavía, y los ya entregados.
+        """Todo el origen de una vez: los lotes juntos (lo usa quien no procesa)."""
+        pendientes: list[Path] = []
+        entregados: list[tuple[Path, Constancia | None]] = []
+        for lote, ya in self._lotes_del_origen(run):
+            pendientes.extend(lote)
+            entregados.extend(ya)
+        return pendientes, entregados
+
+    def _lotes_del_origen(self, run: FolderRun):
+        """Los PDF del árbol de origen que nadie ha tomado todavía, y los ya entregados, por lotes.
 
         Por todo el árbol y no sólo por la carpeta que se indicó: el archivo se
         entrega en cajas -- una carpeta por expediente, y cien expedientes en la
         ruta que el operador señala -- y pedirle que apunte cien veces, una por
         carpeta, es pedirle que haga a mano lo que la máquina sabe hacer.
 
-        En orden de ruta, no de nombre, que es lo que mantiene juntos los
-        documentos de una misma carpeta mientras se procesan.
-
-        Con ``os.walk`` y no con ``rglob``: ``rglob`` se salta en silencio una
-        subcarpeta que no se deja leer -- la red que parpadea, un permiso --, y
-        sus PDF desaparecían de la corrida sin un error que mirar. Ahora cada
-        una queda en los avisos de la corrida. ``_procesados`` no se recorre.
+        En orden de ruta: carpeta por carpeta, por nombre, que es lo que mantiene
+        juntos los documentos de una misma caja mientras se procesan.
 
         Lo ya entregado se sabe por su constancia (ver ``constancia.py``), sin
         abrir ni el origen ni lo entregado. Sin constancia, una carpeta del
         destino con algún PDF es una entrega de antes de que existiera, y se da
         por buena como hasta ahora.
+        """
+        fuente = self._pdfs_en_la_red(run) if red_smb.por_smb(run.source) else self._pdfs_locales(run)
+        lote: list[Path] = []
+        huellas: dict[str, tuple[int, int]] = {}
+        for path, huella in fuente:
+            if str(path) in run.seen:
+                continue
+            lote.append(path)
+            if huella is not None:
+                huellas[str(path)] = huella
+            if len(lote) >= self.LOTE_DEL_ORIGEN:
+                yield self._repartir(run, lote, huellas)
+                lote, huellas = [], {}
+        if lote:
+            yield self._repartir(run, lote, huellas)
+
+    def _pdfs_locales(self, run: FolderRun):
+        """Los PDF de una carpeta del equipo, a medida que se leen.
+
+        Con ``os.walk`` y no con ``rglob``: ``rglob`` se salta en silencio una
+        subcarpeta que no se deja leer -- la red que parpadea, un permiso --, y
+        sus PDF desaparecían de la corrida sin un error que mirar. Ahora cada
+        una queda en los avisos de la corrida. ``_procesados`` no se recorre.
         """
 
         def no_se_pudo(error: OSError) -> None:
@@ -830,32 +913,19 @@ class FolderRunner:
                 f"{error.strerror or error}. Sus PDF no entraron en esta corrida.",
             )
 
-        if red_smb.por_smb(run.source):
-            return self._discover_en_la_red(run)
-
-        encontrados: list[Path] = []
         try:
-            for carpeta, subcarpetas, archivos in os.walk(run.source, onerror=no_se_pudo):
-                # `_procesados` a cualquier profundidad: bajo MOVE los originales
-                # se apartan ahí, y volver a tomarlos sería procesar dos veces.
-                subcarpetas[:] = [nombre for nombre in subcarpetas if nombre != CONSUMED_DIR]
-                encontrados.extend(
-                    Path(carpeta) / nombre for nombre in archivos if nombre.lower().endswith(".pdf")
-                )
+            for path in en_orden_de_ruta(run.source, no_se_pudo):
+                yield path, None
         except FolderError:
             raise
         except OSError as error:
             raise FolderError(f"No se pudo leer la carpeta de origen: {error}") from None
-        encontrados.sort(key=lambda path: str(path).lower())
-        return self._repartir(run, encontrados, {})
 
-    def _discover_en_la_red(
-        self, run: FolderRun
-    ) -> tuple[list[Path], list[tuple[Path, Constancia | None]]]:
-        """Lo mismo que ``_discover``, para una carpeta de red leída con SMB.
+    def _pdfs_en_la_red(self, run: FolderRun):
+        """Lo mismo, para una carpeta de red leída con SMB, con la huella de cada PDF.
 
         Un listado por carpeta con el tamaño y la fecha de cada PDF: la huella
-        de cada uno sale de ahí, sin otra pregunta al servidor por archivo.
+        sale de ahí, sin otra pregunta al servidor por archivo.
         """
 
         def no_se_pudo(carpeta: str, error: OSError) -> None:
@@ -866,18 +936,18 @@ class FolderRunner:
             )
 
         try:
-            archivos = red_smb.recorrer(
+            for archivo in red_smb.iterar(
                 str(run.source), saltar=frozenset({CONSUMED_DIR}), al_fallar=no_se_pudo
-            )
+            ):
+                yield Path(archivo.ruta), (archivo.tamano, archivo.modificado_ns)
         except red_smb.CredencialesDeRed as error:
             # A mitad de una corrida no hay a quién preguntar: se espera a que
             # el operador vuelva a entrar, como con una unidad que se cayó.
-            raise FolderError(f"{error.motivo}: {error.recurso}. Vuelva a conectar la carpeta de red.") from None
+            raise FolderError(
+                f"{error.motivo}: {error.recurso}. Vuelva a conectar la carpeta de red."
+            ) from None
         except OSError as error:
             raise FolderError(f"No se pudo leer la carpeta de red: {error}") from None
-        encontrados = [Path(archivo.ruta) for archivo in archivos]
-        huellas = {str(Path(archivo.ruta)): (archivo.tamano, archivo.modificado_ns) for archivo in archivos}
-        return self._repartir(run, encontrados, huellas)
 
     def _repartir(
         self, run: FolderRun, encontrados: list[Path], huellas: dict[str, tuple[int, int]]
@@ -1020,6 +1090,81 @@ class FolderRunner:
             return path.relative_to(run.source)
         except ValueError:
             return Path(path.name)
+
+    async def _procesar_por_lotes(self, run: FolderRun) -> bool:
+        """Recorre el origen por lotes y procesa en paralelo a la vez. Dice si hubo algo que hacer.
+
+        Una cadena (lo pidió el operador el 2026-10-20: «utilicemos el
+        procesamiento en paralelo por lotes»): el recorrido llena una cola lote a
+        lote, y los trabajadores -- tantos como «Archivos en paralelo» -- la
+        vacían sin esperar a que se termine un lote para empezar el siguiente.
+        Antes, al final de cada lote los que ya habían acabado se quedaban
+        quietos esperando al último. El recorrido no se adelanta más de un lote:
+        con un millón de PDF, la cola no se llena de rutas que tardarán horas.
+        """
+        cola: deque[Path] = deque()
+        hay_novedad = asyncio.Event()
+        estado = {"terminado": False, "hubo": False}
+        ranuras = self._planificador.ranuras
+
+        async def recorrer() -> None:
+            try:
+                async for pending, entregados in self._descubrir_por_lotes(run):
+                    for path, constancia in entregados:
+                        run.seen.add(str(path))
+                        self._contar_lo_ya_entregado(run, path, constancia)
+                    run.ya_entregados += len(entregados)
+                    run.discovered += len(pending) + len(entregados)
+                    if entregados:
+                        self._pedir_generales(run)
+                    if pending:
+                        estado["hubo"] = True
+                        cola.extend(pending)
+                        run.queue.extend(str(self._relative(run, path)) for path in pending)
+                        if run.state is not RunState.RECOVERING:
+                            run.state = RunState.PROCESSING
+                        hay_novedad.set()
+                    self._publish(run)
+                    # Un lote por delante, no más.
+                    while run.active and len(cola) >= self.LOTE_DEL_ORIGEN:
+                        await asyncio.sleep(0.05)
+                    if not run.active:
+                        return
+            finally:
+                estado["terminado"] = True
+                hay_novedad.set()
+
+        async def trabajador(indice: int) -> None:
+            while run.active:
+                if not cola:
+                    if estado["terminado"]:
+                        return
+                    # Sin `await` entre mirar y limpiar: en asyncio nadie puede
+                    # meter algo en la cola en medio.
+                    hay_novedad.clear()
+                    await hay_novedad.wait()
+                    continue
+                # En pausa, o sobrando mientras la carpeta va de uno en uno:
+                # se espera sin tomar nada.
+                await self._esperar_turno(run, indice, cola)
+                if not run.active or not cola:
+                    continue
+                path = cola.popleft()
+                async with ranuras:
+                    if not run.active:
+                        return
+                    await self._consume(run, path)
+
+        recorrido = asyncio.create_task(recorrer())
+        try:
+            cuantos = run.paralelo or self._planificador.por_omision
+            await asyncio.gather(*(trabajador(indice) for indice in range(cuantos)))
+        finally:
+            if not recorrido.done():
+                recorrido.cancel()
+        # Si el recorrido se rindió -- el origen no volvió --, aquí sube su error.
+        await recorrido
+        return estado["hubo"]
 
     async def _consumir_en_paralelo(self, run: FolderRun, pendientes: list[Path]) -> None:
         """Los PDF pendientes, repartidos entre varios trabajadores.
@@ -2221,8 +2366,11 @@ class FolderRunner:
     ) -> None:
         """Aparta lo que se entregó antes de rehacer un PDF, para no dejar «(2)».
 
-        En la carpeta propia del PDF, todo lo que hay en ella; en el espejo de
-        las actas, que comparten varios PDF, sólo lo que su constancia lista.
+        Con constancia, exactamente lo que ella dice que se entregó. Sin ella
+        (una entrega de antes de que existiera), sólo lo que el bot produce --
+        los PDF y los Excel de la carpeta del PDF --: un archivo que el operador
+        dejó ahí por su cuenta no es del bot y no se toca (lo pidió el operador
+        el 2026-10-20: «que actúe estrictamente según lo seleccionado»).
         Se mueve a ``_reemplazados/<fecha>``, no se borra: es trabajo entregado,
         y si sobra lo decide el operador.
         """
@@ -2230,7 +2378,11 @@ class FolderRunner:
         apartado = base / REEMPLAZADOS_DIR / sello
         if constancia is None:
             try:
-                rutas = [ruta for ruta in base.iterdir() if ruta.is_file()]
+                rutas = [
+                    ruta
+                    for ruta in base.iterdir()
+                    if ruta.is_file() and ruta.suffix.lower() in EXTENSIONES_DEL_BOT
+                ]
             except OSError:
                 rutas = []
         else:

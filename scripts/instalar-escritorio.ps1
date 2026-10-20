@@ -104,6 +104,13 @@ function Escribir-Override($discos) {
     )
     $mapa = ($discos | ForEach-Object { "$($_.DeviceID)=/equipo/$($_.DeviceID.Substring(0,1).ToLower())" }) -join ";"
     $lineas += "      BOTPDF_UNIDADES: `"$mapa`""
+    # El dominio de este equipo ("SIAR"), para las carpetas de red: quien escribe
+    # su usuario sin dominio entra igual que en Windows. No es un secreto, y solo
+    # se pasa si el equipo esta en un dominio.
+    $equipo = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+    if ($equipo -and $equipo.PartOfDomain -and $env:USERDOMAIN) {
+        $lineas += "      BOTPDF_DOMINIO: `"$($env:USERDOMAIN)`""
+    }
     $lineas += "    volumes:"
     foreach ($d in $discos) {
         $letra = $d.DeviceID.Substring(0, 1)

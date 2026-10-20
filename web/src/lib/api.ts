@@ -319,6 +319,8 @@ export interface Sugerencia {
 export interface SugerenciaDeCarpeta {
   ruta: string;
   total: number;
+  /** Falso si el conteo se paró en su tope: hay al menos `total`. */
+  total_exacto?: boolean;
   mirados: number;
   por_tipo: { tipo: string; etiqueta: string; cantidad: number }[];
   archivos: (Sugerencia & { ruta: string })[];

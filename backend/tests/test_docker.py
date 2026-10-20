@@ -131,6 +131,28 @@ class TestUnaCorridaConRutasDeWindows:
         assert z["parent"] is None
         assert z["folders"] == [{"name": "Shared with Me", "path": r"Z:\Shared with Me"}]
 
+    def test_el_explorador_ensena_las_primeras_y_cuenta_las_demas(self, en_docker, monkeypatch):
+        # Una caja con miles de subcarpetas no se manda entera (2026-10-20).
+        import asyncio
+        from types import SimpleNamespace
+
+        from resolutions.api.routers import carpetas
+
+        for nombre in ("c", "a", "b", "d"):
+            (Path(en_docker["C"]) / "CAJAS" / nombre).mkdir(parents=True)
+        monkeypatch.setattr(carpetas, "CARPETAS_EN_EL_EXPLORADOR", 2)
+        listado = asyncio.run(carpetas.browse(SimpleNamespace(), r"C:\CAJAS"))
+        assert [d["name"] for d in listado["folders"]] == ["a", "b"]
+        assert listado["omitidas"] == 2
+
+    def test_contar_tiene_tope_y_lo_dice(self, monkeypatch):
+        from resolutions.api.routers import reconocer
+
+        monkeypatch.setattr(reconocer, "TOPE_DEL_CONTEO", 5)
+        muestra, total, exacto = reconocer.contar_por_lotes(iter(range(1000)), 3)
+        assert (muestra, total, exacto) == ([0, 1, 2], 5, False)
+        assert reconocer.contar_por_lotes(iter(range(4)), 3) == ([0, 1, 2], 4, True)
+
     def test_reconocer_la_carpeta_encuentra_la_ruta_de_windows(self, en_docker):
         """Antes de procesar, la pantalla pide reconocer la carpeta: sin traducir
         la ruta, dentro del contenedor contestaba «La carpeta no existe»."""

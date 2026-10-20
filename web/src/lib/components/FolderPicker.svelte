@@ -29,6 +29,8 @@
   let parent = $state<string | null>(null);
   let drives = $state<FolderEntry[]>([]);
   let folders = $state<FolderEntry[]>([]);
+  /** Las que no vinieron: una carpeta con miles se enseña por sus primeras 500. */
+  let omitidas = $state(0);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let manual = $state('');
@@ -46,6 +48,7 @@
       // para que la columna de accesos no parpadee al entrar a una carpeta.
       if (listing.drives.length) drives = listing.drives;
       folders = listing.folders;
+      omitidas = listing.omitidas ?? 0;
       manual = listing.path ?? '';
     } catch (problem) {
       error = (problem as Error).message;
@@ -178,6 +181,12 @@
           {/each}
           {#if !folders.length}
             <p class="empty-state">Esta carpeta no tiene subcarpetas. Puede usarla tal cual.</p>
+          {/if}
+          {#if omitidas > 0}
+            <p class="muted">
+              Y {omitidas.toLocaleString('es-CO')} carpetas más. Para entrar a una, escriba su ruta
+              abajo; para procesarlas todas, use esta carpeta.
+            </p>
           {/if}
         {/if}
       </div>

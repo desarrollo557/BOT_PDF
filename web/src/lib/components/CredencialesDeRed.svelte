@@ -69,7 +69,10 @@
         <span>Clave</span>
         <input bind:value={clave} class="input" type="password" autocomplete="off" />
       </label>
-      <small>Se usan sólo para entrar a esta carpeta y no se guardan en ningún archivo.</small>
+      <small>
+        El mismo usuario y clave con que entra a Windows. Si no escribe el dominio, se usa el de
+        este equipo. Se usan sólo para entrar a esta carpeta y no se guardan en ningún archivo.
+      </small>
 
       <div class="botones">
         <button type="button" class="btn" onclick={() => cerrar(null)}>Cancelar</button>

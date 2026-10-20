@@ -598,6 +598,8 @@ export interface FolderListing {
   parent: string | null;
   drives: FolderEntry[];
   folders: FolderEntry[];
+  /** Subcarpetas que no se mandaron: el explorador enseña las primeras 500. */
+  omitidas?: number;
 }
 
 

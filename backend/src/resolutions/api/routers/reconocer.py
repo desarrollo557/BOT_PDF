@@ -9,7 +9,9 @@ para elegir la habilidad, no el trabajo.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import Counter
+from collections.abc import Iterator
 from pathlib import Path
 from uuid import uuid4
 
@@ -19,7 +21,7 @@ from ...adapters import red_smb
 from ...application.sugerencia import sugerir
 from ...domain.doctype import DocumentType
 from ..contexto import Ctx
-from ..folders import clean_path
+from ..folders import CONSUMED_DIR, clean_path, en_orden_de_ruta
 from ..rutas_del_equipo import al_operador, al_servicio
 from .trabajos import _stream_to_disk
 
@@ -95,17 +97,50 @@ async def reconocer_carpeta(payload: dict) -> dict[str, object]:
         raise HTTPException(status_code=404, detail="La carpeta no existe")
 
     def recorrer() -> dict[str, object]:
-        pdfs = sorted(ruta for ruta in raiz.rglob("*") if ruta.suffix.lower() == ".pdf")
+        muestra, total, exacto = contar_por_lotes(_pdfs_de(raiz), MAXIMO_DE_LA_CARPETA)
         archivos = []
-        for ruta in pdfs[:MAXIMO_DE_LA_CARPETA]:
+        for ruta in muestra:
             relativa = ruta.relative_to(raiz).as_posix()
             try:
                 archivos.append({"ruta": relativa, **_sugerencia(ruta, relativa)})
             except Exception as error:  # noqa: BLE001 - uno roto no tapa a los demás
                 archivos.append(_sin_abrir(relativa, error))
-        return _resumen(al_operador(raiz), len(pdfs), archivos)
+        return _resumen(al_operador(raiz), total, archivos, exacto=exacto)
 
     return await asyncio.to_thread(recorrer)
+
+
+#: Hasta cuántos PDF se cuentan, y cuánto tiempo, antes de decir «más de N».
+#: Una carpeta del repositorio puede tener cientos de miles: contarlos todos
+#: para una sugerencia dejaba la pantalla esperando (2026-10-20, «hagámoslo por
+#: conteo por lotes»). El número exacto lo da la corrida, que sí los recorre.
+TOPE_DEL_CONTEO = 50_000
+SEGUNDOS_DEL_CONTEO = 4.0
+#: Cada cuántos PDF se mira el reloj.
+LOTE_DEL_CONTEO = 500
+
+
+def contar_por_lotes(pdfs, muestra: int) -> tuple[list, int, bool]:
+    """Los primeros ``muestra`` y la cuenta del resto, con tope: (muestra, total, exacto).
+
+    ``exacto`` es falso si se paró por el tope de cantidad o de tiempo: el
+    total es entonces «al menos».
+    """
+    tomados: list = []
+    total = 0
+    limite = time.monotonic() + SEGUNDOS_DEL_CONTEO
+    for pdf in pdfs:
+        total += 1
+        if len(tomados) < muestra:
+            tomados.append(pdf)
+        if total >= TOPE_DEL_CONTEO or (total % LOTE_DEL_CONTEO == 0 and time.monotonic() > limite):
+            return tomados, total, False
+    return tomados, total, True
+
+
+def _pdfs_de(raiz: Path) -> Iterator[Path]:
+    """Los PDF de la carpeta y sus subcarpetas, a medida que se leen, como los recorre la corrida."""
+    return en_orden_de_ruta(raiz)
 
 
 def _reconocer_en_la_red(ruta: str) -> dict[str, object]:
@@ -114,10 +149,12 @@ def _reconocer_en_la_red(ruta: str) -> dict[str, object]:
 
     if not red_smb.es_carpeta(ruta):
         raise HTTPException(status_code=404, detail="La carpeta no existe")
-    pdfs = red_smb.recorrer(ruta)
+    muestra, total, exacto = contar_por_lotes(
+        red_smb.iterar(ruta, saltar=frozenset({CONSUMED_DIR})), MUESTRA_DE_LA_RED
+    )
     archivos = []
     with tempfile.TemporaryDirectory(prefix="reconocer-red-") as temporal:
-        for indice, pdf in enumerate(pdfs[:MUESTRA_DE_LA_RED]):
+        for indice, pdf in enumerate(muestra):
             relativa = pdf.ruta[len(ruta.rstrip("/")) + 1 :]
             try:
                 copia = red_smb.traer(pdf.ruta, Path(temporal) / f"{indice}.pdf")
@@ -126,14 +163,18 @@ def _reconocer_en_la_red(ruta: str) -> dict[str, object]:
                 raise
             except Exception as error:  # noqa: BLE001 - uno roto no tapa a los demás
                 archivos.append(_sin_abrir(relativa, error))
-    return _resumen(al_operador(ruta), len(pdfs), archivos)
+    return _resumen(al_operador(ruta), total, archivos, exacto=exacto)
 
 
-def _resumen(ruta: str, total: int, archivos: list[dict[str, object]]) -> dict[str, object]:
+def _resumen(
+    ruta: str, total: int, archivos: list[dict[str, object]], *, exacto: bool = True
+) -> dict[str, object]:
     cuenta = Counter(archivo["tipo"] for archivo in archivos)
     return {
         "ruta": ruta,
         "total": total,
+        # Falso si el conteo se paró en su tope: hay al menos `total`.
+        "total_exacto": exacto,
         "mirados": len(archivos),
         "por_tipo": [
             {"tipo": tipo, "etiqueta": DocumentType(tipo).label, "cantidad": cantidad}

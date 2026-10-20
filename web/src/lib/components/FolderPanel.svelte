@@ -2,6 +2,7 @@
   import FolderPicker from '$lib/components/FolderPicker.svelte';
   import SugerenciaDeTipo from '$lib/components/wizard/SugerenciaDeTipo.svelte';
   import { reconocerCarpeta, type SugerenciaDeCarpeta } from '$lib/api';
+  import { confirmar } from '$lib/confirmar.svelte';
   import { jobStore } from '$lib/jobs.svelte';
   import type { AgruparChoice, CorteChoice } from '$lib/habilidades';
   import type { LecturaChoice } from '$lib/lectura';
@@ -132,7 +133,9 @@
     {
       id: 'no',
       label: 'Saltar lo ya entregado',
-      hint: 'Procesa lo nuevo y rehace lo que quedó a medias; lo entregado entero no se vuelve a leer'
+      hint:
+        'Procesa lo nuevo; lo entregado entero no se vuelve a leer. Lo que quedó a medias, o cuyo ' +
+        'original cambió, se rehace y lo anterior se aparta en _reemplazados (no se borra)'
     },
     {
       id: 'faltantes',
@@ -210,10 +213,24 @@
     picking = which;
   }
 
+  /**
+   * Lo que el bot hace con cada original, dicho exactamente: es lo único que
+   * hace en el origen (lo pidió el operador el 2026-10-20: «que actúe
+   * estrictamente según lo seleccionado»). Apartar y borrar sólo ocurren
+   * cuando ese PDF se entregó completo; uno que falla se queda donde estaba.
+   */
   const DISPOSITIONS: { id: SourceDisposition; label: string; hint: string }[] = [
-    { id: 'leave', label: 'Dejarlo', hint: 'El original no se toca' },
-    { id: 'move', label: 'Apartarlo', hint: 'Se mueve a _procesados' },
-    { id: 'delete', label: 'Borrarlo', hint: 'Se elimina del origen' }
+    { id: 'leave', label: 'Dejarlo', hint: 'El original no se toca ni se mueve' },
+    {
+      id: 'move',
+      label: 'Apartarlo',
+      hint: 'Ya entregado completo, se mueve a _procesados en el origen'
+    },
+    {
+      id: 'delete',
+      label: 'Borrarlo',
+      hint: 'Ya entregado completo, se elimina del origen (se pide confirmación)'
+    }
   ];
 
   /**
@@ -227,6 +244,21 @@
 
   async function start() {
     error = null;
+    // Borrar originales no se hace sin preguntar: es lo único irreversible.
+    if (
+      disposicion === 'delete' &&
+      !(await confirmar({
+        titulo: '¿Borrar los originales?',
+        mensaje:
+          'Cada PDF del origen se eliminará después de entregarse completo en el destino. ' +
+          'Los que fallen se quedan donde están. Esto no se puede deshacer.',
+        aceptar: 'Sí, borrarlos al entregar',
+        volver: 'Volver',
+        peligro: true
+      }))
+    ) {
+      return;
+    }
     starting = true;
     try {
       await jobStore.startFolder({
@@ -305,7 +337,14 @@
         error={errorDeAnalisis}
         onusar={(id) => onusarHabilidad?.(id)}
       />
-      {#if analisis && analisis.mirados < analisis.total}
+      {#if analisis && analisis.total_exacto === false}
+        <!-- Una carpeta enorme no se cuenta entera para sugerir: la corrida sí
+             la recorre, por lotes, y empieza sin esperar a terminar de contar. -->
+        <small>
+          Se miraron {analisis.mirados} de más de {analisis.total.toLocaleString('es-CO')} PDF. Al
+          procesar se recorren todos, por lotes, sin esperar a contarlos.
+        </small>
+      {:else if analisis && analisis.mirados < analisis.total}
         <small>Se miraron {analisis.mirados} de {analisis.total} PDF.</small>
       {/if}
     </div>
