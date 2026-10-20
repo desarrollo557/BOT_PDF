@@ -177,7 +177,7 @@ async def _correr(ctx: Contexto, job: Job, hilos: int | None) -> None:
                 # Dentro del `try`: con el pool roto, mandar el trabajo ya falla,
                 # y antes ese fallo dejaba el trabajo «en curso» para siempre.
                 futuro = loop.run_in_executor(pool, ctx.procesar, payload)
-                report = await _esperar(ctx, job, futuro)
+                report = await _esperar(ctx, job, futuro, pool)
                 break
             except (asyncio.CancelledError, Cancelled, TrabajoSinAvance):
                 raise
@@ -255,7 +255,7 @@ class TrabajoSinAvance(TimeoutError):
 _VIGILANCIA = 30.0
 
 
-async def _esperar(ctx: Contexto, job: Job, futuro) -> dict:
+async def _esperar(ctx: Contexto, job: Job, futuro, pool=None) -> dict:
     """El informe del worker, vigilando que el documento avance.
 
     Una página que el lector nativo no suelta, o una lectura de la red que no
@@ -284,6 +284,17 @@ async def _esperar(ctx: Contexto, job: Job, futuro) -> dict:
             if limite and job.state is JobState.RUNNING and silencio >= limite:
                 ctx.controls[job.id] = str(RunState.CANCELLED)
                 loop.create_task(_soltar(ctx, job, futuro))
+                if _pool_congelado(ctx, job, limite):
+                    # No es este PDF: ninguno de los que corren avanza. Se matan
+                    # los procesos y se levanta otro pool; los demás fallan con
+                    # «pool roto», que se reintenta en el acto con el nuevo.
+                    logger.error(
+                        "ningún documento avanza desde hace %.0f min: se cambia el pool de procesos",
+                        limite / 60,
+                    )
+                    rehacer = getattr(ctx, "rehacer_pool", None)
+                    if rehacer is not None and pool is not None:
+                        rehacer(pool, matar=True)
                 raise TrabajoSinAvance(
                     f"El documento lleva {limite / 60:.0f} minutos sin avanzar una página y se "
                     "dio por atascado. Suele ser una página dañada o la red; vuelva a "
@@ -294,6 +305,24 @@ async def _esperar(ctx: Contexto, job: Job, futuro) -> dict:
         ctx.registry.mark_cancelled(job)
         loop.create_task(_soltar(ctx, job, futuro))
         raise
+
+
+def _pool_congelado(ctx: Contexto, job: Job, limite: float) -> bool:
+    """Si, además de este, ninguno de los documentos en curso avanza desde hace rato.
+
+    El 2026-10-19 cinco libros de actas de grado se quedaron a la vez con todas
+    sus páginas leídas y sin avanzar más: no era un PDF, era el pool. Con uno
+    solo en curso no se sabe, y no se toca el pool.
+    """
+    listar = getattr(getattr(ctx, "registry", None), "snapshot", None)
+    if listar is None:
+        return False
+    otros = [
+        otro
+        for otro in listar()
+        if otro.id != job.id and otro.state is JobState.RUNNING and otro.progress.last_event_monotonic is not None
+    ]
+    return bool(otros) and all(otro.progress.silent_seconds >= limite / 2 for otro in otros)
 
 
 async def _soltar(ctx: Contexto, job: Job, futuro) -> None:

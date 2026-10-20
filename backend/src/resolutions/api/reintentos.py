@@ -45,7 +45,9 @@ _TRANSITORIOS_POR_NOMBRE = frozenset({"BrokenProcessPool", "OrigenNoDisponible"}
 #: Lo que se sabe que no cambia con otro intento, aunque herede de una clase
 #: que sí: un PDF que no se abre es un ValueError que a veces trae debajo un
 #: OSError, y lo que manda es lo que dice del papel.
-_DEFINITIVOS_POR_NOMBRE = frozenset({"PdfQueNoSeAbre", "TrabajoSinAvance", "Cancelled"})
+_DEFINITIVOS_POR_NOMBRE = frozenset(
+    {"PdfQueNoSeAbre", "TrabajoSinAvance", "LecturaAtascada", "Cancelled"}
+)
 
 
 def es_transitorio(error: BaseException) -> bool:

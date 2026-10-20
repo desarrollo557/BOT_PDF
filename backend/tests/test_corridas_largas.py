@@ -876,3 +876,92 @@ class TestLaUnidadQueNoEntrega:
         roto.write_bytes(b"esto no es un pdf" * 20)
         with pytest.raises(PdfQueNoSeAbre, match="dañado"):
             _abrir(roto, roto.name)
+
+
+class TestNingunaEsperaSinTope:
+    """El 2026-10-19 cinco libros de actas se quedaron quietos con todas sus páginas leídas."""
+
+    def _colgado(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        suelta = threading.Event()
+        pool = ThreadPoolExecutor(1)
+        return pool, pool.submit(suelta.wait, 5), suelta
+
+    def test_aguardar_no_espera_para_siempre(self):
+        from resolutions.application.control import (
+            LecturaAtascada,
+            NullRunControl,
+            aguardar,
+        )
+
+        pool, futuro, suelta = self._colgado()
+        with pytest.raises(LecturaAtascada, match="minutos sin volver"):
+            aguardar(futuro, NullRunControl(), tope=0.3)
+        suelta.set()
+        pool.shutdown()
+
+    def test_completados_y_alguno_listo_tampoco(self):
+        from resolutions.application.control import (
+            LecturaAtascada,
+            NullRunControl,
+            alguno_listo,
+            completados,
+        )
+
+        pool, futuro, suelta = self._colgado()
+        with pytest.raises(LecturaAtascada):
+            list(completados([futuro], NullRunControl(), tope=0.3))
+        with pytest.raises(LecturaAtascada):
+            alguno_listo([futuro], NullRunControl(), tope=0.3)
+        suelta.set()
+        pool.shutdown()
+
+    def test_lo_que_vuelve_a_tiempo_no_se_toca(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from resolutions.application.control import NullRunControl, completados
+
+        with ThreadPoolExecutor(2) as pool:
+            futuros = [pool.submit(lambda n=n: n * 2) for n in range(5)]
+            assert sorted(f.result() for f in completados(futuros, NullRunControl(), tope=5)) == [0, 2, 4, 6, 8]
+
+    def test_viaja_entre_procesos_y_vuelve_al_final_no_en_el_acto(self):
+        from resolutions.api.reintentos import merece_otra_vuelta
+        from resolutions.application.control import LecturaAtascada
+
+        error = pickle.loads(pickle.dumps(LecturaAtascada(900)))
+        assert isinstance(error, LecturaAtascada)
+        assert "15 minutos" in str(error)
+        assert not es_transitorio(error)
+        assert merece_otra_vuelta(error)
+
+
+class TestElPoolCongelado:
+    def _job(self, id_, silencio):
+        import time
+
+        job = Job(id=id_, filename=f"{id_}.pdf", source=Path(f"{id_}.pdf"), state=JobState.RUNNING)
+        job.progress.last_event_monotonic = time.monotonic() - silencio
+        return job
+
+    def test_si_ninguno_avanza_es_el_pool(self):
+        from resolutions.api.ejecucion import _pool_congelado
+
+        este = self._job("a", 1300)
+        ctx = SimpleNamespace(registry=SimpleNamespace(snapshot=lambda: [este, self._job("b", 900), self._job("c", 1250)]))
+        assert _pool_congelado(ctx, este, 1200)
+
+    def test_si_otro_avanza_es_el_pdf(self):
+        from resolutions.api.ejecucion import _pool_congelado
+
+        este = self._job("a", 1300)
+        ctx = SimpleNamespace(registry=SimpleNamespace(snapshot=lambda: [este, self._job("b", 30)]))
+        assert not _pool_congelado(ctx, este, 1200)
+
+    def test_solo_no_se_sabe(self):
+        from resolutions.api.ejecucion import _pool_congelado
+
+        este = self._job("a", 1300)
+        ctx = SimpleNamespace(registry=SimpleNamespace(snapshot=lambda: [este]))
+        assert not _pool_congelado(ctx, este, 1200)

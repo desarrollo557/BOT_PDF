@@ -162,18 +162,28 @@ async def lifespan(app: FastAPI):
     # core left to accept uploads while the pool is saturated.
     ctx.pool = _nuevo_pool(ctx.settings)
 
-    def rehacer_pool(roto) -> None:
+    def rehacer_pool(roto, matar: bool = False) -> None:
         """Otro pool en lugar del que se rompió, una sola vez aunque fallen varios.
 
         Un proceso que muere -- memoria, un fallo nativo de MuPDF -- deja el
         pool entero inservible, y antes todos los PDF que quedaban en la
         carpeta fallaban en segundos hasta reiniciar el servicio. Quien llega
         con el pool ya cambiado no hace nada: otro trabajo lo rehízo antes.
+
+        ``matar`` es para el pool congelado (ningún documento avanza): sus
+        procesos siguen vivos pero no devuelven nada, así que se terminan; lo
+        que tenían dentro falla como «pool roto» y se reintenta en el nuevo.
         """
         if ctx.pool is not roto:
             return
-        logger.error("el pool de procesos se rompió; se levanta otro")
+        logger.error("el pool de procesos se %s; se levanta otro", "congeló" if matar else "rompió")
         ctx.pool = _nuevo_pool(ctx.settings)
+        if matar:
+            for proceso in list((getattr(roto, "_processes", None) or {}).values()):
+                try:
+                    proceso.terminate()
+                except Exception:  # noqa: BLE001 - el que ya no está, no hace falta
+                    logger.debug("no se pudo terminar un proceso del pool", exc_info=True)
         try:
             roto.shutdown(wait=False, cancel_futures=True)
         except Exception:  # noqa: BLE001 - ya estaba roto

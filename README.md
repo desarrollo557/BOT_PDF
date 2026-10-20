@@ -503,6 +503,23 @@ la carpeta, clonar de nuevo y ejecutar el instalador: los datos siguen en su
 volumen. En Linux, `./scripts/instalar-escritorio.sh` (monta `/home`, `/mnt` y
 `/media` en la misma ruta). Registro en vivo: `docker compose logs -f`.
 
+#### Probar la instalación
+
+Después de instalar en cualquier equipo, `probar-instalacion.cmd` (doble clic, o
+`.\probar-instalacion.cmd` en PowerShell) responde punto por punto si la instalación
+funciona de verdad. No gasta IA y borra todo lo que crea:
+
+| Bloque | Qué comprueba |
+|---|---|
+| Docker | motor encendido, contenedor corriendo y sano, sin reinicios ni falta de memoria |
+| Servicio | la API de salud, la pantalla, recargar `/archivo`, que una ruta de la API inexistente dé 404 |
+| Imagen | Tesseract con español, las versiones de `constraints-docker.txt`, las plantillas oficiales, `/data` escribible y su espacio, el registro diario |
+| Equipo | los discos montados, el explorador de carpetas, si llegó la llave de la IA |
+| Punta a punta | reconocer un PDF subido; una corrida de carpeta con rutas de Windows sobre un PDF digital y uno escaneado (Tesseract), con sus inventarios y constancias; volver a lanzarla y que no repita lo entregado |
+
+Termina con «TODO EN ORDEN» o con los fallos, y deja el informe en
+`prueba-instalacion.txt`. `-Rapida` se salta la corrida de punta a punta.
+
 Si algo falla, `diagnosticar-docker.cmd` (o `-Archivo "C:\ruta\archivo.pdf"` para
 probar con un PDF real) deja en `diagnostico-docker.txt` el estado y los reinicios
 del contenedor, la memoria, la salud, una prueba de subida que no crea trabajos y

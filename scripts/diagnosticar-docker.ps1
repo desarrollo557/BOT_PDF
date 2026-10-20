@@ -21,7 +21,9 @@ if (Test-Path $rutaEnv) {
 $url = "http://localhost:$puerto"
 
 function Seccion($titulo) { "`n===== $titulo =====" }
-function Correr($bloque) { try { & $bloque 2>&1 | Out-String } catch { "ERROR: $_" } }
+function Correr($bloque) {
+    try { (& $bloque 2>&1 | ForEach-Object { "$_" }) -join "`n" } catch { "ERROR: $_" }
+}
 
 $informe = @()
 $informe += "Diagnostico de BOT_PDF en Docker - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
@@ -37,6 +39,16 @@ $informe += Correr { docker info --format "memoria del motor: {{.MemTotal}} byte
 
 $informe += Seccion "Contenedor"
 $informe += Correr { docker compose ps }
+docker inspect botpdf *> $null
+$hayContenedor = ($LASTEXITCODE -eq 0)
+if (-not $hayContenedor) {
+    $informe += "NO HAY CONTENEDOR 'botpdf': BOT_PDF no esta instalado o se borro. Ejecute .\instalar-docker.cmd"
+    $informe += "Contenedores que existen en este equipo:"
+    $informe += Correr { docker ps -a --format "{{.Names}}  imagen={{.Image}}  estado={{.Status}}  puertos={{.Ports}}" }
+    $informe += "Imagenes:"
+    $informe += Correr { docker images --format "{{.Repository}}:{{.Tag}}  {{.Size}}  creada {{.CreatedSince}}" }
+}
+if ($hayContenedor) {
 $informe += Correr { docker inspect botpdf --format "estado={{.State.Status}} reinicios={{.RestartCount}} sin_memoria(OOMKilled)={{.State.OOMKilled}} ultimo_codigo_de_salida={{.State.ExitCode}} inicio={{.State.StartedAt}} salud={{if .State.Health}}{{.State.Health.Status}}{{end}}" }
 $informe += Correr { docker stats --no-stream --format "CPU {{.CPUPerc}}  memoria {{.MemUsage}} ({{.MemPerc}})" botpdf }
 $informe += Correr { docker exec botpdf df -h /data /tmp }
@@ -46,6 +58,7 @@ $informe += Correr { docker exec botpdf python -c "import pymupdf; print('pymupd
 $informe += Correr { docker exec botpdf python -c "import resolutions, pathlib; a = pathlib.Path(resolutions.__file__).parent / 'assets'; print('plantillas:', sorted(p.name for p in a.rglob('*') if p.is_file()))" }
 $informe += Correr { docker exec botpdf sh -c "env | grep -E '^(BOTPDF|RESOLUTIONS)_' | sort; echo; env | grep -E '_API_KEY=' | sed -E 's/=(.{4}).*/=\1... (presente)/'" }
 $informe += Correr { docker exec botpdf sh -c "ls /equipo 2>/dev/null && echo '(discos montados)' || echo 'sin /equipo: los discos del equipo no estan montados'" }
+}
 
 $informe += Seccion "Salud del servicio"
 $informe += Correr { (Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 "$url/api/health").Content }

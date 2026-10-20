@@ -87,13 +87,15 @@ class Settings:
     #: Cuántos minutos puede pasar un documento sin avanzar una página antes de
     #: darlo por atascado: se le ordena parar y se marca fallido, y la carpeta
     #: sigue. Generoso a propósito: escribir trescientos PDF o esperar a la IA
-    #: tampoco produce avisos. Cero lo apaga.
-    minutos_sin_avance: float = 30.0
+    #: tampoco produce avisos. Cero lo apaga. Por debajo, cada espera entre
+    #: hilos tiene su propio tope de quince minutos (``control.TOPE_SIN_NOVEDAD``).
+    minutos_sin_avance: float = 20.0
     #: Cuántos documentos procesa cada proceso del pool antes de cambiarlo por
-    #: uno nuevo. MuPDF y Tesseract son código nativo y en días de corrida la
-    #: memoria que no devuelven se acumula; un proceso nuevo empieza limpio.
-    #: Cero lo apaga.
-    documentos_por_proceso: int = 25
+    #: uno nuevo (``max_tasks_per_child``). Apagado (cero) por omisión: es la
+    #: pieza del pool con más historia de cuelgues en CPython, y un pool colgado
+    #: deja la carpeta parada sin un error. Se enciende con
+    #: RESOLUTIONS_DOCUMENTOS_POR_PROCESO si la memoria crece en corridas de días.
+    documentos_por_proceso: int = 0
     #: Cuántos documentos seguidos pueden fallar en una carpeta antes de
     #: pausarla. Diez seguidos casi nunca son diez papeles malos: es la red,
     #: el disco o la cuenta del proveedor, y seguir quemaría la carpeta entera
@@ -225,8 +227,8 @@ class Settings:
             queue_limit=_int("RESOLUTIONS_QUEUE_LIMIT", 10_000),
             reintentos=_int("RESOLUTIONS_REINTENTOS", 2),
             espera_de_reintento=_float("RESOLUTIONS_ESPERA_REINTENTO", 15.0),
-            minutos_sin_avance=_float("RESOLUTIONS_MINUTOS_SIN_AVANCE", 30.0),
-            documentos_por_proceso=_int("RESOLUTIONS_DOCUMENTOS_POR_PROCESO", 25),
+            minutos_sin_avance=_float("RESOLUTIONS_MINUTOS_SIN_AVANCE", 20.0),
+            documentos_por_proceso=_int("RESOLUTIONS_DOCUMENTOS_POR_PROCESO", 0),
             fallos_seguidos=_int("RESOLUTIONS_FALLOS_SEGUIDOS", 10),
             pausa_tras_fallos=_float("RESOLUTIONS_PAUSA_TRAS_FALLOS", 60.0),
             vueltas_de_reintento=_int("RESOLUTIONS_VUELTAS_DE_REINTENTO", 1),

@@ -117,6 +117,22 @@ function Escribir-Override($discos) {
 Paso ("Discos del equipo: " + (($unidades | ForEach-Object { $_.DeviceID }) -join ", "))
 Escribir-Override $unidades
 
+# -- 3b. Un contenedor de una instalacion anterior --------------------------------
+# Un "botpdf" creado por otra version del compose (otro proyecto) choca por el
+# nombre y por el puerto. Se quita: los datos viven en el volumen, no en el
+# contenedor, y el nuevo los vuelve a montar.
+$anteriorEA = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$etiquetas = docker inspect botpdf --format "{{json .Config.Labels}}" 2>$null
+$ErrorActionPreference = $anteriorEA
+if ($LASTEXITCODE -eq 0 -and $etiquetas) {
+    $proyecto = ($etiquetas | ConvertFrom-Json).'com.docker.compose.project'
+    if ($proyecto -ne "botpdf") {
+        Paso "Se quita el contenedor anterior de BOT_PDF (proyecto '$proyecto'); los datos se conservan..."
+        docker rm -f botpdf | Out-Null
+    }
+}
+
 # -- 4. Construir y arrancar -----------------------------------------------------
 Paso "Construyendo la imagen y arrancando (la primera vez tarda unos minutos)..."
 docker compose up -d --build
@@ -150,6 +166,7 @@ if (-not $listo) {
 
 Write-Host ""
 Write-Host "BOT_PDF listo en $url" -ForegroundColor Green
+Write-Host "Comprobarlo todo:  .\probar-instalacion.cmd   (23 pruebas, no gasta IA)" -ForegroundColor Yellow
 Write-Host "Registro en vivo:  docker compose logs -f" -ForegroundColor Yellow
 Write-Host "Detenerlo:         docker compose down   (los datos se conservan)" -ForegroundColor Yellow
 Start-Process $url

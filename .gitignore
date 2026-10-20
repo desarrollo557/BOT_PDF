@@ -37,3 +37,6 @@ vite.config.ts.timestamp-*
 docker-compose.override.yml
 # El informe que deja diagnosticar-docker: es de cada equipo.
 diagnostico-docker.txt
+
+# El informe que deja probar-instalacion: es de cada equipo.
+prueba-instalacion.txt

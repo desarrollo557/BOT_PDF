@@ -452,6 +452,22 @@
                 </span>
               {/if}
             </div>
+            {#if item.job?.progress.detail}
+              <!-- Qué hace dentro de la etapa: con todas las páginas leídas, la
+                   barra llena no dice si sigue trabajando o se quedó quieto. -->
+              <small class="detalle">
+                {item.job.progress.detail}{item.job.progress.stage_total
+                  ? ` · ${item.job.progress.stage_done} de ${item.job.progress.stage_total}`
+                  : ''}
+              </small>
+            {/if}
+            {#if (item.job?.progress.silent_seconds ?? 0) >= 120}
+              <small class="sin-novedad" role="status">
+                Sin novedades desde hace {Math.floor((item.job?.progress.silent_seconds ?? 0) / 60)} min. Si
+                sigue así, se da por atascado solo y se reintenta al final de la carpeta; los demás
+                documentos siguen.
+              </small>
+            {/if}
             {#if item.job?.progress.page_count}
               <div class="bar">
                 <div class="fill" style:width={`${item.job.progress.percent}%`}></div>
@@ -691,6 +707,19 @@
     flex-shrink: 0;
     font-size: var(--text-xs);
     color: var(--ink-2);
+  }
+  .detalle {
+    display: block;
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+  .sin-novedad {
+    display: block;
+    margin-top: 0.2rem;
+    font-size: var(--text-xs);
+    color: var(--ink);
+    border-left: 3px solid var(--warning);
+    padding-left: 0.4rem;
   }
   .pages {
     margin-left: auto;

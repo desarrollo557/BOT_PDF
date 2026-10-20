@@ -123,34 +123,92 @@ class FlagRunControl:
 #: Cada cuánto se pregunta mientras se espera a otro hilo.
 ESPERA_ENTRE_CONSULTAS = 0.2
 
+#: Cuánto puede pasar sin que vuelva ninguna lectura antes de dar el documento
+#: por atascado. Ninguna espera es sin tope: una lectura de Tesseract tiene su
+#: propio límite y se mata, una de la IA reintenta unos minutos y se rinde; si
+#: aun así un hilo no vuelve -- el 2026-10-19 cinco libros de actas de grado se
+#: quedaron con todas sus páginas leídas en «Leyendo lo que falta», sin un
+#: error y sin avanzar --, a los quince minutos el documento falla diciendo por
+#: qué, y la carpeta lo vuelve a intentar al final en vez de quedarse parada.
+TOPE_SIN_NOVEDAD = 15 * 60.0
 
-def aguardar(futuro, control: RunControl) -> None:
-    """Espera a que el futuro termine, atendiendo la cancelación mientras tanto."""
+
+class LecturaAtascada(TimeoutError):
+    """Una lectura en otro hilo que no volvió en ``TOPE_SIN_NOVEDAD`` segundos."""
+
+    #: El mensaje ya está escrito para quien opera.
+    para_el_operador = True
+
+    def __init__(self, segundos: float | str) -> None:
+        # También con el texto ya hecho: así la reconstruye pickle cuando viaja
+        # del proceso del worker al del servicio.
+        texto = (
+            segundos
+            if isinstance(segundos, str)
+            else (
+                f"Una lectura (OCR o IA) lleva {segundos / 60:.0f} minutos sin volver y el "
+                "documento se dio por atascado. Se volverá a intentar al final de la carpeta; "
+                "si se repite, revise el PDF o la conexión con el proveedor."
+            )
+        )
+        super().__init__(texto)
+
+
+def _tope(tope: float | None) -> float:
+    return TOPE_SIN_NOVEDAD if tope is None else tope
+
+
+def aguardar(futuro, control: RunControl, *, tope: float | None = None) -> None:
+    """Espera a que el futuro termine, atendiendo la cancelación mientras tanto.
+
+    Si en ``tope`` segundos no termina, lanza ``LecturaAtascada``.
+    """
     from concurrent.futures import wait
 
+    limite = _tope(tope)
+    inicio = time.monotonic()
     while not futuro.done():
         control.check()
+        if time.monotonic() - inicio > limite:
+            futuro.cancel()
+            raise LecturaAtascada(limite)
         wait([futuro], timeout=ESPERA_ENTRE_CONSULTAS)
     control.check()
 
 
-def completados(futuros, control: RunControl):
-    """Como ``as_completed``, pero preguntando al control mientras espera."""
+def completados(futuros, control: RunControl, *, tope: float | None = None):
+    """Como ``as_completed``, pero preguntando al control mientras espera.
+
+    Si pasan ``tope`` segundos sin que termine ninguno, lanza ``LecturaAtascada``.
+    """
     from concurrent.futures import FIRST_COMPLETED, wait
 
+    limite = _tope(tope)
     pendientes = set(futuros)
+    ultima_novedad = time.monotonic()
     while pendientes:
         control.check()
         listos, pendientes = wait(
             pendientes, timeout=ESPERA_ENTRE_CONSULTAS, return_when=FIRST_COMPLETED
         )
+        if listos:
+            ultima_novedad = time.monotonic()
+        elif time.monotonic() - ultima_novedad > limite:
+            for futuro in pendientes:
+                futuro.cancel()
+            raise LecturaAtascada(limite)
         yield from listos
 
 
-def alguno_listo(futuros, control: RunControl) -> set:
-    """Como ``wait(..., FIRST_COMPLETED)``, pero preguntando al control mientras espera."""
+def alguno_listo(futuros, control: RunControl, *, tope: float | None = None) -> set:
+    """Como ``wait(..., FIRST_COMPLETED)``, pero preguntando al control mientras espera.
+
+    Si en ``tope`` segundos no termina ninguno, lanza ``LecturaAtascada``.
+    """
     from concurrent.futures import FIRST_COMPLETED, wait
 
+    limite = _tope(tope)
+    inicio = time.monotonic()
     while True:
         control.check()
         listos, _ = wait(
@@ -158,6 +216,10 @@ def alguno_listo(futuros, control: RunControl) -> set:
         )
         if listos:
             return listos
+        if time.monotonic() - inicio > limite:
+            for futuro in futuros:
+                futuro.cancel()
+            raise LecturaAtascada(limite)
 
 
 def mapear(pool, funcion, elementos, control: RunControl) -> list:
