@@ -1,0 +1,327 @@
+"""Carpetas de red con el cliente SMB propio, contra un servidor de mentira.
+
+Lo pidió el operador el 2026-10-20 con
+«\\\\200.100.20.97\\afinia\\REPOSITORIO\\AFINIA\\BOLIVAR SUR\\COMERCIAL\\MAGANGUE»:
+cualquier ruta de red, sin credenciales escritas en ningún archivo, y que si el
+servidor pide usuario y clave se le pidan a él. Aquí el servidor es un
+diccionario: se prueba el comportamiento del bot, no la red.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import errno
+import io
+import stat
+import sys
+import types
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+from smbprotocol.exceptions import SMBAuthenticationError
+
+from resolutions.adapters import red_smb
+from resolutions.api.folders import FolderError, FolderRunner, SourceDisposition
+from resolutions.api.jobs import JobRegistry
+from resolutions.api.settings import Settings
+
+SERVIDOR = "200.100.20.97"
+RAIZ = rf"\\{SERVIDOR}\afinia"
+CARPETA = rf"{RAIZ}\REPOSITORIO\AFINIA\BOLIVAR SUR\COMERCIAL\MAGANGUE"
+USUARIO, CLAVE = r"SIAR\desarrollo", "secreta"
+
+
+class ServidorDeMentira:
+    """Lo mínimo de ``smbclient`` que usa el bot, sobre un árbol en memoria."""
+
+    def __init__(self, archivos: dict[str, bytes], prohibidas: tuple[str, ...] = ()) -> None:
+        self.archivos = {self._clave(ruta): datos for ruta, datos in archivos.items()}
+        self.prohibidas = {self._clave(ruta) for ruta in prohibidas}
+        self.sesiones: set[str] = set()
+        self.descargas = 0
+
+    @staticmethod
+    def _clave(ruta: str) -> str:
+        return ruta.replace("/", "\\").rstrip("\\").lower()
+
+    def _es_carpeta(self, clave: str) -> bool:
+        return any(nombre.startswith(clave + "\\") for nombre in self.archivos)
+
+    def _sesion(self, ruta: str, username=None, password=None) -> None:
+        if (username, password) != (USUARIO, CLAVE) or SERVIDOR not in self.sesiones:
+            raise SMBAuthenticationError("Failed to authenticate with server")
+
+    # -- la API de smbclient ----------------------------------------------------------
+
+    def register_session(self, server, username=None, password=None, **_):
+        if (username, password) != (USUARIO, CLAVE):
+            raise SMBAuthenticationError("Failed to authenticate with server")
+        self.sesiones.add(server)
+
+    def reset_connection_cache(self, **_):
+        self.sesiones.clear()
+
+    def stat(self, ruta, **cuenta):
+        self._sesion(ruta, **cuenta)
+        clave = self._clave(ruta)
+        if clave in self.archivos:
+            return types.SimpleNamespace(st_mode=stat.S_IFREG, st_size=len(self.archivos[clave]), st_mtime_ns=7)
+        if self._es_carpeta(clave) or clave == self._clave(RAIZ):
+            return types.SimpleNamespace(st_mode=stat.S_IFDIR, st_size=0, st_mtime_ns=0)
+        raise FileNotFoundError(errno.ENOENT, "no existe", ruta)
+
+    def scandir(self, ruta, **cuenta):
+        self._sesion(ruta, **cuenta)
+        clave = self._clave(ruta)
+        if clave in self.prohibidas:
+            raise PermissionError(errno.EACCES, "acceso denegado", ruta)
+        vistos: dict[str, bool] = {}
+        for nombre in self.archivos:
+            if nombre.startswith(clave + "\\"):
+                resto = nombre[len(clave) + 1 :].split("\\")
+                vistos[resto[0]] = vistos.get(resto[0], False) or len(resto) > 1
+        for nombre, es_carpeta in vistos.items():
+            completo = f"{clave}\\{nombre}"
+            datos = self.archivos.get(completo, b"")
+            yield types.SimpleNamespace(
+                name=nombre.upper() if nombre.endswith(".pdf") else nombre.upper(),
+                is_dir=lambda c=es_carpeta: c,
+                stat=lambda d=datos: types.SimpleNamespace(st_size=len(d), st_mtime_ns=7),
+            )
+
+    def open_file(self, ruta, mode="r", **cuenta):
+        self._sesion(ruta, **cuenta)
+        self.descargas += 1
+        return io.BytesIO(self.archivos[self._clave(ruta)])
+
+
+@pytest.fixture
+def servidor(monkeypatch):
+    falso = ServidorDeMentira(
+        {
+            rf"{CARPETA}\210847\UPD2998726.pdf": b"%PDF-1.4 caja 210847",
+            rf"{CARPETA}\910349\UPD2998266.pdf": b"%PDF-1.4 caja 910349",
+            rf"{CARPETA}\_procesados\910349\VIEJO.pdf": b"%PDF-1.4 ya apartado",
+            rf"{CARPETA}\SIN PERMISO\UPD1.pdf": b"%PDF-1.4 no se deja",
+        },
+        prohibidas=(rf"{CARPETA}\SIN PERMISO",),
+    )
+    modulo = types.ModuleType("smbclient")
+    for nombre in ("register_session", "reset_connection_cache", "stat", "scandir", "open_file"):
+        setattr(modulo, nombre, getattr(falso, nombre))
+    monkeypatch.setitem(sys.modules, "smbclient", modulo)
+    # Como en el contenedor: Linux, la red por este cliente.
+    monkeypatch.setattr(red_smb, "NATIVA", False)
+    red_smb.olvidar()
+    yield falso
+    red_smb.olvidar()
+
+
+class TestLaRuta:
+    def test_partes_de_una_ruta_de_red(self):
+        partes = red_smb.partes(CARPETA)
+        assert (partes.servidor, partes.recurso) == (SERVIDOR, "afinia")
+        assert partes.raiz == RAIZ
+        assert partes.unc == CARPETA
+        assert partes.del_servicio == (
+            f"//{SERVIDOR}/afinia/REPOSITORIO/AFINIA/BOLIVAR SUR/COMERCIAL/MAGANGUE"
+        )
+        assert red_smb.partes(partes.del_servicio).unc == CARPETA
+
+    def test_lo_que_no_es_de_red(self):
+        assert red_smb.partes(r"C:\Users\ana") is None
+        assert red_smb.partes("/equipo/c/Users") is None
+        assert not red_smb.es_de_red("")
+
+
+class TestLasCredenciales:
+    def test_sin_credenciales_el_servidor_las_pide(self, servidor):
+        with pytest.raises(red_smb.CredencialesDeRed) as pregunta:
+            red_smb.asegurar(CARPETA)
+        assert pregunta.value.recurso == RAIZ
+        assert pregunta.value.motivo == "El servidor pide usuario y clave"
+
+    def test_con_la_clave_mala_lo_dice(self, servidor):
+        with pytest.raises(red_smb.CredencialesDeRed, match="no son correctos"):
+            red_smb.conectar(CARPETA, USUARIO, "otra")
+        assert red_smb.conectados() == []
+
+    def test_con_la_buena_entra_y_lo_recuerda_en_memoria(self, servidor):
+        assert red_smb.conectar(CARPETA, USUARIO, CLAVE) == RAIZ
+        assert red_smb.conectados() == [RAIZ]
+        red_smb.asegurar(CARPETA)  # ya no pregunta
+
+    def test_olvidar_borra_la_memoria(self, servidor):
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        red_smb.olvidar(SERVIDOR)
+        assert red_smb.conectados() == []
+        with pytest.raises(red_smb.CredencialesDeRed):
+            red_smb.asegurar(CARPETA)
+
+    def test_si_la_sesion_cae_se_reconecta_sola(self, servidor):
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        servidor.sesiones.clear()  # el servidor se reinició
+        assert red_smb.es_carpeta(CARPETA)
+
+
+class TestLeer:
+    def test_recorre_las_cajas_sin_apartados_y_avisa_lo_que_no_se_deja(self, servidor):
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        avisos = []
+        archivos = red_smb.recorrer(
+            CARPETA, saltar=frozenset({"_PROCESADOS", "_procesados"}), al_fallar=lambda c, e: avisos.append(c)
+        )
+        nombres = [a.ruta.rsplit("/", 2)[-2:] for a in archivos]
+        assert nombres == [["210847", "UPD2998726.PDF"], ["910349", "UPD2998266.PDF"]]
+        assert archivos[0].tamano == len(b"%PDF-1.4 caja 210847")
+        assert len(avisos) == 1 and avisos[0].endswith("SIN PERMISO")
+
+    def test_trae_una_copia_entera(self, servidor, tmp_path):
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        copia = red_smb.traer(rf"{CARPETA}\210847\UPD2998726.pdf", tmp_path / "a" / "UPD.pdf")
+        assert copia.read_bytes() == b"%PDF-1.4 caja 210847"
+        assert not list(tmp_path.rglob("*.part"))
+
+    def test_lista_subcarpetas_y_sabe_si_existe(self, servidor):
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        assert "210847" in red_smb.carpetas(CARPETA)
+        assert red_smb.es_carpeta(CARPETA)
+        assert not red_smb.es_carpeta(rf"{CARPETA}\NO EXISTE")
+
+
+@pytest.fixture
+def ajustes(tmp_path):
+    settings = replace(
+        Settings(),
+        upload_dir=tmp_path / "uploads",
+        output_dir=tmp_path / "outputs",
+        ledger_path=tmp_path / "inventory.jsonl",
+        pausa_tras_fallos=0.01,
+    )
+    settings.ensure_directories()
+    return settings
+
+
+def _motor(ajustes, registro, leidos):
+    async def run_job(job):
+        # El trabajo recibe una copia local, con la ruta del servidor dentro.
+        leidos.append((job.filename, Path(job.source).read_bytes(), str(job.source)))
+        carpeta = ajustes.output_dir / job.id
+        carpeta.mkdir(parents=True, exist_ok=True)
+        (carpeta / "01_DOCUMENTO.pdf").write_bytes(b"%PDF-1.4 out")
+        registro.mark_done(job, {"groups": [{"code": "01"}], "review_queue": []})
+
+    return FolderRunner(registro, ajustes, run_job, watch_interval=0.01)
+
+
+def _correr(motor, origen, destino, **opciones):
+    async def ir():
+        run = motor.start(origen, str(destino), **opciones)
+        for _ in range(500):
+            if not run.active:
+                return run
+            await asyncio.sleep(0.01)
+        return run
+
+    return asyncio.run(ir())
+
+
+class TestUnaCorridaDesdeLaRed:
+    def test_procesa_cada_caja_de_la_red_y_no_deja_copias(self, servidor, ajustes, tmp_path):
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        leidos: list = []
+        run = _correr(_motor(ajustes, JobRegistry(), leidos), CARPETA, tmp_path / "destino")
+
+        assert run.state == "done" and run.processed == 2
+        assert sorted(contenido for _, contenido, _ in leidos) == [
+            b"%PDF-1.4 caja 210847",
+            b"%PDF-1.4 caja 910349",
+        ]
+        # La copia conserva la ruta del servidor: el índice lee de ella el
+        # municipio (MAGANGUE) y el NIC (la carpeta de la caja).
+        assert all("MAGANGUE" in ruta for _, _, ruta in leidos)
+        # Lo entregado, en el destino del equipo, con la estructura de la caja.
+        assert (tmp_path / "destino" / "210847" / "UPD2998726" / "01_DOCUMENTO.pdf").exists()
+        # Ninguna copia de la red se queda ocupando disco.
+        assert not list((ajustes.upload_dir / "red").rglob("*.pdf"))
+        # Y la pantalla enseña la ruta de red como la escribió el operador.
+        assert run.as_dict()["source"] == CARPETA
+
+    def test_relanzarla_no_vuelve_a_bajar_lo_entregado(self, servidor, ajustes, tmp_path):
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        registro = JobRegistry()
+        _correr(_motor(ajustes, registro, []), CARPETA, tmp_path / "destino")
+        bajados = servidor.descargas
+
+        leidos: list = []
+        segunda = _correr(_motor(ajustes, registro, leidos), CARPETA, tmp_path / "destino")
+        assert segunda.ya_entregados == 2 and segunda.processed == 0
+        assert leidos == [] and servidor.descargas == bajados
+
+    def test_sin_credenciales_la_corrida_las_pide_antes_de_empezar(self, servidor, ajustes, tmp_path):
+        motor = _motor(ajustes, JobRegistry(), [])
+
+        async def ir():
+            motor.start(CARPETA, str(tmp_path / "destino"))
+
+        with pytest.raises(red_smb.CredencialesDeRed):
+            asyncio.run(ir())
+
+    def test_el_original_de_la_red_no_se_mueve_ni_se_borra(self, servidor, ajustes, tmp_path):
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        motor = _motor(ajustes, JobRegistry(), [])
+
+        async def ir(disposicion):
+            motor.start(CARPETA, str(tmp_path / "destino"), disposition=disposicion)
+
+        for disposicion in (SourceDisposition.MOVE, SourceDisposition.DELETE):
+            with pytest.raises(FolderError, match="Dejarlo"):
+                asyncio.run(ir(disposicion))
+
+    def test_el_destino_va_en_el_equipo(self, servidor, ajustes):
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        motor = _motor(ajustes, JobRegistry(), [])
+
+        async def ir():
+            motor.start(CARPETA, rf"{RAIZ}\SALIDA")
+
+        with pytest.raises(FolderError, match="destino tiene que estar en este equipo"):
+            asyncio.run(ir())
+
+
+class TestLaPantallaRecibeUnaPregunta:
+    def test_el_401_dice_que_recurso_y_por_que(self):
+        import json
+
+        from resolutions.api.main import _credenciales_de_red
+
+        respuesta = asyncio.run(
+            _credenciales_de_red(None, red_smb.CredencialesDeRed(RAIZ, "El servidor pide usuario y clave"))
+        )
+        assert respuesta.status_code == 401
+        assert json.loads(respuesta.body)["detail"] == {
+            "codigo": "credenciales_de_red",
+            "recurso": RAIZ,
+            "mensaje": f"El servidor pide usuario y clave: {RAIZ}",
+        }
+
+    def test_conectar_desde_la_pantalla(self, servidor):
+        from resolutions.api.routers import red
+
+        respuesta = asyncio.run(red.conectar({"ruta": CARPETA, "usuario": USUARIO, "clave": CLAVE}))
+        assert respuesta == {"recurso": RAIZ, "conectado": True}
+        assert asyncio.run(red.abiertas()) == {"recursos": [RAIZ]}
+
+    def test_el_explorador_entra_a_la_red(self, servidor):
+        from types import SimpleNamespace
+
+        from resolutions.api.routers.carpetas import browse
+
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        listado = asyncio.run(browse(SimpleNamespace(), CARPETA))
+        assert listado["path"] == CARPETA
+        assert listado["parent"] == rf"{RAIZ}\REPOSITORIO\AFINIA\BOLIVAR SUR\COMERCIAL"
+        assert {"name": "210847", "path": rf"{CARPETA}\210847"} in listado["folders"]
+        raiz = asyncio.run(browse(SimpleNamespace(), RAIZ + "\\"))
+        assert raiz["parent"] is None

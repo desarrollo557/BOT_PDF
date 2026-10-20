@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import FileResponse
 
+from ...adapters import red_smb
 from ...adapters.excel_inventory import NOMBRE_DEL_INVENTARIO_DE_PROCESOS
 from ...adapters.indice_electronico import NOMBRE_DEL_INDICE
 from ...application.task import TaskKind
@@ -17,7 +18,7 @@ from .. import native_picker
 from ..contexto import Ctx
 from ..folders import FolderError, SourceDisposition, clean_path
 from ..indices import carpeta_del_lote, libro_de_indices
-from ..rutas_del_equipo import al_operador, al_servicio, raices
+from ..rutas_del_equipo import al_operador, al_servicio, es_una_raiz, raices, red_abierta
 from .salidas import XLSX_MEDIA
 from .trabajos import (
     _agrupar_choice,
@@ -272,8 +273,16 @@ async def browse(ctx: Ctx, path: str | None = None) -> dict[str, object]:
     if not path:
         return {"path": None, "parent": None, "drives": _drives(), "folders": []}
 
+    ruta = clean_path(path)
+    if red_smb.es_de_red(ruta):
+        # Si el servidor pide usuario y clave, `CredencialesDeRed` sube hasta el
+        # manejador de la aplicación, que contesta 401 y la pantalla los pide.
+        await asyncio.to_thread(red_smb.asegurar, ruta)
+        if red_smb.por_smb(ruta):
+            return await asyncio.to_thread(_explorar_la_red, ruta)
+
     try:
-        current = Path(al_servicio(clean_path(path))).expanduser().resolve(strict=True)
+        current = Path(al_servicio(ruta)).expanduser().resolve(strict=True)
     except (OSError, ValueError):
         raise HTTPException(status_code=404, detail=f"La carpeta no existe: {path}") from None
     if not current.is_dir():
@@ -298,8 +307,9 @@ async def browse(ctx: Ctx, path: str | None = None) -> dict[str, object]:
         raise HTTPException(status_code=422, detail=f"No se pudo leer: {error}") from None
 
     parent = al_operador(current.parent) if current.parent != current else None
-    if al_operador(current).endswith(":\\"):
-        # La raíz de una unidad montada: arriba de ella sólo está el contenedor.
+    if es_una_raiz(al_operador(current)):
+        # La raíz de una unidad o de un recurso de red montado: arriba de ella
+        # sólo está el contenedor.
         parent = None
     return {
         "path": al_operador(current),
@@ -355,4 +365,41 @@ def _drives() -> list[dict[str, str]]:
                 continue
     else:
         roots.append({"name": "Raíz", "path": "/"})
-    return [root for root in roots if Path(root["path"]).is_dir()]
+    filtradas = [root for root in roots if _es_carpeta(root["path"])]
+    # Y las carpetas de red a las que ya se entró: «\\200.100.20.97\afinia».
+    return filtradas + red_abierta()
+
+
+def _explorar_la_red(ruta: str) -> dict[str, object]:
+    """Lo mismo que el explorador hace con un disco, para una carpeta de red."""
+    partes = red_smb.partes(ruta)
+    try:
+        if not red_smb.es_carpeta(partes.unc):
+            raise HTTPException(status_code=404, detail=f"La carpeta no existe: {partes.unc}")
+        nombres = red_smb.carpetas(partes.unc)
+    except red_smb.RedNoDisponible as error:
+        raise HTTPException(status_code=404, detail=str(error)) from None
+    except OSError as error:
+        raise HTTPException(status_code=422, detail=f"No se pudo leer: {error}") from None
+    padre = None
+    if partes.resto:
+        arriba = partes.resto.rsplit("\\", 1)[0] if "\\" in partes.resto else ""
+        padre = f"{partes.raiz}\\{arriba}" if arriba else f"{partes.raiz}\\"
+    return {
+        "path": partes.unc if partes.resto else f"{partes.raiz}\\",
+        "parent": padre,
+        "drives": _drives(),
+        "folders": [
+            {"name": nombre, "path": f"{partes.unc}\\{nombre}"}
+            for nombre in nombres
+            if not nombre.startswith((".", "$"))
+        ],
+    }
+
+
+def _es_carpeta(ruta: str) -> bool:
+    """Si existe; una carpeta de red que no contesta no tumba el explorador."""
+    try:
+        return Path(ruta).is_dir()
+    except OSError:
+        return False

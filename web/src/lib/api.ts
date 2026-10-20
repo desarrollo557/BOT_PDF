@@ -45,7 +45,7 @@ export class SinConexion extends ApiError {
  * Sin esto, un servicio apagado llega a la pantalla como «Failed to fetch» o
  * «NetworkError when attempting to fetch resource», según el navegador.
  */
-async function pedir(input: string, init?: RequestInit): Promise<Response> {
+async function alServicio(input: string, init?: RequestInit): Promise<Response> {
   try {
     return await fetch(input, init);
   } catch (problema) {
@@ -53,6 +53,62 @@ async function pedir(input: string, init?: RequestInit): Promise<Response> {
     if (problema instanceof DOMException && problema.name === 'AbortError') throw problema;
     throw new SinConexion();
   }
+}
+
+/** Una carpeta de red que pide usuario y clave, como la describe el servicio. */
+export interface PedidoDeCredenciales {
+  recurso: string;
+  mensaje: string;
+}
+
+/** Si la respuesta es la pregunta de usuario y clave de una carpeta de red. */
+export function credencialesPedidas(payload: unknown): PedidoDeCredenciales | null {
+  const detail = (payload as { detail?: unknown } | null)?.detail as
+    | { codigo?: unknown; recurso?: unknown; mensaje?: unknown }
+    | undefined;
+  if (!detail || typeof detail !== 'object' || detail.codigo !== 'credenciales_de_red') return null;
+  return { recurso: String(detail.recurso ?? ''), mensaje: String(detail.mensaje ?? '') };
+}
+
+type Preguntador = (
+  pedido: PedidoDeCredenciales
+) => Promise<{ usuario: string; clave: string } | null>;
+
+/** Quién le pregunta al operador: el cuadro de `CredencialesDeRed.svelte`. */
+let preguntar: Preguntador | null = null;
+
+export function alPedirCredenciales(preguntador: Preguntador | null): void {
+  preguntar = preguntador;
+}
+
+/**
+ * `fetch`, con la caída de la red convertida en un error que se entiende, y
+ * con la carpeta de red que pide usuario y clave resuelta en el camino.
+ *
+ * Cuando el servicio contesta 401 con `credenciales_de_red`, se le pregunta al
+ * operador, se entra con lo que escriba (`POST /api/red/conectar`) y se repite
+ * la petición: quien llamó recibe la respuesta como si nada. Si la clave no
+ * sirve, se vuelve a preguntar con el motivo; si cancela, recibe el 401 y lo
+ * enseña como cualquier otro error.
+ */
+async function pedir(input: string, init?: RequestInit): Promise<Response> {
+  const respuesta = await alServicio(input, init);
+  if (respuesta.status !== 401 || !preguntar) return respuesta;
+  let pedido = credencialesPedidas(await respuesta.clone().json().catch(() => null));
+  while (pedido) {
+    const cuenta = await preguntar(pedido);
+    if (!cuenta) return respuesta;
+    const conexion = await alServicio(`${BASE}/red/conectar`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ruta: pedido.recurso, usuario: cuenta.usuario, clave: cuenta.clave })
+    });
+    if (conexion.ok) return alServicio(input, init);
+    if (conexion.status !== 401) return conexion;
+    pedido = credencialesPedidas(await conexion.clone().json().catch(() => null));
+    if (!pedido) return conexion;
+  }
+  return respuesta;
 }
 
 /**
@@ -118,6 +174,9 @@ const ORIGENES = ['query', 'body', 'path', 'header', 'cookie'];
 export function mensajeDe(status: number, payload: unknown): string {
   const detail = (payload as { detail?: unknown } | null)?.detail;
   if (typeof detail === 'string' && detail) return detail;
+  // La carpeta de red que pide usuario y clave, cuando no se dieron.
+  const pedido = credencialesPedidas(payload);
+  if (pedido) return pedido.mensaje || 'La carpeta de red pide usuario y clave.';
   if (Array.isArray(detail) && detail.length) {
     const frases = (detail as ErrorDeCampo[]).map((error) => {
       const campo = (error.loc ?? [])

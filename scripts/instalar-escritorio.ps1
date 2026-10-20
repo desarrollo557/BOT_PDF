@@ -172,7 +172,7 @@ if (-not $listo) {
 
 Write-Host ""
 Write-Host "BOT_PDF listo en $url" -ForegroundColor Green
-Write-Host "Comprobarlo todo:  .\probar-instalacion.cmd   (26 pruebas, no gasta IA)" -ForegroundColor Yellow
+Write-Host "Comprobarlo todo:  .\probar-instalacion.cmd   (27 pruebas, no gasta IA)" -ForegroundColor Yellow
 Write-Host "Registro en vivo:  docker compose logs -f" -ForegroundColor Yellow
 Write-Host "Detenerlo:         docker compose down   (los datos se conservan)" -ForegroundColor Yellow
 if (-not $SinNavegador) { Start-Process $url }

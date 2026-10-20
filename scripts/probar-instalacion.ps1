@@ -160,6 +160,22 @@ Comprobar "Equipo" "Discos montados" {
     }
     if ($faltan.Count -eq 0) { Ok $unidades } else { Falla ("no se ven: " + ($faltan -join ", ")) }
 }
+Comprobar "Equipo" "Carpetas de red" {
+    # El cliente SMB en la imagen y la cadena entera -- API, cliente, traduccion
+    # del error -- sin credenciales: un servidor que no existe tiene que contestar
+    # "no se pudo conectar" (503), no tumbar nada ni colgarse.
+    $cliente = EnContenedor python -c "import smbclient; print('si')"
+    if ($cliente -notmatch "si") { return (Falla "la imagen no trae el cliente de red (smbprotocol)") }
+    $cuerpo = @{ ruta = '\\127.0.0.1\prueba' } | ConvertTo-Json
+    try {
+        Invoke-RestMethod -Method Post -UseBasicParsing -DisableKeepAlive -TimeoutSec 60 -ContentType "application/json" -Body $cuerpo "$url/api/reconocer-carpeta" | Out-Null
+        Falla "un servidor de red inexistente no dio error"
+    } catch {
+        $codigo = $_.Exception.Response.StatusCode.value__
+        if ($codigo -eq 503) { Ok "cliente SMB listo; un servidor que no existe se informa (503) sin colgar nada" }
+        else { Falla "se esperaba 503 y llego $codigo" }
+    }
+}
 Comprobar "Equipo" "Explorador de carpetas" {
     $inicio = Pedir "/api/folders"
     $raices = @($inicio.drives | ForEach-Object { $_.path })

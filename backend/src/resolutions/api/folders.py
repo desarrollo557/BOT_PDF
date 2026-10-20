@@ -16,6 +16,7 @@ from itertools import islice
 from pathlib import Path
 from uuid import uuid4
 
+from ..adapters import red_smb
 from ..adapters.excel_inventory import NOMBRE_DEL_INVENTARIO_DE_PROCESOS
 from . import constancia as constancias
 from .constancia import Constancia, EstadoDeEntrega, Vigencia
@@ -425,20 +426,41 @@ def validate_folders(source: str, destination: str) -> tuple[Path, Path]:
     destination = clean_path(destination)
     if not source or not destination:
         raise FolderError("Indique la carpeta de origen y la de destino")
+    # Una carpeta de red se comprueba antes de nada: si el servidor pide usuario
+    # y clave, `CredencialesDeRed` sube y la pantalla los pide.
+    if red_smb.es_de_red(source):
+        red_smb.asegurar(source)
+    if red_smb.por_smb(destination):
+        # Se lee de la red; no se escribe en ella: lo entregado va a una
+        # carpeta de este equipo, que es la que el bot puede vigilar y retomar.
+        raise FolderError(
+            "La carpeta de destino tiene que estar en este equipo (C:\\…); "
+            "el origen sí puede ser una carpeta de red"
+        )
     # En Docker, «C:\…» del operador está montada en otra ruta del contenedor
     # (ver `rutas_del_equipo.py`). Fuera de Docker no cambia nada.
     source = al_servicio(source)
     destination = al_servicio(destination)
 
-    origin = Path(source).expanduser()
     target = Path(destination).expanduser()
-
-    try:
-        origin = origin.resolve(strict=True)
-    except (OSError, FileNotFoundError):
-        raise FolderError(f"La carpeta de origen no existe: {source}") from None
-    if not origin.is_dir():
-        raise FolderError(f"El origen no es una carpeta: {origin}")
+    if red_smb.por_smb(source):
+        origin = Path(source)
+        try:
+            existe = red_smb.es_carpeta(source)
+        except red_smb.RedNoDisponible as error:
+            raise FolderError(str(error)) from None
+        except OSError as error:
+            raise FolderError(f"No se pudo leer la carpeta de red: {error}") from None
+        if not existe:
+            raise FolderError(f"La carpeta de origen no existe: {al_operador(source)}")
+    else:
+        origin = Path(source).expanduser()
+        try:
+            origin = origin.resolve(strict=True)
+        except (OSError, FileNotFoundError):
+            raise FolderError(f"La carpeta de origen no existe: {source}") from None
+        if not origin.is_dir():
+            raise FolderError(f"El origen no es una carpeta: {origin}")
 
     try:
         target.mkdir(parents=True, exist_ok=True)
@@ -543,6 +565,11 @@ class FolderRunner:
             raise FolderError("Retomar una entrega sólo está disponible para libros de diplomas")
         if modo in (Retomar.FALTANTES, Retomar.REVISAR) and watch:
             raise FolderError("Una carpeta que se retoma no se puede vigilar a la vez")
+        if red_smb.es_de_red(clean_path(source)) and disposition is not SourceDisposition.LEAVE:
+            # El original de una carpeta de red no se toca: es el repositorio.
+            raise FolderError(
+                "En una carpeta de red el original se deja como está: elija «Dejarlo»"
+            )
         origin, target = validate_folders(source, destination)
 
         for existing in self._runs.values():
@@ -685,6 +712,7 @@ class FolderRunner:
             run.en_curso.clear()
             run.queue = []
             await asyncio.to_thread(self._write_manifest, run)
+            await asyncio.to_thread(self._limpiar_las_copias, run)
             self._publish(run)
         except asyncio.CancelledError:
             # stop() already recorded the state; do not overwrite it. Pero lo
@@ -734,6 +762,7 @@ class FolderRunner:
         self._escribir_inventario_de_actas(run)
         self._escribir_todo_lo_general(run)
         self._write_manifest(run)
+        self._limpiar_las_copias(run)
 
     async def _descubrir_con_paciencia(
         self, run: FolderRun
@@ -801,6 +830,9 @@ class FolderRunner:
                 f"{error.strerror or error}. Sus PDF no entraron en esta corrida.",
             )
 
+        if red_smb.por_smb(run.source):
+            return self._discover_en_la_red(run)
+
         encontrados: list[Path] = []
         try:
             for carpeta, subcarpetas, archivos in os.walk(run.source, onerror=no_se_pudo):
@@ -815,13 +847,50 @@ class FolderRunner:
         except OSError as error:
             raise FolderError(f"No se pudo leer la carpeta de origen: {error}") from None
         encontrados.sort(key=lambda path: str(path).lower())
+        return self._repartir(run, encontrados, {})
 
+    def _discover_en_la_red(
+        self, run: FolderRun
+    ) -> tuple[list[Path], list[tuple[Path, Constancia | None]]]:
+        """Lo mismo que ``_discover``, para una carpeta de red leída con SMB.
+
+        Un listado por carpeta con el tamaño y la fecha de cada PDF: la huella
+        de cada uno sale de ahí, sin otra pregunta al servidor por archivo.
+        """
+
+        def no_se_pudo(carpeta: str, error: OSError) -> None:
+            self._avisar(
+                run,
+                f"No se pudo leer la carpeta «{self._relative(run, Path(carpeta))}»: "
+                f"{error.strerror or error}. Sus PDF no entraron en esta corrida.",
+            )
+
+        try:
+            archivos = red_smb.recorrer(
+                str(run.source), saltar=frozenset({CONSUMED_DIR}), al_fallar=no_se_pudo
+            )
+        except red_smb.CredencialesDeRed as error:
+            # A mitad de una corrida no hay a quién preguntar: se espera a que
+            # el operador vuelva a entrar, como con una unidad que se cayó.
+            raise FolderError(f"{error.motivo}: {error.recurso}. Vuelva a conectar la carpeta de red.") from None
+        except OSError as error:
+            raise FolderError(f"No se pudo leer la carpeta de red: {error}") from None
+        encontrados = [Path(archivo.ruta) for archivo in archivos]
+        huellas = {str(Path(archivo.ruta)): (archivo.tamano, archivo.modificado_ns) for archivo in archivos}
+        return self._repartir(run, encontrados, huellas)
+
+    def _repartir(
+        self, run: FolderRun, encontrados: list[Path], huellas: dict[str, tuple[int, int]]
+    ) -> tuple[list[Path], list[tuple[Path, Constancia | None]]]:
+        """Lo pendiente y lo ya entregado, según la constancia de cada PDF."""
         pending: list[Path] = []
         entregados: list[tuple[Path, Constancia | None]] = []
         for path in encontrados:
             key = str(path)
             if key in run.seen:
                 continue
+            if key in huellas:
+                run.huellas_del_origen[key] = huellas[key]
             if run.retomar == Retomar.NO:
                 vigencia, constancia = self._vigencia(run, path)
                 if vigencia is Vigencia.VIGENTE:
@@ -839,10 +908,11 @@ class FolderRunner:
                 vigencia, constancia = self._vigencia(run, path)
                 if constancia is not None or self._tiene_pdf_entregado(run, path):
                     run.a_rehacer[key] = (vigencia, constancia)
-            try:
-                run.huellas_del_origen[key] = constancias.huella_del_origen(path)
-            except OSError:
-                run.huellas_del_origen[key] = (0, 0)
+            if key not in huellas:
+                try:
+                    run.huellas_del_origen[key] = constancias.huella_del_origen(path)
+                except OSError:
+                    run.huellas_del_origen[key] = (0, 0)
             pending.append(path)
 
         return pending, entregados
@@ -866,7 +936,10 @@ class FolderRunner:
             constancia = constancias.leer(ruta)
             if constancia is not None:
                 base = ruta.parent.parent if actas else ruta.parent
-                return constancias.vigencia(constancia, path, base), constancia
+                # La huella que ya trajo el listado, si la hay: en una carpeta
+                # de red, preguntarla otra vez es una ida y vuelta por PDF.
+                huella = run.huellas_del_origen.get(str(path))
+                return constancias.vigencia(constancia, path, base, huella=huella), constancia
         return Vigencia.SIN_CONSTANCIA, None
 
     def _tiene_pdf_entregado(self, run: FolderRun, path: Path) -> bool:
@@ -1020,9 +1093,22 @@ class FolderRunner:
         # sólo las páginas que faltan.
         paginas: list[int] | None = None
         control: ControlDeUnLibro | None = None
+        # De una carpeta de red se procesa una copia local, bajada justo antes
+        # y borrada al terminar (ver `_copia_local`).
+        local = self._copia_local(run, path)
         if run.retomar in (Retomar.FALTANTES, Retomar.REVISAR):
-            control, paginas, seguir = await self._mirar_el_destino(run, path, relativa)
+            if local != path:
+                try:
+                    await asyncio.to_thread(red_smb.traer, str(path), local)
+                except Exception as error:  # noqa: BLE001 - un PDF que no baja no tumba la carpeta
+                    self._avisar(run, f"No se pudo traer «{relativa}» de la red: {explicar_fallo(error)}")
+                    run.failed += 1
+                    run.fallidos[str(path)] = explicar_fallo(error)
+                    self._publish(run)
+                    return
+            control, paginas, seguir = await self._mirar_el_destino(run, path, relativa, local)
             if not seguir:
+                self._borrar_la_copia(path, local)
                 self._pedir_generales(run)
                 self._publish(run)
                 return
@@ -1035,7 +1121,7 @@ class FolderRunner:
         huella = run.huellas_del_origen.pop(str(path), (0, 0))
         job = self._registry.create(
             filename=relativa,
-            source=path,
+            source=local,
             owns_source=False,
             size=huella[0],
             operator=run.operator,
@@ -1071,6 +1157,11 @@ class FolderRunner:
         self._publish(run)
 
         try:
+            if local != path and not local.exists():
+                # Dentro del `try`: una red que se corta a mitad de la copia es
+                # un fallo pasajero de este PDF, que vuelve en la vuelta de
+                # reintento, y no de la carpeta.
+                await asyncio.to_thread(red_smb.traer, str(path), local)
             await self._run_job(job)
 
             run.bytes_total += job.bytes
@@ -1099,7 +1190,7 @@ class FolderRunner:
                     run.entregas_incompletas = len(run.incompletas)
                 await asyncio.to_thread(self._dispose, run, path)
                 if control is not None:
-                    await self._comprobar_el_destino(run, path, control)
+                    await self._comprobar_el_destino(run, path, control, local)
             elif job.state is JobState.CANCELLED:
                 # Lo canceló el operador: no es un fallo y no se cuenta como tal.
                 if control is not None:
@@ -1122,6 +1213,7 @@ class FolderRunner:
                 control.accion = "falló"
                 control.error = job.error
         finally:
+            self._borrar_la_copia(path, local)
             run.en_curso.pop(job.id, None)
             self._anotar_el_proceso(run, job, relativa)
             if job.state is JobState.FAILED and job.reintentable:
@@ -1132,6 +1224,39 @@ class FolderRunner:
             # -- también si falló --, cuando le toque al escritor de fondo.
             self._pedir_generales(run)
             self._publish(run)
+
+    #: Dónde se dejan, mientras se procesan, las copias de los PDF de una carpeta de red.
+    CARPETA_DE_COPIAS = "red"
+
+    def _copia_local(self, run: FolderRun, path: Path) -> Path:
+        """El PDF que se procesa: el mismo, o su copia local si viene de la red.
+
+        La copia conserva la ruta entera del servidor -- «…/200.100.20.97/afinia/
+        REPOSITORIO/AFINIA/BOLIVAR SUR/COMERCIAL/MAGANGUE/210847/UPD….pdf» --
+        porque el Índice Electrónico lee de ella el municipio y el NIC.
+        """
+        partes = red_smb.partes(path) if red_smb.por_smb(path) else None
+        if partes is None:
+            return path
+        base = Path(self._settings.upload_dir) / self.CARPETA_DE_COPIAS / run.id
+        return base.joinpath(partes.servidor, partes.recurso, *partes.resto.split("\\"))
+
+    @staticmethod
+    def _borrar_la_copia(path: Path, local: Path) -> None:
+        """Una copia de la red no se queda ocupando disco cuando su PDF terminó."""
+        if local == path:
+            return
+        try:
+            local.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("no se pudo borrar la copia local %s", local, exc_info=True)
+
+    def _limpiar_las_copias(self, run: FolderRun) -> None:
+        """Al terminar o detener una corrida de red, nada suyo queda en la carpeta de copias."""
+        if red_smb.por_smb(run.source):
+            shutil.rmtree(
+                Path(self._settings.upload_dir) / self.CARPETA_DE_COPIAS / run.id, ignore_errors=True
+            )
 
     def _anotar_el_proceso(self, run: FolderRun, job: Job, relativa: str) -> None:
         from .indices import fila_de_proceso
@@ -1283,7 +1408,7 @@ class FolderRunner:
             run.generales_en = time.monotonic()
 
     async def _mirar_el_destino(
-        self, run: FolderRun, path: Path, relativa: str
+        self, run: FolderRun, path: Path, relativa: str, local: Path | None = None
     ) -> tuple[ControlDeUnLibro, list[int] | None, bool]:
         """Qué hay de este PDF en el destino, y qué hacer: (control, páginas, seguir).
 
@@ -1307,8 +1432,9 @@ class FolderRunner:
                 self._contar_lo_ya_entregado(run, path, constancia)
                 return control, None, False
         try:
+            # El libro se abre de su copia local si viene de la red.
             control.antes, control.ilegibles = await asyncio.to_thread(
-                conciliar_libro, path, carpeta, run.huellas
+                conciliar_libro, local or path, carpeta, run.huellas
             )
         except Exception as error:  # noqa: BLE001 - un PDF que no se deja mirar no tumba la carpeta
             logger.warning("no se pudo mirar el destino de %s", relativa, exc_info=True)
@@ -1325,14 +1451,14 @@ class FolderRunner:
         return control, paginas, True
 
     async def _comprobar_el_destino(
-        self, run: FolderRun, path: Path, control: ControlDeUnLibro
+        self, run: FolderRun, path: Path, control: ControlDeUnLibro, local: Path | None = None
     ) -> None:
         """Vuelve a mirar el destino tras entregar: lo que dice el control es lo que hay."""
         from .retomar import conciliar_libro
 
         try:
             control.despues, control.ilegibles = await asyncio.to_thread(
-                conciliar_libro, path, self._output_dir(run, path), run.huellas
+                conciliar_libro, local or path, self._output_dir(run, path), run.huellas
             )
         except Exception as error:  # noqa: BLE001 - la entrega ya está hecha
             logger.warning("no se pudo comprobar el destino de %s", control.pdf, exc_info=True)
@@ -1979,7 +2105,9 @@ class FolderRunner:
 
     def _dispose(self, run: FolderRun, path: Path) -> None:
         """Leave, move aside, or delete the original, as the operator chose."""
-        if run.disposition is SourceDisposition.LEAVE:
+        # El original de una carpeta de red no se toca nunca (`start` ya sólo
+        # admite «Dejarlo» ahí; esto es la segunda llave).
+        if run.disposition is SourceDisposition.LEAVE or red_smb.por_smb(path):
             return
         try:
             if run.disposition is SourceDisposition.DELETE:

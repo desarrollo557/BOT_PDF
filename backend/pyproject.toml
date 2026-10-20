@@ -17,6 +17,9 @@ dependencies = [
     # El inventario en MySQL. Sin esto el servicio arranca igual y guarda en
     # el archivo JSONL, que es lo correcto en una máquina sin base.
     "pymysql>=1.1",
+    # Las carpetas de red («\\servidor\recurso\…») dentro de Docker, sin montar
+    # nada ni dar permisos extra al contenedor (ver adapters/red_smb.py).
+    "smbprotocol>=1.15",
 ]
 
 [project.optional-dependencies]

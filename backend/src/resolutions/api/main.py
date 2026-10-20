@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from ..adapters import red_smb
 from ..adapters.ledger import InventoryLedger
 from ..adapters.mysql_inventory import (
     InventoryUnavailable,
@@ -49,6 +50,7 @@ from .routers import (
     lotes,
     mantenimiento,
     reconocer,
+    red,
     salidas,
     salud,
     trabajos,
@@ -265,6 +267,31 @@ async def _entrada_invalida(request: Request, error: RequestValidationError) -> 
     )
 
 
+@app.exception_handler(red_smb.CredencialesDeRed)
+async def _credenciales_de_red(request: Request, error: red_smb.CredencialesDeRed) -> JSONResponse:
+    """La carpeta de red pide usuario y clave: una pregunta para el operador, no un fallo.
+
+    Con un código que la pantalla reconoce, para que abra el cuadro de usuario
+    y clave, conecte y repita lo que estaba haciendo.
+    """
+    return JSONResponse(
+        status_code=401,
+        content={
+            "detail": {
+                "codigo": "credenciales_de_red",
+                "recurso": error.recurso,
+                "mensaje": f"{error.motivo}: {error.recurso}",
+            }
+        },
+    )
+
+
+@app.exception_handler(red_smb.RedNoDisponible)
+async def _red_no_disponible(request: Request, error: red_smb.RedNoDisponible) -> JSONResponse:
+    """El servidor de red no contesta o el recurso no existe: se dice tal cual."""
+    return JSONResponse(status_code=503, content={"detail": str(error)})
+
+
 @app.exception_handler(Exception)
 async def _fallo_interno(request: Request, error: Exception) -> JSONResponse:
     """Lo que nadie previó se registra entero y se cuenta a medias.
@@ -306,6 +333,7 @@ for router in (
     eventos.router,
     usuarios.router,
     reconocer.router,
+    red.router,
 ):
     app.include_router(router)
 
@@ -342,7 +370,7 @@ class _Pantalla(StaticFiles):
 
     async def get_response(self, path: str, scope):
         try:
-            return await super().get_response(path, scope)
+            respuesta = await super().get_response(path, scope)
         except StarletteHTTPException as error:
             # Sólo una ruta de página («archivo», «revision/123») es la página
             # única. Un archivo que no existe -- un .js de la versión anterior
@@ -352,7 +380,18 @@ class _Pantalla(StaticFiles):
             ultimo = path.rstrip("/").rsplit("/", 1)[-1]
             if error.status_code != 404 or path.startswith(("api", "_app")) or "." in ultimo:
                 raise
-            return await super().get_response("index.html", scope)
+            respuesta = await super().get_response("index.html", scope)
+        # Lo que lleva la versión en el nombre («3.DhUHgjH6.js») no cambia nunca
+        # y se guarda para siempre. Todo lo demás -- la página, que es la que
+        # dice qué archivos pedir -- se pregunta cada vez: un navegador que
+        # guardó la página de antes de reconstruir pedía archivos que ya no
+        # existen («Failed to fetch dynamically imported module», 2026-10-20).
+        # Starlette da la ruta con el separador del sistema: «\» en Windows.
+        if path.replace("\\", "/").startswith("_app/immutable/"):
+            respuesta.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            respuesta.headers["Cache-Control"] = "no-cache"
+        return respuesta
 
 
 frontend_root = _frontend_root()

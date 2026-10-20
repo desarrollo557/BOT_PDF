@@ -2,7 +2,9 @@
   import '../app.css';
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { setIdentidad, setOperator } from '$lib/api';
+  import { alPedirCredenciales, setIdentidad, setOperator } from '$lib/api';
+  import CredencialesDeRed from '$lib/components/CredencialesDeRed.svelte';
+  import { preguntaDeRed } from '$lib/red.svelte';
   import { atraparErroresSueltos } from '$lib/avisos.svelte';
   import Avisos from '$lib/components/Avisos.svelte';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
@@ -26,12 +28,15 @@
   onMount(() => {
     // Antes que nada: si conectar o arrancar la sesión fallan, eso también se ve.
     const soltar = atraparErroresSueltos();
+    // Una carpeta de red que pide usuario y clave: se le preguntan al operador.
+    alPedirCredenciales(({ recurso, mensaje }) => preguntaDeRed.pedir(recurso, mensaje));
     const release = jobStore.connect();
     const stop = session.start();
     return () => {
       release();
       stop();
       soltar();
+      alPedirCredenciales(null);
     };
   });
 
@@ -152,6 +157,7 @@
      de confirmar la puede hacer cualquier pantalla. -->
 <Avisos />
 <ConfirmDialog />
+<CredencialesDeRed />
 
 <style>
   .topbar {

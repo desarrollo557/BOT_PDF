@@ -33,6 +33,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
+from ..adapters import red_smb
+
 logger = logging.getLogger(__name__)
 
 #: El nombre de la constancia en la carpeta de un PDF. Con punto delante, para
@@ -88,7 +90,12 @@ class Constancia:
 
 
 def huella_del_origen(path: Path) -> tuple[int, int]:
-    """Tamaño y fecha de modificación del PDF de origen, sin abrirlo."""
+    """Tamaño y fecha de modificación del PDF de origen, sin abrirlo.
+
+    De una carpeta de red leída con SMB, se le pregunta al servidor.
+    """
+    if red_smb.por_smb(path):
+        return red_smb.huella(str(path))
     datos = path.stat()
     return datos.st_size, datos.st_mtime_ns
 
@@ -168,19 +175,27 @@ def archivos_de(carpeta: Path, rutas: list[Path]) -> list[dict]:
     return archivos
 
 
-def vigencia(constancia: Constancia | None, origen: Path, carpeta: Path) -> Vigencia:
+def vigencia(
+    constancia: Constancia | None,
+    origen: Path,
+    carpeta: Path,
+    *,
+    huella: tuple[int, int] | None = None,
+) -> Vigencia:
     """Si lo que dice la constancia sigue siendo verdad en el disco.
 
     Los archivos se comprueban con un solo listado de la carpeta cuando están
     en ella -- lo normal --, y uno por uno sólo los que van en subcarpetas.
+    ``huella`` es la del origen si ya se sabe -- la trajo el listado de la
+    carpeta --; si no, se mira.
     """
     if constancia is None:
         return Vigencia.SIN_CONSTANCIA
     if constancia.estado != EstadoDeEntrega.COMPLETA:
         return Vigencia.INCOMPLETA
     try:
-        tamano, modificado = huella_del_origen(origen)
-    except OSError:
+        tamano, modificado = huella if huella and huella != (0, 0) else huella_del_origen(origen)
+    except (OSError, red_smb.CredencialesDeRed):
         # Sin poder mirar el origen no se sabe si cambió: se procesa, y será su
         # lectura la que diga qué le pasa.
         return Vigencia.ORIGEN_CAMBIADO

@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, UploadFile
 
+from ...adapters import red_smb
 from ...application.sugerencia import sugerir
 from ...domain.doctype import DocumentType
 from ..contexto import Ctx
@@ -62,11 +63,34 @@ async def reconocer_archivo(ctx: Ctx, file: UploadFile) -> dict[str, object]:
         temporal.unlink(missing_ok=True)
 
 
+#: En una carpeta de red, cuántos PDF se bajan para sugerir el tipo. Cada uno
+#: viaja entero por la red; el total se sabe igual por el listado.
+MUESTRA_DE_LA_RED = 12
+
+
+def _sin_abrir(relativa: str, error: Exception) -> dict[str, object]:
+    return {
+        "ruta": relativa,
+        "tipo": str(DocumentType.DESCONOCIDO),
+        "etiqueta": DocumentType.DESCONOCIDO.label,
+        "por": "",
+        "motivo": f"no se pudo abrir: {type(error).__name__}",
+        "paginas": 0,
+    }
+
+
 @router.post("/api/reconocer-carpeta")
 async def reconocer_carpeta(payload: dict) -> dict[str, object]:
-    """Qué hay en una carpeta local y sus subcarpetas, PDF por PDF."""
+    """Qué hay en una carpeta local o de red y sus subcarpetas, PDF por PDF."""
+    escrita = clean_path(str((payload or {}).get("ruta") or ""))
+    if red_smb.es_de_red(escrita):
+        # Si el servidor pide usuario y clave, 401 y la pantalla los pide.
+        await asyncio.to_thread(red_smb.asegurar, escrita)
     # Dentro de Docker «C:\Users\…» es «/equipo/c/Users/…», como en la corrida.
-    raiz = Path(al_servicio(clean_path(str((payload or {}).get("ruta") or ""))))
+    ruta_del_servicio = al_servicio(escrita)
+    if red_smb.por_smb(ruta_del_servicio):
+        return await asyncio.to_thread(_reconocer_en_la_red, ruta_del_servicio)
+    raiz = Path(ruta_del_servicio)
     if not raiz.is_dir():
         raise HTTPException(status_code=404, detail="La carpeta no existe")
 
@@ -78,26 +102,42 @@ async def reconocer_carpeta(payload: dict) -> dict[str, object]:
             try:
                 archivos.append({"ruta": relativa, **_sugerencia(ruta, relativa)})
             except Exception as error:  # noqa: BLE001 - uno roto no tapa a los demás
-                archivos.append(
-                    {
-                        "ruta": relativa,
-                        "tipo": str(DocumentType.DESCONOCIDO),
-                        "etiqueta": DocumentType.DESCONOCIDO.label,
-                        "por": "",
-                        "motivo": f"no se pudo abrir: {type(error).__name__}",
-                        "paginas": 0,
-                    }
-                )
-        cuenta = Counter(archivo["tipo"] for archivo in archivos)
-        return {
-            "ruta": al_operador(raiz),
-            "total": len(pdfs),
-            "mirados": len(archivos),
-            "por_tipo": [
-                {"tipo": tipo, "etiqueta": DocumentType(tipo).label, "cantidad": cantidad}
-                for tipo, cantidad in cuenta.most_common()
-            ],
-            "archivos": archivos,
-        }
+                archivos.append(_sin_abrir(relativa, error))
+        return _resumen(al_operador(raiz), len(pdfs), archivos)
 
     return await asyncio.to_thread(recorrer)
+
+
+def _reconocer_en_la_red(ruta: str) -> dict[str, object]:
+    """Una carpeta de red: el total por el listado y el tipo por una muestra."""
+    import tempfile
+
+    if not red_smb.es_carpeta(ruta):
+        raise HTTPException(status_code=404, detail="La carpeta no existe")
+    pdfs = red_smb.recorrer(ruta)
+    archivos = []
+    with tempfile.TemporaryDirectory(prefix="reconocer-red-") as temporal:
+        for indice, pdf in enumerate(pdfs[:MUESTRA_DE_LA_RED]):
+            relativa = pdf.ruta[len(ruta.rstrip("/")) + 1 :]
+            try:
+                copia = red_smb.traer(pdf.ruta, Path(temporal) / f"{indice}.pdf")
+                archivos.append({"ruta": relativa, **_sugerencia(copia, relativa)})
+            except red_smb.CredencialesDeRed:
+                raise
+            except Exception as error:  # noqa: BLE001 - uno roto no tapa a los demás
+                archivos.append(_sin_abrir(relativa, error))
+    return _resumen(al_operador(ruta), len(pdfs), archivos)
+
+
+def _resumen(ruta: str, total: int, archivos: list[dict[str, object]]) -> dict[str, object]:
+    cuenta = Counter(archivo["tipo"] for archivo in archivos)
+    return {
+        "ruta": ruta,
+        "total": total,
+        "mirados": len(archivos),
+        "por_tipo": [
+            {"tipo": tipo, "etiqueta": DocumentType(tipo).label, "cantidad": cantidad}
+            for tipo, cantidad in cuenta.most_common()
+        ],
+        "archivos": archivos,
+    }

@@ -478,6 +478,16 @@ espera a que el servicio conteste y abre `http://localhost:8000`.
   servicio traduce las rutas en los dos sentidos (`api/rutas_del_equipo.py`).
   Si una unidad de red o de la nube (WorkDrive, OneDrive) no se deja montar, el
   instalador sigue con los discos locales y dice cuál quedó fuera.
+- **Carpetas de red, sin montar nada.** Como origen vale cualquier ruta de red
+  tal como la copia el Explorador: `\\200.100.20.97\afinia\REPOSITORIO\…`. El
+  servicio la lee con su propio cliente SMB (`adapters/red_smb.py`), sin permisos
+  extra para el contenedor. Si el servidor pide usuario y clave, **la pantalla
+  los pide** en ese momento (`DOMINIO\usuario`); quedan sólo en la memoria del
+  servicio -- en ningún archivo, ni en el `.env` -- y se vuelven a pedir al
+  reiniciarlo. Cada PDF se baja a una copia temporal justo antes de procesarse y
+  se borra al terminar; el original en la red no se mueve ni se borra (con
+  origen de red sólo cabe «Dejarlo»). El destino va en este equipo. Sin Docker,
+  en Windows, la red la abre el sistema con la sesión del usuario.
 - **Las llaves de la IA**, en el `.env` de la raíz (`MISTRAL_API_KEY`,
   `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`). Se leen al arrancar: tras cambiarlas,
   `docker compose up -d`.
@@ -514,8 +524,8 @@ funciona de verdad. No gasta IA y borra todo lo que crea:
 | Docker | motor encendido, contenedor corriendo y sano, sin reinicios ni falta de memoria |
 | Servicio | la API de salud, la pantalla, recargar `/archivo`, que una ruta de la API inexistente dé 404 |
 | Imagen | Tesseract con español, las versiones de `constraints-docker.txt`, las plantillas oficiales, `/data` escribible y su espacio, el registro diario |
-| Equipo | los discos montados, el explorador de carpetas, si llegó la llave de la IA |
-| Punta a punta | reconocer un PDF subido; una corrida de carpeta con rutas de Windows sobre un PDF digital y uno escaneado (Tesseract), con sus inventarios y constancias; volver a lanzarla y que no repita lo entregado |
+| Equipo | los discos montados, el cliente de carpetas de red (un servidor inexistente se informa, no cuelga nada), el explorador de carpetas, si llegó la llave de la IA |
+| Punta a punta | reconocer un PDF subido y la carpeta de origen; una corrida de carpeta con rutas de Windows sobre un PDF digital y uno escaneado (Tesseract), con sus inventarios y constancias; volver a lanzarla y que no repita lo entregado; detener al instante y retomar sin repetir |
 
 Termina con «TODO EN ORDEN» o con los fallos, y deja el informe en
 `prueba-instalacion.txt`. `-Rapida` se salta la corrida de punta a punta.

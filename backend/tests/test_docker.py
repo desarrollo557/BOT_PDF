@@ -63,6 +63,46 @@ class TestLasRutasDelEquipo:
         ]
 
 
+class TestLasCarpetasDeRed:
+    """La ruta de red del operador, leída con el cliente SMB dentro de Docker (2026-10-20)."""
+
+    RUTA = r"\\200.100.20.97\afinia\REPOSITORIO\AFINIA\BOLIVAR SUR\COMERCIAL\MAGANGUE"
+    DEL_SERVICIO = "//200.100.20.97/afinia/REPOSITORIO/AFINIA/BOLIVAR SUR/COMERCIAL/MAGANGUE"
+
+    @pytest.fixture(autouse=True)
+    def _en_linux(self, monkeypatch):
+        from resolutions.adapters import red_smb
+
+        monkeypatch.setattr(red_smb, "NATIVA", False)
+        monkeypatch.setenv(rutas.VARIABLE, "C:=/equipo/c")
+
+    def test_la_ruta_de_red_viaja_con_barras(self):
+        assert al_servicio(self.RUTA) == self.DEL_SERVICIO
+        # Con barras o sólo la raíz del recurso, también.
+        assert al_servicio("//200.100.20.97/afinia/REPOSITORIO") == "//200.100.20.97/afinia/REPOSITORIO"
+        assert al_servicio("\\\\200.100.20.97\\afinia\\") == "//200.100.20.97/afinia"
+
+    def test_y_se_le_ensena_como_la_copio(self):
+        assert al_operador(self.DEL_SERVICIO) == self.RUTA
+        # Como `Path` en Windows, que la escribe con «\\».
+        assert al_operador(Path(self.DEL_SERVICIO)) == self.RUTA
+        assert al_operador("//200.100.20.97/afinia") == "\\\\200.100.20.97\\afinia\\"
+        # Las unidades siguen igual.
+        assert al_operador("/equipo/c/Users") == r"C:\Users"
+
+    def test_la_raiz_de_un_recurso_es_una_raiz(self):
+        assert rutas.es_una_raiz("\\\\200.100.20.97\\afinia\\")
+        assert rutas.es_una_raiz("C:\\")
+        assert not rutas.es_una_raiz(self.RUTA)
+
+    def test_en_windows_la_red_la_abre_el_sistema(self, monkeypatch):
+        from resolutions.adapters import red_smb
+
+        monkeypatch.setattr(red_smb, "NATIVA", True)
+        monkeypatch.delenv(rutas.VARIABLE, raising=False)
+        assert al_servicio(self.RUTA) == self.RUTA
+
+
 class TestUnaCorridaConRutasDeWindows:
     def test_valida_y_ensena_las_rutas_del_operador(self, en_docker):
         from resolutions.api.folders import FolderRun, validate_folders
@@ -132,6 +172,29 @@ class TestLaPaginaUnica:
         # hacía fallar el script y la pestaña se recargaba sin parar.
         assert cliente.get("/_app/immutable/chunks/viejo.js").status_code == 404
         assert cliente.get("/favicon-que-no-existe.png").status_code == 404
+
+    def test_la_pagina_se_pregunta_y_lo_versionado_se_guarda(self, tmp_path):
+        """Un navegador que guardó la página de antes de reconstruir pedía
+        archivos que ya no existen: «Failed to fetch dynamically imported
+        module» en otro escritorio (2026-10-20)."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from resolutions.api.main import _Pantalla
+
+        (tmp_path / "index.html").write_text("<html>BOT_PDF</html>", encoding="utf-8")
+        nodos = tmp_path / "_app" / "immutable" / "nodes"
+        nodos.mkdir(parents=True)
+        (nodos / "3.nuevo.js").write_text("export {}", encoding="utf-8")
+        app = FastAPI()
+        app.mount("/", _Pantalla(directory=str(tmp_path), html=True), name="frontend")
+        cliente = TestClient(app)
+
+        for pagina in ("/", "/archivo", "/index.html"):
+            assert cliente.get(pagina).headers["cache-control"] == "no-cache", pagina
+        versionado = cliente.get("/_app/immutable/nodes/3.nuevo.js")
+        assert versionado.status_code == 200
+        assert "immutable" in versionado.headers["cache-control"]
 
 
 class TestElPaqueteLlevaSusPlantillas:

@@ -216,6 +216,13 @@
     { id: 'delete', label: 'Borrarlo', hint: 'Se elimina del origen' }
   ];
 
+  /**
+   * Una carpeta de red -- «\\servidor\recurso\…» --. Su original no se toca: es
+   * el repositorio de donde se lee, así que sólo cabe «Dejarlo».
+   */
+  const origenDeRed = $derived(/^(\\\\|\/\/)[^\\/]+[\\/]+[^\\/]+/.test(cleanPath(source)));
+  const disposicion = $derived<SourceDisposition>(origenDeRed ? 'leave' : disposition);
+
   const ready = $derived(cleanPath(source).length > 0 && cleanPath(destination).length > 0);
 
   async function start() {
@@ -225,7 +232,7 @@
       await jobStore.startFolder({
         source: cleanPath(source),
         destination: cleanPath(destination),
-        disposition,
+        disposition: disposicion,
         watch: puedeVigilar && watch,
         task,
         oracle,
@@ -247,7 +254,8 @@
 
 <div class="carpeta">
   <p class="lead">
-    El servicio lee y escribe carpetas de <b>esta máquina</b>. No se sube nada: toma los PDF
+    El servicio lee carpetas de <b>esta máquina</b> o de la <b>red</b> y escribe en esta máquina.
+    No se sube nada: toma los PDF
     de la carpeta —tantos a la vez como diga <b>Archivos en paralelo</b>—, los procesa y deja
     lo que sale de cada uno en el destino.
   </p>
@@ -281,7 +289,11 @@
         </svg>
       </button>
     </div>
-    <small>Elíjala con el icono, o pegue la ruta. Si trae comillas, se quitan solas.</small>
+    <small>
+      Elíjala con el icono, o pegue la ruta. Si trae comillas, se quitan solas. También vale
+      una carpeta de red (<span class="mono">\\servidor\recurso\…</span>): si pide usuario y
+      clave, se le preguntarán.
+    </small>
   </div>
 
   {#if analizando || analisis || errorDeAnalisis}
@@ -337,7 +349,8 @@
       {#each DISPOSITIONS as option (option.id)}
         <button
           type="button"
-          class:current={disposition === option.id}
+          class:current={disposicion === option.id}
+          disabled={origenDeRed && option.id !== 'leave'}
           onclick={() => (disposition = option.id)}
         >
           <b>{option.label}</b>
@@ -345,6 +358,9 @@
         </button>
       {/each}
     </div>
+    {#if origenDeRed}
+      <small>En una carpeta de red el original no se toca: sólo se lee.</small>
+    {/if}
   </fieldset>
 
   <fieldset>
@@ -542,6 +558,11 @@
   .choices button.current {
     border-color: var(--s4);
     color: var(--ink);
+  }
+  /* Lo que no cabe con este origen -- apartar o borrar un original de la red --. */
+  .choices button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 
   .toggle {

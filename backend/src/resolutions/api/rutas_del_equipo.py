@@ -9,12 +9,19 @@ explorador de la pantalla le enseñaría carpetas que no reconoce.
 Las unidades montadas se declaran en ``BOTPDF_UNIDADES`` -- «C:=/equipo/c;Z:=/equipo/z»
 --, que escribe el instalador según las unidades que encuentra. Sin ella (el
 servicio corriendo directamente en Windows) todo es la identidad: nada cambia.
+
+Las carpetas de red no se montan (lo pidió el operador el 2026-10-20 con
+«\\\\200.100.20.97\\afinia\\…»): en el contenedor se leen con el cliente SMB de
+``adapters/red_smb.py``, y su ruta viaja con barras -- «//200.100.20.97/afinia/…»
+--. El operador sigue pegando la ruta de red tal como la copia del Explorador.
 """
 
 from __future__ import annotations
 
 import os
 import re
+
+from ..adapters import red_smb
 
 VARIABLE = "BOTPDF_UNIDADES"
 
@@ -42,12 +49,24 @@ def unidades() -> dict[str, str]:
     return montadas
 
 
+def es_una_raiz(ruta: str) -> bool:
+    """Si es la raíz de una unidad («C:\\») o de un recurso de red («\\\\servidor\\recurso\\»)."""
+    if re.fullmatch(r"[A-Za-z]:\\?", ruta):
+        return True
+    partes = red_smb.partes(ruta)
+    return partes is not None and not partes.resto
+
+
 def al_servicio(ruta: str) -> str:
     """La ruta que escribió el operador, donde el servicio la encuentra.
 
-    «C:\\Users\\ana\\ENTRADA» -> «/equipo/c/Users/ana/ENTRADA». Una ruta de una
-    unidad que no está montada, o una que ya es del contenedor, pasa tal cual.
+    «C:\\Users\\ana\\ENTRADA» -> «/equipo/c/Users/ana/ENTRADA», y en el
+    contenedor «\\\\200.100.20.97\\afinia\\REPOSITORIO» -> «//200.100.20.97/afinia/REPOSITORIO».
+    Una ruta de una unidad que no está montada, o una que ya es del contenedor,
+    pasa tal cual.
     """
+    if red_smb.por_smb(ruta):
+        return red_smb.partes(ruta).del_servicio  # type: ignore[union-attr]
     montadas = unidades()
     coincide = _RUTA_DE_WINDOWS.match(ruta.strip()) if montadas else None
     if not coincide:
@@ -62,6 +81,9 @@ def al_servicio(ruta: str) -> str:
 def al_operador(ruta: object) -> str:
     """La ruta del contenedor como la reconoce el operador: «C:\\Users\\ana\\ENTRADA»."""
     texto = str(ruta)
+    if red_smb.por_smb(texto):
+        partes = red_smb.partes(texto)
+        return partes.unc if partes.resto else f"{partes.raiz}\\"  # type: ignore[union-attr]
     comparable = _barras(texto)
     for letra, montaje in unidades().items():
         if comparable == montaje or comparable.startswith(montaje + "/"):
@@ -71,5 +93,11 @@ def al_operador(ruta: object) -> str:
 
 
 def raices() -> list[dict[str, str]]:
-    """Las unidades montadas como puntos de partida del explorador de la pantalla."""
-    return [{"name": f"Disco {letra}:", "path": f"{letra}:\\"} for letra in sorted(unidades())]
+    """Las unidades montadas y las carpetas de red ya abiertas: los puntos de partida del explorador."""
+    discos = [{"name": f"Disco {letra}:", "path": f"{letra}:\\"} for letra in sorted(unidades())]
+    return discos + red_abierta()
+
+
+def red_abierta() -> list[dict[str, str]]:
+    """Los recursos de red a los que ya se entró en esta sesión del servicio."""
+    return [{"name": f"Red {raiz}", "path": f"{raiz}\\"} for raiz in red_smb.conectados()]
