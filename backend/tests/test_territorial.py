@@ -9,7 +9,29 @@ from __future__ import annotations
 
 import pytest
 
-from resolutions.domain.territorial import territorial_de_la_ruta
+from resolutions.domain.territorial import (
+    nic_de_la_ruta,
+    nombre_del_expediente,
+    territorial_de_la_ruta,
+)
+
+
+class TestElEncabezadoDeLaCaja:
+    """Lo fijó el operador con su planilla de UPD2998266 el 2026-10-20."""
+
+    def test_el_nic_es_la_carpeta_de_la_caja(self):
+        assert nic_de_la_ruta(r"C:\PRUEBAS_BOT\FUENTE\MAGANGUE\910349\UPD2998266.pdf") == "910349"
+        assert nic_de_la_ruta("/equipo/c/FUENTE/MAGANGUE/210847/UPD2998726.pdf") == "210847"
+
+    def test_una_caja_con_numero_de_caja_no_es_un_nic(self):
+        assert nic_de_la_ruta(r"…\COMERCIAL\MOMPOX\108C000534\UPD2452915.pdf") is None
+        assert nic_de_la_ruta(r"…\FUENTE\MAGANGUE\UPD2998266.pdf") is None
+        assert nic_de_la_ruta("") is None
+
+    def test_el_expediente_es_el_pdf_sin_la_carpeta(self):
+        assert nombre_del_expediente("910349/UPD2998266.pdf") == "UPD2998266"
+        assert nombre_del_expediente(r"910349\UPD2998266.pdf") == "UPD2998266"
+        assert nombre_del_expediente("UPD2326399.pdf") == "UPD2326399"
 
 
 @pytest.mark.parametrize(

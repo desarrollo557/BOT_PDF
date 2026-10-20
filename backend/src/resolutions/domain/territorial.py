@@ -36,6 +36,35 @@ def _carpetas(ruta: str) -> list[str]:
     return partes
 
 
+#: Un NIC es un número; una caja llamada «108C000534» es un número de caja, no un NIC.
+_NIC = re.compile(r"^\d{4,12}$")
+
+
+def nic_de_la_ruta(ruta: str) -> str | None:
+    """El NIC de la caja: la carpeta que contiene el PDF, si es un número.
+
+    Lo fijó el operador con su planilla el 2026-10-20: de
+    «…\\MAGANGUE\\210847\\UPD2998726.pdf» la «Identificación / Nic» es 210847.
+    """
+    carpetas = _carpetas(ruta)
+    if not carpetas:
+        return None
+    caja = carpetas[-1].strip()
+    return caja if _NIC.match(caja) else None
+
+
+def nombre_del_expediente(ruta: str) -> str:
+    """El expediente es el PDF de la caja, sin la carpeta: «UPD2998266».
+
+    En una corrida de carpeta el nombre del trabajo trae la subcarpeta --
+    «910349/UPD2998266.pdf» -- y el índice salía con «910349 UPD2998266».
+    """
+    archivo = [parte for parte in re.split(r"[\\/]+", ruta or "") if parte.strip()]
+    if not archivo:
+        return ""
+    return re.sub(r"\.[A-Za-z0-9]{1,5}$", "", archivo[-1]).strip()
+
+
 def territorial_de_la_ruta(ruta: str) -> str | None:
     """El municipio de la caja -- la carpeta que la contiene --; ``None`` si la ruta no lo dice."""
     carpetas = _carpetas(ruta)

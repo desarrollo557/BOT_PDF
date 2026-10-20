@@ -204,10 +204,12 @@ def _escribir_indice(report: dict, destination: Path, payload: dict) -> None:
       (S.F. si no trae ninguna);
     - la incorporación al expediente, el día en que el bot lo crea;
     - las observaciones, vacías: son las del negocio, las escribe el archivo;
-    - el responsable, quien procesa la caja; la territorial, la que escribió.
+    - el responsable, quien procesa la caja; la territorial, el municipio de
+      la ruta o lo que escribió.
 
-    El NIC no se escribe: la celda queda vacía y se llena a mano. El nombre
-    del expediente es el de la caja: «UPD2326399».
+    El NIC es la carpeta de la caja si es un número -- «…\\210847\\UPD….pdf» --;
+    si no, la celda queda vacía y se llena a mano (el de los papeles no se
+    extrae). El nombre del expediente es el del PDF: «UPD2326399».
 
     Que falle no invalida nada, igual que la planilla: se anota y se sigue.
     """
@@ -239,18 +241,23 @@ def _escribir_indice(report: dict, destination: Path, payload: dict) -> None:
         for orden, item in enumerate(items, start=1)
     ]
     try:
-        from ...domain.territorial import territorial_de_la_ruta
+        from ...domain.territorial import nic_de_la_ruta, territorial_de_la_ruta
 
+        de_una_carpeta = bool(payload.get("destination"))
         escrito = escribir_indice(
             destination,
             filas,
+            # La carpeta de la caja («…\MAGANGUE\210847\UPD….pdf» → 210847). No
+            # el NIC leído en los papeles: el operador pidió no extraerlo
+            # (2026-10-13); la carpeta no es una lectura, la puso el archivo.
+            nic=nic_de_la_ruta(str(payload.get("source") or "")) if de_una_carpeta else None,
             # El municipio, la carpeta que contiene la caja («…\COMERCIAL\
             # MAGANGUE\210847\UPD….pdf»). Sólo en una corrida de carpeta (con
             # destino): un archivo subido vive en la carpeta de subidas, cuya
             # ruta no dice nada. Si no, lo que escribió el operador.
             territorial=(
                 territorial_de_la_ruta(str(payload.get("source") or ""))
-                if payload.get("destination")
+                if de_una_carpeta
                 else None
             )
             or (payload.get("territorial") or "").strip()
@@ -312,7 +319,11 @@ def _nombre_de_la_fila(item: dict, report: dict) -> str:
     título es lo que el documento dice ser en su primera hoja, no una frase de
     su petición. Todo en mayúsculas.
     """
-    titulo = _primera_pieza(item, report).get("titulo") or item.get("type") or DOCUMENT_PREFIX
+    titulo = _primera_pieza(item, report).get("titulo")
+    # Lo que no tiene título conocido se llama como su archivo: el encabezado
+    # impreso de su hoja o su caja y sus páginas, nunca «DOCUMENTO» a secas.
+    if not titulo or titulo == DOCUMENT_PREFIX:
+        titulo = item.get("type") or DOCUMENT_PREFIX
     partes = [str(titulo)]
     radicado = _radicado_de_la_fila(item, report)
     if radicado:

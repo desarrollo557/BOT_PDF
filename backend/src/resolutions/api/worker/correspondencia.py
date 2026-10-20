@@ -20,6 +20,39 @@ from .taller import Taller, _anunciar
 #: trámite en que caen (UPD2326311 p1, UPD2326314 p3, UPD2320047 p7).
 _FORMATOS_SIN_RE_AJENO = ("ACTA", "LEY HABEAS", "AUTORIZACION", "SOLICITUD", "CONTRATO", "CERTIFICADO")
 
+#: La franja de arriba de la hoja donde va el título de un formato, y a cuánto
+#: se lee. Medido sobre UPD2998726: la tabla escrita a mano hunde la confianza
+#: de la página entera y su lectura se descarta, pero la franja sola a 400 ppp
+#: deja leer «FORMATO DE NUEVOS SUMINISTROS O SUMINISTROS MODIFICADOS».
+ALTO_DEL_ENCABEZADO = 0.22
+PPP_DEL_ENCABEZADO = 400
+#: Por qué un archivo se llamó por su origen y no por lo que es.
+SIN_TITULO = "sin título legible: se nombró por su caja y sus páginas"
+
+
+def _titulo_del_encabezado(fuente, pagina: int, lector) -> str | None:
+    """El título impreso de una hoja, leído en su franja de arriba con el OCR de casa.
+
+    Sólo para la hoja que abre un documento que nadie supo nombrar: son pocas,
+    y es Tesseract, así que no cuesta IA. La hoja se dibuja ya girada y la
+    franja se recorta de la imagen, que es lo que se ve; recortar en la página
+    sin girar tomaba un lateral en un formulario apaisado.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    from ...domain.titulo_impreso import titulo_impreso
+
+    try:
+        imagen = Image.open(BytesIO(fuente.render(pagina, None, PPP_DEL_ENCABEZADO)))
+        franja = imagen.crop((0, 0, imagen.width, int(imagen.height * ALTO_DEL_ENCABEZADO)))
+        salida = BytesIO()
+        franja.save(salida, format="PNG")
+        return titulo_impreso(lector.read(salida.getvalue()).text)
+    except Exception:  # noqa: BLE001 - sin franja legible, el nombre por su origen
+        return None
+
 
 def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     """Un PDF por unidad documental, cortando costura por costura.
@@ -34,6 +67,7 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     from ...adapters.pymupdf_assembler import PyMuPDFAssembler
     from ...adapters.pymupdf_source import PyMuPDFPageSource
     from ...adapters.tesseract_ocr import (
+        PSM_AUTO,
         PSM_TEXTO_DISPERSO,
         PSM_UNA_LINEA,
         TesseractConfig,
@@ -79,6 +113,7 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         lleva_etiqueta_de_envio,
         numero_del_acta_de_suspension,
     )
+    from ...domain.territorial import nombre_del_expediente
     from ...domain.tramites import radicado_de
 
     taller = Taller.desde(payload)
@@ -589,9 +624,33 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         titulo = _titulo(textos.get(primera, "") or "", None)
         if titulo != DOCUMENT_PREFIX:
             return replace(g, kind=titulo)
-        return g if g.kind else replace(g, kind=DOCUMENT_PREFIX)
+        if g.kind and g.kind != DOCUMENT_PREFIX:
+            return g
+        # Ningún documento se entrega sin un nombre que lo referencie (lo dictó
+        # el operador el 2026-10-20 ante «01_DOCUMENTO.pdf»): el título que
+        # imprime su primera hoja, leído del texto o, si la lectura de la hoja
+        # entera se descartó, de su franja de arriba; y si ninguno se deja
+        # leer, su caja y sus páginas, a revisión.
+        impreso = titulo_impreso(textos.get(primera, "") or "")
+        if impreso is None:
+            if not fuente_de_encabezados:
+                fuente_de_encabezados.append(PyMuPDFPageSource(tmp_path, taller.name))
+            impreso = _titulo_del_encabezado(fuente_de_encabezados[0], primera, lector_de_encabezados)
+        if impreso:
+            return replace(g, kind=impreso)
+        sin_titulo.append(primera)
+        return replace(g, kind=nombre_por_su_origen(taller.name, g.page_numbers))
 
-    grupos = replace(grupos, groups=[tipo_del_archivo(g) for g in grupos.groups])
+    from ...domain.titulo_impreso import nombre_por_su_origen, titulo_impreso
+
+    fuente_de_encabezados: list = []
+    lector_de_encabezados = TesseractOcr(TesseractConfig(min_word_confidence=0, psm=PSM_AUTO))
+    sin_titulo: list[int] = []
+    try:
+        grupos = replace(grupos, groups=[tipo_del_archivo(g) for g in grupos.groups])
+    finally:
+        for fuente in fuente_de_encabezados:
+            fuente.close()
     # F6. El nombre. Ningún documento se llama como su anexo: el que abre con
     # un reclamo y trae una cédula detrás es el reclamo, no un «DOCUMENTO DE
     # IDENTIDAD».
@@ -646,7 +705,8 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
             nombre=taller.name,
         ),
         en_revision=[boundary.right for boundary in costuras_en_revision]
-        + [pagina.page for pagina in sin_fecha_en_revision],
+        + [pagina.page for pagina in sin_fecha_en_revision]
+        + sin_titulo,
         estadisticas=estadisticas,
         anexos=anexos,
     )
@@ -683,6 +743,8 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         # evidencia no alcanza para moverlas, o porque la comprobación las volvió
         # al trámite abierto aunque la fecha y el radicado no lo soporten.
         + [{"page": hoja.page, "reason": hoja.motivo} for hoja in tramite_en_revision]
+        # El documento que no dejó leer ningún título y se nombró por su caja.
+        + [{"page": pagina, "reason": SIN_TITULO} for pagina in sin_titulo]
         # Y el escrito que enumera anexos que no aparecen detrás.
         # Dice de qué documento es la lista: una caja trae varios escritos con
         # su propia lista, y «pág. 2» a secas se confundía con la lista de la
@@ -727,7 +789,9 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         "anexos_declarados": [escrito.as_dict() for escrito in escritos],
         # Los documentos que forman cada archivo, y el expediente: la caja.
         "piezas": piezas,
-        "expediente": document_folder(taller.name),
+        # Sólo el PDF, sin la subcarpeta de la caja: «UPD2998266», no
+        # «910349 UPD2998266» (la caja va en «Identificación / Nic»).
+        "expediente": document_folder(nombre_del_expediente(taller.name)),
     }
     # 4. El Índice Electrónico del cliente, junto a los PDF de la caja y sin
     #    que nadie lo pida. Es el inventario de toda caja de correspondencia y

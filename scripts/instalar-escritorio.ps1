@@ -135,6 +135,11 @@ if ($LASTEXITCODE -eq 0 -and $etiquetas) {
 
 # -- 4. Construir y arrancar -----------------------------------------------------
 Paso "Construyendo la imagen y arrancando (la primera vez tarda unos minutos)..."
+# Docker escribe su progreso por stderr. Con "Stop", si alguien guarda la salida
+# en un archivo (*> o 2>&1), Windows PowerShell 5.1 toma la primera linea de
+# progreso por un error y corta la instalacion. Lo que decide es el codigo de
+# salida, que se mira justo despues.
+$ErrorActionPreference = "Continue"
 docker compose up -d --build
 if ($LASTEXITCODE -ne 0) {
     $locales = @($unidades | Where-Object { $_.DriveType -eq 3 })
@@ -146,6 +151,7 @@ if ($LASTEXITCODE -ne 0) {
     docker compose up -d --build
     if ($LASTEXITCODE -ne 0) { throw "docker compose no pudo arrancar el servicio. Revise el mensaje de arriba." }
 }
+$ErrorActionPreference = "Stop"
 
 # -- 5. Esperar a que conteste y abrir la pantalla ---------------------------------
 Paso "Esperando a que el servicio conteste..."
