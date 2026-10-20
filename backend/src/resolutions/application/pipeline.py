@@ -18,7 +18,7 @@ from ..domain.plantilla_de_pagina import Evidencia, plantilla_de
 from ..domain.resolution_code import ResolutionCode
 from ..domain.scoring import Selection, select_best
 from ..domain.title import extract_title
-from .control import NullRunControl, RunControl, hilos, mapear
+from .control import Cancelled, NullRunControl, RunControl, hilos, mapear
 from .diagnostico import explicar
 from .ports import HEADER_BAND, Band, Crop, OcrEngine, PageSource, VisionOracle
 from .progress import NullProgressReporter, ProgressEvent, ProgressReporter, Stage
@@ -394,6 +394,9 @@ class ClassificationPipeline:
         self._control.check()
         try:
             analysis = self._analyzer.analyse(source, page_number)
+        except Cancelled:
+            # Detener no es que la página esté dañada: se sale, no se anota.
+            raise
         except Exception as error:  # noqa: BLE001 - reported, not swallowed
             logger.warning("page %s failed to analyse", page_number, exc_info=True)
             analysis = PageAnalysis(

@@ -239,10 +239,16 @@ def _escribir_indice(report: dict, destination: Path, payload: dict) -> None:
         for orden, item in enumerate(items, start=1)
     ]
     try:
+        from ...domain.territorial import territorial_de_la_ruta
+
         escrito = escribir_indice(
             destination,
             filas,
-            territorial=(payload.get("territorial") or "").strip() or None,
+            # La de la ruta de la caja en el repositorio («…\AFINIA\BOLIVAR
+            # SUR\COMERCIAL\…»); si la ruta no la dice, la que escribió el operador.
+            territorial=territorial_de_la_ruta(str(payload.get("source") or ""))
+            or (payload.get("territorial") or "").strip()
+            or None,
             nombre_del_expediente=report.get("expediente") or None,
         )
         report["indice_electronico"] = escrito.name

@@ -61,8 +61,8 @@
 
   <!-- Debajo de las opciones y no encima: al elegir una, el aviso de que falta
        la territorial sale abajo, y el campo tiene que estar a la vista. -->
-  <label class="territorial" class:falta={!territorial.trim()}>
-    <span>Territorial de la caja <em>(obligatorio)</em></span>
+  <label class="territorial">
+    <span>Territorial de la caja <em>(obligatoria al subir archivos)</em></span>
     <input
       class="input"
       id="territorial-de-la-caja"
@@ -70,7 +70,7 @@
       value={territorial}
       oninput={(evento) => onTerritorial(evento.currentTarget.value)}
       onkeydown={(evento) => {
-        if (evento.key === 'Enter' && territorial.trim()) {
+        if (evento.key === 'Enter') {
           evento.preventDefault();
           onListo?.();
         }
@@ -78,9 +78,11 @@
       placeholder="Ej.: CESAR"
       maxlength="60"
       autocomplete="off"
-      required
     />
-    <small>Va en el encabezado del Índice Electrónico; el papel no la trae.</small>
+    <small>
+      Va en el encabezado del Índice Electrónico; el papel no la trae. Al procesar una carpeta del
+      repositorio (…\AFINIA\BOLIVAR SUR\COMERCIAL\…) se lee de la ruta y no hace falta escribirla.
+    </small>
   </label>
 </StepFrame>
 
@@ -108,10 +110,6 @@
     font-style: normal;
     font-weight: 400;
     color: var(--muted);
-  }
-
-  .territorial.falta input {
-    border-color: var(--warning);
   }
 
   .territorial small {

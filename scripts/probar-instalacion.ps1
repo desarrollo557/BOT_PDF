@@ -26,6 +26,10 @@ if (Test-Path $rutaEnv) {
 }
 $url = "http://localhost:$puerto"
 
+# Windows PowerShell 5.1 reutiliza las conexiones HTTP y a veces se cuelga con
+# ellas: cada peticion abre la suya (-DisableKeepAlive).
+[System.Net.ServicePointManager]::DefaultConnectionLimit = 64
+
 # -- registro de resultados ------------------------------------------------------
 $resultados = New-Object System.Collections.ArrayList
 function Anotar($bloque, $nombre, $estado, $detalle) {
@@ -47,7 +51,7 @@ function Ok($detalle) { [pscustomobject]@{ Estado = "OK"; Detalle = $detalle } }
 function Falla($detalle) { [pscustomobject]@{ Estado = "FALLO"; Detalle = $detalle } }
 function Aviso($detalle) { [pscustomobject]@{ Estado = "AVISO"; Detalle = $detalle } }
 function EnContenedor { param([Parameter(ValueFromRemainingArguments = $true)] $argumentos) (& docker exec botpdf @argumentos 2>&1 | ForEach-Object { "$_" }) -join "`n" }
-function Pedir($ruta) { Invoke-RestMethod -UseBasicParsing -TimeoutSec 30 "$url$ruta" }
+function Pedir($ruta) { Invoke-RestMethod -UseBasicParsing -DisableKeepAlive -TimeoutSec 30 "$url$ruta" }
 
 Write-Host ""
 Write-Host "Prueba de la instalacion de BOT_PDF en $url" -ForegroundColor Cyan
@@ -94,15 +98,15 @@ Comprobar "Servicio" "API de salud" {
     if ($script:salud.status -eq "ok") { Ok ("revision {0}, {1} procesos, {2} documentos de carpeta a la vez" -f $script:salud.api_revision, $script:salud.document_workers, $script:salud.folder_documents) } else { Falla "contesto '$($script:salud.status)'" }
 }
 Comprobar "Servicio" "Pantalla" {
-    $inicio = Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 "$url/"
+    $inicio = Invoke-WebRequest -UseBasicParsing -DisableKeepAlive -TimeoutSec 30 "$url/"
     if ($inicio.StatusCode -eq 200 -and $inicio.Content -match "<html") { Ok "se sirve en $url" } else { Falla "la pagina inicial no contesto bien" }
 }
 Comprobar "Servicio" "Paginas internas al recargar" {
-    $archivo = Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 "$url/archivo"
+    $archivo = Invoke-WebRequest -UseBasicParsing -DisableKeepAlive -TimeoutSec 30 "$url/archivo"
     if ($archivo.StatusCode -eq 200 -and $archivo.Content -match "<html") { Ok "/archivo devuelve la pantalla" } else { Falla "/archivo no devuelve la pantalla" }
 }
 Comprobar "Servicio" "Rutas de la API que no existen" {
-    try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 "$url/api/no-existe-prueba" | Out-Null; Falla "devolvio 200 en vez de 404" }
+    try { Invoke-WebRequest -UseBasicParsing -DisableKeepAlive -TimeoutSec 30 "$url/api/no-existe-prueba" | Out-Null; Falla "devolvio 200 en vez de 404" }
     catch { if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) { Ok "404, como debe" } else { Falla $_.Exception.Message } }
 }
 
@@ -227,7 +231,7 @@ print("listo")
 
         function Correr-Carpeta {
             $cuerpo = @{ source = $entrada; destination = $salida; task = "both"; lectura = "local"; tipo = "auto" } | ConvertTo-Json
-            $corrida = Invoke-RestMethod -Method Post -UseBasicParsing -TimeoutSec 60 -ContentType "application/json" -Body $cuerpo "$url/api/folder-runs"
+            $corrida = Invoke-RestMethod -Method Post -UseBasicParsing -DisableKeepAlive -TimeoutSec 60 -ContentType "application/json" -Body $cuerpo "$url/api/folder-runs"
             $script:corridas += $corrida.id
             $limite = (Get-Date).AddMinutes(10)
             do {
@@ -265,16 +269,112 @@ print("listo")
             if ($c.state -eq "done" -and $c.ya_entregados -eq 2 -and $c.processed -eq 0) { Ok "la segunda corrida salto los 2 PDF sin leerlos" }
             else { Falla ("ya entregados {0}, procesados {1}, estado {2}" -f $c.ya_entregados, $c.processed, $c.state) }
         }
+
+        # -- Detener a la mitad y retomar ------------------------------------
+        # Un PDF corto y uno largo escaneado, de uno en uno: cuando el corto ya
+        # se entrego y el largo va leyendo, se detiene. Tiene que responder al
+        # instante, dejar de leer y, al relanzar, saltar el corto y rehacer el largo.
+        $entradaD = Join-Path $base "ENTRADA-DETENER"
+        $salidaD = Join-Path $base "SALIDA-DETENER"
+        $hacerLargo = @'
+import sys, pathlib, pymupdf
+destino = pathlib.Path(sys.argv[1]) / "ENTRADA-DETENER"
+destino.mkdir(parents=True, exist_ok=True)
+def pagina(doc, texto):
+    p = doc.new_page(width=612, height=792)
+    p.insert_text((72, 90), texto, fontsize=13)
+d = pymupdf.open()
+pagina(d, "UNIVERSIDAD DE CARTAGENA\nRESOLUCION No. 00010 DE 2025\nPor medio de la cual se hace un encargo\nEL RECTOR DE LA UNIVERSIDAD DE CARTAGENA")
+d.save(str(destino / "A CORTO 00010.pdf"))
+fuente = pymupdf.open()
+for n in range(60):
+    pagina(fuente, "RESOLUCION No. %05d DE 2025\nPor medio de la cual se hace un nombramiento\nEL RECTOR DE LA UNIVERSIDAD DE CARTAGENA\nCONSIDERANDO: pagina %d" % (100 + n // 2, n + 1))
+largo = pymupdf.open()
+for p in fuente:
+    pix = p.get_pixmap(dpi=150)
+    nueva = largo.new_page(width=p.rect.width, height=p.rect.height)
+    nueva.insert_image(nueva.rect, pixmap=pix)
+largo.save(str(destino / "B LARGO ESCANEADO.pdf"))
+print("listo")
+'@
+        $hecho = $hacerLargo | docker exec -i botpdf python - $enContenedor 2>&1
+        if (-not (Test-Path (Join-Path $entradaD "B LARGO ESCANEADO.pdf"))) { throw "no se pudieron crear los PDF de la prueba de detener ($hecho)" }
+
+        $detenida = $null
+        Comprobar "Punta a punta" "Detener es inmediato" {
+            $cuerpo = @{ source = $entradaD; destination = $salidaD; task = "both"; lectura = "local"; tipo = "auto"; paralelo = 1 } | ConvertTo-Json
+            $corrida = Invoke-RestMethod -Method Post -UseBasicParsing -DisableKeepAlive -TimeoutSec 60 -ContentType "application/json" -Body $cuerpo "$url/api/folder-runs"
+            $script:corridas += $corrida.id
+            # Esperar a que el corto este entregado y el largo vaya leyendo.
+            $largo = $null
+            $limite = (Get-Date).AddMinutes(4)
+            do {
+                Start-Sleep -Milliseconds 700
+                $corrida = Pedir "/api/folder-runs/$($corrida.id)"
+                $script:trabajos += @($corrida.job_ids)
+                $enCurso = @($corrida.en_curso | Where-Object { $_.nombre -match "LARGO" })
+                if ($enCurso.Count -and $corrida.processed -ge 1) {
+                    $largo = Pedir "/api/jobs/$($enCurso[0].job_id)"
+                    if ($largo.progress.pages_done -ge 2) { break }
+                }
+            } while ($corrida.state -in "scanning", "processing" -and (Get-Date) -lt $limite)
+            if (-not $largo) { return (Falla "el PDF largo no llego a leerse; no se pudo probar detener") }
+
+            $reloj = [Diagnostics.Stopwatch]::StartNew()
+            Invoke-RestMethod -Method Post -UseBasicParsing -DisableKeepAlive -TimeoutSec 30 "$url/api/folder-runs/$($corrida.id)/stop" | Out-Null
+            $respuesta = $reloj.Elapsed.TotalSeconds
+            # El documento en curso, cancelado en pantalla al momento.
+            $cancelado = $false
+            $limite = (Get-Date).AddSeconds(10)
+            do {
+                $l = Pedir "/api/jobs/$($largo.id)"
+                if ($l.state -eq "cancelled") { $cancelado = $true; break }
+                Start-Sleep -Milliseconds 300
+            } until ((Get-Date) -gt $limite)
+            $enCancelar = $reloj.Elapsed.TotalSeconds
+            # Y el worker deja de leer: las paginas no siguen subiendo.
+            Start-Sleep -Seconds 3
+            $antes = (Pedir "/api/jobs/$($largo.id)").progress.pages_done
+            Start-Sleep -Seconds 8
+            $despues = (Pedir "/api/jobs/$($largo.id)").progress.pages_done
+            # Y la pantalla sigue contestando mientras se escriben los inventarios.
+            $reloj2 = [Diagnostics.Stopwatch]::StartNew()
+            Pedir "/api/health" | Out-Null
+            $salud = $reloj2.Elapsed.TotalSeconds
+            $estadoCorrida = (Pedir "/api/folder-runs/$($corrida.id)").state
+            $script:detenida = $corrida.id
+            if ($respuesta -gt 3) { Falla ("detener tardo {0:N1} s en contestar" -f $respuesta) }
+            elseif (-not $cancelado) { Falla "el documento en curso no quedo cancelado en 10 s" }
+            elseif ($despues -gt $antes) { Falla ("siguio leyendo despues de detener: {0} -> {1} paginas" -f $antes, $despues) }
+            elseif ($estadoCorrida -ne "stopped") { Falla "la carpeta quedo en '$estadoCorrida'" }
+            else { Ok ("contesto en {0:N2} s, cancelado en {1:N1} s, sin leer mas paginas ({2}), salud en {3:N2} s" -f $respuesta, $enCancelar, $antes, $salud) }
+        }
+        Comprobar "Punta a punta" "Retomar tras detener no repite" {
+            $cuerpo = @{ source = $entradaD; destination = $salidaD; task = "both"; lectura = "local"; tipo = "auto"; paralelo = 1 } | ConvertTo-Json
+            $corrida = Invoke-RestMethod -Method Post -UseBasicParsing -DisableKeepAlive -TimeoutSec 60 -ContentType "application/json" -Body $cuerpo "$url/api/folder-runs"
+            $script:corridas += $corrida.id
+            $limite = (Get-Date).AddMinutes(10)
+            do {
+                Start-Sleep -Seconds 2
+                $corrida = Pedir "/api/folder-runs/$($corrida.id)"
+            } while ($corrida.state -in "scanning", "processing", "recovering" -and (Get-Date) -lt $limite)
+            $script:trabajos += @($corrida.job_ids)
+            if ($corrida.state -eq "done" -and $corrida.ya_entregados -eq 1 -and $corrida.processed -eq 1 -and $corrida.failed -eq 0) {
+                Ok "salto el PDF ya entregado y rehizo solo el que se habia detenido"
+            } else {
+                Falla ("estado {0}, ya entregados {1}, procesados {2}, fallidos {3}" -f $corrida.state, $corrida.ya_entregados, $corrida.processed, $corrida.failed)
+            }
+        }
     } catch {
         Anotar "Punta a punta" "Corrida de carpeta" "FALLO" $_.Exception.Message
     } finally {
         # Todo lo que la prueba creo se borra: archivos, filas del Archivo y corridas.
         $ids = @($trabajos | Where-Object { $_ } | Select-Object -Unique)
         if ($ids.Count) {
-            try { Invoke-RestMethod -Method Delete -UseBasicParsing -TimeoutSec 60 -ContentType "application/json" -Body (@{ job_ids = $ids } | ConvertTo-Json) "$url/api/documents" | Out-Null } catch {}
-            foreach ($id in $ids) { try { Invoke-RestMethod -Method Delete -UseBasicParsing -TimeoutSec 30 "$url/api/jobs/$id" | Out-Null } catch {} }
+            try { Invoke-RestMethod -Method Delete -UseBasicParsing -DisableKeepAlive -TimeoutSec 60 -ContentType "application/json" -Body (@{ job_ids = $ids } | ConvertTo-Json) "$url/api/documents" | Out-Null } catch {}
+            foreach ($id in $ids) { try { Invoke-RestMethod -Method Delete -UseBasicParsing -DisableKeepAlive -TimeoutSec 30 "$url/api/jobs/$id" | Out-Null } catch {} }
         }
-        foreach ($id in $corridas) { try { Invoke-RestMethod -Method Delete -UseBasicParsing -TimeoutSec 30 "$url/api/folder-runs/$id" | Out-Null } catch {} }
+        foreach ($id in $corridas) { try { Invoke-RestMethod -Method Delete -UseBasicParsing -DisableKeepAlive -TimeoutSec 30 "$url/api/folder-runs/$id" | Out-Null } catch {} }
         Remove-Item (Split-Path $base -Parent) -Recurse -Force -ErrorAction SilentlyContinue
         Anotar "Punta a punta" "Limpieza" "OK" "se borro lo que creo la prueba"
     }

@@ -10,7 +10,7 @@
 # Los datos (salidas, libro mayor, usuarios, registro) viven en el volumen
 # "bot_pdf_botpdf_data" y sobreviven a reconstruir la imagen o volver a clonar.
 
-param([int]$Puerto = 0)
+param([int]$Puerto = 0, [switch]$SinNavegador)
 
 $ErrorActionPreference = "Stop"
 
@@ -169,4 +169,4 @@ Write-Host "BOT_PDF listo en $url" -ForegroundColor Green
 Write-Host "Comprobarlo todo:  .\probar-instalacion.cmd   (23 pruebas, no gasta IA)" -ForegroundColor Yellow
 Write-Host "Registro en vivo:  docker compose logs -f" -ForegroundColor Yellow
 Write-Host "Detenerlo:         docker compose down   (los datos se conservan)" -ForegroundColor Yellow
-Start-Process $url
+if (-not $SinNavegador) { Start-Process $url }

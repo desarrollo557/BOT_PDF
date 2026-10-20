@@ -591,7 +591,10 @@ class FolderRunner:
         run.state = RunState.STOPPED
         run.finished_at = _now()
         run.en_curso.clear()
-        self._write_manifest(run)
+        # La planilla de la entrega y los inventarios los escribe la propia
+        # corrida al recibir la cancelación, en un hilo (ver `_drain`). Aquí
+        # escribían en el hilo que atiende la pantalla: con una carpeta grande,
+        # «Detener» tardaba en contestar y todo parecía colgado.
         self._publish(run)
         return run
 
@@ -690,8 +693,15 @@ class FolderRunner:
             if run.escritor is not None:
                 run.escritor.cancel()
             run.generales_pendientes = False
-            self._escribir_inventario_de_actas(run)
-            self._escribir_todo_lo_general(run)
+            # En un hilo y protegido: la pantalla sigue atendiendo mientras se
+            # escribe, y una segunda pulsación de «Detener» no deja los Excel a
+            # medio escribir.
+            try:
+                await asyncio.shield(asyncio.to_thread(self._dejar_escrito_al_detener, run))
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 - detener no falla por un Excel
+                logger.warning("no se pudo dejar escrito lo de %s al detener", run.source, exc_info=True)
             self._publish(run)
             raise
         except Exception as error:  # noqa: BLE001 - surfaced to the operator
@@ -718,6 +728,12 @@ class FolderRunner:
             run.error = explicar_fallo(error)
             run.finished_at = _now()
             self._publish(run)
+
+    def _dejar_escrito_al_detener(self, run: FolderRun) -> None:
+        """Lo inventariado hasta aquí, escrito: detener a la mitad no pierde lo leído."""
+        self._escribir_inventario_de_actas(run)
+        self._escribir_todo_lo_general(run)
+        self._write_manifest(run)
 
     async def _descubrir_con_paciencia(
         self, run: FolderRun
@@ -1084,6 +1100,10 @@ class FolderRunner:
                 await asyncio.to_thread(self._dispose, run, path)
                 if control is not None:
                     await self._comprobar_el_destino(run, path, control)
+            elif job.state is JobState.CANCELLED:
+                # Lo canceló el operador: no es un fallo y no se cuenta como tal.
+                if control is not None:
+                    control.accion = "cancelado"
             else:
                 run.failed += 1
                 if control is not None:

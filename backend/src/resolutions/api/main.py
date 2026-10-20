@@ -344,7 +344,13 @@ class _Pantalla(StaticFiles):
         try:
             return await super().get_response(path, scope)
         except StarletteHTTPException as error:
-            if error.status_code != 404 or path.startswith("api"):
+            # Sólo una ruta de página («archivo», «revision/123») es la página
+            # única. Un archivo que no existe -- un .js de la versión anterior
+            # que pide una pestaña abierta antes de reconstruir -- es un 404 de
+            # verdad: servirle HTML hacía fallar el script y la pestaña se
+            # recargaba una y otra vez.
+            ultimo = path.rstrip("/").rsplit("/", 1)[-1]
+            if error.status_code != 404 or path.startswith(("api", "_app")) or "." in ultimo:
                 raise
             return await super().get_response("index.html", scope)
 

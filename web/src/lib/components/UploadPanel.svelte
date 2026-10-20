@@ -92,7 +92,9 @@
   );
   const opcionDeAgrupar = $derived(agrupaciones.find((opcion) => opcion.id === agruparElegido));
   /* Una caja de correspondencia sale con su Índice Electrónico, y su encabezado
-     pide la territorial: el papel no la trae, así que sin ella no se sigue. */
+     pide la territorial: el papel no la trae. Al subir archivos se escribe; en una
+     carpeta del repositorio el servicio la lee de la ruta («…\AFINIA\BOLIVAR SUR\…»),
+     así que sólo se exige al subir (ver `recibirArchivos`), no para avanzar de paso. */
   const faltaTerritorial = $derived(
     habilidad.agrupar && !territorial.trim()
       ? 'Escriba la territorial de la caja (ej.: CESAR): va en el Índice Electrónico.'
@@ -185,9 +187,7 @@
         ? blockedLectura
         : pasoId === 'oracle'
           ? blocked
-          : pasoId === 'agrupar'
-            ? faltaTerritorial
-            : null
+          : null
   );
 
   const reduceMotion =
@@ -333,12 +333,6 @@
   function elegirAgrupar(a: AgruparChoice) {
     agrupar = a;
     notice = null;
-    // Sin territorial no se avanza: el paso se queda abierto con su campo.
-    if (faltaTerritorial) {
-      notice = faltaTerritorial;
-      document.getElementById('territorial-de-la-caja')?.focus();
-      return;
-    }
     siguiente();
   }
 

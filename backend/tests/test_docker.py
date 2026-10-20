@@ -116,6 +116,10 @@ class TestLaPaginaUnica:
         assert "BOT_PDF" in cliente.get("/revision/123").text
         # Una ruta de la API que no existe sigue siendo un 404.
         assert cliente.get("/api/no-existe").status_code == 404
+        # Y un archivo que no existe también: un .js viejo que recibía HTML
+        # hacía fallar el script y la pestaña se recargaba sin parar.
+        assert cliente.get("/_app/immutable/chunks/viejo.js").status_code == 404
+        assert cliente.get("/favicon-que-no-existe.png").status_code == 404
 
 
 class TestElPaqueteLlevaSusPlantillas:
