@@ -69,8 +69,8 @@ class TestColumnas:
             # (la incorporación por el bot), el orden, las páginas, el formato,
             # las observaciones vacías y quien lo procesó.
             (
-                # Título directo y fecha del documento, en mayúsculas.
-                "SOLICITUD DE SERVICIO ELECTRICO EN BAJA TENSION - 14/06/2022",
+                # Sólo el título directo, en mayúsculas: la fecha va en su columna.
+                "SOLICITUD DE SERVICIO ELECTRICO EN BAJA TENSION",
                 "14/06/2022",
                 hoy,
                 1,

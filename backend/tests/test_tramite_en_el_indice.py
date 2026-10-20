@@ -156,9 +156,10 @@ class TestElIndiceDelTramite:
 
         hoja = self.openpyxl.load_workbook(tmp_path / indice_electronico.NOMBRE_DEL_INDICE).active
         assert hoja["B3"].value == "UPD2321099"
-        # Lo que dice ser la primera hoja, el RE del trámite y su fecha: no la
-        # clase del trámite (RECLAMO) ni una frase de la petición.
-        assert hoja["A8"].value == "DERECHO DE PETICION - RE3110202043677 - 02/12/2020"
+        # Sólo lo que dice ser la primera hoja: no la clase del trámite
+        # (RECLAMO) ni una frase de la petición, y desde el 2026-10-20 sin el RE
+        # ni la fecha detrás («que solo salga el título»).
+        assert hoja["A8"].value == "DERECHO DE PETICION"
         # La creación es la fecha del documento -- su sello, su guía --; la
         # incorporación, el día del bot.
         assert hoja["B8"].value == "02/12/2020"

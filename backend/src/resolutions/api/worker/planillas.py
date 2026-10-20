@@ -8,7 +8,6 @@ informe, y aquí se convierten en el papel que acompaña la carpeta.
 from __future__ import annotations
 
 import logging
-import re
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -278,11 +277,6 @@ def _fecha_iso(valor: object) -> date | None:
         return None
 
 
-#: El número de un trámite en el código de su archivo: «01 RE3110202138312
-#: 02-09-2021», «02 P43102019110005», «03 SIN-RADICADO-2022-08-18».
-_RADICADO_DEL_CODIGO = re.compile(r"\b(RE\d{13}|P\d{14}|SIN-RADICADO)", re.IGNORECASE)
-
-
 def _piezas_de(item: dict, report: dict) -> list[dict]:
     """Los documentos del corte que caen en el archivo de esta fila, en orden."""
     suyas = set(item.get("page_numbers") or [])
@@ -301,34 +295,20 @@ def _fecha_de_la_fila(item: dict, report: dict) -> date | None:
     return _fecha_iso(_primera_pieza(item, report).get("fecha")) or _fecha_iso(item.get("fecha"))
 
 
-def _radicado_de_la_fila(item: dict, report: dict) -> str | None:
-    """El RE del trámite; fuera de un trámite, el del documento si lo trae."""
-    if report.get("agrupar") == "tramite":
-        hallado = _RADICADO_DEL_CODIGO.search(str(item.get("code") or ""))
-        if hallado is not None:
-            radicado = hallado.group(1).upper()
-            return "SIN RADICADO" if radicado == "SIN-RADICADO" else radicado
-    radicado = _primera_pieza(item, report).get("radicado")
-    return str(radicado).upper() if radicado else None
-
-
 def _nombre_de_la_fila(item: dict, report: dict) -> str:
-    """Título directo, radicado y fecha: «DERECHO DE PETICION - RE3110202043677 - 02/12/2020».
+    """Sólo el título directo: «DERECHO DE PETICION».
 
     Lo pidió el operador mirando la primera imagen de cada documento: el
     título es lo que el documento dice ser en su primera hoja, no una frase de
-    su petición. Todo en mayúsculas.
+    su petición. Todo en mayúsculas. Llevó detrás el radicado y la fecha
+    («… - RE3110202043677 - 02/12/2020») hasta el 2026-10-20.
     """
     titulo = _primera_pieza(item, report).get("titulo")
     # Lo que no tiene título conocido se llama como su archivo: el encabezado
     # impreso de su hoja o su caja y sus páginas, nunca «DOCUMENTO» a secas.
     if not titulo or titulo == DOCUMENT_PREFIX:
         titulo = item.get("type") or DOCUMENT_PREFIX
-    partes = [str(titulo)]
-    radicado = _radicado_de_la_fila(item, report)
-    if radicado:
-        partes.append(radicado)
-    fecha = _fecha_de_la_fila(item, report)
-    if fecha:
-        partes.append(f"{fecha:%d/%m/%Y}")
-    return " - ".join(partes).upper()
+    # Sólo el título (lo dictó el operador el 2026-10-20: «quita la fecha al
+    # lado del título, que solo salga el título»). La fecha ya tiene su columna
+    # y el RE va en el nombre del PDF.
+    return str(titulo).upper()
