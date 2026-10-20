@@ -91,6 +91,18 @@ class TestUnaCorridaConRutasDeWindows:
         assert z["parent"] is None
         assert z["folders"] == [{"name": "Shared with Me", "path": r"Z:\Shared with Me"}]
 
+    def test_reconocer_la_carpeta_encuentra_la_ruta_de_windows(self, en_docker):
+        """Antes de procesar, la pantalla pide reconocer la carpeta: sin traducir
+        la ruta, dentro del contenedor contestaba «La carpeta no existe»."""
+        import asyncio
+
+        from resolutions.api.routers.reconocer import reconocer_carpeta
+
+        (Path(en_docker["C"]) / "FUENTE" / "MAGANGUE").mkdir(parents=True)
+        respuesta = asyncio.run(reconocer_carpeta({"ruta": r"C:\FUENTE\MAGANGUE"}))
+        assert respuesta["ruta"] == r"C:\FUENTE\MAGANGUE"
+        assert respuesta["total"] == 0
+
 
 class TestLaPaginaUnica:
     def test_recargar_una_ruta_del_front_sirve_la_pagina(self, tmp_path):

@@ -242,6 +242,13 @@ print("listo")
             return $corrida
         }
 
+        # Lo primero que hace la pantalla al pulsar «Procesar carpeta»: reconocerla.
+        Comprobar "Punta a punta" "Reconocer la carpeta de origen" {
+            $cuerpo = @{ ruta = $entrada } | ConvertTo-Json
+            $r = Invoke-RestMethod -Method Post -UseBasicParsing -DisableKeepAlive -TimeoutSec 60 -ContentType "application/json" -Body $cuerpo "$url/api/reconocer-carpeta"
+            if ($r.total -eq 2) { Ok ("2 PDF reconocidos en {0}" -f $r.ruta) } else { Falla ("se esperaban 2 PDF y hay {0}" -f $r.total) }
+        }
+
         $primera = $null
         Comprobar "Punta a punta" "Corrida de carpeta con rutas de Windows" {
             $script:primera = Correr-Carpeta

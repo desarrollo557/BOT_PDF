@@ -19,6 +19,7 @@ from ...application.sugerencia import sugerir
 from ...domain.doctype import DocumentType
 from ..contexto import Ctx
 from ..folders import clean_path
+from ..rutas_del_equipo import al_operador, al_servicio
 from .trabajos import _stream_to_disk
 
 router = APIRouter()
@@ -64,7 +65,8 @@ async def reconocer_archivo(ctx: Ctx, file: UploadFile) -> dict[str, object]:
 @router.post("/api/reconocer-carpeta")
 async def reconocer_carpeta(payload: dict) -> dict[str, object]:
     """Qué hay en una carpeta local y sus subcarpetas, PDF por PDF."""
-    raiz = Path(clean_path(str((payload or {}).get("ruta") or "")))
+    # Dentro de Docker «C:\Users\…» es «/equipo/c/Users/…», como en la corrida.
+    raiz = Path(al_servicio(clean_path(str((payload or {}).get("ruta") or ""))))
     if not raiz.is_dir():
         raise HTTPException(status_code=404, detail="La carpeta no existe")
 
@@ -88,7 +90,7 @@ async def reconocer_carpeta(payload: dict) -> dict[str, object]:
                 )
         cuenta = Counter(archivo["tipo"] for archivo in archivos)
         return {
-            "ruta": str(raiz),
+            "ruta": al_operador(raiz),
             "total": len(pdfs),
             "mirados": len(archivos),
             "por_tipo": [
