@@ -251,12 +251,18 @@ def _fecha(plano: str) -> date | None:
 #: trae RE ni lo traerá nunca (UPD2326352 p5, UPD2326389 p9). La sola mención
 #: de la SSPD no cuenta: el formulario de la empresa dice «apelación ante la
 #: SSPD».
-_RADICADO_SSPD = re.compile(r"SSPD\W{0,3}N\W?U\W?M\w{0,4}\s+D[EF]\s+RADICAD[O0]\W{0,3}\d{10,14}")
+_RADICADO_SSPD = re.compile(r"SSPD\W{0,3}N\W?U\W?M\w{0,4}\s+D[EF]\s+RADICAD[O0]\W{0,3}(\d{10,14})")
 
 
 def es_radicado_de_la_superintendencia(texto: str) -> bool:
     """Si el recorte trae el radicado de la SSPD, no el sello de la empresa."""
     return bool(_RADICADO_SSPD.search(_plano(texto)))
+
+
+def numero_de_la_superintendencia(texto: str) -> str | None:
+    """El número que la SSPD le dio al escrito: «SSPD Número de Radicado 20238004468522»."""
+    hallado = _RADICADO_SSPD.search(_plano(texto))
+    return hallado.group(1) if hallado else None
 
 
 def leer_sello(texto: str) -> Sello | None:

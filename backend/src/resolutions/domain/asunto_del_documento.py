@@ -274,7 +274,11 @@ def asunto_del_documento(paginas: Sequence[str], tipo: str | None = None) -> str
 _TITULOS_DEL_ESCRITO: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "RECURSO DE REPOSICION EN SUBSIDIO DE APELACION",
-        re.compile(r"REC\w*\W{0,3}(?:DE\s+)?REPOSICION\s+(?:Y\s+)?EN\s+SUBSIDIO\s+(?:EL\s+)?(?:DE\s+)?APELACION"),
+        # También «Reposición y Subsidio de Apelación» y «y subsidiariamente el
+        # de apelación» (UPD3102756 pág. 56).
+        re.compile(
+            r"REC\w*\W{0,3}(?:DE\s+)?REPOSICION\s+(?:Y\s+)?(?:EN\s+)?SUBSIDI\w*\s+(?:EL\s+)?(?:DE\s+)?APELACION"
+        ),
     ),
     ("RECURSO DE APELACION", re.compile(r"RECURSO\s+DE\s+APELACION")),
     ("RECURSO DE REPOSICION", re.compile(r"REC\w*\W{0,3}(?:DE\s+)?REPOSICION")),
@@ -285,6 +289,11 @@ _TITULOS_DEL_ESCRITO: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("QUEJA", re.compile(r"\bQUEJA\b")),
     ("SOLICITUD", re.compile(r"\bSOLICITUD\b")),
 )
+#: Los escritos con que el cliente abre un trámite: su carta abre documento
+#: aunque no traiga sello (:mod:`~resolutions.application.cartas`). No la
+#: «SOLICITUD» a secas: también se titulan así los formularios que la empresa
+#: le da a llenar -- la solicitud de servicio de UPD2555087 pág. 4 --.
+ESCRITOS_DEL_TRAMITE = frozenset(nombre for nombre, _ in _TITULOS_DEL_ESCRITO) - {"SOLICITUD"}
 #: Lo que imprime la empresa en una carta suya.
 _DE_LA_EMPRESA = re.compile(r"\bCONSECUTIVO\s+N[O0°º]?\W")
 #: La constancia que firma el usuario al radicar en la oficina.
@@ -373,6 +382,18 @@ _TIPO_DEL_SELLO: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("RECLAMACION", re.compile(r"\w?CLAM[O0A]")),
     ("DERECHO DE PETICION", re.compile(r"PETI\w{1,3}N")),
 )
+
+
+def es_carta_de_la_empresa(texto: str) -> bool:
+    """Si la carta es de la empresa -- su respuesta, su citación -- y no del cliente.
+
+    Lleva su consecutivo, o se titula como lo que la empresa le manda al
+    cliente. Es la que el trámite une a su escrito por el RE que cita.
+    """
+    cabeza = " ".join(_plano(r) for r in (texto or "").splitlines()[:RENGLONES_DE_CABECERA])
+    if _DE_LA_EMPRESA.search(cabeza):
+        return True
+    return titulo_del_documento(texto).startswith(("RESPUESTA", "CITACION", "NOTIFICACION", "CONSTANCIA"))
 
 
 def _titulo_del_escrito(texto: str) -> str | None:

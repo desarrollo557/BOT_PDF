@@ -767,6 +767,82 @@ def unir_lo_que_no_abre(
     return replace(grupos, groups=salida), anexos, unidas
 
 
+def ajustar_por_cartas(
+    grupos: GroupingResult,
+    anexos: dict[str, list[int]] | None = None,
+    *,
+    abren: set[int] | frozenset[int],
+    siguen: set[int] | frozenset[int] = frozenset(),
+    pruebas: set[int] | frozenset[int] = frozenset(),
+) -> tuple[GroupingResult, dict[str, list[int]], list[int], list[int]]:
+    """Cada carta abre su trámite; lo que la continúa o la prueba va con ella.
+
+    Lo pidió el operador ante UPD3102756: «cada trámite va solo, con sus
+    respectivos anexos». Tres señales del texto (:mod:`~resolutions.domain.carta`):
+
+    * ``abren``: la primera hoja de una carta -- fecha, «Señores…», «ASUNTO:»
+      --. Abre documento aunque no traiga sello y la continuidad la hubiera
+      pegado al trámite anterior.
+    * ``siguen``: la hoja que empieza a mitad de la carta anterior -- «Peticiones.»,
+      la frase en minúscula -- va con ella, aunque traiga el sello al pie.
+    * ``pruebas``: la copia de una carta o de un sello ya radicados en la caja, y
+      la constancia que la carta anterior cita, van como anexo del documento que
+      las trae.
+
+    Devuelve los documentos, sus anexos, las hojas en que se abrió uno y las
+    que dejaron de abrirlo.
+    """
+    anexos = {codigo: list(paginas) for codigo, paginas in (anexos or {}).items()}
+    # Primero se parte en cada carta que abre.
+    tramos: list[tuple[PageGroup, list[int]]] = []
+    abiertas: list[int] = []
+    for grupo in grupos.groups:
+        actual: list[int] = []
+        for pagina in grupo.page_numbers:
+            if actual and pagina in abren:
+                tramos.append((grupo, actual))
+                abiertas.append(pagina)
+                actual = []
+            actual.append(pagina)
+        tramos.append((grupo, actual))
+    # Y lo que sigue la carta o la prueba se une al documento anterior.
+    piezas: list[tuple[PageGroup, list[int], list[int]]] = []
+    unidas: list[int] = []
+    for grupo, paginas in tramos:
+        suyos = [p for p in paginas if p in set(anexos.get(grupo.code.value, []))]
+        primera = paginas[0]
+        if piezas and primera not in abren and (primera in siguen or primera in pruebas):
+            anterior, de_antes, sus_anexos = piezas[-1]
+            # La prueba es anexo del documento que la trae; la hoja que sigue
+            # la carta es la carta.
+            piezas[-1] = (anterior, de_antes + paginas, sus_anexos + (paginas if primera in pruebas else suyos))
+            unidas.append(primera)
+            continue
+        piezas.append((grupo, list(paginas), suyos))
+    if not abiertas and not unidas:
+        return grupos, anexos, [], []
+    # Se numeran otra vez por su puesto, como al separar las actas.
+    numerados = all(g.code.value.isdigit() for g in grupos.groups)
+    ancho = max(2, len(grupos.groups[0].code.value)) if grupos.groups else 2
+    salida: list[PageGroup] = []
+    nuevos: dict[str, list[int]] = {}
+    for puesto, (grupo, paginas, suyos) in enumerate(piezas, start=1):
+        entero = paginas == list(grupo.page_numbers)
+        pieza = grupo if entero else replace(grupo, page_numbers=paginas, kind=None, fecha=None)
+        if numerados:
+            valor = f"{puesto:0{ancho}d}"
+            pieza = replace(pieza, code=type(grupo.code)(value=valor, raw=valor))
+        elif not entero and paginas[0] != grupo.page_numbers[0]:
+            pieza = replace(
+                pieza,
+                code=type(grupo.code)(value=f"{grupo.code.value}-{paginas[0]}", raw=f"{grupo.code.raw}-{paginas[0]}"),
+            )
+        salida.append(pieza)
+        if suyos:
+            nuevos[pieza.code.value] = sorted(set(suyos))
+    return replace(grupos, groups=salida), nuevos, abiertas, unidas
+
+
 def separar_las_actas(
     grupos: GroupingResult,
     numeros: Mapping[int, str | None],

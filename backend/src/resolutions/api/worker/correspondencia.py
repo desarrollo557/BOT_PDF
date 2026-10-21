@@ -171,10 +171,12 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         unir_soportes,
         verificar_en_el_documento,
     )
+    from ...application.cartas import Cartas
     from ...application.entrega import Destino, entregar
     from ...application.segment_document import SegmentDocument
     from ...application.segment_split import group_by_segment
     from ...application.sellos import (
+        ajustar_por_cartas,
         cortar_por_sellos,
         dividir_por_tramite,
         hojas_que_pueden_llevar_sello,
@@ -184,8 +186,10 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         separar_las_actas,
         unir_lo_que_no_abre,
     )
+    from ...domain.carta import abre_carta, asunto_de_la_carta
     from ...domain.fingerprint import nic_de_la_caja
     from ...domain.naming import DOCUMENT_PREFIX, document_folder
+    from ...domain.nombre_oficial import nombre_oficial
     from ...domain.segmentation import Verdict
     from ...domain.sello import (
         claves_del_envio,
@@ -373,9 +377,16 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     # entrega que la precede.
     guias = {p for p, texto in textos.items() if es_guia_de_envio(texto or "")}
     etiquetas = {p for p, texto in textos.items() if lleva_etiqueta_de_envio(texto or "")}
+    # Las cartas (lo dictó el operador ante UPD3102756: «cada trámite va solo,
+    # con sus respectivos anexos»). No todo sello abre: el que va al pie de la
+    # hoja de firmas radica la carta que continúa, el de una copia ya radicada
+    # en la caja es una prueba, y el radicado de la Superintendencia que la
+    # carta anterior cita es el soporte de esa carta.
+    cartas = Cartas.de(textos, sellos)
+    sellos_que_abren = {p: s for p, s in sellos.items() if p not in cartas.no_abren}
     grupos, anexos, cortes_por_sello = cortar_por_sellos(
         grupos,
-        sellos,
+        sellos_que_abren,
         anexos,
         etiquetas=etiquetas,
         guias=guias,
@@ -389,11 +400,24 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     grupos, anexos, actas = separar_las_actas(
         grupos, {p: numero_del_acta_de_suspension(t or "") for p, t in textos.items()}, anexos
     )
-    abren = {g.page_numbers[0] for g in grupos.groups if g.page_numbers[0] in sellos or g.page_numbers[0] in etiquetas or g.page_numbers[0] + 1 in etiquetas or g.page_numbers[0] in actas}
+    abren = {g.page_numbers[0] for g in grupos.groups if g.page_numbers[0] in sellos_que_abren or g.page_numbers[0] in etiquetas or g.page_numbers[0] + 1 in etiquetas or g.page_numbers[0] in actas}
     # F2b. Los folios del sello: lo que la oficina recibió como un escrito
     # -- «Folios: 19» -- no lo parte la continuidad. Sólo otro sello o la
     # etiqueta de LECTA abren algo dentro de esas hojas.
-    grupos, anexos, por_folios = retener_los_folios(grupos, sellos, abren, anexos)
+    grupos, anexos, por_folios = retener_los_folios(grupos, sellos_que_abren, abren, anexos)
+    # F2d. La carta abre su trámite aunque no traiga sello -- salvo dentro de
+    # los folios de un sello, que son de ese escrito --; la hoja que la
+    # continúa y la prueba que trae van con ella.
+    que_abren = cartas.que_abren(sellos_que_abren)
+    grupos, anexos, abiertas_por_carta, unidas_por_carta = ajustar_por_cartas(
+        grupos, anexos, abren=que_abren, siguen=cartas.siguen, pruebas=cartas.pruebas
+    )
+    # El trámite no une a su anterior un escrito del cliente, aunque cite su
+    # RE: sólo la respuesta o la notificación de la empresa (lo dictó el
+    # operador: «cada trámite va solo, no unido a otros trámites por código de
+    # referencia»).
+    abren_el_tramite = abren | cartas.escritos(que_abren)
+    abren = abren | que_abren
     # F3. Lista de ANEXOS.
     retencion = retener_anexos(grupos, textos, anexos, abren=abren)
     grupos, anexos = retencion.grupos, retencion.anexos
@@ -411,6 +435,8 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         and b.right not in soportes.movidas
         and b.right not in cortes_por_sello
         and b.right not in por_folios
+        and b.right not in abiertas_por_carta
+        and b.right not in unidas_por_carta
         # Ni la costura que dejó detrás un soporte -- el certificado, la
         # factura, la cédula --: ésa la decidió la regla de los soportes, con
         # evidencia, no la duda (UPD2326306, UPD2326322).
@@ -436,6 +462,27 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     # Hasta dónde se busca el título: el escrito pide en sus primeras hojas, y
     # lo que viene detrás son sus anexos.
     PAGINAS_DEL_TITULO = 6
+
+    def _oficial_de_la_hoja(pagina: int, tipo: str | None) -> str:
+        """El nombre oficial del documento que abre en esa hoja; DOCUMENTO si no dice qué es.
+
+        Lo mismo para el archivo y para su fila del índice (lo dictó el
+        operador el 2026-10-21: «tanto en el nombre del documento como en el
+        inventario»). De lo más cierto a lo menos: su título, con el nombre del
+        catálogo -- «RECLAMO», no «RECLAMACION» --; si es una carta, lo que su
+        REF o su ASUNTO dicen que es -- no lo que el catálogo adivine de su
+        cuerpo --; y el tipo del catálogo, ``tipo``.
+        """
+        texto = textos.get(pagina, "") or ""
+        asunto = asunto_de_la_carta(texto)
+        titulo = titulo_del_documento(texto, None)
+        if titulo != DOCUMENT_PREFIX:
+            return nombre_oficial(titulo, asunto) or titulo
+        if abre_carta(texto) and (del_asunto := nombre_oficial(DOCUMENT_PREFIX, asunto)):
+            return del_asunto
+        if tipo and tipo.upper() != DOCUMENT_PREFIX:
+            return nombre_oficial(tipo, asunto) or tipo.upper()
+        return DOCUMENT_PREFIX
 
     def fecha_de_la_hoja(pagina: int):
         texto = textos.get(pagina, "") or ""
@@ -475,11 +522,16 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
                     ] or titulares
                 # La fecha del documento, de lo más cierto a lo menos: la que
                 # el mensajero marcó en la guía, la del sello de radicación y,
-                # si no trae ninguna, la de su primera hoja fechada.
+                # si no trae ninguna, la de su primera hoja fechada. No la del
+                # sello de una copia aportada como prueba: ésa es de otro día.
                 primera = (
                     next((fechas_de_guia[p] for p in paginas if fechas_de_guia.get(p)), None)
                     or next(
-                        (sellos[p].fecha for p in paginas if p in sellos and sellos[p].fecha),
+                        (
+                            sellos[p].fecha
+                            for p in paginas
+                            if p in sellos and sellos[p].fecha and p not in cartas.copias
+                        ),
                         None,
                     )
                     or next(
@@ -497,11 +549,14 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
                         # Lo que el documento dice ser en su primera hoja --
                         # «DERECHO DE PETICION», «RESPUESTA A RECLAMACION» --,
                         # que es el título de su fila en el índice.
-                        "titulo": ACUERDO_DE_PAGO
+                        # Con su nombre oficial, el del catálogo del cliente:
+                        # «RECLAMO», no «RECLAMACION» (lo dictó el operador el
+                        # 2026-10-21). Es el mismo que nombra el archivo.
+                        # Sin título conocido se queda en DOCUMENTO, y la fila
+                        # toma el nombre de su archivo.
+                        "titulo": nombre_oficial(ACUERDO_DE_PAGO)
                         if acuerdo
-                        else titulo_del_documento(
-                            textos.get(titulares[0], "") or "", cortado.kind
-                        ),
+                        else _oficial_de_la_hoja(titulares[0], cortado.kind),
                         # Y su radicado: el del sello si lo trae, si no el que
                         # cite su texto. El acuerdo de pago no lleva.
                         "radicado": None if acuerdo else next(
@@ -566,6 +621,18 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
                 for g in grupos.groups
                 for p in g.page_numbers
             }
+            # Dentro del escrito de un cliente, el RE de lo que trae como
+            # prueba -- la copia de una carta o de un sello ya radicados, que
+            # cita el radicado de su propio trámite -- es el de otro trámite, y
+            # no parte el escrito ni lo nombra (UPD3102756 pág. 25 dentro del
+            # aviso de la 23). Tampoco el sello de una copia.
+            escritos = cartas.escritos(que_abren)
+            de_anexo = {p for paginas in anexos.values() for p in paginas}
+            for g in grupos.groups:
+                if g.page_numbers[0] in escritos:
+                    for p in g.page_numbers:
+                        if p in cartas.copias or (p in de_anexo and p not in sellos_que_abren):
+                            propios[p] = None
             # Lo que no es un escrito del trámite no se nombra con su RE: el
             # acta, la autorización de habeas data o de notificación, la
             # solicitud de un formato.
@@ -576,17 +643,29 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
                 # Sí toma el que le cita después la respuesta que le contesta
                 # (UPD2321099: la citación de la p10 cita el RE de la
                 # petición de la p1).
-                if paginas[0] in sellos:
+                # Y lo mismo la carta del cliente que abre sin sello: no toma el
+                # RE de su vecino (UPD3102756, trece reclamos con el mismo RE).
+                if paginas[0] in sellos_que_abren or paginas[0] in escritos:
                     suyo = del_tramite.get(paginas[0])
                     citado_antes = any(r == suyo for p, r in propios.items() if p < paginas[0])
-                    citado_despues = any(r == suyo for p, r in propios.items() if p > paginas[-1])
+                    # La carta sin sello sólo toma el RE que le cita después
+                    # la empresa -- su respuesta, su citación --, no el del
+                    # sello de otro escrito: en UPD3102756 los reclamos del
+                    # 13-oct y del 8-nov se llamaban con el RE de la solicitud
+                    # de la pág. 11.
+                    sin_sello = paginas[0] not in sellos_que_abren
+                    citado_despues = any(
+                        r == suyo
+                        for p, r in propios.items()
+                        if p > paginas[-1] and not (sin_sello and p in sellos)
+                    )
                     return citado_antes or not citado_despues
                 primera = next((x for x in paginas if x not in guias), paginas[0])
                 titulo = titulo_del_documento(textos.get(primera, "") or "", None)
                 return titulo.startswith(_FORMATOS_SIN_RE_AJENO) or titulo == DOCUMENT_PREFIX
 
             grupos, anexos = dividir_por_tramite(
-                grupos, propios, del_tramite, abren, anexos, sin_re_ajeno=sin_re_ajeno
+                grupos, propios, del_tramite, abren_el_tramite, anexos, sin_re_ajeno=sin_re_ajeno
             )
             # Un trámite hecho sólo de cédulas o facturas iría solo.
             sueltos = unir_soportes(
@@ -614,7 +693,7 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
             entregado_por = Agrupacion.MES
     # F5b. La última hoja de la caja, si trae sello -- de radicación o de envío
     # --, va sola: lo dictó el operador, y manda sobre el trámite.
-    grupos, anexos, ultima_sola = la_ultima_hoja_sola(grupos, set(sellos) | etiquetas, anexos, guias)
+    grupos, anexos, ultima_sola = la_ultima_hoja_sola(grupos, set(sellos_que_abren) | etiquetas, anexos, guias)
     if entregado_por is Agrupacion.TRAMITE:
         # El aviso cuenta los archivos que se escriben, no los trámites.
         avisos_de_agrupacion[0] = por_tramite.aviso(archivos=len(grupos.groups))
@@ -634,7 +713,10 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     sin_apertura = set()
     for anterior, g in zip(grupos.groups, grupos.groups[1:], strict=False):
         primera = g.page_numbers[0]
-        if primera in sellos or primera in etiquetas or primera + 1 in etiquetas:
+        if primera in sellos_que_abren or primera in etiquetas or primera + 1 in etiquetas:
+            continue
+        # La carta que abre su trámite tampoco se une: trae su asunto.
+        if primera in que_abren:
             continue
         if primera in del_acuerdo or primera == ultima_sola:
             continue
@@ -702,13 +784,18 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         if entregado_por is Agrupacion.MES:
             return g
         if g.page_numbers[0] in del_acuerdo:
-            return replace(g, kind=ACUERDO_DE_PAGO)
+            return replace(g, kind=nombre_oficial(ACUERDO_DE_PAGO))
         primera = next((x for x in g.page_numbers if x not in guias), g.page_numbers[0])
-        titulo = _titulo(textos.get(primera, "") or "", None)
-        if titulo != DOCUMENT_PREFIX:
-            return replace(g, kind=titulo)
-        if g.kind and g.kind != DOCUMENT_PREFIX:
-            return g
+        # El nombre oficial (lo dictó el operador el 2026-10-21: «según el
+        # nombre oficial del documento del trámite… tanto en el nombre del
+        # documento como en el inventario»): su título con el nombre del
+        # catálogo, o lo que su ASUNTO o su REF dicen que es.
+        # La carta se llama por lo que su REF dice que es, no por su membrete:
+        # «NOTIFICACION DEL REPORTE DEL SILENCIO ADMINISTRATIVO POSITIVO», no
+        # «PUBLICOS DOMICILIARIOS DE MAGANGUE BOLIVAR» (UPD3102756 pág. 23).
+        oficial = _oficial_de_la_hoja(primera, g.kind)
+        if oficial != DOCUMENT_PREFIX:
+            return replace(g, kind=oficial)
         # Ningún documento se entrega sin un nombre que lo referencie (lo dictó
         # el operador el 2026-10-20 ante «01_DOCUMENTO.pdf»): el título que
         # imprime su primera hoja, leído del texto o, si la lectura de la hoja
@@ -723,10 +810,17 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
             return replace(g, kind=impreso)
         # Lo que el documento dice de sí mismo en su «ASUNTO:» o «REF.:» --
         # «COBRO EXCESIVO DEL SERVICIO DE ENERGIA» (UPD2465747, 2026-10-21)
-        # --, antes que llamarlo por su caja.
+        # --, antes que llamarlo por su caja. Primero el renglón del asunto; si
+        # no, lo que su texto dice pedir -- «INFORMACION GENERAL» (UPD2326360
+        # págs. 4-5) --, pero no una de sus peticiones, que empieza «Que…»:
+        # «QUE LA PRESTADORA AFINIA S» no nombra nada (UPD3102756 pág. 57).
         titulares = [p for p in g.page_numbers if p not in guias][:2] or g.page_numbers[:1]
+        for titular in titulares:
+            del_asunto = nombre_oficial(DOCUMENT_PREFIX, asunto_de_la_carta(textos.get(titular, "") or ""))
+            if del_asunto:
+                return replace(g, kind=del_asunto)
         asunto = asunto_del_documento([textos.get(p, "") or "" for p in titulares], None)
-        if asunto:
+        if asunto and not asunto.startswith("QUE "):
             return replace(g, kind=asunto[:MAX_ASUNTO_EN_EL_NOMBRE].rsplit(" ", 1)[0] if len(asunto) > MAX_ASUNTO_EN_EL_NOMBRE else asunto)
         sin_titulo.append(primera)
         return replace(g, kind=nombre_por_su_origen(taller.name, g.page_numbers))
@@ -798,6 +892,9 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
             # del trámite se escribe «RE3110…» y no «re3110…».
             mayusculas=True,
             nombre=taller.name,
+            # «Número, título y número de ref si lo hay» (lo dictó el operador
+            # el 2026-10-21): 01_DERECHO-DE-PETICION-RE3110202212114.pdf.
+            radicado_detras=True,
         ),
         en_revision=[boundary.right for boundary in costuras_en_revision]
         + [pagina.page for pagina in sin_fecha_en_revision]

@@ -55,8 +55,13 @@ _NO_ES_TITULO = re.compile(
     r"REFERENCIA|ASUNTO|NIC|CC|RADICADO|CONSECUTIVO|VO|VOBO|FIRMA|NOMBRE|"
     r"IDENTIFICACION|IDENTIFICADO|EL|LA|YO|QUE|POR\s+MEDIO|CUENTA\s+INTERNA|MATRICULA)\b"
 )
-#: El membrete: quien emite, no qué es el papel.
-_MEMBRETE = re.compile(r"\b(?:AFINIA|GRUPO\s*EPM|ELECTRICARIBE|CARIBEMAR|SIAR|S\.?\s*A\.?\s*S?\.?\s*E\.?\s*S\.?\s*P)\b")
+#: El membrete: quien emite, no qué es el papel. También el del comité o la
+#: entidad que escribe la carta: «COMITE DE DESARROLLO Y CONTROL SOCIAL DE LOS
+#: SERVICIOS / PUBLICOS DOMICILIARIOS DE MAGANGUE BOLIVAR» (UPD3102756).
+_MEMBRETE = re.compile(
+    r"\b(?:AFINIA|GRUPO\s*EPM|ELECTRICARIBE|CARIBEMAR|SIAR|S\.?\s*A\.?\s*S?\.?\s*E\.?\s*S\.?\s*P"
+    r"|COMITES?|PUBLICOS\s+DOMICILIARIOS|SUPERINTENDENCIA)\b"
+)
 #: Una fecha suelta: «26 , Nov de 2022», «Valledupar, 02 de diciembre de 2020».
 _MESES = r"ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|SET|OCT|NOV|DIC"
 _FECHA = re.compile(rf"\b(?:{_MESES})\w*\.?\s+(?:DE\s+)?\d{{4}}\b|\b\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}}\b")
