@@ -35,6 +35,7 @@ from ..domain.sello import (
     leer_sello,
     radicado_aproximado,
     radicado_del_texto,
+    radicado_escrito,
     radicado_por_la_cola,
 )
 from .anexos_declarados import SOPORTES
@@ -64,7 +65,11 @@ _ANCLA = re.compile(
     r"CONT[EHIR]\W?STA[RN]\W{0,3}C|N\W?[UV]\W?[MVWI\\]{1,2}\W?[EF]\W?[RN]\W?[O0]\W?[RK]\W?[EFK]?\W?\d"
     # El sello de tinta por su frase, no por una palabra suelta: «le implica
     # otras» está en el cuerpo de un recurso (UPD2326324 p9).
-    r"|NO\s+IM[PB]LICA|IM[PB]LICA\s*A?C?EPTACI|RECIBIDO\s+NO|N\W{0,3}\s*D[EF]\s+RADICACI",
+    r"|NO\s+IM[PB]LICA|IM[PB]LICA\s*A?C?EPTACI|RECIBIDO\s+NO|N\W{0,3}\s*D[EF]\s+RADICACI"
+    # La primera línea de la etiqueta, que la capa deja pegada por lo chica de
+    # su letra: «CaribemardelaCostaS AS ESP» (UPD3102756 pág. 51). Una carta
+    # escribe el nombre con sus espacios.
+    r"|C[AU]R[IT]?B[OE]?MA[RS]D[EI]LAC[OU]STA",
     re.IGNORECASE,
 )
 #: Lo que sólo dice un sello, para buscarlo fuera de la cabecera.
@@ -75,7 +80,22 @@ _ANCLA_ESTRICTA = re.compile(
 #: Y los campos de la etiqueta, que sólo valen como ancla a la derecha de la
 #: hoja y con su número: «Asunto: 03», no el «Asunto:» de una carta.
 _ANCLA_A_LA_DERECHA = re.compile(r"\bASUNTO\s*:\s*0\d\b", re.IGNORECASE)
-_TINTA = re.compile(r"IM[PB]LICA|RECIBIDO", re.IGNORECASE)
+_TINTA = re.compile(r"IM[PB]LICA|RECIBIDO|[O0]\W?[FPR]\W?[IÍ1L]\W?C\W?[IÍ1L]\W?N\W?A", re.IGNORECASE)
+#: El sello de tinta de una oficina por su rótulo, que es lo único que la capa
+#: deja entero de su letra diminuta: «OFICINA / BOLIVAR SUR» (UPD3102756:
+#: «OPICINA», «oficina'», «3CLIVAR SUR»). Debajo, «SUR»; o al lado, lo que
+#: sólo dice el sello. No la «Oficina Magangué Bolívar» de la dirección de una
+#: carta, que no lleva ninguna de las dos.
+_OFICINA = re.compile(r"[O0]\W?[FPR]\W?[IÍ1L]\W?C\W?[IÍ1L]\W?N\W?A", re.IGNORECASE)
+_SUR = re.compile(r"^\W*SUR\b", re.IGNORECASE)
+_DEL_SELLO = re.compile(r"RECIB|IM[PB]LICA|ACEPTACI|GRUPO\W?EP", re.IGNORECASE)
+#: El recorte del sello de oficina, desde su rótulo: con el RE que se escribe a
+#: mano encima (hasta tres renglones de carta) y los campos de debajo.
+SOBRE_EL_ROTULO = 0.075
+#: Y desde su «RECIBIDO NO IMPLICA ACEPTACIÓN», que va dos renglones más abajo.
+SOBRE_EL_SELLO_DE_TINTA = 0.10
+BAJO_EL_ROTULO = 0.13
+ANCHO_DEL_SELLO = 0.34
 
 #: Las clases de hoja que nunca abren un escrito, y por eso no se miran.
 _NO_LLEVAN_SELLO = {*SOPORTES, HOJA_MUDA}
@@ -139,15 +159,18 @@ def ubicar_sello(source, pagina: int) -> tuple[Band, str] | None:
         trozos = todos
         anclas = anclas_de(todos, _ANCLA_ESTRICTA, con_campos=False)
     if not anclas:
-        return None
+        return _sello_de_oficina(todos, ancho, alto)
     x0, x1 = min(t.x0 for t in anclas), max(t.x1 for t in anclas)
     y0, y1 = min(t.y0 for t in anclas), max(t.y1 for t in anclas)
     # La etiqueta con su margen: dos renglones encima del de «CONTESTAR» --
     # la empresa y el consecutivo -- y tres debajo -- el asunto, la oficina, el
-    # código de barras y la fecha --.
+    # código de barras y la fecha --. El sello de tinta, más arriba: encima de
+    # su «RECIBIDO NO IMPLICA» van el rótulo de la oficina y el RE escrito a
+    # mano (UPD3102756 págs. 23, 49, 57: el recorte lo dejaba fuera).
+    tinta = any(_TINTA.search(t.texto) for t in anclas)
     banda = Band(
         max(0.0, x0 / ancho - 0.10),
-        max(0.0, y0 / alto - 0.05),
+        max(0.0, y0 / alto - (SOBRE_EL_SELLO_DE_TINTA if tinta else 0.05)),
         min(1.0, x1 / ancho + 0.08),
         min(1.0, y1 / alto + 0.09),
     )
@@ -157,6 +180,36 @@ def ubicar_sello(source, pagina: int) -> tuple[Band, str] | None:
         if t.y0 >= y0 - alto * 0.05 and t.y1 <= y1 + alto * 0.09 and t.x1 >= x0 - ancho * 0.10
     )
     return banda, cerca
+
+
+def _sello_de_oficina(trozos, ancho: float, alto: float) -> tuple[Band, str] | None:
+    """El sello de tinta de una oficina por su rótulo, en cualquier parte de la hoja.
+
+    Va casi siempre al pie de la hoja de firmas, y su letra es tan chica que la
+    capa la deja rota -- «NoDEFCLICS», «DiR. NCTIFICACIÓS» --; el rótulo
+    «OFICINA / BOLIVAR SUR» sí queda. El recorte incluye el RE que se escribe a
+    mano encima del sello (UPD3102756 págs. 8, 23, 39, 45, 49, 57).
+    """
+    for rotulo in (t for t in trozos if _OFICINA.search(t.texto)):
+        cerca = [
+            t
+            for t in trozos
+            if -alto * 0.01 <= t.y0 - rotulo.y0 <= alto * 0.06 and abs(t.x0 - rotulo.x0) <= ancho * 0.30
+        ]
+        debajo = [
+            t for t in cerca if 0 < t.y0 - rotulo.y0 <= alto * 0.035 and _SUR.search(t.texto)
+        ]
+        if not debajo and not any(_DEL_SELLO.search(t.texto) for t in cerca):
+            continue
+        x0, y0 = rotulo.x0 / ancho, rotulo.y0 / alto
+        banda = Band(
+            max(0.0, x0 - 0.06),
+            max(0.0, y0 - SOBRE_EL_ROTULO),
+            min(1.0, x0 + ANCHO_DEL_SELLO),
+            min(1.0, y0 + BAJO_EL_ROTULO),
+        )
+        return banda, " ".join(t.texto for t in cerca)
+    return None
 
 
 #: El renglón del número en la capa: «AL CONTESTAR CITE ESTE NUMERO RE…».
@@ -337,7 +390,10 @@ def leer_sellos(
                 return ""
 
         orden = list(detectados)
-        imagenes = [source.render(p, BANDA_DEL_SELLO, DPI_DEL_PAGO, "jpeg") for p in orden]
+        # Donde está el sello, no la esquina de arriba: el de tinta va al pie
+        # de la hoja de firmas, y leyendo arriba la IA nunca lo veía
+        # (UPD3102756: de trece sellos, sólo leía el de la pág. 11).
+        imagenes = [source.render(p, detectados[p][3], DPI_DEL_PAGO, "jpeg") for p in orden]
         with hilos(max(1, workers)) as pool:
             for pagina, texto in zip(orden, mapear(pool, leer_de_pago, imagenes, control), strict=True):
                 pagados[pagina] = texto
@@ -358,10 +414,12 @@ def leer_sellos(
         radicado = None
         if sello.clase == "impreso":
             radicado = _votar([relecturas.get(pagina, ""), texto, de_la_capa], conocidos)
-        elif pagados.get(pagina):
+        if radicado is None and pagados.get(pagina):
             # El sello de tinta lleva el número a mano: el de casa no lo lee;
-            # el de pago, a veces.
-            radicado = radicado_del_texto(pagados[pagina])
+            # el de pago sí, con lo que la letra a mano le hace a cada cifra
+            # -- «RE23102023214Y3», «RE 23/0 2024 003 48» -- y el año de la
+            # «FECHA DE RECIBIDO» del propio sello para validarlo.
+            radicado = radicado_del_texto(pagados[pagina]) or radicado_escrito(pagados[pagina])
         de_la_capa_leido = leer_sello(de_la_capa) if de_la_capa else None
         releido = leer_sello(relecturas[pagina]) if relecturas.get(pagina) else None
         fecha = (
@@ -774,7 +832,7 @@ def ajustar_por_cartas(
     abren: set[int] | frozenset[int],
     siguen: set[int] | frozenset[int] = frozenset(),
     pruebas: set[int] | frozenset[int] = frozenset(),
-) -> tuple[GroupingResult, dict[str, list[int]], list[int], list[int]]:
+) -> tuple[GroupingResult, dict[str, list[int]], list[int], list[int], list[int]]:
     """Cada carta abre su trámite; lo que la continúa o la prueba va con ella.
 
     Lo pidió el operador ante UPD3102756: «cada trámite va solo, con sus
@@ -789,8 +847,10 @@ def ajustar_por_cartas(
       la constancia que la carta anterior cita, van como anexo del documento que
       las trae.
 
-    Devuelve los documentos, sus anexos, las hojas en que se abrió uno y las
-    que dejaron de abrirlo.
+    Devuelve los documentos, sus anexos, las hojas en que se abrió uno, las
+    que dejaron de abrirlo y todas las hojas que entraron como prueba: la copia
+    entera, no sólo su primera hoja, para que ninguna dé su RE al documento que
+    la trae (UPD3102756 pág. 32, la copia del sello de la petición del 14-nov).
     """
     anexos = {codigo: list(paginas) for codigo, paginas in (anexos or {}).items()}
     # Primero se parte en cada carta que abre.
@@ -808,6 +868,7 @@ def ajustar_por_cartas(
     # Y lo que sigue la carta o la prueba se une al documento anterior.
     piezas: list[tuple[PageGroup, list[int], list[int]]] = []
     unidas: list[int] = []
+    de_prueba: list[int] = []
     for grupo, paginas in tramos:
         suyos = [p for p in paginas if p in set(anexos.get(grupo.code.value, []))]
         primera = paginas[0]
@@ -817,10 +878,12 @@ def ajustar_por_cartas(
             # la carta es la carta.
             piezas[-1] = (anterior, de_antes + paginas, sus_anexos + (paginas if primera in pruebas else suyos))
             unidas.append(primera)
+            if primera in pruebas:
+                de_prueba.extend(paginas)
             continue
         piezas.append((grupo, list(paginas), suyos))
     if not abiertas and not unidas:
-        return grupos, anexos, [], []
+        return grupos, anexos, [], [], []
     # Se numeran otra vez por su puesto, como al separar las actas.
     numerados = all(g.code.value.isdigit() for g in grupos.groups)
     ancho = max(2, len(grupos.groups[0].code.value)) if grupos.groups else 2
@@ -840,7 +903,7 @@ def ajustar_por_cartas(
         salida.append(pieza)
         if suyos:
             nuevos[pieza.code.value] = sorted(set(suyos))
-    return replace(grupos, groups=salida), nuevos, abiertas, unidas
+    return replace(grupos, groups=salida), nuevos, abiertas, unidas, de_prueba
 
 
 def separar_las_actas(

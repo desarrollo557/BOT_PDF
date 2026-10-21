@@ -134,6 +134,122 @@ def _completar_las_fechas(piezas: list[dict], textos: dict, ruta_pdf, taller) ->
     return halladas
 
 
+#: A cuánto se dibuja cada recorte del mosaico que lee la IA, y en cuántas
+#: columnas se ordenan: la letra a mano del RE se lee bien a esta resolución y
+#: el mosaico no crece tanto que la IA lo achique.
+PPP_DEL_MOSAICO = 170
+COLUMNAS_DEL_MOSAICO = 2
+
+
+def _mosaico(imagenes: list[bytes]) -> bytes:
+    """Los recortes en una sola imagen, en filas de dos: una página para la IA."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    piezas = [Image.open(BytesIO(imagen)).convert("RGB") for imagen in imagenes]
+    ancho = max(p.width for p in piezas)
+    piezas = [p if p.width == ancho else p.resize((ancho, round(p.height * ancho / p.width))) for p in piezas]
+    filas = [piezas[i : i + COLUMNAS_DEL_MOSAICO] for i in range(0, len(piezas), COLUMNAS_DEL_MOSAICO)]
+    altos = [max(p.height for p in fila) for fila in filas]
+    hoja = Image.new("RGB", (ancho * COLUMNAS_DEL_MOSAICO, sum(altos)), "white")
+    y = 0
+    for fila, alto in zip(filas, altos, strict=True):
+        for columna, pieza in enumerate(fila):
+            hoja.paste(pieza, (columna * ancho, y))
+        y += alto
+    salida = BytesIO()
+    hoja.save(salida, format="JPEG", quality=85)
+    return salida.getvalue()
+
+
+def _poner_los_re(
+    grupos,
+    textos: dict,
+    sellos: dict,
+    cartas,
+    leidas,
+    conocidos: set,
+    sin_re: set,
+    guias: set,
+    de_prueba: set,
+    ruta_pdf,
+    taller,
+):
+    """El RE del sello de cada documento que no lo trae (ver ``re_del_documento``).
+
+    Busca el sello en todas las hojas de cada documento: lo que la capa ubica
+    no cuesta, el OCR de casa lee la etiqueta impresa y, sólo si el operador
+    eligió una lectura con IA, la IA lee de una vez el mosaico de los sitios
+    donde puede estar. Un fallo aquí no tumba la caja: los documentos se quedan
+    como estaban.
+    """
+    from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...adapters.tesseract_ocr import PSM_AUTO, TesseractConfig, TesseractOcr
+    from ...application.re_del_documento import ReDeLosDocumentos, poner_los_re
+    from ...application.sellos import hojas_que_pueden_llevar_sello, ubicar_sello
+    from ...domain.asunto_del_documento import es_carta_de_la_empresa
+    from ...domain.fechas import fecha_de_la_pagina
+    from ...domain.tramites import radicado_de
+
+    def de_la_carta(paginas: list[int]) -> list[int]:
+        primera = paginas[0]
+        if primera not in cartas.primeras or primera in cartas.de_la_empresa or primera in cartas.copias:
+            return []
+        carta = [primera]
+        for p in paginas[1:]:
+            if p not in cartas.siguen:
+                break
+            carta.append(p)
+        return carta
+
+    def de_la_empresa(paginas: list[int]) -> str | None:
+        # La carta, no la guía de LECTA que la precede.
+        primera = next((p for p in paginas if p not in guias), paginas[0])
+        texto = textos.get(primera, "") or ""
+        return radicado_de(texto) if es_carta_de_la_empresa(texto) else None
+
+    def fecha_de(paginas: list[int]):
+        return leidas.fechas.get(paginas[0]) or fecha_de_la_pagina(textos.get(paginas[0], "") or "")
+
+    # Las hojas que no llevan el sello del escrito: cédulas, facturas, mudas.
+    descartadas = set(textos) - set(hojas_que_pueden_llevar_sello(textos))
+    fuente = None
+    try:
+        fuente = PyMuPDFPageSource(ruta_pdf, taller.name)
+
+        def ubicar(pagina: int):
+            hallado = ubicar_sello(fuente, pagina)
+            return hallado[0] if hallado else None
+
+        hecho = poner_los_re(
+            grupos,
+            sellos=sellos,
+            # La copia entera aportada como prueba, no sólo su primera hoja.
+            copias=cartas.copias | de_prueba,
+            sin_re=sin_re,
+            descartadas=descartadas,
+            de_la_carta=de_la_carta,
+            de_la_empresa=de_la_empresa,
+            fecha_de=fecha_de,
+            ubicar=ubicar,
+            render=lambda p, banda, ppp: fuente.render(p, banda, ppp, "jpeg"),
+            mosaico=lambda recortes: _mosaico([fuente.render(p, b, PPP_DEL_MOSAICO, "jpeg") for p, b in recortes]),
+            local=TesseractOcr(TesseractConfig(min_word_confidence=0, psm=PSM_AUTO)),
+            de_pago=taller.lector_de_pago(),
+            conocidos=frozenset(conocidos),
+        )
+        if hecho.lecturas_con_ia:
+            logger.info("RE de los sellos: %d lecturas con IA", hecho.lecturas_con_ia)
+        return hecho
+    except Exception:  # noqa: BLE001 - buscar el RE no tumba la caja
+        logger.warning("no se pudo terminar de buscar el RE de los documentos", exc_info=True)
+        return ReDeLosDocumentos(grupos=grupos)
+    finally:
+        if fuente is not None:
+            fuente.close()
+
+
 def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     """Un PDF por unidad documental, cortando costura por costura.
 
@@ -409,7 +525,7 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     # los folios de un sello, que son de ese escrito --; la hoja que la
     # continúa y la prueba que trae van con ella.
     que_abren = cartas.que_abren(sellos_que_abren)
-    grupos, anexos, abiertas_por_carta, unidas_por_carta = ajustar_por_cartas(
+    grupos, anexos, abiertas_por_carta, unidas_por_carta, de_prueba = ajustar_por_cartas(
         grupos, anexos, abren=que_abren, siguen=cartas.siguen, pruebas=cartas.pruebas
     )
     # El trámite no une a su anterior un escrito del cliente, aunque cite su
@@ -593,8 +709,13 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     entregado_por = Agrupacion.DOCUMENTO
     if agrupacion is Agrupacion.TRAMITE:
         # F5. Trámite: mismo RE, mismo trámite.
+        # Sin los sellos de las copias aportadas como prueba: son de otro trámite.
         por_tramite = agrupar_por_tramite(
-            grupos, leidas, anexos, retenidas=retencion.retenidas, sellos=sellos
+            grupos,
+            leidas,
+            anexos,
+            retenidas=retencion.retenidas,
+            sellos={p: s for p, s in sellos.items() if p not in de_prueba},
         )
         avisos_de_agrupacion.append(por_tramite.aviso())
         if por_tramite.agrupo:
@@ -627,6 +748,11 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
             # no parte el escrito ni lo nombra (UPD3102756 pág. 25 dentro del
             # aviso de la 23). Tampoco el sello de una copia.
             escritos = cartas.escritos(que_abren)
+            # Ninguna hoja de una copia aportada como prueba da su RE: la
+            # copia del sello de la petición del 14-nov (pág. 32) llamaba
+            # RE…21592 al aviso de la pág. 23.
+            for p in de_prueba:
+                propios[p] = None
             de_anexo = {p for paginas in anexos.values() for p in paginas}
             for g in grupos.groups:
                 if g.page_numbers[0] in escritos:
@@ -648,16 +774,12 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
                 if paginas[0] in sellos_que_abren or paginas[0] in escritos:
                     suyo = del_tramite.get(paginas[0])
                     citado_antes = any(r == suyo for p, r in propios.items() if p < paginas[0])
-                    # La carta sin sello sólo toma el RE que le cita después
-                    # la empresa -- su respuesta, su citación --, no el del
-                    # sello de otro escrito: en UPD3102756 los reclamos del
-                    # 13-oct y del 8-nov se llamaban con el RE de la solicitud
-                    # de la pág. 11.
-                    sin_sello = paginas[0] not in sellos_que_abren
+                    # Sólo toma el RE que le cita después la empresa -- su
+                    # respuesta, su citación --, nunca el del sello de otro
+                    # escrito: en UPD3102756 los reclamos del 13-oct y del
+                    # 8-nov se llamaban con el RE de la solicitud de la pág. 11.
                     citado_despues = any(
-                        r == suyo
-                        for p, r in propios.items()
-                        if p > paginas[-1] and not (sin_sello and p in sellos)
+                        r == suyo for p, r in propios.items() if p > paginas[-1] and p not in sellos
                     )
                     return citado_antes or not citado_despues
                 primera = next((x for x in paginas if x not in guias), paginas[0])
@@ -732,6 +854,17 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         ):
             sin_apertura.add(primera)
     grupos, anexos, _ = unir_lo_que_no_abre(grupos, sin_apertura, anexos)
+    # F5d. El RE de cada documento, buscado en su sello -- a mano o impreso --
+    # (lo dictó el operador el 2026-10-21: «búscalo en los sellos… que todo
+    # quede bien referenciado»). Ya no mueve ninguna hoja: sólo nombra.
+    # El acuerdo de pago no lleva RE (lo dictó el operador ante UPD2326302), ni
+    # el acta de suspensión, que levanta la empresa en el terreno.
+    sin_re = set(del_acuerdo) | {p for p, t in textos.items() if numero_del_acta_de_suspension(t or "")}
+    re_hallados = _poner_los_re(
+        grupos, textos, sellos, cartas, leidas, conocidos, sin_re, guias, set(de_prueba), tmp_path, taller
+    )
+    grupos = re_hallados.grupos
+    anexos = {re_hallados.renombrados.get(codigo, codigo): paginas for codigo, paginas in anexos.items()}
     # La lista de ANEXOS de cada escrito, verificada contra su PDF final: los
     # soportes, los folios y lo que no abría nada ya se le unieron.
     escritos = verificar_en_el_documento(retencion.escritos, grupos, textos, abren=abren)
@@ -984,6 +1117,8 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         # Las fechas que no estaban a la vista y de dónde salieron: el índice
         # lleva sólo la fecha; aquí queda cómo se obtuvo, para auditarla.
         "fechas_halladas": fechas_halladas,
+        # Y el RE de cada documento que se buscó en su sello, con de dónde salió.
+        "re_hallados": {str(p): como for p, como in re_hallados.halladas.items()},
         # Sólo el PDF, sin la subcarpeta de la caja: «UPD2998266», no
         # «910349 UPD2998266» (la caja va en «Identificación / Nic»).
         "expediente": document_folder(nombre_del_expediente(taller.name)),

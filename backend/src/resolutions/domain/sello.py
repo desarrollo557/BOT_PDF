@@ -40,7 +40,9 @@ from datetime import date
 #: cada palabra: «CONTHSTAR», «Cartbomar Je lu Custa», «Tollos:3».
 #: Con la puntuación que la OCR mete entre las letras: «CONTRSTAR C'ÍTF».
 _CONTESTAR = re.compile(
-    r"CONT[EHIR]\w?STA[RN]\W{0,3}C\W{0,2}[IÍ1L]?\W{0,2}T|\bC\W?ITF?\W{0,2}(?:ESTF?|F\.STF)"
+    r"CONT[EHIR]\w?STA[RN]\W{0,3}C\W{0,2}[IÍ1L]?\W{0,2}T|\bC\W?IT[EF]?\W{0,2}(?:ESTF?|F\.STF)"
+    # Partida en dos: «CONTES TnR CITE» (UPD3102756 pág. 51).
+    r"|CONT[EHIR]S\s?T[AN][RN]\W{0,3}C\W{0,2}[IÍ1L]?\W{0,2}T"
 )
 _CARIBEMAR = re.compile(r"C[AU]R[IT]?B[OE]?MA[RS]\s+[DJ][EI]\s+L[AU]\s+C[OU]STA")
 _CAMPOS_DE_LA_ETIQUETA = re.compile(r"AS\w{0,2}N?T?O\W{0,2}\s*0\d|[FTIL]\w?L[IL]?OS\s*[:;.]\s*\d")
@@ -101,12 +103,12 @@ def _radicado(plano: str) -> str | None:
     """
     hallados = [re.sub(r"\s", "", h.group(1)) for h in _TRECE_CIFRAS.finditer(plano)]
     for cifras in hallados:
-        if cifras[:4] in _OFICINAS.values() and cifras[4:6] == "20":
+        if cifras[:4] in OFICINAS_CONOCIDAS and cifras[4:6] == "20":
             return f"RE{cifras}"
-    # Oficina (empieza por 3 o 4: «3110», «4310»), año 20… y consecutivo.
-    # «RE7110…» o «RE2110…» son lecturas malas, no radicados.
+    # Oficina (empieza por 2, 3 o 4: «2310», «3110», «4310»), año 20… y
+    # consecutivo. «RE7110…» son lecturas malas, no radicados.
     for cifras in map(_con_la_oficina, hallados):
-        if cifras[4:6] == "20" and cifras[0] in "34":
+        if cifras[4:6] == "20" and cifras[0] in "234":
             return f"RE{cifras}"
     return None
 
@@ -130,7 +132,7 @@ _CIFRAS_PARECIDAS: dict[str, str] = {
 _NUMERO = re.compile(r"NU\W?[MVW]|MER[O0]|C\W?ITE\W+ESTE")
 #: Las oficinas que radican: «3110» (Valledupar), «3120», «4310»… -- empiezan
 #: por 3 o 4 --, el año y el consecutivo.
-_FORMA_DEL_RADICADO = re.compile(r"[34]\d{3}20(1[89]|2\d)\d{5}")
+_FORMA_DEL_RADICADO = re.compile(r"[234]\d{3}20(1[89]|2\d)\d{5}")
 
 
 #: El número interno que la etiqueta imprime encima del radicado empieza por el
@@ -151,6 +153,11 @@ def anio_del_sello(texto: str, fecha: date | None = None) -> int | None:
 #: OCR yerra la primera más que ninguna -- «RE2|10…», «RE7110…» --, y las
 #: otras tres bastan para saber cuál es.
 _OFICINAS = {"110": "3110", "120": "3120", "310": "4310"}
+#: Las oficinas que radican, enteras, y que no se corrigen. La 2310 es la de
+#: Bolívar Sur (Magangué): «RE2310202321592» a mano en el sello de UPD3102756.
+#: Su «310» es también el de la 4310, y deducir la oficina por esas tres cifras
+#: convertía el RE2310… en un RE4310… que no existe.
+OFICINAS_CONOCIDAS = frozenset({"3110", "3120", "4310", "2310"})
 #: Cuántas letras se aceptan en lugar de cifras al leer un radicado roto.
 LETRAS_QUE_SE_PERDONAN = 2
 
@@ -159,8 +166,11 @@ def _con_la_oficina(cifras: str) -> str:
     """Las cifras con su oficina deducida de las tres que siguen a la primera.
 
     «7110…», «2110…», «4110…»: no hay oficina 4110; con «110» detrás es la
-    3110. Las oficinas que no se conocen se dejan como vienen.
+    3110. Una oficina conocida no se toca, y las que no se conocen se dejan
+    como vienen.
     """
+    if cifras[:4] in OFICINAS_CONOCIDAS:
+        return cifras
     if cifras[1:4] in _OFICINAS and cifras[:4] != _OFICINAS[cifras[1:4]]:
         return _OFICINAS[cifras[1:4]] + cifras[4:]
     return cifras
@@ -228,6 +238,123 @@ def radicado_por_la_cola(texto: str, conocidos: Iterable[str]) -> str | None:
         and cola[-CIFRAS_DE_LA_COLA:][:2] == "20"
     }
     return hallados.pop() if len(hallados) == 1 else None
+
+
+#: El RE escrito junto al sello -- a mano encima del sello de tinta o impreso
+#: en la etiqueta --: «RE2310202321592», «RE 2310 2023 21592», «NUMERORE2310…»,
+#: y como la IA lee la letra a mano: «RE23102023214Y3», «RE 23/0 2024 003 48».
+#: Sin pasar de renglón: lo de debajo -- el «DIR.» de «DIR. NOTIFICACIÓN» --
+#: no es parte del número (UPD3102756 pág. 42 daba RE…00301 con ese «DI»).
+_RE_ESCRITO = re.compile(r"R[ \t]?[EF£][ \t]?[-.:]?[ \t]?((?:[0-9OILYSZBGQTD|/][ \t]?){11,16})")
+#: Lo que la letra a mano hace de cada cifra al leerla (UPD3102756, sellos de
+#: Bolívar Sur leídos por la IA): la Y es un 4, la D un 0.
+_LETRA_POR_CIFRA = {
+    "O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "|": "1",
+    "Z": "2", "Y": "4", "S": "5", "G": "6", "T": "7", "B": "8",
+}
+#: Y la que puede ser dos cifras: la barra es un 1 en «23/0» (la oficina 2310)
+#: y un 4 en «003/8» (RE…00348, UPD3102756 pág. 42). Sólo se acepta donde hay
+#: con qué comprobarla: en la oficina, que tiene que ser una conocida, y en el
+#: año, que tiene que ser el del sello. En el consecutivo no se adivina.
+_LETRA_DUDOSA = {"/": "14"}
+#: «FECHA DE RECIBIDO: 10-11-2023» del sello de tinta: su año valida el RE.
+_FECHA_DE_RECIBIDO = re.compile(r"RECIBID[O0]\W{0,4}(\d{1,2})\s?[-/.]\s?(\d{1,2})\s?[-/.]\s?(20\d{2})")
+
+
+def _del_anio(cifras: str, anio: int | None) -> bool:
+    if not _FORMA_DEL_RADICADO.fullmatch(cifras):
+        return False
+    return anio is None or int(cifras[4:8]) in (anio, anio + 1)
+
+
+def _trece_comprobadas(crudo: str, anio: int | None) -> str | None:
+    """Las trece cifras de una lectura con sus letras dudosas resueltas, o ``None``.
+
+    Cada letra dudosa da varias lecturas; vale la única que cuadra, y sólo si
+    las dudas caen en la oficina (que tiene que ser una conocida) o en el año
+    (que tiene que ser el del sello).
+    """
+    dudosas = [i for i, c in enumerate(crudo) if c in _LETRA_DUDOSA]
+    if any(i >= 8 for i in dudosas) or (any(4 <= i < 8 for i in dudosas) and anio is None):
+        return None
+    lecturas = [""]
+    for c in crudo:
+        lecturas = [hecho + d for hecho in lecturas for d in _LETRA_DUDOSA.get(c, _LETRA_POR_CIFRA.get(c, c))]
+    validas = {
+        cifras
+        for cifras in lecturas
+        if _del_anio(cifras, anio)
+        and (not any(i < 4 for i in dudosas) or cifras[:4] in OFICINAS_CONOCIDAS)
+        and (not any(4 <= i < 8 for i in dudosas) or int(cifras[4:8]) == anio)
+    }
+    return validas.pop() if len(validas) == 1 else None
+
+
+def radicado_escrito(texto: str, anio: int | None = None) -> str | None:
+    """El RE que trae escrito una lectura del sello, si cuadra; ``None`` si no.
+
+    Cuadra si tiene oficina (cuatro cifras que empiezan por 2, 3 o 4), el año
+    entre 2018 y 2029 y, si se sabe ``anio`` -- el de la carta que radica, o si
+    no el de la «FECHA DE RECIBIDO» del propio sello --, ese año o el siguiente
+    (la carta del 28 de diciembre se radica en enero). Así una lectura mala de
+    la letra a mano se descarta en vez de inventar un número: el operador
+    quiere el RE del sello, no uno parecido.
+
+    Se perdonan hasta ``LETRAS_QUE_SE_PERDONAN`` letras en lugar de cifras
+    («214Y3» → «21443», «23/0» → «2310»), una cifra repetida en el
+    consecutivo, sólo si hay una sola manera de quitarla («…2024114223» →
+    «…202414223»), y una cifra que falte **en el año**, sólo si se sabe el año
+    y hay una sola manera de ponerla («RE231020202596» con el sello del
+    08-02-2024 → RE2310202402596). El consecutivo nunca se completa: ahí no
+    hay con qué comprobarlo.
+
+    El número sólo termina donde termina uno de sus grupos: la IA deja la
+    letra a mano en grupos -- «RE23 10 20 24 07 55D» -- y lo que viene detrás
+    -- el «09» de la dirección en «RE231020202596 09#18-04» -- no es parte de él.
+    """
+    plano = (texto or "").upper()
+    if anio is None and (recibido := _FECHA_DE_RECIBIDO.search(plano)):
+        anio = int(recibido.group(3))
+    for hallado in _RE_ESCRITO.finditer(plano):
+        # Los finales posibles: donde acaba cada grupo, con no más letras de
+        # las que se perdonan.
+        crudos: dict[int, str] = {}
+        crudo = ""
+        for grupo in hallado.group(1).split():
+            # Un grupo sin cifras ya es otra palabra: la «O» de «OFICINA».
+            if not any(c.isdigit() for c in grupo):
+                break
+            crudo += grupo
+            if sum(not c.isdigit() for c in crudo) > LETRAS_QUE_SE_PERDONAN:
+                break
+            crudos[len(crudo)] = crudo
+        # Trece cifras, como se escribió.
+        if 13 in crudos and (trece := _trece_comprobadas(crudos[13], anio)):
+            return f"RE{trece}"
+        # Lo que hay que reparar -- una cifra de más o de menos -- no se repara
+        # sobre una letra dudosa: serían dos conjeturas sobre el mismo número.
+        finales = {
+            largo: "".join(_LETRA_POR_CIFRA.get(c, c) for c in crudo)
+            for largo, crudo in crudos.items()
+            if not any(c in _LETRA_DUDOSA for c in crudo)
+        }
+        # Catorce, con una cifra del consecutivo repetida.
+        if 14 in finales:
+            catorce = finales[14]
+            quitando = {
+                catorce[:i] + catorce[i + 1 :] for i in range(8, 14) if catorce[i] == catorce[i - 1]
+            }
+            validos = {c for c in quitando if _del_anio(c, anio)}
+            if len(validos) == 1:
+                return f"RE{validos.pop()}"
+        # Doce, con la cifra que falta en el año.
+        if 12 in finales and anio is not None:
+            doce = finales[12]
+            puestas = {doce[:i] + cifra + doce[i:] for i in range(4, 9) for cifra in "0123456789"}
+            validas = {c for c in puestas if _FORMA_DEL_RADICADO.fullmatch(c) and int(c[4:8]) == anio}
+            if len(validas) == 1:
+                return f"RE{validas.pop()}"
+    return None
 
 
 def radicado_del_texto(texto: str) -> str | None:

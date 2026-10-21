@@ -145,7 +145,7 @@ class TestLaCajaDelComite:
     def test_cada_carta_en_su_documento_con_lo_suyo(self):
         cartas = Cartas.de(self.TEXTOS, self.SELLOS)
         # Como lo dejó la continuidad: 1 | 2-4 | 5 | 6 | 7 | 8.
-        grupos, anexos, abiertas, unidas = ajustar_por_cartas(
+        grupos, anexos, abiertas, unidas, de_prueba = ajustar_por_cartas(
             _grupos([1], [2, 3, 4], [5], [6], [7], [8]),
             abren=cartas.que_abren({7: Sello("tinta")}),
             siguen=cartas.siguen,
@@ -153,6 +153,8 @@ class TestLaCajaDelComite:
         )
         assert [g.page_numbers for g in grupos.groups] == [[1, 2, 3], [4, 5], [6], [7, 8]]
         assert abiertas == [4] and unidas == [2, 5, 8]
+        # La copia entera es prueba.
+        assert de_prueba == [8]
         # La copia es anexo del documento que la trae; la hoja que sigue, la carta.
         assert anexos == {"04": [8]}
         assert [g.code.value for g in grupos.groups] == ["01", "02", "03", "04"]
