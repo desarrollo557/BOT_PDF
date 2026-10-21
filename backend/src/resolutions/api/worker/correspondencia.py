@@ -29,6 +29,8 @@ _FORMATOS_SIN_RE_AJENO = ("ACTA", "LEY HABEAS", "AUTORIZACION", "SOLICITUD", "CO
 #: deja leer «FORMATO DE NUEVOS SUMINISTROS O SUMINISTROS MODIFICADOS».
 ALTO_DEL_ENCABEZADO = 0.22
 PPP_DEL_ENCABEZADO = 400
+#: Lo más largo que se deja ser al asunto cuando nombra el archivo.
+MAX_ASUNTO_EN_EL_NOMBRE = 80
 #: Por qué un archivo se llamó por su origen y no por lo que es.
 SIN_TITULO = "sin título legible: se nombró por su caja y sus páginas"
 
@@ -719,6 +721,13 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
             impreso = _titulo_del_encabezado(fuente_de_encabezados[0], primera, lector_de_encabezados)
         if impreso:
             return replace(g, kind=impreso)
+        # Lo que el documento dice de sí mismo en su «ASUNTO:» o «REF.:» --
+        # «COBRO EXCESIVO DEL SERVICIO DE ENERGIA» (UPD2465747, 2026-10-21)
+        # --, antes que llamarlo por su caja.
+        titulares = [p for p in g.page_numbers if p not in guias][:2] or g.page_numbers[:1]
+        asunto = asunto_del_documento([textos.get(p, "") or "" for p in titulares], None)
+        if asunto:
+            return replace(g, kind=asunto[:MAX_ASUNTO_EN_EL_NOMBRE].rsplit(" ", 1)[0] if len(asunto) > MAX_ASUNTO_EN_EL_NOMBRE else asunto)
         sin_titulo.append(primera)
         return replace(g, kind=nombre_por_su_origen(taller.name, g.page_numbers))
 

@@ -24,6 +24,50 @@ from resolutions.domain.fechas import (
 )
 
 
+class TestTodasLasFormasDeEscribirUnaFecha:
+    """«Que el bot cubra todas las excepciones posibles» (2026-10-21, UPD2465747)."""
+
+    @pytest.mark.parametrize(
+        ("texto", "esperada"),
+        [
+            ("Talaigua nuevo Bolívar, 07 octubre del 2022", date(2022, 10, 7)),
+            ("Magangué, octubre 07 del 2022", date(2022, 10, 7)),
+            ("Octubre 07, 2022", date(2022, 10, 7)),
+            ("07 de octubre, 2022", date(2022, 10, 7)),
+            ("07 de octubre del año 2022", date(2022, 10, 7)),
+            ("07.10.2022", date(2022, 10, 7)),
+            ("recibido 07/10/22", date(2022, 10, 7)),
+            ("a los 7 días de octubre de 2.022", date(2022, 10, 7)),
+            ("siete (7) de octubre de 2022", date(2022, 10, 7)),
+            ("siete de octubre de dos mil veintidós", date(2022, 10, 7)),
+            ("primero de mayo de 2021", date(2021, 5, 1)),
+            ("treinta y uno de diciembre de dos mil veinte", date(2020, 12, 31)),
+            ("veinte de enero de mil novecientos noventa y ocho", date(1998, 1, 20)),
+            ("Fecha de emisión: 2022-10-07", date(2022, 10, 7)),
+            ("O7/1O/2O22", date(2022, 10, 7)),
+        ],
+    )
+    def test_se_lee(self, texto, esperada):
+        assert fecha_de_la_pagina(texto) == esperada
+
+    @pytest.mark.parametrize(
+        "texto",
+        [
+            # Un código de guía con guiones no es una fecha.
+            "GUIA 2022-10-07-5511",
+            # Ni el número de una cifra con puntos de miles.
+            "por valor de $ 1.500.000",
+            # Ni un «o» de la prosa delante de un número.
+            "uno o 2 documentos",
+            # Ni una fecha futura escrita con año corto.
+            "vence 07/10/99 de la prórroga",
+        ],
+    )
+    def test_no_se_inventa(self, texto):
+        fecha = fecha_de_la_pagina(texto)
+        assert fecha is None or fecha.year == 1999
+
+
 class TestLaFechaDeUnFormulario:
     """El CONTRATO DE TRANSACCIÓN de UPD2437820 salía «S.F.» con la fecha impresa (2026-10-20)."""
 
@@ -50,6 +94,8 @@ class TestLaFechaDeUnFormulario:
             # Lo que leyó la IA del renglón manuscrito de UPD2997962.
             ("El Banco 19/10 de 2021\n# ACTA DE VERIFICACIÓN DE PREDIO DESOCUPADO", date(2021, 10, 19)),
             ("Magangué, 19 de 10 de 2021", date(2021, 10, 19)),
+            # El encabezado real de UPD2465747: sin «de» entre el día y el mes.
+            ("‘^Talaigua nuevo Bolívar, 07 octubre del 2022\nSeñores,", date(2022, 10, 7)),
         ],
     )
     def test_el_mes_abreviado(self, texto, esperada):
@@ -72,6 +118,8 @@ class TestLaFechaDeUnFormulario:
     def test_una_palabra_que_empieza_como_un_mes_no_es_un_mes(self):
         # «mar» de «marca», «dic» de «dicho»: no son meses.
         assert fecha_de_la_pagina("12 marcas 2021") is None
+        # Ni una palabra que no es un mes, sin «de» delante.
+        assert fecha_de_la_pagina("consumo de 12 meses 2021") is None
 
     def test_una_casilla_imposible_no_es_una_fecha(self):
         assert fecha_de_la_pagina("día:31 mes:2 año:2021") is None

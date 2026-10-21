@@ -22,8 +22,11 @@ from datetime import date
 #: sobre un expediente real de 97 páginas: 157 en cifras con barras, 49 en
 #: letra y 8 en cifras con guiones.
 _EN_CIFRAS = re.compile(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b")
+#: El «de» entre el día y el mes es opcional: «Talaigua nuevo Bolívar, 07
+#: octubre del 2022» (UPD2465747, 2026-10-21) salía «S.F.». Que la palabra sea
+#: un mes de verdad lo comprueba `MESES`, así que «12 meses 2021» no casa.
 _EN_LETRA = re.compile(
-    r"\b(\d{1,2})\s+de\s+([a-záéíóúñ]+)\s+(?:de[l]?\s+)?(\d{4})\b",
+    r"\b(\d{1,2})\s+(?:de\s+)?([a-záéíóúñ]+)\s*,?\s+(?:de[l]?\s+)?(?:a[ñn]o\s+)?(\d{4})\b",
     re.IGNORECASE,
 )
 
@@ -161,12 +164,12 @@ _MES = (
 _CIFRAS_CON_ESPACIOS = re.compile(r"\b(\d{1,2})\s*([/-])\s*(\d{1,2})\s*\2\s*(\d{4})\b")
 
 #: «Mayo 20 de 2021»: el mes delante del día, como se encabezan algunos oficios.
-_MES_DIA_ANIO = re.compile(rf"\b({_MES})\s+(\d{{1,2}})\s*(?:de|,)\s*(\d{{4}})\b", re.IGNORECASE)
+_MES_DIA_ANIO = re.compile(rf"\b({_MES})\s+(\d{{1,2}})\s*(?:del?|,)\s*(\d{{4}})\b", re.IGNORECASE)
 
 #: «a los 26 días del mes de Abril del 2021»: la fórmula con que se firman
 #: pagarés, actas y certificados. La OCR suele pegar «alos».
 _A_LOS_DIAS = re.compile(
-    rf"\ba\s*los\s+(\d{{1,2}})\s+d[ií]as?\s+del\s+mes\s+de\W{{0,4}}({_MES})\s+(?:del?\s+)?(\d{{4}})\b",
+    rf"\ba\s*los\s+(\d{{1,2}})\s+d[ií]as?\s+(?:del\s+mes\s+)?de\W{{0,4}}({_MES})\s+(?:del?\s+)?(?:a[ñn]o\s+)?(\d{{4}})\b",
     re.IGNORECASE,
 )
 
@@ -175,7 +178,7 @@ _A_LOS_DIAS = re.compile(
 #: mismo, y por eso manda sobre las demás que haya en la página.
 _LUGAR_Y_FECHA = re.compile(
     r"\b([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ.]+(?: [A-Za-zÁÉÍÓÚÑáéíóúñ.]+){0,3}),\s*"
-    r"(\d{1,2}[/-]\d{1,2}[/-]\d{4}|\d{1,2}\s+de\s+[A-Za-záéíóúñ]+\s+(?:del?\s+)?\d{4})"
+    r"(\d{1,2}[/-]\d{1,2}[/-]\d{4}|\d{1,2}\s+(?:de\s+)?[A-Za-záéíóúñ]+\s+(?:del?\s+)?\d{4})"
 )
 
 
@@ -230,6 +233,109 @@ def _abreviado(hallazgo: re.Match[str]) -> str:
     return f"{dia} de {_ABREVIADOS[mes.lower()]} de {anio}"
 
 
+# -- todas las formas de escribir una fecha (2026-10-21) ----------------------------
+#
+# «Que el bot cubra todas las excepciones posibles» (el operador, ante UPD2465747):
+# cada forma con que estos papeles escriben una fecha se lleva aquí a una que
+# `fechas_de` reconoce. Ninguna inventa nada: si la parte no es un día, un mes o
+# un año de verdad, la fecha no sale.
+
+_UNIDADES = {
+    "un": 1, "uno": 1, "una": 1, "primero": 1, "primer": 1, "dos": 2, "tres": 3, "cuatro": 4,
+    "cinco": 5, "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "once": 11,
+    "doce": 12, "trece": 13, "catorce": 14, "quince": 15, "dieciseis": 16, "diecisiete": 17,
+    "dieciocho": 18, "diecinueve": 19, "veinte": 20, "veintiuno": 21, "veintiun": 21,
+    "veintidos": 22, "veintitres": 23, "veinticuatro": 24, "veinticinco": 25,
+    "veintiseis": 26, "veintisiete": 27, "veintiocho": 28, "veintinueve": 29, "treinta": 30,
+    "cuarenta": 40, "cincuenta": 50, "sesenta": 60, "setenta": 70, "ochenta": 80, "noventa": 90,
+}
+
+
+def _sin_tildes(texto: str) -> str:
+    import unicodedata
+
+    return "".join(c for c in unicodedata.normalize("NFD", texto) if unicodedata.category(c) != "Mn")
+
+
+def _numero(palabras: str) -> int | None:
+    """«treinta y uno» → 31, «veintidós» → 22; ``None`` si no es un número de dos cifras."""
+    total = 0
+    for palabra in _sin_tildes(palabras).lower().split():
+        if palabra == "y":
+            continue
+        valor = _UNIDADES.get(palabra)
+        if valor is None:
+            return None
+        total += valor
+    return total if 0 < total < 100 else None
+
+
+_PALABRA_DE_NUMERO = r"(?:y|un[oa]?|primer[o]?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|diecis[eé]is|diecisiete|dieciocho|diecinueve|veinte|veinti\w+|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa)"
+#: «dos mil veintidós», «mil novecientos noventa y ocho»: el año en letra.
+_ANIO_EN_LETRA = re.compile(
+    rf"\b(dos\s+mil|mil\s+novecientos)((?:\s+{_PALABRA_DE_NUMERO})*)\b", re.IGNORECASE
+)
+
+
+def _anio_en_letra(hallazgo: re.Match[str]) -> str:
+    base = 2000 if hallazgo.group(1).lower().startswith("dos") else 1900
+    resto = hallazgo.group(2).strip()
+    if not resto:
+        return str(base) if base == 2000 else hallazgo.group(0)
+    numero = _numero(resto)
+    return str(base + numero) if numero is not None else hallazgo.group(0)
+
+
+#: «siete (7) de octubre», «veintiuno (21) días»: el día en letra con la cifra al lado.
+_DIA_CON_CIFRA = re.compile(rf"\b{_PALABRA_DE_NUMERO}(?:\s+y\s+\w+)?\s*\(\s*(\d{{1,2}})\s*\)", re.IGNORECASE)
+#: «siete de octubre», «primero de mayo», «treinta y uno de diciembre»: sólo letra.
+_DIA_EN_LETRA = re.compile(
+    rf"\b({_PALABRA_DE_NUMERO}(?:\s+y\s+{_PALABRA_DE_NUMERO})?)(\s+(?:d[ií]as?\s+del\s+mes\s+)?de\s+(?:{_MES})\b)",
+    re.IGNORECASE,
+)
+
+
+def _dia_en_letra(hallazgo: re.Match[str]) -> str:
+    numero = _numero(hallazgo.group(1))
+    return f"{numero}{hallazgo.group(2)}" if numero is not None and numero <= 31 else hallazgo.group(0)
+
+
+#: «07.10.2022»: con puntos.
+_CON_PUNTOS = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b")
+#: «07/10/22»: el año con dos cifras, sólo con barras (con guiones es un código).
+_ANIO_CORTO = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{2})\b(?![/\d])")
+#: «de 2.022»: el año con el punto de los miles, como se escribe una cifra.
+_ANIO_CON_PUNTO = re.compile(r"\b(del?\s+(?:a[ñn]o\s+)?)([12])\.(\d{3})\b", re.IGNORECASE)
+#: «Fecha de emisión: 2022-10-07»: el año delante con guiones, sólo tras el
+#: rótulo de una fecha (sin él, con guiones es un código de guía).
+_ISO_CON_ROTULO = re.compile(r"(\bfecha\b[^\d\n]{0,25})(\d{4})-(\d{1,2})-(\d{1,2})\b", re.IGNORECASE)
+#: La «O» que la OCR lee en lugar de un cero dentro de una cifra: «O7/1O/2O22».
+#: Sólo la que no va pegada a una letra: la «o» de «año2021» es una letra.
+_O_POR_CERO = re.compile(r"(?<=\d)[Oo](?=[\d/.\-]|\s|$)|(?<![^\W\d_])[Oo](?=\d)")
+
+
+def _anio_corto(hallazgo: re.Match[str]) -> str:
+    from datetime import date as _date
+
+    dia, mes, corto = hallazgo.groups()
+    anio = 2000 + int(corto)
+    if anio > _date.today().year:
+        anio -= 100
+    return f"{dia}/{mes}/{anio}"
+
+
+def _todas_las_formas(plano: str) -> str:
+    """Las formas raras de una fecha, llevadas a una que `fechas_de` reconoce."""
+    plano = _O_POR_CERO.sub("0", plano)
+    plano = _ANIO_EN_LETRA.sub(_anio_en_letra, plano)
+    plano = _DIA_CON_CIFRA.sub(r"\1", plano)
+    plano = _DIA_EN_LETRA.sub(_dia_en_letra, plano)
+    plano = _ISO_CON_ROTULO.sub(r"\1\4/\3/\2", plano)
+    plano = _CON_PUNTOS.sub(r"\1/\2/\3", plano)
+    plano = _ANIO_CORTO.sub(_anio_corto, plano)
+    return _ANIO_CON_PUNTO.sub(r"\1\2\3", plano)
+
+
 def _del_formulario(hallazgo: re.Match[str]) -> str:
     dia, mes, anio = hallazgo.groups()
     return f"{dia}/{mes}/{anio}" if mes.isdigit() else f"{dia} de {mes} de {anio}"
@@ -238,6 +344,7 @@ def _del_formulario(hallazgo: re.Match[str]) -> str:
 def _normalizar(texto: str) -> str:
     """El texto con las fechas escritas como las reconoce :func:`fechas_de`."""
     plano = " ".join(texto.split())
+    plano = _todas_las_formas(plano)
     plano = _ANIO_MES_DIA.sub(r"\3/\2/\1", plano)
     plano = _CIFRAS_CON_ESPACIOS.sub(r"\1\2\3\2\4", plano)
     plano = _FORMULARIO.sub(_del_formulario, plano)
