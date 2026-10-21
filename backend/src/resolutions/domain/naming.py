@@ -146,7 +146,7 @@ def output_filename(
     kind: str | None = None,
     con_titulo: bool = False,
     mayusculas: bool = False,
-    radicado_detras: bool = False,
+    sin_radicado: bool = False,
 ) -> str:
     """Nombrar un archivo generado por lo que es y por su número.
 
@@ -176,18 +176,16 @@ def output_filename(
     archivo nombrado sólo con su número se encuentra igual, uno que no llegó a
     escribirse no.
 
-    ``radicado_detras`` es la caja de correspondencia (lo dictó el operador el
-    2026-10-21: «número, título y número de ref si lo hay»): el número, el
-    tipo y el RE del código al final -- ``01_DERECHO-DE-PETICION-RE3110202212114.pdf``
-    en vez de ``01-RE3110202212114_DERECHO-DE-PETICION.pdf`` --. Al apretar
-    el nombre, el RE tampoco se toca: se recorta el tipo.
+    ``sin_radicado`` es la caja de correspondencia (lo dictó el operador el
+    2026-10-21: «quita el RE del título, que vaya número-título»): sólo el
+    número y el tipo -- ``01_DERECHO-DE-PETICION.pdf`` --, aunque el código
+    del trámite traiga su RE, que sigue en el informe y agrupando.
     """
     fragment = code_fragment(code)
-    radicado = ""
-    if radicado_detras and kind is not None and (
-        partido := re.match(r"^(\d+)-((?:RE|P)\d.*)$", fragment, re.IGNORECASE)
+    if sin_radicado and kind is not None and (
+        partido := re.match(r"^(\d+)-(?:RE|P)\d", fragment, re.IGNORECASE)
     ):
-        fragment, radicado = partido.group(1), partido.group(2)
+        fragment = partido.group(1)
 
     if prefix:
         return f"{prefix}{PREFIX_SEPARATOR}{fragment}{extension}"
@@ -206,10 +204,7 @@ def output_filename(
             quien = quien[len(fragment) :].strip("-_")
         if budget is not None:
             room = budget - len(fragment) - len(PREFIX_SEPARATOR) - len(extension)
-            room -= len(radicado) + 1 if radicado else 0
             if room < MIN_KIND_FRAGMENT:
-                if radicado:
-                    return f"{fragment}{PREFIX_SEPARATOR}{radicado}{extension}"
                 # No cabe ni recortado. El número sí, y un archivo nombrado
                 # sólo con su número se encuentra; uno que no se llegó a
                 # escribir no.
@@ -223,7 +218,7 @@ def output_filename(
                 quien = slugify(quien, max_length=sobra)
             if len(etiqueta) > room:
                 etiqueta = etiqueta[:room].rstrip("-")
-        piezas = [fragment, *([quien] if quien else []), f"{etiqueta}-{radicado}" if radicado else etiqueta]
+        piezas = [fragment, *([quien] if quien else []), etiqueta]
         if mayusculas:
             piezas = [pieza.upper() for pieza in piezas]
         return PREFIX_SEPARATOR.join(piezas) + extension

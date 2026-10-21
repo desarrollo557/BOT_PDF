@@ -299,9 +299,9 @@ class PyMuPDFAssembler:
         con_titulo: bool = False,
         mayusculas: bool = False,
         nombre: str | None = None,
-        # El RE detrás del tipo: «01_RECLAMO-RE3110….pdf» (la caja de
+        # Sin el RE del trámite en el nombre: «01_RECLAMO.pdf» (la caja de
         # correspondencia, ver ``output_filename``).
-        radicado_detras: bool = False,
+        sin_radicado: bool = False,
     ) -> None:
         #: Escribir cuatrocientos archivos tarda tanto como leerlos. Sin un punto
         #: de parada aquí, una cancelación pedida durante la escritura se
@@ -318,7 +318,7 @@ class PyMuPDFAssembler:
         self._prefix = naming_prefix
         self._con_titulo = con_titulo
         self._mayusculas = mayusculas
-        self._radicado_detras = radicado_detras
+        self._sin_radicado = sin_radicado
         #: Cómo llamó el operador al documento de origen. Las subidas se guardan
         #: con un nombre generado, y un aviso sobre "6ea93142663d.pdf" no dice
         #: de qué archivo se está hablando.
@@ -364,7 +364,7 @@ class PyMuPDFAssembler:
                     con_titulo=self._con_titulo,
                     mayusculas=self._mayusculas,
                     kind=group.kind,
-                    radicado_detras=self._radicado_detras,
+                    sin_radicado=self._sin_radicado,
                 )
                 # Dos unidades distintas nunca comparten archivo. El nombre se
                 # recorta para caber en la ruta, y dos graduados leídos con el

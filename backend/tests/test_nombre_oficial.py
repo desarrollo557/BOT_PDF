@@ -76,40 +76,23 @@ class TestElMembrete:
 
 
 class TestElNombreDelArchivo:
-    """«Número, título y número de ref si lo hay» (el operador, 2026-10-21)."""
+    """«Número-título», sin el RE (el operador, 2026-10-21: «quita el RE del título»)."""
 
-    def test_el_re_va_detras_del_titulo(self):
+    def test_el_re_del_tramite_no_va_en_el_nombre(self):
         from resolutions.domain.naming import output_filename
         from resolutions.domain.resolution_code import ResolutionCode
 
         codigo = ResolutionCode(value="01 RE3110202212114", raw="RE3110202212114")
         nombre = output_filename(
-            codigo, None, prefix=None, kind="DERECHO DE PETICION", mayusculas=True, radicado_detras=True
+            codigo, None, prefix=None, kind="DERECHO DE PETICION", mayusculas=True, sin_radicado=True
         )
-        assert nombre == "01_DERECHO-DE-PETICION-RE3110202212114.pdf"
+        assert nombre == "01_DERECHO-DE-PETICION.pdf"
 
-    def test_sin_re_solo_el_numero_y_el_titulo(self):
+    def test_sin_re_igual(self):
         from resolutions.domain.naming import output_filename
         from resolutions.domain.resolution_code import ResolutionCode
 
         nombre = output_filename(
-            ResolutionCode(value="02", raw="02"), None, prefix=None, kind="RECLAMO", mayusculas=True, radicado_detras=True
+            ResolutionCode(value="02", raw="02"), None, prefix=None, kind="RECLAMO", mayusculas=True, sin_radicado=True
         )
         assert nombre == "02_RECLAMO.pdf"
-
-    def test_al_apretar_el_nombre_el_re_no_se_pierde(self):
-        from resolutions.domain.naming import output_filename
-        from resolutions.domain.resolution_code import ResolutionCode
-
-        codigo = ResolutionCode(value="04 RE2310202321592", raw="RE2310202321592")
-        nombre = output_filename(
-            codigo,
-            None,
-            prefix=None,
-            kind="SOLICITUD DE RECONOCIMIENTO DE SILENCIO ADMINISTRATIVO POSITIVO",
-            mayusculas=True,
-            radicado_detras=True,
-            budget=45,
-        )
-        assert nombre.startswith("04_SOLICITUD") and nombre.endswith("-RE2310202321592.pdf")
-        assert len(nombre) <= 45
