@@ -78,9 +78,26 @@ def _valida(dia: int, mes: int, anio: int, hoy: date | None = None) -> date | No
     return fecha if fecha <= (hoy or date.today()) else None
 
 
+#: Los campos de una cédula: una fecha a su lado es la de nacimiento o la de
+#: expedición del documento de identidad, nunca la del papel que se archiva.
+#: Medido el 2026-10-20 en las cajas de MAGANGUE: «09-SEP-1980 FECHA DE
+#: NACIMIENTO» fechaba un acuerdo de pago en 1980.
+_DE_LA_CEDULA = re.compile(
+    # Con lo que la OCR hace de la palabra: «NACÍMIEMTO» (UPD3102762 p5).
+    r"nac[iíl1]m[iíl1]e[nm]t[o0]|estatura|\bg\.?\s*s\.?\s*rh\b|lugar\s+de\s+expedici[oó]n"
+    r"|fecha\s+y\s+lugar\s+de\s+expedici|registrad\w*\s+nacional",
+    re.IGNORECASE,
+)
+#: Cuánto texto alrededor se mira para decidir si la fecha es de una cédula.
+CONTEXTO_DE_CEDULA = 45
+
+
 def _citada(texto: str, inicio: int) -> bool:
-    """Si lo que hay justo antes de la fecha la convierte en una cita."""
-    return bool(_CITA.search(texto[max(0, inicio - CONTEXTO_DE_CITA) : inicio]))
+    """Si lo que hay justo antes de la fecha la convierte en una cita, o es la de una cédula."""
+    if _CITA.search(texto[max(0, inicio - CONTEXTO_DE_CITA) : inicio]):
+        return True
+    alrededor = texto[max(0, inicio - CONTEXTO_DE_CEDULA) : inicio + CONTEXTO_DE_CEDULA + 25]
+    return bool(_DE_LA_CEDULA.search(alrededor))
 
 
 def fechas_de(texto: str, *, hoy: date | None = None) -> list[date]:
@@ -167,14 +184,82 @@ _LUGAR_Y_FECHA = re.compile(
 #: de las guías de envío.
 _ANIO_MES_DIA = re.compile(r"\b(\d{4})/(\d{1,2})/(\d{1,2})\b")
 
+#: «día:3 mes:5 del año2021», «Día __03__ Mes __05__ Año __2021__», «dia 3 mes
+#: mayo año 2021»: la fecha de un formulario, con cada parte en su casilla. Así
+#: firma el CONTRATO DE TRANSACCIÓN de Afinia (UPD2437820 p3), y salía «S.F.»
+#: porque ninguna otra regla la reconocía (2026-10-20).
+_HUECO = r"\s*[:.\-]?[\s_]*"
+_FORMULARIO = re.compile(
+    rf"\bd[ií]a{_HUECO}(\d{{1,2}})[\s_,;]*(?:del?\s+)?mes{_HUECO}(\d{{1,2}}|{_MES})[\s_,;]*"
+    # Sin `\b` al final: «2021__» no lo cierra, porque `_` cuenta como letra.
+    # La raya de la casilla se come, para que la fecha quede suelta.
+    rf"(?:del?\s+)?a[ñn]o{_HUECO}(\d{{4}})(?!\d)_*",
+    re.IGNORECASE,
+)
+#: Y el formulario en columnas: los rótulos «DÍA MES AÑO» en un renglón y las
+#: cifras debajo, que la OCR deja seguidas: «DIA MES AÑO 03 05 2021».
+_FORMULARIO_EN_COLUMNAS = re.compile(
+    r"\bD[IÍ]A\W{1,6}MES\W{1,6}A[ÑN]O\W{1,10}(\d{1,2})\W{1,4}(\d{1,2})\W{1,4}(\d{4})\b",
+    re.IGNORECASE,
+)
+
+
+#: «26 Nov de 2022», «03-dic-2021», «5 Sept. 2020»: el mes abreviado, como se
+#: escribe a mano en el renglón de la fecha de un acta (ACTA DE VERIFICACIÓN DE
+#: PREDIO DESOCUPADO, 2026-10-20). Sin él, la fecha salía «S.F.».
+_ABREVIADOS = {
+    "ene": "enero", "feb": "febrero", "mar": "marzo", "abr": "abril", "may": "mayo",
+    "jun": "junio", "jul": "julio", "ago": "agosto", "sep": "septiembre", "sept": "septiembre",
+    "set": "septiembre", "oct": "octubre", "nov": "noviembre", "dic": "diciembre",
+}
+_MES_ABREVIADO = re.compile(
+    r"\b(\d{1,2})\s*[,./-]?\s*(ene|feb|mar|abr|may|jun|jul|ago|sept|sep|set|oct|nov|dic)\.?"
+    r"(?![a-záéíóúñ])\s*[,./-]?\s*(?:del?\s+)?(\d{4})\b",
+    re.IGNORECASE,
+)
+
+
+#: «El Banco 19/10 de 2021», «19 de 10 de 2021»: el día y el mes a mano en los
+#: huecos de un formato que trae impreso «___, ____ de 20__». Así lo leyó la IA
+#: en el ACTA DE VERIFICACIÓN DE PREDIO DESOCUPADO de UPD2997962 (2026-10-20).
+_CIFRAS_Y_DE = re.compile(r"\b(\d{1,2})\s*(?:/|\s+de\s+)\s*(\d{1,2})\s*,?\s+del?\s+(\d{4})\b", re.IGNORECASE)
+
+
+def _abreviado(hallazgo: re.Match[str]) -> str:
+    dia, mes, anio = hallazgo.groups()
+    return f"{dia} de {_ABREVIADOS[mes.lower()]} de {anio}"
+
+
+def _del_formulario(hallazgo: re.Match[str]) -> str:
+    dia, mes, anio = hallazgo.groups()
+    return f"{dia}/{mes}/{anio}" if mes.isdigit() else f"{dia} de {mes} de {anio}"
+
 
 def _normalizar(texto: str) -> str:
     """El texto con las fechas escritas como las reconoce :func:`fechas_de`."""
     plano = " ".join(texto.split())
     plano = _ANIO_MES_DIA.sub(r"\3/\2/\1", plano)
     plano = _CIFRAS_CON_ESPACIOS.sub(r"\1\2\3\2\4", plano)
+    plano = _FORMULARIO.sub(_del_formulario, plano)
+    plano = _FORMULARIO_EN_COLUMNAS.sub(r"\1/\2/\3", plano)
+    plano = _MES_ABREVIADO.sub(_abreviado, plano)
+    plano = _CIFRAS_Y_DE.sub(r"\1/\2/\3", plano)
     plano = _MES_DIA_ANIO.sub(r"\2 de \1 de \3", plano)
     return _A_LOS_DIAS.sub(r"\1 de \2 de \3", plano)
+
+
+#: Lo que delata que en una hoja hay una fecha que leer, aunque la OCR no la
+#: haya entendido: el rótulo de la fecha, la fórmula de firma, el lugar.
+_PISTAS_DE_FECHA = re.compile(
+    r"\bfecha\b|\bd[ií]a\b|\bmes\b|\ba[ñn]o\b|\bciudad\s*:|\ba\s*los\s+\S+\s+d[ií]as\b"
+    r"|\ben\s+constancia\b|\bse\s+firma\b|\bfirmad[oa]\b|\brecibid[oa]\b",
+    re.IGNORECASE,
+)
+
+
+def pistas_de_fecha(texto: str) -> int:
+    """Cuántas señales de una fecha por leer trae la hoja; para elegir cuál releer."""
+    return len(_PISTAS_DE_FECHA.findall(texto or ""))
 
 
 def fecha_de_la_pagina(texto: str, *, hoy: date | None = None) -> date | None:

@@ -18,9 +18,67 @@ import pytest
 from resolutions.domain.fechas import (
     fecha_de_la_pagina,
     fechas_de,
+    pistas_de_fecha,
     primera_fecha,
     ultima_fecha,
 )
+
+
+class TestLaFechaDeUnFormulario:
+    """El CONTRATO DE TRANSACCIÓN de UPD2437820 salía «S.F.» con la fecha impresa (2026-10-20)."""
+
+    @pytest.mark.parametrize(
+        ("texto", "esperada"),
+        [
+            # El texto real de su última hoja.
+            ("Ciudad: MAGANGUE, día:3 mes:5 del año2021.", date(2021, 5, 3)),
+            ("Día __03__ Mes __05__ Año __2021__", date(2021, 5, 3)),
+            ("dia 3 mes mayo año 2021", date(2021, 5, 3)),
+            ("Fecha: DÍA MES AÑO\n03 05 2021", date(2021, 5, 3)),
+        ],
+    )
+    def test_se_lee_la_fecha_del_formulario(self, texto, esperada):
+        assert fecha_de_la_pagina(texto) == esperada
+
+    @pytest.mark.parametrize(
+        ("texto", "esperada"),
+        [
+            # El renglón manuscrito del ACTA DE VERIFICACIÓN DE PREDIO DESOCUPADO.
+            ("26 , Nov de 2022\nACTA DE VERIFICACIÓN DE PREDIO DESOCUPADO", date(2022, 11, 26)),
+            ("03-dic-2021", date(2021, 12, 3)),
+            ("5 Sept. 2020", date(2020, 9, 5)),
+            # Lo que leyó la IA del renglón manuscrito de UPD2997962.
+            ("El Banco 19/10 de 2021\n# ACTA DE VERIFICACIÓN DE PREDIO DESOCUPADO", date(2021, 10, 19)),
+            ("Magangué, 19 de 10 de 2021", date(2021, 10, 19)),
+        ],
+    )
+    def test_el_mes_abreviado(self, texto, esperada):
+        assert fecha_de_la_pagina(texto) == esperada
+
+    @pytest.mark.parametrize(
+        "texto",
+        [
+            # Las cédulas reales de UPD2973859 p5 y UPD3102728 p2.
+            "09-SEP-1980\nFECHA DE NACIMIENTO\nLUGAR DE NACIMIENTO",
+            "11-OCT-1995\nlugar de nacimiento",
+            # Como la dejó la OCR en UPD3102762 p5.
+            "fecha de NACÍMIEMTO 27-ENE-1995\nLUGAR DE NACiMíENTO\nBEOlSTRADOn NACIONAL",
+            "ESTATURA 1.62 G.S. RH O+ SEXO F 18-AGO-1999 SOPLAVIENTO FECHA Y LUGAR DE EXPEDICION",
+        ],
+    )
+    def test_la_fecha_de_una_cedula_no_fecha_el_documento(self, texto):
+        assert fecha_de_la_pagina(texto) is None
+
+    def test_una_palabra_que_empieza_como_un_mes_no_es_un_mes(self):
+        # «mar» de «marca», «dic» de «dicho»: no son meses.
+        assert fecha_de_la_pagina("12 marcas 2021") is None
+
+    def test_una_casilla_imposible_no_es_una_fecha(self):
+        assert fecha_de_la_pagina("día:31 mes:2 año:2021") is None
+
+    def test_las_pistas_de_una_fecha_por_leer(self):
+        assert pistas_de_fecha("Ciudad: MAGANGUE, día:__ mes:__ del año____") >= 3
+        assert pistas_de_fecha("ACOMETIDA FRAUDULENTA") == 0
 
 
 class TestLosTresFormatosDelCorpus:

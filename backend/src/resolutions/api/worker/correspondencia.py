@@ -10,11 +10,14 @@ vez de descubrirse abriendo los archivos.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 
 from ...application.progress import ProgressEvent, Stage
 from .planillas import _escribir_indice
 from .taller import Taller, _anunciar
+
+logger = logging.getLogger(__name__)
 
 #: Los títulos de lo que no es un escrito del trámite: no toman el RE del
 #: trámite en que caen (UPD2326311 p1, UPD2326314 p3, UPD2320047 p7).
@@ -52,6 +55,81 @@ def _titulo_del_encabezado(fuente, pagina: int, lector) -> str | None:
         return titulo_impreso(lector.read(salida.getvalue()).text)
     except Exception:  # noqa: BLE001 - sin franja legible, el nombre por su origen
         return None
+
+
+#: A cuánto se relee una hoja buscando su fecha: en local, fino; para la IA,
+#: lo que ya basta y viaja ligero.
+PPP_PARA_LA_FECHA_LOCAL = 300
+PPP_PARA_LA_FECHA_CON_IA = 200
+
+
+def _completar_las_fechas(piezas: list[dict], textos: dict, ruta_pdf, taller) -> list[dict]:
+    """Pone fecha a cada documento que salió sin ella. Devuelve de dónde salió cada una.
+
+    Primero el agente (:mod:`~resolutions.application.agente_de_fechas`): el
+    texto, la relectura local y, sólo si el operador eligió una lectura con IA,
+    la IA. Lo que el papel no trae, la fecha de su trámite. Un fallo aquí no
+    tumba la caja: el documento se queda como estaba.
+    """
+    from datetime import date
+
+    from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...adapters.tesseract_ocr import PSM_AUTO, TesseractConfig, TesseractOcr
+    from ...application.agente_de_fechas import AgenteDeFechas, fecha_por_su_tramite
+    from ...domain.tramites import es_cedula
+
+    sin_fecha = [i for i, pieza in enumerate(piezas) if not pieza.get("fecha")]
+    if not sin_fecha:
+        return []
+    halladas: list[dict] = []
+    fuente = None
+    try:
+        fuente = PyMuPDFPageSource(ruta_pdf, taller.name)
+        local = TesseractOcr(TesseractConfig(min_word_confidence=0, psm=PSM_AUTO))
+        de_pago = taller.lector_de_pago()
+        agente = AgenteDeFechas(
+            releer=lambda p: local.read(fuente.render(p, None, PPP_PARA_LA_FECHA_LOCAL)).text,
+            leer_con_ia=(
+                (lambda p: de_pago.read(fuente.render(p, None, PPP_PARA_LA_FECHA_CON_IA, "jpeg")).text)
+                if de_pago is not None
+                else None
+            ),
+            # La cédula no fecha nada: su fecha es la de nacimiento.
+            no_fecha=es_cedula,
+        )
+        for i in sin_fecha:
+            hallada = agente.buscar(piezas[i]["pages"], textos)
+            if hallada is not None:
+                piezas[i]["fecha"] = hallada.fecha.isoformat()
+                piezas[i]["fecha_por"] = hallada.como()
+                halladas.append({"pages": piezas[i]["pages"], "fecha": piezas[i]["fecha"], "como": hallada.como()})
+    except Exception:  # noqa: BLE001 - buscar una fecha no tumba la caja
+        logger.warning("no se pudo terminar de buscar las fechas que faltan", exc_info=True)
+    finally:
+        if fuente is not None:
+            fuente.close()
+
+    # Lo que el papel no trae -- la copia de una cédula, una foto --: la fecha
+    # de su trámite, el documento con que viaja. Sólo de las fechas del propio
+    # papel, para que una prestada no se preste otra vez.
+    propias = [
+        date.fromisoformat(str(p["fecha"])[:10]) if p.get("fecha") else None for p in piezas
+    ]
+    archivos = [p.get("archivo") for p in piezas]
+    for i, pieza in enumerate(piezas):
+        if propias[i] is not None:
+            continue
+        del_tramite = fecha_por_su_tramite(i, propias, archivos)
+        if del_tramite is None:
+            continue
+        fecha, de = del_tramite
+        pieza["fecha"] = fecha.isoformat()
+        pieza["fecha_por"] = (
+            f"la de su trámite: {piezas[de].get('titulo') or piezas[de].get('type') or 'documento'} "
+            f"(pág. {piezas[de]['pages'][0]})"
+        )
+        halladas.append({"pages": pieza["pages"], "fecha": pieza["fecha"], "como": pieza["fecha_por"]})
+    return halladas
 
 
 def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
@@ -375,7 +453,7 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         y la fecha de cada parte tienen que ser los suyos, no los de la otra.
         """
         piezas = []
-        for entregado in entregados:
+        for archivo, entregado in enumerate(entregados):
             suyas = set(entregado.page_numbers)
             for cortado in cortados:
                 paginas = [p for p in cortado.page_numbers if p in suyas]
@@ -409,6 +487,9 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
                 piezas.append(
                     {
                         "pages": paginas,
+                        # En qué archivo acabó: la fecha de su trámite se busca
+                        # primero entre los documentos de su mismo archivo.
+                        "archivo": archivo,
                         "type": cortado.kind,
                         "fecha": primera.isoformat() if primera else cortado.fecha,
                         # Lo que el documento dice ser en su primera hoja --
@@ -656,6 +737,11 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     # IDENTIDAD».
     grupos = nombrar_sin_soporte(grupos, textos)
     piezas = describir_piezas(grupos.groups)
+    # F7. Ningún documento sin fecha (lo dictó el operador el 2026-10-20: «que
+    # el bot en todos los casos tome la fecha»): el agente la busca en el texto,
+    # relee en local y, si se eligió una lectura con IA, se la pide a la IA; lo
+    # que el papel no trae lleva la de su trámite.
+    fechas_halladas = _completar_las_fechas(piezas, textos, tmp_path, taller)
     _anunciar(
         payload,
         Stage.ASSEMBLING,
@@ -789,6 +875,9 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         "anexos_declarados": [escrito.as_dict() for escrito in escritos],
         # Los documentos que forman cada archivo, y el expediente: la caja.
         "piezas": piezas,
+        # Las fechas que no estaban a la vista y de dónde salieron: el índice
+        # lleva sólo la fecha; aquí queda cómo se obtuvo, para auditarla.
+        "fechas_halladas": fechas_halladas,
         # Sólo el PDF, sin la subcarpeta de la caja: «UPD2998266», no
         # «910349 UPD2998266» (la caja va en «Identificación / Nic»).
         "expediente": document_folder(nombre_del_expediente(taller.name)),
