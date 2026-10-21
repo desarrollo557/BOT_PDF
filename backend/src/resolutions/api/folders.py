@@ -997,12 +997,20 @@ class FolderRunner:
         """Dónde va la constancia de un PDF: en su carpeta, o la de sus actas en el espejo."""
         if actas:
             return self._espejo(run, path) / constancias.CARPETA_DE_ACTAS / f"{path.name}.json"
-        return self._output_dir(run, path) / constancias.NOMBRE
+        return self._output_dir(run, path) / self._nombre_de_la_constancia(run, path)
 
     def _vigencia(self, run: FolderRun, path: Path) -> tuple[Vigencia, Constancia | None]:
         """Qué dice la constancia de un PDF -- la suya o, si es de actas, la del espejo --."""
-        for actas in (False, True):
-            ruta = self._ruta_de_la_constancia(run, path, actas=actas)
+        rutas = [
+            self._ruta_de_la_constancia(run, path, actas=False),
+            self._ruta_de_la_constancia(run, path, actas=True),
+        ]
+        if self._plana(run):
+            # Una entrega de antes del 2026-10-21, en su subcarpeta UPD: también
+            # vale, para que «Saltar lo ya entregado» no repita lo ya pagado.
+            rutas.append(self._entrega_de_antes(run, path) / constancias.NOMBRE)
+        for indice, ruta in enumerate(rutas):
+            actas = indice == 1
             constancia = constancias.leer(ruta)
             if constancia is not None:
                 base = ruta.parent.parent if actas else ruta.parent
@@ -1015,9 +1023,41 @@ class FolderRunner:
     def _tiene_pdf_entregado(self, run: FolderRun, path: Path) -> bool:
         carpeta = self._output_dir(run, path)
         try:
-            return carpeta.is_dir() and any(carpeta.glob("*.[pP][dD][fF]"))
+            if carpeta.is_dir() and any(carpeta.glob(f"{self._prefijo(run, path)}*.[pP][dD][fF]")):
+                return True
+            # Y la de antes, en su subcarpeta UPD.
+            antes = self._entrega_de_antes(run, path)
+            return self._plana(run) and antes.is_dir() and any(antes.glob("*.[pP][dD][fF]"))
         except OSError:
             return False
+
+    def _entrega_de_antes(self, run: FolderRun, origin: Path) -> Path:
+        """Dónde quedaba lo de un PDF antes de la entrega plana: «DESTINO\\caja\\UPD…»."""
+        relativa = self._relative(run, origin)
+        return run.destination / relativa.parent / relativa.stem
+
+    def _apartar_la_entrega_de_antes(self, run: FolderRun, origin: Path, carpeta: Path) -> None:
+        """La subcarpeta UPD de una entrega de antes, apartada entera al rehacer el PDF.
+
+        A `_reemplazados` de su caja, no a la basura: es trabajo entregado. Así la
+        caja queda sólo con la forma nueva, sin el mismo documento dos veces.
+        """
+        antes = self._entrega_de_antes(run, origin)
+        if not antes.is_dir() or antes == carpeta:
+            return
+        sello = datetime.now().strftime("%Y%m%d-%H%M%S")
+        apartado = carpeta / REEMPLAZADOS_DIR / sello / antes.name
+        try:
+            apartado.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(antes, apartado)
+        except OSError as error:
+            logger.warning("no se pudo apartar la entrega de antes %s: %s", antes, error)
+            return
+        self._avisar(
+            run,
+            f"«{antes.name}»: la entrega de antes, en su subcarpeta, quedó en "
+            f"{REEMPLAZADOS_DIR}\\{sello}; ahora sus archivos van en la carpeta de la caja.",
+        )
 
     def _contar_lo_ya_entregado(
         self, run: FolderRun, path: Path, constancia: Constancia | None
@@ -1069,8 +1109,18 @@ class FolderRunner:
             self._sumar_filas_de_actas(run, constancia.actas)
         if constancia.unidades:
             run.manifest.extend(constancia.unidades)
-        if any(str(archivo.get("ruta")) == NOMBRE_DEL_INDICE for archivo in constancia.archivos):
-            run.indices[carpeta.name] = carpeta / NOMBRE_DEL_INDICE
+        nombre_del_indice = self._nombre_del_indice(run, path, NOMBRE_DEL_INDICE)
+        entregados = {str(archivo.get("ruta")) for archivo in constancia.archivos}
+        if nombre_del_indice in entregados:
+            run.indices[self._clave_del_indice(run, path, carpeta)] = carpeta / nombre_del_indice
+        elif self._plana(run) and NOMBRE_DEL_INDICE in entregados:
+            # Una entrega de antes, en su subcarpeta UPD: su índice está ahí.
+            run.indices[path.stem] = self._entrega_de_antes(run, path) / NOMBRE_DEL_INDICE
+
+    @staticmethod
+    def _clave_del_indice(run: FolderRun, origin: Path, carpeta: Path) -> str:
+        """El nombre de la hoja de su índice en el libro general: el UPD."""
+        return origin.stem if FolderRunner._plana(run) else carpeta.name
 
     @staticmethod
     def _sumar_filas_de_actas(run: FolderRun, filas: list[dict]) -> None:
@@ -1702,6 +1752,38 @@ class FolderRunner:
             return str(job.destination or "")
 
     @staticmethod
+    def _plana(run: FolderRun) -> bool:
+        """Si la entrega va directa en la carpeta de la caja, sin subcarpeta por PDF.
+
+        Lo pidió el operador el 2026-10-21 para la caja de correspondencia:
+        «DESTINO\\210847» con lo de cada UPD dentro, no «DESTINO\\210847\\UPD…».
+        De 30 003 cajas de MAGANGUE, 6 266 traen dos o tres UPD, así que todo lo
+        de un PDF lleva su UPD delante (`_prefijo`) y nunca pisa lo de otro.
+        Las demás habilidades siguen con su carpeta por PDF.
+        """
+        return str(run.task) == "segment"
+
+    @staticmethod
+    def _prefijo(run: FolderRun, origin: Path) -> str:
+        """Lo que va delante de cada archivo de un PDF en una entrega plana: «UPD2998726_»."""
+        return f"{origin.stem}_" if FolderRunner._plana(run) else ""
+
+    @staticmethod
+    def _nombre_de_la_constancia(run: FolderRun, origin: Path) -> str:
+        """La constancia de un PDF: una por PDF también en la carpeta compartida de su caja."""
+        if FolderRunner._plana(run):
+            return f"{Path(constancias.NOMBRE).stem}-{origin.stem}.json"
+        return constancias.NOMBRE
+
+    @staticmethod
+    def _nombre_del_indice(run: FolderRun, origin: Path, nombre: str) -> str:
+        """«00.INDICE ELECTRONICO UPD2998726.xlsx» en una entrega plana; tal cual si no."""
+        if FolderRunner._plana(run):
+            hoja = Path(nombre)
+            return f"{hoja.stem} {origin.stem}{hoja.suffix}"
+        return nombre
+
+    @staticmethod
     def _output_dir(run: FolderRun, origin: Path, job: Job | None = None) -> Path:
         """Dónde caen los PDF que salen de un documento de origen.
 
@@ -1723,6 +1805,9 @@ class FolderRunner:
         es también el nombre del expediente en su Índice Electrónico.
         """
         relativa = FolderRunner._relative(run, origin)
+        if FolderRunner._plana(run):
+            # La caja de correspondencia, plana: la carpeta de la caja.
+            return run.destination / relativa.parent
         return run.destination / relativa.parent / relativa.stem
 
     def _deliver(
@@ -1773,8 +1858,13 @@ class FolderRunner:
             files = []
 
         carpeta = self._output_dir(run, origin, job)
-        ruta_de_la_constancia = carpeta / constancias.NOMBRE
-        entrega = Entrega(base=carpeta, constancia=ruta_de_la_constancia)
+        ruta_de_la_constancia = carpeta / self._nombre_de_la_constancia(run, origin)
+        prefijo = self._prefijo(run, origin)
+        # En la carpeta compartida de una caja, la constancia lista lo que se
+        # copió de este PDF y nada más: lo demás es de los otros UPD.
+        entrega = Entrega(
+            base=carpeta, constancia=ruta_de_la_constancia, archivos=[] if prefijo else None
+        )
         try:
             carpeta.mkdir(parents=True, exist_ok=True)
         except OSError as error:
@@ -1786,8 +1876,10 @@ class FolderRunner:
 
         rehacer = run.a_rehacer.pop(str(origin), None)
         if rehacer is not None:
-            self._apartar_lo_anterior(run, carpeta, None, rehacer[0])
+            self._apartar_lo_anterior(run, carpeta, rehacer[1] if prefijo else None, rehacer[0], prefijo=prefijo)
             run.rehechos += 1
+        if prefijo:
+            self._apartar_la_entrega_de_antes(run, origin, carpeta)
         # «Entregando» antes de copiar nada: si la corrida se corta a media
         # copia, la próxima ve una entrega cortada y la rehace entera.
         self._escribir_constancia(
@@ -1805,9 +1897,13 @@ class FolderRunner:
             # aparte y no se anota como entrega, que cuenta documentos.
             try:
                 for hoja in sorted(produced.rglob(indice))[:1]:
-                    destino_del_indice = unique_path(carpeta, hoja.name)
+                    destino_del_indice = unique_path(
+                        carpeta, self._nombre_del_indice(run, origin, hoja.name)
+                    )
                     _copiar(hoja, destino_del_indice)
-                    run.indices[carpeta.name] = destino_del_indice
+                    run.indices[self._clave_del_indice(run, origin, carpeta)] = destino_del_indice
+                    if entrega.archivos is not None:
+                        entrega.archivos.append(destino_del_indice)
             except OSError as error:
                 logger.warning("no se pudo entregar el índice de %s: %s", job.filename, error)
                 entrega.fallos.append(f"el índice: {explicar_fallo(error)}")
@@ -1824,9 +1920,14 @@ class FolderRunner:
                 # Quarantine ships under the document it came from, or every
                 # source in the folder would deliver a file called the same.
                 name = f"{origin.stem}{name}"
+            elif prefijo:
+                # En la carpeta de la caja, con su UPD delante.
+                name = f"{prefijo}{name}"
             try:
                 target = unique_path(carpeta, name)
                 _copiar(source_file, target)
+                if entrega.archivos is not None:
+                    entrega.archivos.append(target)
             except OSError as error:
                 logger.warning("could not deliver %s: %s", source_file.name, error)
                 entrega.fallos.append(f"«{source_file.name}»: {explicar_fallo(error)}")
@@ -2317,7 +2418,7 @@ class FolderRunner:
                     ruta
                     for ruta in entrega.base.iterdir()
                     if ruta.is_file()
-                    and ruta.name != constancias.NOMBRE
+                    and not ruta.name.startswith(Path(constancias.NOMBRE).stem)
                     and not ruta.name.endswith((".part", ".tmp"))
                 ]
             except OSError:
@@ -2362,7 +2463,13 @@ class FolderRunner:
             logger.warning("no se pudieron liberar las salidas de %s: %s", job.filename, error)
 
     def _apartar_lo_anterior(
-        self, run: FolderRun, base: Path, constancia: Constancia | None, vigencia: Vigencia
+        self,
+        run: FolderRun,
+        base: Path,
+        constancia: Constancia | None,
+        vigencia: Vigencia,
+        *,
+        prefijo: str = "",
     ) -> None:
         """Aparta lo que se entregó antes de rehacer un PDF, para no dejar «(2)».
 
@@ -2381,7 +2488,10 @@ class FolderRunner:
                 rutas = [
                     ruta
                     for ruta in base.iterdir()
-                    if ruta.is_file() and ruta.suffix.lower() in EXTENSIONES_DEL_BOT
+                    if ruta.is_file()
+                    and ruta.suffix.lower() in EXTENSIONES_DEL_BOT
+                    # En la carpeta compartida de una caja, sólo lo de este PDF.
+                    and (not prefijo or ruta.name.startswith(prefijo) or ruta.stem.endswith(prefijo.rstrip("_")))
                 ]
             except OSError:
                 rutas = []
@@ -2389,7 +2499,7 @@ class FolderRunner:
             rutas = [base / str(archivo.get("ruta")) for archivo in constancia.archivos]
         movidos = 0
         for ruta in rutas:
-            if ruta.name == constancias.NOMBRE or not ruta.exists():
+            if ruta.name.startswith(Path(constancias.NOMBRE).stem) or not ruta.exists():
                 continue
             try:
                 relativa = ruta.relative_to(base)

@@ -121,6 +121,26 @@ class TestLaFechaDeUnFormulario:
         # Ni una palabra que no es un mes, sin «de» delante.
         assert fecha_de_la_pagina("consumo de 12 meses 2021") is None
 
+    @pytest.mark.parametrize(
+        ("texto", "esperada"),
+        [
+            # Lo que devolvió la IA del COMPROBANTE CUPON MANUAL de UPD2973860.
+            (
+                "Ortega* | FECHA  |   |   |\n|   |   |  DIA | MES | ANIO  |   |   |\n"
+                "|  ID DE COBROS: **1 0 0 1 6 4 4 0 1** |   | **9 16 09 08 2022**  |   |",
+                date(2022, 8, 9),
+            ),
+            ("FECHA DIA MES ANO 15 06 2021", date(2021, 6, 15)),
+            ("dia 3 mes 5 anio 2021", date(2021, 5, 3)),
+        ],
+    )
+    def test_las_casillas_de_un_formulario(self, texto, esperada):
+        assert fecha_de_la_pagina(texto) == esperada
+
+    def test_unas_casillas_sin_cifras_legibles_no_dan_fecha(self):
+        # La capa de texto del mismo comprobante: rótulos y basura.
+        assert fecha_de_la_pagina("NIC\nFECHA\nDIA\nMES *\nANIO\n¿é)2^\nID DE COBROS:") is None
+
     def test_una_casilla_imposible_no_es_una_fecha(self):
         assert fecha_de_la_pagina("día:31 mes:2 año:2021") is None
 

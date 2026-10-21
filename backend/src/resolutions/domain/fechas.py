@@ -196,7 +196,8 @@ _FORMULARIO = re.compile(
     rf"\bd[ií]a{_HUECO}(\d{{1,2}})[\s_,;]*(?:del?\s+)?mes{_HUECO}(\d{{1,2}}|{_MES})[\s_,;]*"
     # Sin `\b` al final: «2021__» no lo cierra, porque `_` cuenta como letra.
     # La raya de la casilla se come, para que la fecha quede suelta.
-    rf"(?:del?\s+)?a[ñn]o{_HUECO}(\d{{4}})(?!\d)_*",
+    # «año», «ano» o «anio», como lo escriben los formularios sin eñe.
+    rf"(?:del?\s+)?a(?:[ñn]|ni)o{_HUECO}(\d{{4}})(?!\d)_*",
     re.IGNORECASE,
 )
 #: Y el formulario en columnas: los rótulos «DÍA MES AÑO» en un renglón y las
@@ -386,8 +387,43 @@ def fecha_de_la_pagina(texto: str, *, hoy: date | None = None) -> date | None:
     encabezado = fecha_del_encabezado(texto, hoy=hoy)
     if encabezado is not None:
         return encabezado
+    # La de las casillas de un formulario, que es la del papel aunque la
+    # página traiga otras: la fecha del pago de un comprobante.
+    casillas = fecha_de_las_casillas(texto, hoy=hoy)
+    if casillas is not None:
+        return casillas
     todas = fechas_de(_normalizar(texto), hoy=hoy)
     return max(todas) if todas else None
+
+
+#: Los rótulos de las casillas de una fecha: «DIA MES AÑO», «DÍA | MES | ANIO»,
+#: «DIA MES ANO». Así fecha el COMPROBANTE CUPÓN MANUAL (UPD2973860, 2026-10-21).
+_ROTULOS_DE_CASILLAS = re.compile(r"\bD[IÍ]A\b\W{1,15}\bMES\b\W{1,15}\bA(?:[ÑN]|NI)?O\b", re.IGNORECASE)
+#: Hasta dónde se buscan, tras los rótulos, las cifras de la fecha.
+_ALCANCE_DE_LAS_CASILLAS = 260
+_TRES_CIFRAS = re.compile(r"(?<!\d)(\d{1,2})\W{1,6}(\d{1,2})\W{1,6}((?:19|20)\d{2})(?!\d)")
+
+
+def fecha_de_las_casillas(texto: str, *, hoy: date | None = None) -> date | None:
+    """La fecha escrita en las casillas DÍA / MES / AÑO de un formulario.
+
+    Tras los rótulos, el primer día-mes-año que sea una fecha de verdad. Las
+    cifras llegan como las deja quien las lee: en una tabla, en negrita, o
+    pegadas a las de la casilla vecina -- la IA leyó «9 16 09 08 2022», con el
+    final del ID de cobros delante --; se prueba desde cada posición y vale la
+    primera que forma una fecha.
+    """
+    plano = _O_POR_CERO.sub("0", " ".join((texto or "").split()))
+    for rotulo in _ROTULOS_DE_CASILLAS.finditer(plano):
+        tramo = plano[rotulo.end() : rotulo.end() + _ALCANCE_DE_LAS_CASILLAS]
+        for inicio in range(len(tramo)):
+            hallado = _TRES_CIFRAS.match(tramo, inicio)
+            if hallado is None:
+                continue
+            fecha = _valida(int(hallado.group(1)), int(hallado.group(2)), int(hallado.group(3)), hoy)
+            if fecha is not None:
+                return fecha
+    return None
 
 
 def fecha_del_encabezado(texto: str, *, hoy: date | None = None) -> date | None:
