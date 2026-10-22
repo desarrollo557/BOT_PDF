@@ -279,8 +279,10 @@ def verificar(
         return Verificacion(Vigencia.SIN_CONSTANCIA, "no tiene constancia de entrega: no se había entregado")
     if not isinstance(constancia.fecha, str):
         return Verificacion(Vigencia.INCOMPLETA, "la constancia tiene una fecha inválida")
-    if not isinstance(constancia.archivos, list) or not constancia.archivos:
-        return Verificacion(Vigencia.INCOMPLETA, "la constancia no registra archivos entregados")
+    # Una entrega completa sin archivos es válida: el inventario de actas sin
+    # dividir no copia ningún PDF. Rehacerla volvería a pagar su lectura.
+    if not isinstance(constancia.archivos, list):
+        return Verificacion(Vigencia.INCOMPLETA, "la constancia tiene una lista de archivos inválida")
     if constancia.estado != EstadoDeEntrega.COMPLETA:
         return Verificacion(
             Vigencia.INCOMPLETA, f"la entrega anterior se cortó a mitad ({constancia.fecha[:16].replace('T', ' ')})"

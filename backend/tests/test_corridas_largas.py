@@ -475,7 +475,9 @@ class TestLaConstancia:
         assert origen.stat().st_size == tamano
         assert verificacion.vigencia is Vigencia.ORIGEN_CAMBIADO
 
-    def test_una_constancia_sin_archivos_no_marca_entrega_completa(self, tmp_path):
+    def test_una_entrega_completa_sin_archivos_sigue_vigente(self, tmp_path):
+        # El inventario de actas sin dividir no copia ningún PDF: rehacerlo en
+        # cada corrida volvería a pagar su lectura.
         origen, carpeta = self._entregada(tmp_path)
         constancia = Constancia(
             origen="libro.pdf",
@@ -486,8 +488,7 @@ class TestLaConstancia:
 
         verificacion = constancias.verificar(constancia, origen, carpeta)
 
-        assert verificacion.vigencia is Vigencia.INCOMPLETA
-        assert "no registra archivos" in verificacion.motivo
+        assert verificacion.vigencia is Vigencia.VIGENTE
 
     def test_una_ruta_de_constancia_no_puede_salir_del_destino(self, tmp_path):
         origen, carpeta = self._entregada(tmp_path)
