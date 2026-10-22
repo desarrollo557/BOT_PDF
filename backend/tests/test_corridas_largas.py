@@ -490,6 +490,19 @@ class TestLaConstancia:
 
         assert verificacion.vigencia is Vigencia.VIGENTE
 
+    def test_la_fecha_de_la_entrega_se_dice_en_hora_local(self, tmp_path):
+        from datetime import UTC, datetime
+
+        origen, carpeta = self._entregada(tmp_path)
+        leida = constancias.leer(carpeta / constancias.NOMBRE)
+        leida.fecha = "2026-10-22T18:46:00+00:00"
+
+        verificacion = constancias.verificar(leida, origen, carpeta)
+
+        local = datetime(2026, 10, 22, 18, 46, tzinfo=UTC).astimezone().strftime("%Y-%m-%d %H:%M")
+        assert verificacion.vigencia is Vigencia.VIGENTE
+        assert f"entregado completo el {local}" in verificacion.motivo
+
     def test_una_ruta_de_constancia_no_puede_salir_del_destino(self, tmp_path):
         origen, carpeta = self._entregada(tmp_path)
         constancia = Constancia(

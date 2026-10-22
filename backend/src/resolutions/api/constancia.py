@@ -253,6 +253,18 @@ def ruta_de_entrega(carpeta: Path, ruta: object) -> Path | None:
     return carpeta.joinpath(*partes)
 
 
+def _cuando(fecha: str) -> str:
+    """La fecha de la constancia -- guardada en UTC -- en la hora local, que es la que lee el operador.
+
+    Sin esto el análisis decía «entregado completo el … 18:46» de algo
+    entregado a la 13:46 en Colombia.
+    """
+    try:
+        return datetime.fromisoformat(fecha).astimezone().strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return str(fecha)[:16].replace("T", " ")
+
+
 def _peso(tamano: int) -> str:
     return f"{tamano / 1024 / 1024:.1f} MB" if tamano >= 1024 * 1024 else f"{max(1, tamano // 1024)} KB"
 
@@ -285,7 +297,7 @@ def verificar(
         return Verificacion(Vigencia.INCOMPLETA, "la constancia tiene una lista de archivos inválida")
     if constancia.estado != EstadoDeEntrega.COMPLETA:
         return Verificacion(
-            Vigencia.INCOMPLETA, f"la entrega anterior se cortó a mitad ({constancia.fecha[:16].replace('T', ' ')})"
+            Vigencia.INCOMPLETA, f"la entrega anterior se cortó a mitad ({_cuando(constancia.fecha)})"
         )
     try:
         tamano, modificado = huella if huella and huella != (0, 0) else huella_del_origen(origen)
@@ -349,7 +361,7 @@ def verificar(
                 f"«{ruta}» cambió en el destino: {_peso(archivo['bytes'])} → {_peso(tamano)}",
             )
     pdfs = sum(1 for archivo in constancia.archivos if str(archivo.get("ruta") or "").lower().endswith(".pdf"))
-    motivo = f"entregado completo el {constancia.fecha[:16].replace('T', ' ')} ({pdfs} PDF)"
+    motivo = f"entregado completo el {_cuando(constancia.fecha)} ({pdfs} PDF)"
     if a_medio_ordenar:
         motivo += "; su carpeta quedó a medio ordenar y se termina de ordenar"
     return Verificacion(Vigencia.VIGENTE, motivo, a_medio_ordenar=a_medio_ordenar)
