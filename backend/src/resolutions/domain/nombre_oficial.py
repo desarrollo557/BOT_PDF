@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from .catalogo import FRASES
+from .catalogo import CATALOGO, FRASES
 
 #: Los títulos que el bot conoce y su nombre en el catálogo del cliente.
 AL_CATALOGO: dict[str, str] = {
@@ -85,6 +85,53 @@ def nombre_del_asunto(asunto: str | None) -> str | None:
     if len(nombre) > MAX_NOMBRE:
         nombre = nombre[:MAX_NOMBRE].rsplit(" ", 1)[0]
     return nombre
+
+
+def instrucciones_para_nombrar() -> str:
+    """Lo que se le pide a la IA para nombrar un documento que nada supo nombrar.
+
+    Lo pidió el operador el 2026-10-22: «analiza todo el documento con la IA,
+    contextualízala, y que de acuerdo al cuerpo del PDF le agregue el nombre;
+    la idea es que no se vaya vacío». El contexto es el catálogo del cliente:
+    la IA elige de ahí si el papel es uno de sus tipos.
+    """
+    tipos = "\n".join(f"- {tipo.nombre}" for tipo in CATALOGO)
+    return (
+        "Eres archivista de Afinia (Caribemar de la Costa S.A.S. E.S.P.), la empresa de "
+        "energía, y nombras los documentos del expediente de un suscriptor para el Índice "
+        "Electrónico. Recibes el texto de UN documento, ya separado de una caja de "
+        "correspondencia; viene de un OCR y trae errores de lectura.\n\n"
+        "Devuelve el nombre del documento:\n"
+        "- Si el documento es uno de los tipos de la lista oficial, devuelve exactamente ese nombre.\n"
+        "- Si no, un nombre corto, de dos a ocho palabras, que diga qué documento es: la clase "
+        "de papel con su complemento, como «ACTA DE VERIFICACION DE PREDIO DESOCUPADO» o "
+        "«FORMATO DE NUEVOS SUMINISTROS».\n"
+        "- En mayúsculas y sin tildes. Nunca nombres de personas, números, fechas, NIC ni radicados.\n"
+        "- Devuelve solo el nombre, en una línea, sin comillas ni explicación.\n\n"
+        f"Lista oficial:\n{tipos}"
+    )
+
+
+#: Lo más largo que se le acepta a la IA como nombre.
+PALABRAS_DEL_NOMBRE_DE_LA_IA = 10
+
+
+def nombre_de_la_ia(respuesta: str | None) -> str | None:
+    """El nombre que devolvió la IA, limpio y con el del catálogo si es uno de sus tipos.
+
+    ``None`` si la respuesta no es un nombre: vacía, larga como una frase, con
+    cifras -- un radicado, una fecha -- o con «no puedo».
+    """
+    plano = _plano((respuesta or "").splitlines()[0] if respuesta else "")
+    plano = re.sub(r"[^A-Z ]+", " ", plano)
+    palabras = plano.split()
+    if not palabras or len(palabras) > PALABRAS_DEL_NOMBRE_DE_LA_IA or re.search(r"\d", respuesta or ""):
+        return None
+    nombre = " ".join(palabras)
+    if nombre.startswith(("NO PUEDO", "NO ES POSIBLE", "LO SIENTO", "DOCUMENTO ILEGIBLE")):
+        return None
+    tipo = next((t for t in CATALOGO if t.nombre == nombre or nombre in t.frases), None)
+    return tipo.nombre if tipo else nombre
 
 
 def _del_catalogo_en(asunto: str, empieza: str) -> str | None:

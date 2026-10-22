@@ -96,3 +96,30 @@ class TestElNombreDelArchivo:
             ResolutionCode(value="02", raw="02"), None, prefix=None, kind="RECLAMO", mayusculas=True, sin_radicado=True
         )
         assert nombre == "02_RECLAMO.pdf"
+
+
+class TestElNombreDeLaIa:
+    def test_el_del_catalogo_si_es_uno_de_sus_tipos(self):
+        from resolutions.domain.nombre_oficial import nombre_de_la_ia
+
+        assert nombre_de_la_ia("Derecho de petición") == "DERECHO DE PETICION"
+        assert nombre_de_la_ia("CEDULA DE CIUDADANIA") == "DOCUMENTO DE IDENTIDAD"
+
+    def test_uno_corto_si_no_esta(self):
+        from resolutions.domain.nombre_oficial import nombre_de_la_ia
+
+        assert nombre_de_la_ia("«Formato de nuevos suministros»\n") == "FORMATO DE NUEVOS SUMINISTROS"
+
+    def test_lo_que_no_es_un_nombre(self):
+        from resolutions.domain.nombre_oficial import nombre_de_la_ia
+
+        assert nombre_de_la_ia("") is None
+        assert nombre_de_la_ia("RE2310202321592") is None
+        assert nombre_de_la_ia("No puedo determinar el tipo de documento") is None
+        assert nombre_de_la_ia("Este documento es una carta que el usuario envía a la empresa para pedir que") is None
+
+    def test_las_instrucciones_llevan_el_catalogo(self):
+        from resolutions.domain.nombre_oficial import instrucciones_para_nombrar
+
+        instrucciones = instrucciones_para_nombrar()
+        assert "- DERECHO DE PETICION" in instrucciones and "- PAGARE" in instrucciones

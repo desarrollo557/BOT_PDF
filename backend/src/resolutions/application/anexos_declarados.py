@@ -772,6 +772,39 @@ def unir_el_acuerdo_de_pago(
             del_acuerdo.update(paginas)
             i = desde
         i += 1
+
+    # Ninguna pieza suelta (lo dictó el operador el 2026-10-22: «ningún pagaré
+    # puede ir suelto, siempre anexado a un reconocimiento de deuda»): el pagaré
+    # o la carta de instrucciones sola va con el acuerdo de al lado y, si no hay
+    # ninguno, con el documento de antes -- o el de después, si es el primero --.
+    i = 0
+    while len(salida) > 1 and i < len(salida):
+        suelta = salida[i]
+        if suelta.kind == ACUERDO_DE_PAGO or not es_pieza(suelta):
+            i += 1
+            continue
+        siguiente = salida[i + 1] if i + 1 < len(salida) else None
+        con_el_siguiente = i == 0 or (siguiente is not None and siguiente.kind == ACUERDO_DE_PAGO)
+        j = i + 1 if con_el_siguiente else i - 1
+        destino = salida[j]
+        paginas = (
+            list(suelta.page_numbers) + list(destino.page_numbers)
+            if con_el_siguiente
+            else list(destino.page_numbers) + list(suelta.page_numbers)
+        )
+        primero = suelta if con_el_siguiente else destino
+        unido = PageGroup(
+            code=primero.code, page_numbers=paginas, title=destino.title, kind=destino.kind, fecha=destino.fecha
+        )
+        propios = anexos.pop(suelta.code.value, []) + anexos.pop(destino.code.value, []) + list(suelta.page_numbers)
+        if destino.kind != ACUERDO_DE_PAGO:
+            # Con un documento que no es el acuerdo: su nombre es el de ese
+            # documento, y sus hojas dejan de ser «del acuerdo».
+            del_acuerdo.difference_update(suelta.page_numbers)
+        lo, hi = min(i, j), max(i, j)
+        salida[lo : hi + 1] = [unido]
+        anexos[unido.code.value] = sorted(set(propios))
+        i = lo
     if len(salida) < len(grupos.groups):
         salida, anexos = _renumerar(salida, anexos)
     return (

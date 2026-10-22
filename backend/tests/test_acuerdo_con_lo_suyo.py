@@ -142,3 +142,65 @@ class TestLaFranjaDelTitulo:
         lector = self._Lector("y * n lí í")
         assert _titulo_del_encabezado(self._Fuente(), 1, lector) is None
         assert lector.lecturas == 1
+
+
+class TestNingunPagareSuelto:
+    """«Ningún pagaré puede ir suelto, siempre anexado a un reconocimiento de deuda» (2026-10-22)."""
+
+    def test_el_pagare_suelto_va_con_el_documento_de_antes(self):
+        textos = {1: DERECHO_DE_PETICION, 2: PAGARE, 3: DERECHO_DE_PETICION.replace("3 de mayo", "9 de junio")}
+        grupos, _, del_acuerdo = unir_el_acuerdo_de_pago(_grupos([1], [2], [3]), textos)
+        assert [g.page_numbers for g in grupos.groups] == [[1, 2], [3]]
+        # Con un documento que no es el acuerdo, no se llama acuerdo.
+        assert 2 not in del_acuerdo
+
+    def test_el_pagare_suelto_al_principio_va_con_el_siguiente(self):
+        textos = {1: PAGARE, 2: DERECHO_DE_PETICION}
+        grupos, _, _ = unir_el_acuerdo_de_pago(_grupos([1], [2]), textos)
+        assert [g.page_numbers for g in grupos.groups] == [[1, 2]]
+
+    def test_el_pagare_con_su_carta_y_su_reconocimiento_es_el_acuerdo(self):
+        textos = {1: DERECHO_DE_PETICION, 2: PAGARE, 3: CARTA, 4: RECONOCIMIENTO}
+        grupos, _, del_acuerdo = unir_el_acuerdo_de_pago(_grupos([1], [2], [3], [4]), textos)
+        assert [g.page_numbers for g in grupos.groups] == [[1], [2, 3, 4]]
+        assert del_acuerdo == {2, 3, 4}
+
+
+class TestElNombreConLaIa:
+    """La última opción, con «OCR + IA»: la IA nombra el documento por su cuerpo."""
+
+    class _Nombrador:
+        def __init__(self, respuesta):
+            self.respuesta = respuesta
+            self.textos = []
+
+        def resumir(self, texto):
+            self.textos.append(texto)
+            return self.respuesta
+
+    class _Fuente:
+        def render(self, pagina, banda, ppp, formato=None):
+            return b"imagen"
+
+    class _Ocr:
+        def read(self, imagen):
+            class _R:
+                text = "FORMATO DE NUEVOS SUMINISTROS O SUMINISTROS MODIFICADOS\nNombre del suscriptor..."
+
+            return _R()
+
+    def test_relee_la_primera_hoja_y_la_ia_lo_nombra(self):
+        from resolutions.api.worker.correspondencia import _nombre_con_la_ia
+
+        nombrador = self._Nombrador("Formato de nuevos suministros")
+        nombre = _nombre_con_la_ia(self._Fuente(), [1, 2], {1: "y * n / lí í", 2: "cédula"}, self._Ocr(), nombrador)
+        assert nombre == "FORMATO DE NUEVOS SUMINISTROS"
+        # Le llegó la hoja releída, no la capa basura.
+        assert "FORMATO DE NUEVOS SUMINISTROS" in nombrador.textos[0]
+
+    def test_sin_texto_no_se_le_pregunta(self):
+        from resolutions.api.worker.correspondencia import _nombre_con_la_ia
+
+        nombrador = self._Nombrador("RECLAMO")
+        assert _nombre_con_la_ia(self._Fuente(), [1], {1: ""}, None, nombrador) is None
+        assert nombrador.textos == []

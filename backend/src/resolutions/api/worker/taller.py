@@ -302,6 +302,33 @@ class Taller:
 
         return MistralResumidor(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
 
+    def nombrador(self):
+        """Quien nombra con la IA un documento que nada supo nombrar, si se pidió la IA.
+
+        Lo pidió el operador el 2026-10-22: «que la IA, de acuerdo al cuerpo del
+        PDF, le agregue el nombre; la idea es que no se vaya vacío». Es el chat
+        pequeño, con el catálogo del cliente como contexto, y sólo para el
+        documento que se iba a llamar por su caja y sus páginas. Con «Solo OCR»
+        no hay nombrador.
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_resumen import MistralResumenConfig, MistralResumidor
+        from ...domain.nombre_oficial import instrucciones_para_nombrar
+
+        return MistralResumidor(
+            api_key=llave,
+            config=MistralResumenConfig(max_tokens=40, temperatura=0.0),
+            consumo=self.consumo,
+            turnos=self.turnos_de_ia,
+            instrucciones=instrucciones_para_nombrar(),
+            encabezado="Texto del documento",
+        )
+
     def lector_de_folios(self):
         """Quien lee el folio manuscrito de un acta, si se pidió la IA.
 

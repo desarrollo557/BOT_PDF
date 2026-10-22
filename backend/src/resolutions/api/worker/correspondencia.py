@@ -89,6 +89,43 @@ def _titulo_del_encabezado(fuente, pagina: int, lector, de_pago=None) -> str | N
         return None
 
 
+#: Hasta cuánto texto del documento se le manda a la IA para nombrarlo: sus
+#: primeras hojas bastan para decir qué es, y el chat cobra por palabra.
+LARGO_PARA_NOMBRAR = 6000
+#: A cuánto viaja a la IA la hoja que se lee para nombrar el documento.
+PPP_PARA_NOMBRAR = 200
+
+
+def _nombre_con_la_ia(fuente, paginas: list[int], textos: dict, lector_de_pago, nombrador) -> str | None:
+    """El nombre que la IA le da a un documento por su cuerpo, o ``None``.
+
+    La primera hoja se relee con el OCR de pago -- su capa puede ser basura,
+    como la de UPD2998726 («y * n / lí í») --; las demás van con lo que ya se
+    leyó. La IA elige del catálogo del cliente o da un nombre corto
+    (``nombre_de_la_ia``). Un fallo aquí no tumba la caja: el documento se
+    nombra por su origen y va a revisión.
+    """
+    from ...domain.nombre_oficial import nombre_de_la_ia
+
+    partes = []
+    for puesto, pagina in enumerate(paginas):
+        texto = textos.get(pagina, "") or ""
+        if puesto == 0 and lector_de_pago is not None:
+            try:
+                texto = lector_de_pago.read(fuente.render(pagina, None, PPP_PARA_NOMBRAR, "jpeg")).text or texto
+            except Exception:  # noqa: BLE001 - se queda con lo que ya se leyó
+                logger.warning("la IA no releyó la pág. %s para nombrarla", pagina, exc_info=True)
+        partes.append(texto)
+    cuerpo = "\n\n".join(p for p in partes if p.strip())[:LARGO_PARA_NOMBRAR]
+    if not cuerpo.strip():
+        return None
+    try:
+        return nombre_de_la_ia(nombrador.resumir(cuerpo))
+    except Exception:  # noqa: BLE001 - sin nombre de la IA, el de su origen
+        logger.warning("la IA no nombró el documento de la pág. %s", paginas[0], exc_info=True)
+        return None
+
+
 #: A cuánto se relee una hoja buscando su fecha: en local, fino; para la IA,
 #: lo que ya basta y viaja ligero.
 PPP_PARA_LA_FECHA_LOCAL = 300
@@ -584,8 +621,12 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
                         # 2026-10-21). Es el mismo que nombra el archivo.
                         # Sin título conocido se queda en DOCUMENTO, y la fila
                         # toma el nombre de su archivo.
+                        # La autorización que se le unió por delante no titula
+                        # la fila: la nombra su archivo, el del documento.
                         "titulo": nombre_oficial(ACUERDO_DE_PAGO)
                         if acuerdo
+                        else DOCUMENT_PREFIX
+                        if paginas[0] in delanteras
                         else _oficial_de_la_hoja(titulares[0], cortado.kind),
                         # Y su radicado: el del sello si lo trae, si no el que
                         # cite su texto. El acuerdo de pago no lleva.
@@ -773,6 +814,24 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         ):
             sin_apertura.add(primera)
     grupos, anexos, _ = unir_lo_que_no_abre(grupos, sin_apertura, anexos)
+    # La autorización con que abre la caja -- Habeas Data, notificación
+    # electrónica -- tampoco va sola (lo dictó el operador el 2026-10-22:
+    # «ningún habeas data puede ir suelto»): sin documento delante, va con el
+    # de después, que se sigue llamando como él.
+    delanteras: set[int] = set()
+    if len(grupos.groups) > 1:
+        primero, segundo = grupos.groups[0], grupos.groups[1]
+        if primero.page_numbers[0] not in del_acuerdo and _titulo(
+            textos.get(primero.page_numbers[0], "") or "", None
+        ) in ("LEY HABEAS DATA", AUTORIZACION_DE_NOTIFICACION):
+            from ...application.anexos_declarados import _renumerar
+
+            delanteras.update(primero.page_numbers)
+            unido = replace(segundo, page_numbers=list(primero.page_numbers) + list(segundo.page_numbers))
+            suyos = anexos.pop(primero.code.value, []) + anexos.pop(segundo.code.value, []) + list(primero.page_numbers)
+            anexos[unido.code.value] = sorted(set(suyos))
+            restantes, anexos = _renumerar([unido, *grupos.groups[2:]], anexos)
+            grupos = replace(grupos, groups=restantes)
     # La lista de ANEXOS de cada escrito, verificada contra su PDF final: los
     # soportes, los folios y lo que no abría nada ya se le unieron.
     escritos = verificar_en_el_documento(retencion.escritos, grupos, textos, abren=abren)
@@ -826,7 +885,9 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
             return g
         if g.page_numbers[0] in del_acuerdo:
             return replace(g, kind=nombre_oficial(ACUERDO_DE_PAGO))
-        primera = next((x for x in g.page_numbers if x not in guias), g.page_numbers[0])
+        # La carta, no la guía que la precede ni la autorización que se le unió
+        # por delante.
+        primera = next((x for x in g.page_numbers if x not in guias and x not in delanteras), g.page_numbers[0])
         # El nombre oficial (lo dictó el operador el 2026-10-21: «según el
         # nombre oficial del documento del trámite… tanto en el nombre del
         # documento como en el inventario»): su título con el nombre del
@@ -865,6 +926,23 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         asunto = asunto_del_documento([textos.get(p, "") or "" for p in titulares], None)
         if asunto and not asunto.startswith("QUE "):
             return replace(g, kind=asunto[:MAX_ASUNTO_EN_EL_NOMBRE].rsplit(" ", 1)[0] if len(asunto) > MAX_ASUNTO_EN_EL_NOMBRE else asunto)
+        # Y si nada de eso lo nombra, con «OCR + IA», la IA lee su cuerpo con el
+        # catálogo del cliente delante y le pone el nombre (lo pidió el
+        # operador el 2026-10-22: «que no se vaya vacío»).
+        if nombrador is not None:
+            if not fuente_de_encabezados:
+                fuente_de_encabezados.append(PyMuPDFPageSource(tmp_path, taller.name))
+            # Todo el documento, no sólo su primera hoja: lo que dice ser puede
+            # estar en cualquiera.
+            de_la_ia = _nombre_con_la_ia(
+                fuente_de_encabezados[0],
+                [p for p in g.page_numbers if p not in guias] or list(g.page_numbers),
+                textos,
+                lector_de_pago_de_encabezados,
+                nombrador,
+            )
+            if de_la_ia:
+                return replace(g, kind=de_la_ia)
         sin_titulo.append(primera)
         return replace(g, kind=nombre_por_su_origen(taller.name, g.page_numbers))
 
@@ -874,8 +952,10 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     lector_de_encabezados = TesseractOcr(
         TesseractConfig(min_word_confidence=0, psm=PSM_AUTO, timeout_seconds=SEGUNDOS_PARA_UNA_HOJA)
     )
-    # La IA, sólo si el operador eligió una lectura con ella: la franja sola.
+    # La IA, sólo si el operador eligió una lectura con ella: la franja sola, y
+    # el nombre del documento que nada supo nombrar.
     lector_de_pago_de_encabezados = taller.lector_de_pago()
+    nombrador = taller.nombrador()
     sin_titulo: list[int] = []
     try:
         grupos = replace(grupos, groups=[tipo_del_archivo(g) for g in grupos.groups])

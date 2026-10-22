@@ -82,8 +82,15 @@ class MistralResumidor:
         consumo: Consumo | None = None,
         esperar: Callable[[float], None] = time.sleep,
         turnos: AbstractContextManager | None = None,
+        *,
+        instrucciones: str = INSTRUCCIONES,
+        encabezado: str = "Texto del acta",
     ) -> None:
         self._api_key = api_key
+        #: Lo que se le pide: el resumen de un acta, o -- para la caja de
+        #: correspondencia -- el nombre de un documento (``taller.nombrador``).
+        self._instrucciones = instrucciones
+        self._encabezado = encabezado
         #: El tope común de llamadas a la vez del servicio; sólo durante la petición.
         self._turnos = turnos
         self._config = config or MistralResumenConfig()
@@ -103,8 +110,8 @@ class MistralResumidor:
             {
                 "model": self._config.model,
                 "messages": [
-                    {"role": "system", "content": INSTRUCCIONES},
-                    {"role": "user", "content": f"Texto del acta:\n\n{texto}"},
+                    {"role": "system", "content": self._instrucciones},
+                    {"role": "user", "content": f"{self._encabezado}:\n\n{texto}"},
                 ],
                 "max_tokens": self._config.max_tokens,
                 "temperature": self._config.temperatura,
