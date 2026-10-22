@@ -28,6 +28,7 @@ from .trabajos import (
     _oracle_choice,
     _territorial,
     _tipo_choice,
+    _tipo_documento_choice,
 )
 
 router = APIRouter()
@@ -69,6 +70,10 @@ async def start_folder_run(
     _require_identity_reader(tipo_choice, lectura_choice)
     corte_choice = _corte_choice(payload.get("corte"))
     agrupar_choice = _agrupar_choice(payload.get("agrupar"))
+    # La plantilla de la caja de correspondencia: índice electrónico, Kingspan
+    # o mixto. Viaja igual que en una subida, para que elegir Kingspan en una
+    # carpeta no se quede en nada.
+    tipo_documento_choice = _tipo_documento_choice(payload.get("tipo_documento"))
     from .trabajos import _paralelo
 
     a_la_vez = _paralelo(ctx, payload.get("paralelo"))
@@ -87,6 +92,7 @@ async def start_folder_run(
             agrupar=str(agrupar_choice),
             territorial=_territorial(payload.get("territorial")),
             tipo=str(tipo_choice),
+            tipo_documento=tipo_documento_choice,
             # Retomar una entrega anterior: procesar sólo lo que falta en el
             # destino, o sólo revisarlo. Sólo para libros de diplomas.
             retomar=str(payload.get("retomar") or "no"),

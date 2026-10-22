@@ -26,6 +26,7 @@ from pathlib import Path
 from ...application.progress import Stage
 from .correspondencia import _segment_job
 from .inventario import _acta_consejo_job, _inventory_file_job, _inventory_job
+from .kingspan import _kingspan_job
 from .planillas import FUID_SUFFIX, _escribir_fuid, _escribir_indice, _escribir_planilla
 from .registros import _record_split_job
 from .resoluciones import _split_job
@@ -173,6 +174,19 @@ def _despachar(payload: dict) -> dict:
     # es el documento sería justo el paso que no hace falta.
     if task is TaskKind.INVENTORY_FILE:
         return _inventory_file_job(payload)
+
+    # Inventario Kingspan: sólo cuando el operador lo eligió como plantilla de
+    # la caja de correspondencia. Antes se detectaba por la presencia de
+    # ``agrupar``, que viaja con *todos* los trabajos y vale «documento» por
+    # omisión: cualquier «Solo inventariar» de cualquier habilidad caía aquí y
+    # fallaba por falta de parámetros que esta ruta nunca tuvo.
+    if payload.get("tipo_documento") == "kingspan":
+        if task not in (TaskKind.INVENTORY, TaskKind.BOTH):
+            raise ValueError(
+                "el inventario Kingspan se inventaría o se divide e inventaría; "
+                f"no admite la acción {task}"
+            )
+        return _kingspan_job(payload, task)
 
     if not task.writes_documents:
         # Sin tipo declarado, una mirada gratis al patrón antes del inventario:

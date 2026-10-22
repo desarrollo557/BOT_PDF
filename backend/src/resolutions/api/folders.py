@@ -168,6 +168,11 @@ class FolderRun:
     #: Una carpeta suele ser homogénea -- una estantería de libros de diplomas
     #: --, así que declararlo una vez vale para todos sus archivos.
     tipo: str = "auto"
+    #: Y qué plantilla de inventario llevar para una caja de correspondencia:
+    #: el índice electrónico de siempre (``None``), el inventario Kingspan o
+    #: «mixto», que deja decidir al contenido. Vale para toda la corrida, como
+    #: el corte, porque una caja suele ser un mismo material.
+    tipo_documento: str | None = None
     #: Si esta corrida retoma una entrega anterior: ``faltantes`` procesa sólo
     #: lo que no está en el destino, ``revisar`` sólo lo mira. Sólo para
     #: libros de diplomas (ver ``retomar.py``).
@@ -355,6 +360,7 @@ class FolderRun:
             "agrupar": self.agrupar,
             "territorial": self.territorial,
             "tipo": self.tipo,
+            "tipo_documento": self.tipo_documento,
             "retomar": self.retomar,
             "paralelo": self.paralelo,
             "ya_entregados": self.ya_entregados,
@@ -612,6 +618,7 @@ class FolderRunner:
         tipo: str = "auto",
         agrupar: str = "documento",
         territorial: str | None = None,
+        tipo_documento: str | None = None,
         retomar: str = "no",
         paralelo: int | None = None,
     ) -> FolderRun:
@@ -651,6 +658,7 @@ class FolderRunner:
             agrupar=agrupar,
             territorial=territorial,
             tipo=tipo,
+            tipo_documento=tipo_documento,
             retomar=str(modo),
             paralelo=paralelo,
         )
@@ -1403,6 +1411,7 @@ class FolderRunner:
             agrupar=run.agrupar,
             territorial=run.territorial,
             tipo=run.tipo,
+            tipo_documento=run.tipo_documento,
             # Adónde irá lo que produzca. Se calcula antes de procesarlo, con
             # el nombre del origen, y la entrega lo recalcula después con el
             # NIC si el expediente lo trae: lo que va en la planilla es dónde

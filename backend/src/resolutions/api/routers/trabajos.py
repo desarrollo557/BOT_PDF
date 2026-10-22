@@ -41,6 +41,7 @@ async def enqueue(
     oracle: str | None = None,
     lectura: str | None = None,
     tipo: str | None = None,
+    tipo_documento: str | None = None,
     corte: str | None = None,
     agrupar: str | None = None,
     territorial: str | None = None,
@@ -59,6 +60,7 @@ async def enqueue(
     choice = _oracle_choice(ctx, oracle)
     lectura_choice = _lectura_choice(ctx, lectura)
     tipo_choice = _tipo_choice(tipo)
+    tipo_documento_choice = _tipo_documento_choice(tipo_documento)
     _require_identity_reader(tipo_choice, lectura_choice)
     corte_choice = _corte_choice(corte)
     agrupar_choice = _agrupar_choice(agrupar)
@@ -89,6 +91,7 @@ async def enqueue(
         oracle=str(choice),
         lectura=str(lectura_choice),
         tipo=str(tipo_choice),
+        tipo_documento=tipo_documento_choice,
         corte=str(corte_choice),
         agrupar=str(agrupar_choice),
         territorial=_territorial(territorial),
@@ -111,6 +114,7 @@ async def enqueue(
         "oracle": job.oracle,
         "lectura": job.lectura,
         "tipo": job.tipo,
+        "tipo_documento": job.tipo_documento,
         "corte": job.corte,
         "agrupar": job.agrupar,
         "territorial": job.territorial,
@@ -152,6 +156,30 @@ def _tipo_choice(value: str | None) -> TipoPedido:
         return TipoPedido.parse(value)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+def _tipo_documento_choice(value: str | None) -> str | None:
+    """Qué plantilla de inventario se pidió para una caja de correspondencia.
+
+    Sólo la caja de correspondencia pregunta esto, y sólo dos valores cambian
+    algo: el índice electrónico es lo de siempre y no viaja; Kingspan enruta a
+    su inventario; «mixto» deja que el contenido decida. Un valor inventado no
+    se adivina: llegaría al worker como si nada y el operador creería haber
+    elegido una plantilla que nunca se aplicó.
+    """
+    if value is None or str(value).strip() == "":
+        return None
+    eleccion = str(value).strip().lower()
+    if eleccion not in _TIPOS_DOCUMENTO:
+        opciones = ", ".join(sorted(_TIPOS_DOCUMENTO))
+        raise HTTPException(
+            status_code=422,
+            detail=f"tipo de documento desconocido: {value!r}; se esperaba uno de {opciones}",
+        )
+    return eleccion
+
+
+_TIPOS_DOCUMENTO = {"indice_electronico", "kingspan", "mixto"}
 
 
 def _corte_choice(value: str | None) -> CriterioDeCorte:

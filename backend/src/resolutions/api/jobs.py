@@ -349,6 +349,11 @@ class Job:
     #: habilidad fue, y el informe tiene que poder decir por qué se cortó como
     #: se cortó.
     tipo: str = "auto"
+    #: La plantilla de inventario que eligió el operador dentro de la caja de
+    #: correspondencia: ``indice_electronico``, ``kingspan`` o ``mixto``.
+    #: ``None`` es el comportamiento de siempre -- que lo decida el contenido --,
+    #: y es lo que viaja en las demás habilidades, que no preguntan esto.
+    tipo_documento: str | None = None
     #: La carpeta a la que se entregará lo que produzca, cuando el trabajo
     #: viene de una corrida sobre carpeta local. Se guarda al crearlo porque la
     #: planilla del inventario se escribe dentro del worker, que no conoce la
@@ -401,6 +406,7 @@ class Job:
             "agrupar": self.agrupar,
             "territorial": self.territorial,
             "tipo": self.tipo,
+            "tipo_documento": self.tipo_documento,
             "origen": self.origen,
             **({"paginas": list(self.paginas)} if self.paginas else {}),
             "intentos": self.intentos,
@@ -509,6 +515,7 @@ class JobRegistry:
         lectura: str = "local",
         corte: str = "pagina",
         tipo: str = "auto",
+        tipo_documento: str | None = None,
         destination: str | None = None,
         agrupar: str = "documento",
         origen: dict | None = None,
@@ -531,6 +538,7 @@ class JobRegistry:
             agrupar=agrupar,
             territorial=territorial,
             tipo=tipo,
+            tipo_documento=tipo_documento,
             destination=destination,
             origen=origen,
             paginas=list(paginas) if paginas else None,

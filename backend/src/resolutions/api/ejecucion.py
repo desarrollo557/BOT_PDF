@@ -153,6 +153,10 @@ async def _correr(ctx: Contexto, job: Job, hilos: int | None) -> None:
         # Y qué dijo el operador que es. Va con el trabajo porque decide a qué
         # habilidad entra, que es la decisión más consecuente de todas.
         "tipo": job.tipo,
+        # Y la plantilla de inventario que eligió, cuando la eligió: la caja de
+        # correspondencia se inventaría de dos maneras distintas y el worker no
+        # puede adivinarla sin arriesgar el flujo de las demás habilidades.
+        "tipo_documento": job.tipo_documento,
         # Dónde quedará la entrega, cuando el trabajo viene de una carpeta. La
         # planilla lo escribe en su columna de destino.
         "destination": job.destination,
