@@ -120,7 +120,8 @@ class TestLaEntregaPlana:
         # Un solo índice, con las filas de los dos en ese mismo orden.
         indice = leer_indice(caja / INDICE)
         assert [(f.orden, f.nombre) for f in indice.filas] == [(1, "RECLAMO DE UPD1"), (2, "RECLAMO DE UPD2")]
-        assert indice.nombre_del_expediente == "UPD1, UPD2"
+        # «Nombre del Expediente», vacía: sin UPD (el operador, 2026-10-22).
+        assert indice.nombre_del_expediente is None
         assert indice.nic == "1000265"
         assert _nombres(tmp_path / "destino" / "210847") == [".bot-entrega-UPD3.json", INDICE, "01_RECLAMO.pdf"]
 

@@ -35,13 +35,25 @@ MAX_ASUNTO_EN_EL_NOMBRE = 80
 SIN_TITULO = "sin título legible: se nombró por su caja y sus páginas"
 
 
-def _titulo_del_encabezado(fuente, pagina: int, lector) -> str | None:
-    """El título impreso de una hoja, leído en su franja de arriba con el OCR de casa.
+#: Cuánto se le deja a Tesseract para leer una sola franja o una sola hoja. Los
+#: 15 s de siempre no alcanzan con la carpeta entera leyéndose a la vez: el
+#: 2026-10-22, con el equipo ocupado, la franja de UPD2998726 se agotó y el
+#: documento salió «UPD2998726 PAGINAS 1-3» en vez de «FORMATO DE NUEVOS
+#: SUMINISTROS O SUMINISTROS MODIFICADOS».
+SEGUNDOS_PARA_UNA_HOJA = 90.0
+#: Cuántas veces se intenta la franja con el OCR de casa.
+INTENTOS_DE_LA_FRANJA = 2
 
-    Sólo para la hoja que abre un documento que nadie supo nombrar: son pocas,
-    y es Tesseract, así que no cuesta IA. La hoja se dibuja ya girada y la
-    franja se recorta de la imagen, que es lo que se ve; recortar en la página
-    sin girar tomaba un lateral en un formulario apaisado.
+
+def _titulo_del_encabezado(fuente, pagina: int, lector, de_pago=None) -> str | None:
+    """El título impreso de una hoja, leído en su franja de arriba.
+
+    Sólo para la hoja que abre un documento que nadie supo nombrar: son pocas.
+    Primero el OCR de casa, que no cuesta IA, con un reintento; si no lee nada
+    y el operador eligió una lectura con IA, la IA lee esa franja sola. La
+    hoja se dibuja ya girada y la franja se recorta de la imagen, que es lo que
+    se ve; recortar en la página sin girar tomaba un lateral en un formulario
+    apaisado.
     """
     from io import BytesIO
 
@@ -54,8 +66,26 @@ def _titulo_del_encabezado(fuente, pagina: int, lector) -> str | None:
         franja = imagen.crop((0, 0, imagen.width, int(imagen.height * ALTO_DEL_ENCABEZADO)))
         salida = BytesIO()
         franja.save(salida, format="PNG")
-        return titulo_impreso(lector.read(salida.getvalue()).text)
+    except Exception:  # noqa: BLE001 - sin franja, el nombre por su origen
+        logger.warning("no se pudo dibujar la franja de la pág. %s", pagina, exc_info=True)
+        return None
+    for _ in range(INTENTOS_DE_LA_FRANJA):
+        try:
+            texto = lector.read(salida.getvalue()).text
+        except Exception:  # noqa: BLE001 - se agotó o falló: se intenta otra vez
+            logger.warning("no se pudo leer la franja de la pág. %s", pagina, exc_info=True)
+            continue
+        titulo = titulo_impreso(texto)
+        if titulo:
+            return titulo
+        # Leyó y la franja no trae título: repetir no lo cambia.
+        break
+    if de_pago is None:
+        return None
+    try:
+        return titulo_impreso(de_pago.read(salida.getvalue()).text)
     except Exception:  # noqa: BLE001 - sin franja legible, el nombre por su origen
+        logger.warning("la IA no leyó la franja de la pág. %s", pagina, exc_info=True)
         return None
 
 
@@ -87,7 +117,7 @@ def _completar_las_fechas(piezas: list[dict], textos: dict, ruta_pdf, taller) ->
     fuente = None
     try:
         fuente = PyMuPDFPageSource(ruta_pdf, taller.name)
-        local = TesseractOcr(TesseractConfig(min_word_confidence=0, psm=PSM_AUTO))
+        local = TesseractOcr(TesseractConfig(min_word_confidence=0, psm=PSM_AUTO, timeout_seconds=SEGUNDOS_PARA_UNA_HOJA))
         de_pago = taller.lector_de_pago()
         agente = AgenteDeFechas(
             releer=lambda p: local.read(fuente.render(p, None, PPP_PARA_LA_FECHA_LOCAL)).text,
@@ -637,6 +667,11 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
             # RE…21592 al aviso de la pág. 23.
             for p in de_prueba:
                 propios[p] = None
+            # Ni las del acuerdo de pago, que no lleva RE: las constancias de
+            # la financiación que se firmaron con él traen el suyo y lo partían
+            # (UPD3102729).
+            for p in del_acuerdo:
+                propios[p] = None
             de_anexo = {p for paginas in anexos.values() for p in paginas}
             for g in grupos.groups:
                 if g.page_numbers[0] in escritos:
@@ -811,7 +846,9 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         if impreso is None:
             if not fuente_de_encabezados:
                 fuente_de_encabezados.append(PyMuPDFPageSource(tmp_path, taller.name))
-            impreso = _titulo_del_encabezado(fuente_de_encabezados[0], primera, lector_de_encabezados)
+            impreso = _titulo_del_encabezado(
+                fuente_de_encabezados[0], primera, lector_de_encabezados, lector_de_pago_de_encabezados
+            )
         if impreso:
             return replace(g, kind=impreso)
         # Lo que el documento dice de sí mismo en su «ASUNTO:» o «REF.:» --
@@ -834,7 +871,11 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     from ...domain.titulo_impreso import nombre_por_su_origen, titulo_impreso
 
     fuente_de_encabezados: list = []
-    lector_de_encabezados = TesseractOcr(TesseractConfig(min_word_confidence=0, psm=PSM_AUTO))
+    lector_de_encabezados = TesseractOcr(
+        TesseractConfig(min_word_confidence=0, psm=PSM_AUTO, timeout_seconds=SEGUNDOS_PARA_UNA_HOJA)
+    )
+    # La IA, sólo si el operador eligió una lectura con ella: la franja sola.
+    lector_de_pago_de_encabezados = taller.lector_de_pago()
     sin_titulo: list[int] = []
     try:
         grupos = replace(grupos, groups=[tipo_del_archivo(g) for g in grupos.groups])

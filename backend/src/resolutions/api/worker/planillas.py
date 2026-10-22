@@ -261,7 +261,9 @@ def _escribir_indice(report: dict, destination: Path, payload: dict) -> None:
             )
             or (payload.get("territorial") or "").strip()
             or None,
-            nombre_del_expediente=report.get("expediente") or None,
+            # Vacía (lo dictó el operador el 2026-10-22: «esta celda déjala
+            # vacía, sin UPD»). El UPD sigue en el informe, en «expediente».
+            nombre_del_expediente=None,
         )
         report["indice_electronico"] = escrito.name
     except Exception as error:  # noqa: BLE001 - la entrega ya está en el disco

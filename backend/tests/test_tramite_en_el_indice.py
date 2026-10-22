@@ -155,7 +155,8 @@ class TestElIndiceDelTramite:
         _escribir_indice(report, tmp_path, {"territorial": "CESAR", "operator": "SIAR"})
 
         hoja = self.openpyxl.load_workbook(tmp_path / indice_electronico.NOMBRE_DEL_INDICE).active
-        assert hoja["B3"].value == "UPD2321099"
+        # «Nombre del Expediente», vacía: sin UPD (el operador, 2026-10-22).
+        assert hoja["B3"].value is None
         # Sólo lo que dice ser la primera hoja: no la clase del trámite
         # (RECLAMO) ni una frase de la petición, y desde el 2026-10-20 sin el RE
         # ni la fecha detrás («que solo salga el título»).

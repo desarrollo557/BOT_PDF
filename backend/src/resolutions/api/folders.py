@@ -2592,13 +2592,10 @@ class FolderRunner:
                 # 3. Un solo índice, con las filas de todos sus UPD.
                 filas: list[FilaDelIndice] = []
                 nic = territorial = None
-                expedientes: list[str] = []
                 for _, constancia in leidas:
                     datos = constancia.indice or {}
                     nic = nic or datos.get("nic")
                     territorial = territorial or datos.get("territorial")
-                    if datos.get("expediente") and datos["expediente"] not in expedientes:
-                        expedientes.append(datos["expediente"])
                     for fila in datos.get("filas") or []:
                         filas.append(
                             FilaDelIndice(
@@ -2615,13 +2612,9 @@ class FolderRunner:
                             )
                         )
                 if any(constancia.indice for _, constancia in leidas):
-                    indice = escribir_indice(
-                        carpeta,
-                        filas,
-                        nic=nic,
-                        territorial=territorial,
-                        nombre_del_expediente=", ".join(expedientes) or None,
-                    )
+                    # «Nombre del Expediente», vacía: sin UPD (lo dictó el
+                    # operador el 2026-10-22).
+                    indice = escribir_indice(carpeta, filas, nic=nic, territorial=territorial)
                     # En el libro general, una hoja por NIC y no una por UPD.
                     for _, constancia in leidas:
                         run.indices.pop(Path(constancia.origen).stem, None)

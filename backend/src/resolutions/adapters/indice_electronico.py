@@ -12,6 +12,7 @@ Las fechas van como texto «dd/mm/aaaa», que es como las lleva la plantilla.
 
 from __future__ import annotations
 
+import os
 import re
 from copy import copy
 from dataclasses import dataclass
@@ -95,7 +96,12 @@ def escribir_indice(
     )
     destino.mkdir(parents=True, exist_ok=True)
     ruta = destino / NOMBRE_DEL_INDICE
-    libro.save(ruta)
+    # Entero o nada: a un temporal y luego en su sitio. El libro general lee
+    # el índice de cada carpeta mientras otra entrega lo reescribe, y leía uno
+    # a medias (EOFError, 2026-10-22, «1000265\00.INDICE ELECTRONICO.xlsx»).
+    temporal = ruta.with_name(f".{ruta.name}.tmp")
+    libro.save(temporal)
+    os.replace(temporal, ruta)
     return ruta
 
 
@@ -233,7 +239,9 @@ def _llenar(
     """Escribe el encabezado y las filas en una hoja que es copia de la plantilla."""
     from openpyxl.styles import Alignment
 
-    hoja[CELDA_NOMBRE_DEL_EXPEDIENTE] = nombre_del_expediente or SIN_DATO
+    # Vacía si no se da: lo dictó el operador el 2026-10-22, «esta celda déjala
+    # vacía, sin UPD; en esa celda no ingreses nada».
+    hoja[CELDA_NOMBRE_DEL_EXPEDIENTE] = nombre_del_expediente or None
     # Sin NIC la celda queda vacía, no con raya: se llena a mano.
     hoja[CELDA_NIC] = int(nic) if nic and nic.isdigit() else (nic or None)
     hoja[CELDA_TERRITORIAL] = territorial or SIN_DATO

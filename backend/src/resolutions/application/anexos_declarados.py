@@ -663,13 +663,25 @@ def unir_el_acuerdo_de_pago(
     sello ni RE: es lo que la empresa le hace firmar al usuario, no un escrito
     radicado. Un sello o una etiqueta de envío cortan la racha.
 
+    Y se lleva lo que se firmó con él (lo dictó el operador el 2026-10-22 ante
+    UPD3102729: «la Ley Habeas Data siempre irá anexada a su respectivo
+    reconocimiento de deuda y propuesta de acuerdo de pago… este documento
+    parece ser uno solo»): pegado a sus piezas, arriba o abajo, la
+    autorización de Habeas Data y las constancias de PQR de esa misma visita --
+    las que piden la financiación o las facilidades de pago, o que llevan la
+    fecha del reconocimiento --. Lo que abre su propio documento -- un sello,
+    una carta del cliente -- corta.
+
     Devuelve los documentos, sus anexos y las hojas del acuerdo.
     """
     from ..domain.asunto_del_documento import (
         ACUERDO_DE_PAGO,
         PIEZAS_DEL_ACUERDO,
+        causa_de_la_constancia,
+        es_causa_del_acuerdo,
         titulo_del_documento,
     )
+    from ..domain.fechas import fecha_de_la_pagina
 
     anexos = {codigo: list(paginas) for codigo, paginas in (anexos or {}).items()}
 
@@ -684,7 +696,10 @@ def unir_el_acuerdo_de_pago(
     def cerrar() -> None:
         if not racha:
             return
-        if len(racha) == 1:
+        reconocimiento = any(
+            titulo_del_documento(textos.get(p, "") or "") == ACUERDO_DE_PAGO for g in racha for p in g.page_numbers
+        )
+        if len(racha) == 1 and not reconocimiento:
             salida.append(racha[0])
         else:
             primero = racha[0]
@@ -705,6 +720,58 @@ def unir_el_acuerdo_de_pago(
             cerrar()
             salida.append(grupo)
     cerrar()
+
+    # Lo que se firmó con el acuerdo, pegado a él por arriba o por abajo.
+    def fecha_del_acuerdo(grupo: PageGroup):
+        for p in grupo.page_numbers:
+            texto = textos.get(p, "") or ""
+            if titulo_del_documento(texto) == ACUERDO_DE_PAGO:
+                return fecha_de_la_pagina(texto)
+        return None
+
+    def va_con_el_acuerdo(grupo: PageGroup, fecha) -> bool:
+        primera = grupo.page_numbers[0]
+        if primera in abren or grupo.kind == ACUERDO_DE_PAGO:
+            return False
+        texto = textos.get(primera, "") or ""
+        if titulo_del_documento(texto) == "LEY HABEAS DATA":
+            return True
+        # La constancia de PQR, por su «CAUSA:», que sólo trae ese formulario:
+        # su título puede no leerse («Recibí Constanza del contenido…»,
+        # UPD3102729 pág. 2).
+        causa = causa_de_la_constancia(texto)
+        if causa is None:
+            return False
+        if es_causa_del_acuerdo(causa):
+            return True
+        return fecha is not None and fecha_de_la_pagina(texto) == fecha
+
+    i = 0
+    while i < len(salida):
+        acuerdo = salida[i]
+        if acuerdo.kind != ACUERDO_DE_PAGO:
+            i += 1
+            continue
+        fecha = fecha_del_acuerdo(acuerdo)
+        desde, hasta = i, i
+        while desde > 0 and va_con_el_acuerdo(salida[desde - 1], fecha):
+            desde -= 1
+        while hasta + 1 < len(salida) and va_con_el_acuerdo(salida[hasta + 1], fecha):
+            hasta += 1
+        if (desde, hasta) != (i, i):
+            juntos = salida[desde : hasta + 1]
+            primero = juntos[0]
+            paginas = [p for g in juntos for p in g.page_numbers]
+            propios = [p for g in juntos for p in anexos.pop(g.code.value, [])]
+            # Lo que no era pieza del acuerdo va como su anexo.
+            propios += [p for g in juntos if g.kind != ACUERDO_DE_PAGO for p in g.page_numbers]
+            salida[desde : hasta + 1] = [
+                PageGroup(code=primero.code, page_numbers=paginas, title=primero.title, kind=ACUERDO_DE_PAGO)
+            ]
+            anexos[primero.code.value] = sorted(set(propios))
+            del_acuerdo.update(paginas)
+            i = desde
+        i += 1
     if len(salida) < len(grupos.groups):
         salida, anexos = _renumerar(salida, anexos)
     return (

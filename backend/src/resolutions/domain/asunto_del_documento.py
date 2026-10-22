@@ -384,6 +384,31 @@ _TIPO_DEL_SELLO: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
+#: La causa de una constancia de PQR que es parte del acuerdo de pago: lo que el
+#: usuario pidió para firmarlo (UPD3102729: «Facilidades de pago», «Gestionar
+#: financiación»).
+_CAUSA_DEL_ACUERDO = re.compile(
+    r"FINANCIA|FACILIDAD\w*\s+DE\s+PAGO|ACUERDO\s+DE\s+PAGO|CONVENIO\s+DE\s+PAGO|REFINANC"
+)
+
+
+def causa_de_la_constancia(texto: str) -> str | None:
+    """La «CAUSA:» de una constancia de PQR, plana; ``None`` si no la trae."""
+    renglones = (texto or "").splitlines()[:RENGLONES_DE_CABECERA]
+    for i, renglon in enumerate(renglones):
+        hallado = _CAUSA.match(renglon.strip())
+        if hallado is None:
+            continue
+        causa = hallado.group("s").strip() or (renglones[i + 1].strip() if i + 1 < len(renglones) else "")
+        return _plano(causa) or None
+    return None
+
+
+def es_causa_del_acuerdo(causa: str | None) -> bool:
+    """Si la causa de una constancia es pedir la financiación que el acuerdo concede."""
+    return bool(causa) and bool(_CAUSA_DEL_ACUERDO.search(_plano(causa)))
+
+
 def es_carta_de_la_empresa(texto: str) -> bool:
     """Si la carta es de la empresa -- su respuesta, su citación -- y no del cliente.
 
