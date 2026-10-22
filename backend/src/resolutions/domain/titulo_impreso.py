@@ -88,6 +88,10 @@ def _candidato(original: str) -> tuple[int, str] | None:
     letras = [c for c in original if c.isalpha()]
     if len(letras) < 8:
         return None
+    # Un campo del formulario con su valor -- «ASOCIADO COMERCIAL: 444 PA…» --
+    # no es su título (945220, 2026-10-22).
+    if re.search(r":\s*\S", original):
+        return None
     # Impreso en mayúsculas: el título de un formato no va en letra de carta.
     if sum(c.isupper() for c in letras) / len(letras) < 0.8:
         return None

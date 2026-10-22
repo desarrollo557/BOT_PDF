@@ -306,6 +306,41 @@ _FORMULARIO_DE_LA_CONSTANCIA = (
     re.compile(r"\bN\W{0,3}\s*P\W?Q\W?R\b"),
     re.compile(r"\bCAUSA\s*[:.]"),
 )
+#: La publicación del aviso, por su título en su renglón: lleva al lado el aviso,
+#: cuyo «Asunto: Notificación por aviso» no la nombra (1000690, 2026-10-22).
+_PUBLICACION_DEL_AVISO = re.compile(r"^\W*PUBLICACION\s+DEL?\s+AVISO\W*$")
+#: Los papeles que se reconocen por lo que dicen en cualquier parte de su
+#: cabeza, medidos en la revisión de los 38 PDF del 2026-10-22: la carta del
+#: operador de aseo que autoriza una nota crédito (1000501, 1000683, salían
+#: «RECLAMO»), el aviso que notifica un acto (920933, salía «RECURSO DE
+#: REPOSICION» por los recursos que ofrece) y el formulario de la visita de
+#: cobro (887305, salía «PAGO NO APLICADO» por una casilla sin marcar).
+_POR_LO_QUE_DICEN: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "AUTORIZACION",
+        re.compile(r"\bAUT\W?\d{3,5}\W?ASEO\b|APLICAR\s+DESCUENTO\W{0,3}S?\W{0,3}\s*O\s+NOTAS?\s+CREDITO"),
+    ),
+    (
+        "NOTIFICACION POR AVISO",
+        re.compile(r"POR\s+INTERMEDIO\s+DE\s+ESTE\s+AVISO|SE\s+CONSIDERARA\s+SURTIDA\s+AL\s+FINALIZAR"),
+    ),
+    ("GESTION DE COBRO", re.compile(r"MOTIVO\s+DEL\s+NO\s+PAGO")),
+)
+
+
+def _tipo_del_catalogo(asunto: str) -> str | None:
+    """El tipo del catálogo que nombra un REF o un ASUNTO: «DECLARACION BAJO GRAVEDAD DE JURAMENTO».
+
+    Sólo si el asunto es una de sus formas o empieza por una de dos palabras o
+    más: «RECLAMO por alto consumo» no es por esto un tipo, lo dice su título.
+    """
+    from .catalogo import FRASES
+
+    plano = re.sub(r"\s+", " ", re.sub(r"[^A-Z0-9 ]+", " ", _plano(asunto))).strip()
+    for frase, tipo in FRASES:
+        if plano == frase or (len(frase.split()) >= 2 and plano.startswith(f"{frase} ")):
+            return tipo.nombre
+    return None
 #: Los títulos centrados de las comunicaciones de la empresa, en su renglón.
 _TITULOS_DE_LA_EMPRESA: tuple[tuple[str, re.Pattern[str]], ...] = (
     # «personai», «persona1»: la «L» que la OCR rompe (UPD2326502 p1).
@@ -472,6 +507,8 @@ def titulo_del_documento(primera_pagina: str, tipo: str | None = None) -> str:
         if siguiente and not _OTRO_CAMPO.match(siguiente) and len(siguiente) <= 60:
             asunto = f"{asunto} {siguiente}"
         asuntos.append(_plano(asunto))
+    if any(_PUBLICACION_DEL_AVISO.match(r) for r in renglones):
+        return "PUBLICACION DEL AVISO"
     for nombre, patron in _TITULOS_DE_LA_EMPRESA[:2]:
         if any(patron.search(a) for a in asuntos):
             return nombre
@@ -486,6 +523,9 @@ def titulo_del_documento(primera_pagina: str, tipo: str | None = None) -> str:
                 return f"RESPUESTA A {contestado}"
     if _CONSTANCIA.search(cabeza) or all(campo.search(cabeza) for campo in _FORMULARIO_DE_LA_CONSTANCIA):
         return "CONSTANCIA DE RECLAMACION"
+    for nombre, patron in _POR_LO_QUE_DICEN:
+        if patron.search(cabeza):
+            return nombre
     for renglon in renglones:
         for nombre, patron in _TITULOS_DE_LA_EMPRESA:
             if patron.search(renglon) and len(renglon) <= 60:
@@ -493,6 +533,13 @@ def titulo_del_documento(primera_pagina: str, tipo: str | None = None) -> str:
     for nombre, patron in _FORMATOS:
         if patron.search(cabeza[:CABEZA_DEL_FORMATO]):
             return nombre
+    # El REF o el ASUNTO que ya es un tipo del catálogo: «REFERENCIA:
+    # DECLARACION BAJO GRAVEDAD DE JURAMENTO» (1000265, salía «SOLICITUD» por
+    # una casilla del formulario).
+    for asunto in asuntos:
+        del_catalogo = _tipo_del_catalogo(asunto)
+        if del_catalogo:
+            return del_catalogo
     for asunto in asuntos:
         propio = _titulo_del_escrito(asunto)
         if propio:
