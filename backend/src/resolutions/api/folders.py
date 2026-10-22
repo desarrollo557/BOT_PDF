@@ -4,13 +4,14 @@ import asyncio
 import errno
 import logging
 import os
+import re
 import shutil
 import threading
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from itertools import islice
 from pathlib import Path
@@ -302,6 +303,9 @@ class FolderRun:
     #: porque la entrega corre en un hilo, y uno que ya arrancó no se detiene
     #: aunque se cancele quien lo esperaba.
     cerrojo: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    #: Las carpetas de NIC entregadas a la manera de antes -- con el UPD delante
+    #: y un índice por UPD -- que hay que ordenar aunque no se procese nada.
+    cajas_por_ordenar: set[Path] = field(default_factory=set, repr=False)
 
     @property
     def current(self) -> str | None:
@@ -1111,7 +1115,15 @@ class FolderRunner:
             run.manifest.extend(constancia.unidades)
         nombre_del_indice = self._nombre_del_indice(run, path, NOMBRE_DEL_INDICE)
         entregados = {str(archivo.get("ruta")) for archivo in constancia.archivos}
-        if nombre_del_indice in entregados:
+        if self._plana(run) and (
+            nombre_del_indice in entregados or any(r.startswith(f"{path.stem}_") for r in entregados)
+        ):
+            # Entregado a la manera de antes -- su UPD delante y su propio
+            # índice --: se ordena la carpeta del NIC sin volver a procesarlo.
+            run.cajas_por_ordenar.add(carpeta)
+        elif self._plana(run) and constancia.indice is not None:
+            run.indices[carpeta.name] = carpeta / NOMBRE_DEL_INDICE
+        elif nombre_del_indice in entregados:
             run.indices[self._clave_del_indice(run, path, carpeta)] = carpeta / nombre_del_indice
         elif self._plana(run) and NOMBRE_DEL_INDICE in entregados:
             # Una entrega de antes, en su subcarpeta UPD: su índice está ahí.
@@ -1163,6 +1175,10 @@ class FolderRunner:
                     for path, constancia in entregados:
                         run.seen.add(str(path))
                         self._contar_lo_ya_entregado(run, path, constancia)
+                    # Las carpetas de NIC entregadas a la manera de antes, ya
+                    # numeradas seguidas y con un solo índice.
+                    while run.cajas_por_ordenar:
+                        await asyncio.to_thread(self._ordenar_la_caja, run, run.cajas_por_ordenar.pop())
                     run.ya_entregados += len(entregados)
                     run.discovered += len(pending) + len(entregados)
                     if entregados:
@@ -1880,6 +1896,9 @@ class FolderRunner:
             run.rehechos += 1
         if prefijo:
             self._apartar_la_entrega_de_antes(run, origin, carpeta)
+            # Lo que dejó a medias una entrega cortada de este mismo UPD: va con
+            # su UPD delante hasta que `_ordenar_la_caja` lo numera.
+            self._apartar_lo_anterior(run, carpeta, None, Vigencia.SIN_CONSTANCIA, prefijo=prefijo)
         # «Entregando» antes de copiar nada: si la corrida se corta a media
         # copia, la próxima ve una entrega cortada y la rehace entera.
         self._escribir_constancia(
@@ -1890,7 +1909,19 @@ class FolderRunner:
 
         self._record(run, job, origin)
         indice = (job.report or {}).get("indice_electronico")
-        if indice:
+        if indice and prefijo:
+            # La carpeta de un NIC lleva un solo Índice Electrónico para todos
+            # sus UPD (lo dictó el operador el 2026-10-22): el de este PDF no se
+            # copia; sus filas van en su constancia y `_ordenar_la_caja` escribe
+            # el de la carpeta.
+            from ..adapters.indice_electronico import leer_indice
+
+            try:
+                for hoja in sorted(produced.rglob(indice))[:1]:
+                    entrega.indice = _indice_a_dict(leer_indice(hoja))
+            except Exception:  # noqa: BLE001 - sin sus filas, el índice de la carpeta sale sin ellas
+                logger.warning("no se pudo leer el índice de %s", job.filename, exc_info=True)
+        elif indice:
             # Una caja de correspondencia lleva su Índice Electrónico en lugar
             # de la planilla, y viaja tal cual junto a sus PDF: no declara a
             # dónde se entregó, así que no hay nada que reescribir. Se copia
@@ -2443,6 +2474,7 @@ class FolderRunner:
             ]
             if not informe.get("indice_electronico")
             else [],
+            indice=entrega.indice,
         )
         try:
             constancias.escribir(entrega.constancia, constancia)
@@ -2450,8 +2482,161 @@ class FolderRunner:
             # Sin ella la próxima corrida lo tomará por una entrega de antes y
             # lo saltará igual si su carpeta trae PDF: no se pierde nada.
             logger.warning("no se pudo cerrar la constancia de %s: %s", origin.name, error)
+        if self._plana(run):
+            # La carpeta del NIC, con este UPD ya dentro: numerada seguida y con
+            # un solo índice.
+            self._ordenar_la_caja(run, entrega.base)
         if getattr(self._settings, "liberar_salidas", False):
             self._liberar_salidas(job)
+
+    def _ordenar_la_caja(self, run: FolderRun, carpeta: Path) -> None:
+        """La carpeta de un NIC como un solo expediente: sus PDF seguidos y un índice.
+
+        Lo dictó el operador el 2026-10-22 ante «DESTINO\\1002194» con dos UPD:
+        «no hay necesidad de que crees otro índice electrónico, o que en el
+        nombre le coloques primero la UPD; la idea es que por NIC estén sus
+        archivos en la raíz de la carpeta del NIC con la estructura número-título».
+
+        - Los PDF de todos sus UPD entregados, por el orden de su ruta, se
+          numeran seguidos: «01_…», «02_…», «03_…» (renombrando en dos pasos,
+          para que ningún nombre pise a otro mientras se mueve).
+        - Un solo «00.INDICE ELECTRONICO.xlsx», con las filas de todos en ese
+          mismo orden; las de cada UPD están en su constancia, así que también
+          cuenta el que se entregó en una corrida anterior.
+        - Lo que se entregaba hasta el 2026-10-21 -- el UPD delante del nombre y
+          un índice por UPD -- queda así también: el índice suelto de cada UPD se
+          aparta a ``_reemplazados``.
+
+        Sólo toca lo que las constancias completas dicen que entregó el bot: lo
+        de una entrega en curso o cortada se ordena cuando termine. Un fallo
+        aquí no deshace ninguna entrega: se avisa y la carpeta queda como esté.
+        """
+        from ..adapters.indice_electronico import (
+            NOMBRE_DEL_INDICE,
+            FilaDelIndice,
+            escribir_indice,
+            leer_indice,
+        )
+
+        with run.cerrojo:
+            try:
+                rutas = sorted(carpeta.glob(f"{Path(constancias.NOMBRE).stem}-*.json"))
+            except OSError:
+                return
+            leidas = [
+                (ruta, constancia)
+                for ruta in rutas
+                if (constancia := constancias.leer(ruta)) is not None
+                and constancia.estado == EstadoDeEntrega.COMPLETA
+            ]
+            if not leidas:
+                return
+            leidas.sort(key=lambda par: par[1].origen.casefold())
+            sello = datetime.now().strftime("%Y%m%d-%H%M%S")
+            try:
+                # 0. Lo que un orden cortado a medias dejó con su nombre de paso,
+                #    a su nombre: es el que sigue en su constancia.
+                for paso in carpeta.glob(".ordenando-*"):
+                    original = paso.with_name(paso.name.split("-", 2)[2])
+                    if not original.exists():
+                        os.replace(paso, original)
+                # 1. El índice suelto de cada UPD, como se entregaba antes: sus
+                #    filas a la constancia y el archivo, apartado.
+                for _, constancia in leidas:
+                    sueltos = [a for a in constancia.archivos if _INDICE_POR_UPD.match(str(a.get("ruta") or ""))]
+                    for archivo in sueltos:
+                        hoja = carpeta / str(archivo.get("ruta"))
+                        if constancia.indice is None and hoja.exists():
+                            try:
+                                constancia.indice = _indice_a_dict(leer_indice(hoja))
+                            except Exception:  # noqa: BLE001 - un índice ilegible no para la carpeta
+                                logger.warning("no se pudo leer el índice %s", hoja, exc_info=True)
+                        if hoja.exists():
+                            apartado = carpeta / REEMPLAZADOS_DIR / sello / hoja.name
+                            apartado.parent.mkdir(parents=True, exist_ok=True)
+                            os.replace(hoja, apartado)
+                        constancia.archivos.remove(archivo)
+                # 2. Los PDF, numerados seguidos por el orden de su UPD.
+                pdfs = [
+                    archivo
+                    for _, constancia in leidas
+                    for archivo in sorted(
+                        (a for a in constancia.archivos if str(a.get("ruta") or "").lower().endswith(".pdf")),
+                        key=_orden_del_archivo,
+                    )
+                ]
+                ancho = max(2, len(str(len(pdfs))))
+                cambios = []
+                for numero, archivo in enumerate(pdfs, start=1):
+                    actual = Path(str(archivo["ruta"]))
+                    hallado = _NUMERO_DEL_ARCHIVO.match(actual.name)
+                    nuevo = actual.with_name(f"{numero:0{ancho}d}_{hallado.group(2) if hallado else actual.name}")
+                    if nuevo != actual and (carpeta / actual).exists():
+                        cambios.append((archivo, actual, nuevo))
+                # Primero todos a un nombre de paso, después a su número: así el
+                # «02» de un UPD no pisa el «02» que otro está dejando libre.
+                de_paso = []
+                for puesto, (archivo, actual, nuevo) in enumerate(cambios):
+                    paso = carpeta / actual.with_name(f".ordenando-{puesto}-{actual.name}")
+                    os.replace(carpeta / actual, paso)
+                    de_paso.append((archivo, paso, nuevo))
+                for archivo, paso, nuevo in de_paso:
+                    destino = carpeta / nuevo
+                    if destino.exists():
+                        # Un archivo que no es del bot ocupa el nombre: no se pisa.
+                        destino = unique_path(destino.parent, destino.name)
+                    os.replace(paso, destino)
+                    archivo["ruta"] = destino.relative_to(carpeta).as_posix()
+                for ruta, constancia in leidas:
+                    constancias.escribir(ruta, constancia)
+                # 3. Un solo índice, con las filas de todos sus UPD.
+                filas: list[FilaDelIndice] = []
+                nic = territorial = None
+                expedientes: list[str] = []
+                for _, constancia in leidas:
+                    datos = constancia.indice or {}
+                    nic = nic or datos.get("nic")
+                    territorial = territorial or datos.get("territorial")
+                    if datos.get("expediente") and datos["expediente"] not in expedientes:
+                        expedientes.append(datos["expediente"])
+                    for fila in datos.get("filas") or []:
+                        filas.append(
+                            FilaDelIndice(
+                                nombre=str(fila.get("nombre") or ""),
+                                fecha_creacion=date.fromisoformat(fila["fecha_creacion"]) if fila.get("fecha_creacion") else None,
+                                fecha_incorporacion=date.fromisoformat(fila["fecha_incorporacion"])
+                                if fila.get("fecha_incorporacion")
+                                else None,
+                                orden=len(filas) + 1,
+                                paginas=int(fila.get("paginas") or 0),
+                                formato=str(fila.get("formato") or "pdf"),
+                                observaciones=str(fila.get("observaciones") or ""),
+                                responsable=str(fila.get("responsable") or ""),
+                            )
+                        )
+                if any(constancia.indice for _, constancia in leidas):
+                    indice = escribir_indice(
+                        carpeta,
+                        filas,
+                        nic=nic,
+                        territorial=territorial,
+                        nombre_del_expediente=", ".join(expedientes) or None,
+                    )
+                    # En el libro general, una hoja por NIC y no una por UPD.
+                    for _, constancia in leidas:
+                        run.indices.pop(Path(constancia.origen).stem, None)
+                    run.indices[carpeta.name] = indice
+                    if len(filas) != len(pdfs):
+                        self._avisar(
+                            run,
+                            f"«{carpeta.name}»: el índice lleva {len(filas)} filas y la carpeta "
+                            f"{len(pdfs)} PDF; revise el índice.",
+                        )
+                elif (carpeta / NOMBRE_DEL_INDICE).exists():
+                    run.indices[carpeta.name] = carpeta / NOMBRE_DEL_INDICE
+            except Exception as error:  # noqa: BLE001 - las entregas ya están hechas
+                logger.warning("no se pudo ordenar la carpeta %s", carpeta, exc_info=True)
+                self._avisar(run, f"«{carpeta.name}»: no se pudo ordenar la carpeta del NIC: {explicar_fallo(error)}")
 
     def _liberar_salidas(self, job: Job) -> None:
         """Borra de salidas los PDF que ya están en el destino (ver ``liberar_salidas``)."""
@@ -2527,6 +2712,44 @@ class Entrega:
     #: Lo copiado, o ``None`` para tomar todo lo que hay en ``base``.
     archivos: list[Path] | None = None
     fallos: list[str] = field(default_factory=list)
+    #: El Índice Electrónico de este PDF, leído, para su constancia: en la
+    #: carpeta de un NIC va uno solo para todos sus UPD (``_ordenar_la_caja``).
+    indice: dict | None = None
+
+
+#: Un archivo de la caja de correspondencia en la carpeta de su NIC: «03_RECLAMO.pdf»,
+#: y como se entregaban hasta el 2026-10-21, con su UPD delante.
+_NUMERO_DEL_ARCHIVO = re.compile(r"^(?:UPD\d+_)?(\d+)_(.+)$", re.IGNORECASE)
+#: El índice de un UPD como se entregaba hasta el 2026-10-21: «00.INDICE ELECTRONICO UPD….xlsx».
+_INDICE_POR_UPD = re.compile(r"^00\.INDICE ELECTRONICO \S+\.xlsx$", re.IGNORECASE)
+
+
+def _orden_del_archivo(archivo: dict) -> tuple[int, str]:
+    """El puesto de un PDF entre los de su UPD: el número con que empieza su nombre."""
+    ruta = str(archivo.get("ruta") or "")
+    hallado = _NUMERO_DEL_ARCHIVO.match(Path(ruta).name)
+    return (int(hallado.group(1)) if hallado else 10**6, ruta)
+
+
+def _indice_a_dict(indice) -> dict:
+    """Un ``IndiceLeido`` como va en la constancia: fechas en ISO."""
+    return {
+        "nic": indice.nic,
+        "territorial": indice.territorial,
+        "expediente": indice.nombre_del_expediente,
+        "filas": [
+            {
+                "nombre": fila.nombre,
+                "fecha_creacion": fila.fecha_creacion.isoformat() if fila.fecha_creacion else None,
+                "fecha_incorporacion": fila.fecha_incorporacion.isoformat() if fila.fecha_incorporacion else None,
+                "paginas": fila.paginas,
+                "formato": fila.formato,
+                "observaciones": fila.observaciones,
+                "responsable": fila.responsable,
+            }
+            for fila in indice.filas
+        ],
+    }
 
 
 def _copiar(desde: Path, hasta: Path) -> None:

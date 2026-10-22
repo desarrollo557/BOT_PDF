@@ -129,33 +129,39 @@ def leer_indice(ruta: Path) -> IndiceLeido:
     """
     from openpyxl import load_workbook
 
-    hoja = load_workbook(ruta, read_only=True).active
-    filas: list[FilaDelIndice] = []
-    fila = PRIMERA_FILA
-    while True:
-        valores = [hoja[f"{c}{fila}"].value for c in COLUMNAS]
-        nombre = str(valores[0] or "").strip()
-        if not nombre or nombre.upper().startswith(CIERRE):
-            break
-        filas.append(
-            FilaDelIndice(
-                nombre=nombre,
-                fecha_creacion=_fecha_leida(valores[1]),
-                fecha_incorporacion=_fecha_leida(valores[2]),
-                orden=int(valores[3] or len(filas) + 1),
-                paginas=int(valores[4] or 0),
-                formato=str(valores[5] or "pdf"),
-                observaciones=str(valores[6] or ""),
-                responsable=str(valores[7] or ""),
+    # Cerrado al terminar: en modo de sólo lectura el libro deja el archivo
+    # abierto, y en Windows un archivo abierto no se puede mover ni apartar.
+    libro = load_workbook(ruta, read_only=True)
+    try:
+        hoja = libro.active
+        filas: list[FilaDelIndice] = []
+        fila = PRIMERA_FILA
+        while True:
+            valores = [hoja[f"{c}{fila}"].value for c in COLUMNAS]
+            nombre = str(valores[0] or "").strip()
+            if not nombre or nombre.upper().startswith(CIERRE):
+                break
+            filas.append(
+                FilaDelIndice(
+                    nombre=nombre,
+                    fecha_creacion=_fecha_leida(valores[1]),
+                    fecha_incorporacion=_fecha_leida(valores[2]),
+                    orden=int(valores[3] or len(filas) + 1),
+                    paginas=int(valores[4] or 0),
+                    formato=str(valores[5] or "pdf"),
+                    observaciones=str(valores[6] or ""),
+                    responsable=str(valores[7] or ""),
+                )
             )
+            fila += 1
+        return IndiceLeido(
+            filas=filas,
+            nic=_dato(hoja[CELDA_NIC].value),
+            territorial=_dato(hoja[CELDA_TERRITORIAL].value),
+            nombre_del_expediente=_dato(hoja[CELDA_NOMBRE_DEL_EXPEDIENTE].value),
         )
-        fila += 1
-    return IndiceLeido(
-        filas=filas,
-        nic=_dato(hoja[CELDA_NIC].value),
-        territorial=_dato(hoja[CELDA_TERRITORIAL].value),
-        nombre_del_expediente=_dato(hoja[CELDA_NOMBRE_DEL_EXPEDIENTE].value),
-    )
+    finally:
+        libro.close()
 
 
 #: Lo más largo que Excel admite en el nombre de una hoja.

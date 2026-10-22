@@ -83,6 +83,10 @@ class Constancia:
     actas: list[dict] = field(default_factory=list)
     #: Sus unidades, para la planilla de la entrega entera.
     unidades: list[dict] = field(default_factory=list)
+    #: Su Índice Electrónico -- «nic», «territorial», «expediente» y «filas» --,
+    #: para rehacer el de la carpeta del NIC con todos sus UPD sin volver a
+    #: procesar ninguno (la caja de correspondencia, desde el 2026-10-22).
+    indice: dict | None = None
     version: int = VERSION
 
     def as_dict(self) -> dict:

@@ -1,19 +1,29 @@
-"""La caja de correspondencia se entrega directo en la carpeta de la caja.
+"""La caja de correspondencia se entrega directo en la carpeta de su NIC.
 
 Lo pidió el operador el 2026-10-21: «DESTINO\\210847» con los archivos de su UPD
-dentro, no «DESTINO\\210847\\UPD2998726\\…». De 30 003 cajas de MAGANGUE, 6 266
-traen dos o tres UPD, así que todo lo de un PDF lleva su UPD delante y nunca pisa
-lo de otro. Las demás habilidades siguen con su carpeta por PDF.
+dentro, no «DESTINO\\210847\\UPD2998726\\…». Y el 2026-10-22, al ver dos UPD en
+un mismo NIC: «no hay necesidad de que crees otro índice electrónico, o que en
+el nombre le coloques primero la UPD; la idea es que por NIC estén sus archivos
+en la raíz, con la estructura número-título». Así: los PDF de todos sus UPD
+numerados seguidos y un solo índice. Las demás habilidades siguen con su
+carpeta por PDF.
 """
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
 import pytest
 
+from resolutions.adapters.indice_electronico import (
+    FilaDelIndice,
+    escribir_indice,
+    leer_indice,
+)
+from resolutions.api import constancia as constancias
 from resolutions.api.folders import REEMPLAZADOS_DIR, FolderRunner, RunState
 from resolutions.api.jobs import JobRegistry
 from resolutions.api.settings import Settings
@@ -40,14 +50,30 @@ def _caja(origen: Path, caja: str, *upds: str) -> None:
         (origen / caja / f"{upd}.pdf").write_bytes(b"%PDF-1.4 " + upd.encode())
 
 
+def _indice(carpeta: Path, upd: str, *nombres: str) -> Path:
+    """Un Índice Electrónico de verdad, como el que deja el worker."""
+    filas = [
+        FilaDelIndice(
+            nombre=nombre,
+            fecha_creacion=date(2024, 2, 8),
+            fecha_incorporacion=date(2026, 10, 22),
+            orden=orden,
+            paginas=3,
+        )
+        for orden, nombre in enumerate(nombres, start=1)
+    ]
+    return escribir_indice(carpeta, filas, nic="1000265", territorial="MAGANGUE", nombre_del_expediente=upd)
+
+
 def _motor(ajustes, registro, hechos):
     async def run_job(job):
         hechos.append(job.filename)
         # Como el worker: dentro de su carpeta de trabajo, en una subcarpeta.
-        salida = ajustes.output_dir / job.id / Path(job.filename).stem
+        upd = Path(job.filename).stem
+        salida = ajustes.output_dir / job.id / upd
         salida.mkdir(parents=True, exist_ok=True)
         (salida / "01_RECLAMO.pdf").write_bytes(b"%PDF-1.4 " + job.filename.encode())
-        (salida / INDICE).write_bytes(b"xlsx " + job.filename.encode())
+        _indice(salida, upd, f"RECLAMO DE {upd}")
         registro.mark_done(
             job,
             {"groups": [{"code": "01"}], "review_queue": [], "indice_electronico": INDICE},
@@ -69,32 +95,34 @@ def _correr(motor, origen, destino, **opciones):
 
 
 def _nombres(carpeta: Path) -> list[str]:
-    return sorted(p.name for p in carpeta.iterdir())
+    return sorted(p.name for p in carpeta.iterdir() if p.name != REEMPLAZADOS_DIR)
 
 
 class TestLaEntregaPlana:
-    def test_todo_directo_en_la_caja_y_con_su_upd_delante(self, ajustes, tmp_path):
+    def test_un_nic_con_dos_upd_numerado_seguido_y_un_solo_indice(self, ajustes, tmp_path):
         _caja(tmp_path / "origen", "1000265", "UPD1", "UPD2")
         _caja(tmp_path / "origen", "210847", "UPD3")
         hechos: list[str] = []
         run = _correr(_motor(ajustes, JobRegistry(), hechos), tmp_path / "origen", tmp_path / "destino", task="segment")
 
         assert run.state is RunState.DONE and run.processed == 3
-        assert _nombres(tmp_path / "destino" / "1000265") == [
+        caja = tmp_path / "destino" / "1000265"
+        assert _nombres(caja) == [
             ".bot-entrega-UPD1.json",
             ".bot-entrega-UPD2.json",
-            "00.INDICE ELECTRONICO UPD1.xlsx",
-            "00.INDICE ELECTRONICO UPD2.xlsx",
-            "UPD1_01_RECLAMO.pdf",
-            "UPD2_01_RECLAMO.pdf",
+            INDICE,
+            "01_RECLAMO.pdf",
+            "02_RECLAMO.pdf",
         ]
-        # Cada uno con lo suyo: el de UPD2 no pisó el de UPD1.
-        assert (tmp_path / "destino" / "1000265" / "UPD1_01_RECLAMO.pdf").read_bytes().endswith(b"UPD1.pdf")
-        assert _nombres(tmp_path / "destino" / "210847") == [
-            ".bot-entrega-UPD3.json",
-            "00.INDICE ELECTRONICO UPD3.xlsx",
-            "UPD3_01_RECLAMO.pdf",
-        ]
+        # Por el orden de sus UPD, cada uno con lo suyo.
+        assert (caja / "01_RECLAMO.pdf").read_bytes().endswith(b"UPD1.pdf")
+        assert (caja / "02_RECLAMO.pdf").read_bytes().endswith(b"UPD2.pdf")
+        # Un solo índice, con las filas de los dos en ese mismo orden.
+        indice = leer_indice(caja / INDICE)
+        assert [(f.orden, f.nombre) for f in indice.filas] == [(1, "RECLAMO DE UPD1"), (2, "RECLAMO DE UPD2")]
+        assert indice.nombre_del_expediente == "UPD1, UPD2"
+        assert indice.nic == "1000265"
+        assert _nombres(tmp_path / "destino" / "210847") == [".bot-entrega-UPD3.json", INDICE, "01_RECLAMO.pdf"]
 
     def test_relanzarla_no_repite_nada(self, ajustes, tmp_path):
         _caja(tmp_path / "origen", "1000265", "UPD1", "UPD2")
@@ -103,6 +131,7 @@ class TestLaEntregaPlana:
         hechos: list[str] = []
         otra = _correr(_motor(ajustes, registro, hechos), tmp_path / "origen", tmp_path / "destino", task="segment")
         assert hechos == [] and otra.ya_entregados == 2
+        assert _nombres(tmp_path / "destino" / "1000265")[-2:] == ["01_RECLAMO.pdf", "02_RECLAMO.pdf"]
 
     def test_rehacer_uno_no_toca_al_otro_upd_de_la_caja(self, ajustes, tmp_path):
         _caja(tmp_path / "origen", "1000265", "UPD1", "UPD2")
@@ -114,8 +143,9 @@ class TestLaEntregaPlana:
         _correr(_motor(ajustes, registro, hechos), tmp_path / "origen", tmp_path / "destino", task="segment")
         assert hechos == [str(Path("1000265") / "UPD1.pdf")]
         caja = tmp_path / "destino" / "1000265"
-        assert (caja / "UPD2_01_RECLAMO.pdf").exists()
-        assert not any(p.name.startswith("UPD2") for p in (caja / REEMPLAZADOS_DIR).rglob("*"))
+        assert (caja / "02_RECLAMO.pdf").read_bytes().endswith(b"UPD2.pdf")
+        apartados = [p for p in (caja / REEMPLAZADOS_DIR).rglob("*") if p.is_file()]
+        assert apartados and not any(p.read_bytes().endswith(b"UPD2.pdf") for p in apartados)
 
     def test_las_otras_habilidades_siguen_con_su_carpeta_por_pdf(self, ajustes, tmp_path):
         _caja(tmp_path / "origen", "1000265", "UPD1")
@@ -124,7 +154,7 @@ class TestLaEntregaPlana:
 
 
 class TestLaEntregaDeAntes:
-    """Lo entregado antes del 2026-10-21, en su subcarpeta UPD, no se vuelve a pagar."""
+    """Lo entregado antes, en su subcarpeta UPD o con el UPD delante, no se vuelve a pagar."""
 
     def _de_antes(self, ajustes, tmp_path):
         _caja(tmp_path / "origen", "1000265", "UPD1")
@@ -153,5 +183,58 @@ class TestLaEntregaDeAntes:
         caja = tmp_path / "destino" / "1000265"
         assert hechos == [str(Path("1000265") / "UPD1.pdf")]
         assert not (caja / "UPD1").exists()
-        assert (caja / "UPD1_01_RECLAMO.pdf").exists()
+        assert (caja / "01_RECLAMO.pdf").exists()
         assert any((caja / REEMPLAZADOS_DIR).rglob("UPD1/01_RECLAMO.pdf"))
+
+    def test_la_caja_con_el_upd_delante_se_ordena_sin_volver_a_procesarla(self, ajustes, tmp_path):
+        """Como se entregaba el 2026-10-21: «UPD1_01_…», «00.INDICE ELECTRONICO UPD1.xlsx»."""
+        _caja(tmp_path / "origen", "1000265", "UPD1", "UPD2")
+        caja = tmp_path / "destino" / "1000265"
+        caja.mkdir(parents=True)
+        for upd, documentos in (("UPD1", ["CONSTANCIA", "RECONOCIMIENTO"]), ("UPD2", ["RECLAMO"])):
+            archivos = []
+            for orden, documento in enumerate(documentos, start=1):
+                pdf = caja / f"{upd}_{orden:02d}_{documento}.pdf"
+                pdf.write_bytes(b"%PDF-1.4 " + f"{upd} {documento}".encode())
+                archivos.append(pdf)
+            hoja = _indice(caja, upd, *documentos)
+            suelto = caja / f"00.INDICE ELECTRONICO {upd}.xlsx"
+            hoja.rename(suelto)
+            archivos.append(suelto)
+            origen = tmp_path / "origen" / "1000265" / f"{upd}.pdf"
+            tamano, modificado = constancias.huella_del_origen(origen)
+            constancias.escribir(
+                caja / f".bot-entrega-{upd}.json",
+                constancias.Constancia(
+                    origen=f"1000265/{upd}.pdf",
+                    tamano=tamano,
+                    modificado_ns=modificado,
+                    estado=constancias.EstadoDeEntrega.COMPLETA,
+                    archivos=constancias.archivos_de(caja, archivos),
+                    habilidad="Caja de correspondencia",
+                ),
+            )
+        hechos: list[str] = []
+        run = _correr(_motor(ajustes, JobRegistry(), hechos), tmp_path / "origen", tmp_path / "destino", task="segment")
+
+        assert hechos == [] and run.ya_entregados == 2
+        assert _nombres(caja) == [
+            ".bot-entrega-UPD1.json",
+            ".bot-entrega-UPD2.json",
+            INDICE,
+            "01_CONSTANCIA.pdf",
+            "02_RECONOCIMIENTO.pdf",
+            "03_RECLAMO.pdf",
+        ]
+        assert (caja / "03_RECLAMO.pdf").read_bytes().endswith(b"UPD2 RECLAMO")
+        indice = leer_indice(caja / INDICE)
+        assert [f.nombre for f in indice.filas] == ["CONSTANCIA", "RECONOCIMIENTO", "RECLAMO"]
+        assert [f.orden for f in indice.filas] == [1, 2, 3]
+        # Los índices sueltos de cada UPD, apartados, no borrados.
+        assert sorted(p.name for p in (caja / REEMPLAZADOS_DIR).rglob("*.xlsx")) == [
+            "00.INDICE ELECTRONICO UPD1.xlsx",
+            "00.INDICE ELECTRONICO UPD2.xlsx",
+        ]
+        # Y la próxima vez sigue saltándolos: sus constancias dicen los nombres nuevos.
+        otra = _correr(_motor(ajustes, JobRegistry(), hechos), tmp_path / "origen", tmp_path / "destino", task="segment")
+        assert hechos == [] and otra.ya_entregados == 2
