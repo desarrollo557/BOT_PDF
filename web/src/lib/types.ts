@@ -546,6 +546,9 @@ export interface FolderRun {
   /** «00.CONTROL DE ENTREGA.xlsx», cuando ya se escribió. */
   control?: string | null;
   control_ruta?: string | null;
+  /** «00.ANALISIS DE LA ENTREGA.xlsx», cuando ya se escribió. */
+  analisis?: string | null;
+  analisis_ruta?: string | null;
   controles?: ControlDeLibro[];
 }
 

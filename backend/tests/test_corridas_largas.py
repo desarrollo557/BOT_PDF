@@ -34,7 +34,7 @@ from types import SimpleNamespace
 import pytest
 
 from resolutions.api import constancia as constancias
-from resolutions.api import ejecucion
+from resolutions.api import ejecucion, folders
 from resolutions.api.constancia import Constancia, EstadoDeEntrega, Vigencia
 from resolutions.api.ejecucion import TrabajoSinAvance, _run
 from resolutions.api.folders import (
@@ -48,6 +48,7 @@ from resolutions.api.jobs import Job, JobRegistry, JobState
 from resolutions.api.reintentos import (
     es_transitorio,
     espera_antes_del_intento,
+    merece_otra_vuelta,
     pide_otro_pool,
 )
 from resolutions.api.retomar import Retomar
@@ -158,6 +159,51 @@ class TestQueSeReintenta:
         tercera = espera_antes_del_intento(3, 10)
         assert 8 <= segunda <= 12
         assert 24 <= tercera <= 36
+
+
+class TestArchivoEnUso:
+    def test_espera_y_vuelve_a_abrir_el_pdf_bloqueado(self, monkeypatch, tmp_path):
+        ruta = tmp_path / "abierto.pdf"
+        ruta.write_bytes(b"%PDF")
+        abrir = Path.open
+        intentos = 0
+
+        def abrir_con_bloqueo(path, *args, **kwargs):
+            nonlocal intentos
+            if path == ruta and intentos == 0:
+                intentos += 1
+                error = PermissionError(13, "The process cannot access the file because it is being used by another process", str(path))
+                error.winerror = 32
+                raise error
+            intentos += 1
+            return abrir(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", abrir_con_bloqueo)
+        monkeypatch.setattr(folders.time, "sleep", lambda _: None)
+
+        folders._esperar_a_que_se_libere(ruta)
+
+        assert intentos == 2
+
+    def test_si_sigue_bloqueado_el_fallo_conserva_la_causa_de_windows(self, monkeypatch, tmp_path):
+        ruta = tmp_path / "abierto.pdf"
+
+        def abrir_bloqueado(path, *args, **kwargs):
+            error = PermissionError(13, "The process cannot access the file because it is being used by another process", str(path))
+            error.winerror = 32
+            raise error
+
+        monkeypatch.setattr(Path, "open", abrir_bloqueado)
+        monkeypatch.setattr(folders.time, "sleep", lambda _: None)
+
+        with pytest.raises(PermissionError) as capturada:
+            folders._esperar_a_que_se_libere(ruta)
+
+        from resolutions.api.errores import archivo_en_uso, explicar_fallo
+
+        assert archivo_en_uso(capturada.value)
+        assert merece_otra_vuelta(capturada.value)
+        assert "se vuelve a intentar al final" in explicar_fallo(capturada.value)
 
 
 class _Registro:
@@ -408,6 +454,56 @@ class TestLaConstancia:
         leida = constancias.leer(carpeta / constancias.NOMBRE)
         assert constancias.vigencia(leida, origen, carpeta) is Vigencia.ORIGEN_CAMBIADO
 
+    def test_un_cambio_en_el_centro_del_pdf_no_se_confunde_con_una_copia(self, tmp_path):
+        origen, carpeta = self._entregada(tmp_path)
+        origen.write_bytes(b"A" * 150_000)
+        tamano, modificado = constancias.huella_del_origen(origen)
+        constancia = Constancia(
+            origen="libro.pdf",
+            tamano=tamano,
+            modificado_ns=modificado,
+            estado=EstadoDeEntrega.COMPLETA,
+            archivos=constancias.archivos_de(carpeta, [carpeta / "1_A.pdf"]),
+            firma=constancias.firma_del_origen(origen),
+        )
+        origen.write_bytes(b"A" * 75_000 + b"B" + b"A" * 74_999)
+
+        verificacion = constancias.verificar(
+            constancia, origen, carpeta, huella=(tamano, modificado + 1)
+        )
+
+        assert origen.stat().st_size == tamano
+        assert verificacion.vigencia is Vigencia.ORIGEN_CAMBIADO
+
+    def test_una_constancia_sin_archivos_no_marca_entrega_completa(self, tmp_path):
+        origen, carpeta = self._entregada(tmp_path)
+        constancia = Constancia(
+            origen="libro.pdf",
+            tamano=origen.stat().st_size,
+            modificado_ns=origen.stat().st_mtime_ns,
+            estado=EstadoDeEntrega.COMPLETA,
+        )
+
+        verificacion = constancias.verificar(constancia, origen, carpeta)
+
+        assert verificacion.vigencia is Vigencia.INCOMPLETA
+        assert "no registra archivos" in verificacion.motivo
+
+    def test_una_ruta_de_constancia_no_puede_salir_del_destino(self, tmp_path):
+        origen, carpeta = self._entregada(tmp_path)
+        constancia = Constancia(
+            origen="libro.pdf",
+            tamano=origen.stat().st_size,
+            modificado_ns=origen.stat().st_mtime_ns,
+            estado=EstadoDeEntrega.COMPLETA,
+            archivos=[{"ruta": "..\\otro.pdf", "bytes": 1}],
+        )
+
+        verificacion = constancias.verificar(constancia, origen, carpeta)
+
+        assert verificacion.vigencia is Vigencia.INCOMPLETA
+        assert "ruta de archivo inválida" in verificacion.motivo
+
     def test_la_que_se_quedo_entregando_es_una_entrega_cortada(self, tmp_path):
         origen, carpeta = self._entregada(tmp_path)
         leida = constancias.leer(carpeta / constancias.NOMBRE)
@@ -437,6 +533,28 @@ class TestNoSeRepiteLoEntregado:
         assert hechos == ["c.pdf"]
         assert segunda.ya_entregados == 2
         assert segunda.sin_constancia == 0
+        from openpyxl import load_workbook
+
+        libro = load_workbook(segunda.analisis, read_only=True, data_only=True)
+        filas = list(libro["Por PDF"].iter_rows(values_only=True))
+        assert {fila[1] for fila in filas[1:]} == {"a.pdf", "b.pdf", "c.pdf"}
+        assert {fila[4] for fila in filas[1:]} == {"Ya estaba entregado", "Procesado"}
+        assert "Aviso de la corrida" in list(libro["Incidencias"].values)[0]
+        libro.close()
+
+    def test_una_constancia_danada_no_se_toma_por_entrega_anterior(self, ajustes, tmp_path):
+        _pon(tmp_path / "origen", "a.pdf")
+        salida = tmp_path / "destino" / "a"
+        salida.mkdir()
+        (salida / "01_X.pdf").write_bytes(b"%PDF-1.4 entregado")
+        (salida / constancias.NOMBRE).write_text("{roto", encoding="utf-8")
+        motor, hechos = _motor(ajustes, JobRegistry())
+
+        run = _vaciar(motor, tmp_path / "origen", tmp_path / "destino")
+
+        assert hechos == ["a.pdf"]
+        assert run.processed == 1
+        assert "constancia de entrega está dañada" in run.verificaciones["a.pdf"][1]
 
     def test_los_generales_siguen_contando_lo_saltado(self, ajustes, tmp_path):
         from openpyxl import load_workbook

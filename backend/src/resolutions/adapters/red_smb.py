@@ -522,6 +522,22 @@ def huella(ruta: str) -> tuple[int, int]:
     return int(datos.st_size), int(datos.st_mtime_ns)
 
 
+def firma(ruta: str) -> str:
+    """SHA-256 del contenido de un archivo de red, leído por bloques."""
+    import hashlib
+
+    import smbclient
+
+    def resumir(p: Partes, cuenta: dict) -> str:
+        resumen = hashlib.sha256()
+        with smbclient.open_file(p.unc, mode="rb", **cuenta) as archivo:
+            while bloque := archivo.read(1024 * 1024):
+                resumen.update(bloque)
+        return resumen.hexdigest()
+
+    return str(_llamar(ruta, resumir))
+
+
 def traer(ruta: str, destino: Path) -> Path:
     """Copia el archivo de la red a ``destino`` y devuelve la copia.
 

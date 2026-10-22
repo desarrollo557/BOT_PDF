@@ -350,6 +350,19 @@
     </div>
   {/if}
 
+  {#if run.analisis}
+    <div class="inventario control" data-listo="si">
+      <div class="texto">
+        <b>Análisis de la entrega</b>
+        <small>
+          Procesados, ya entregados, fallidos y pendientes por carpeta y PDF, con el motivo.
+          Archivo en la raíz del destino:
+          <code title={run.analisis_ruta ?? run.analisis}>{run.analisis}</code>
+        </small>
+      </div>
+    </div>
+  {/if}
+
   {#if !retomando && (entrega.ya || entrega.rehechos || entrega.incompletas || entrega.avisos.length || run.recuperados || run.por_reintentar)}
     <div class="inventario control" data-listo={entrega.incompletas || entrega.avisos.length ? 'no' : 'si'}>
       <div class="texto">

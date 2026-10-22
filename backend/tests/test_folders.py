@@ -192,6 +192,7 @@ class TestConsuming:
         run = drain(engine, tmp_path / "origen", tmp_path / "destino")
         assert processed == []
         assert run.state is RunState.DONE
+        assert (tmp_path / "destino" / "00.ANALISIS DE LA ENTREGA.xlsx").is_file()
 
     def test_a_document_that_fails_does_not_stop_the_folder(self, workspace, tmp_path):
         put(tmp_path / "origen", "a.pdf", "roto.pdf", "z.pdf")

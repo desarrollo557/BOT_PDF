@@ -31,7 +31,7 @@ import os
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from ..adapters import red_smb
 
@@ -87,6 +87,9 @@ class Constancia:
     #: para rehacer el de la carpeta del NIC con todos sus UPD sin volver a
     #: procesar ninguno (la caja de correspondencia, desde el 2026-10-22).
     indice: dict | None = None
+    #: El principio y el final del PDF de origen (``firma_del_origen``): dice si
+    #: es el mismo aunque se haya copiado y tenga otra fecha.
+    firma: str | None = None
     version: int = VERSION
 
     def as_dict(self) -> dict:
@@ -117,9 +120,30 @@ def leer(ruta: Path) -> Constancia | None:
         return None
     conocidos = set(Constancia.__dataclass_fields__)
     try:
-        return Constancia(**{clave: valor for clave, valor in datos.items() if clave in conocidos})
-    except TypeError:
+        constancia = Constancia(**{clave: valor for clave, valor in datos.items() if clave in conocidos})
+    except (TypeError, ValueError):
         return None
+    if (
+        not isinstance(constancia.origen, str)
+        or type(constancia.tamano) is not int
+        or constancia.tamano < 0
+        or type(constancia.modificado_ns) is not int
+        or not isinstance(constancia.estado, str)
+        or not isinstance(constancia.fecha, str)
+        or not isinstance(constancia.archivos, list)
+        or not all(isinstance(archivo, dict) for archivo in constancia.archivos)
+        or not isinstance(constancia.habilidad, str)
+        or not isinstance(constancia.job_id, str)
+        or (constancia.proceso is not None and not isinstance(constancia.proceso, dict))
+        or not isinstance(constancia.actas, list)
+        or not isinstance(constancia.unidades, list)
+        or (constancia.indice is not None and not isinstance(constancia.indice, dict))
+        or (constancia.firma is not None and not isinstance(constancia.firma, str))
+        or type(constancia.version) is not int
+    ):
+        logger.warning("constancia con datos inválidos en %s", ruta)
+        return None
+    return constancia
 
 
 def escribir(ruta: Path, constancia: Constancia) -> None:
@@ -193,34 +217,157 @@ def vigencia(
     ``huella`` es la del origen si ya se sabe -- la trajo el listado de la
     carpeta --; si no, se mira.
     """
+    return verificar(constancia, origen, carpeta, huella=huella).vigencia
+
+
+@dataclass(frozen=True, slots=True)
+class Verificacion:
+    """Lo que dice la constancia de un PDF, y por qué: lo que lee el operador."""
+
+    vigencia: Vigencia
+    motivo: str
+    #: Si algún archivo está con el nombre de paso de un orden de la carpeta del
+    #: NIC que se cortó: está entregado, pero hay que terminar de ordenarla.
+    a_medio_ordenar: bool = False
+
+
+#: El nombre de paso de un archivo mientras se ordena la carpeta de un NIC:
+#: «.ordenando-<puesto>-<nombre>» (ver ``FolderRunner._ordenar_la_caja``).
+PREFIJO_DE_PASO = ".ordenando-"
+
+
+def ruta_de_entrega(carpeta: Path, ruta: object) -> Path | None:
+    """Resuelve sólo rutas relativas y contenidas en la carpeta de entrega."""
+    if not isinstance(ruta, str):
+        return None
+    normalizada = ruta.replace("\\", "/")
+    partes = normalizada.split("/")
+    relativa_windows = PureWindowsPath(normalizada)
+    if (
+        not normalizada
+        or relativa_windows.is_absolute()
+        or relativa_windows.drive
+        or any(parte in ("", ".", "..") for parte in partes)
+    ):
+        return None
+    return carpeta.joinpath(*partes)
+
+
+def _peso(tamano: int) -> str:
+    return f"{tamano / 1024 / 1024:.1f} MB" if tamano >= 1024 * 1024 else f"{max(1, tamano // 1024)} KB"
+
+
+def verificar(
+    constancia: Constancia | None,
+    origen: Path,
+    carpeta: Path,
+    *,
+    huella: tuple[int, int] | None = None,
+) -> Verificacion:
+    """Si lo que dice la constancia sigue siendo verdad en el disco, y por qué no si no lo es.
+
+    Lo pidió el operador el 2026-10-22: que la verificación de lo ya procesado
+    sea «más detallada, más informativa», y que cubra «todas las posibles
+    excepciones». Cada respuesta dice qué la decidió: el archivo que falta, el
+    que cambió de tamaño, el origen que cambió, la entrega que se cortó.
+
+    Un origen con el mismo tamaño y otra fecha -- se copió o se movió, no se
+    volvió a escanear -- no se rehace si su SHA-256 completo coincide con el
+    que se entregó.
+    """
     if constancia is None:
-        return Vigencia.SIN_CONSTANCIA
+        return Verificacion(Vigencia.SIN_CONSTANCIA, "no tiene constancia de entrega: no se había entregado")
+    if not isinstance(constancia.fecha, str):
+        return Verificacion(Vigencia.INCOMPLETA, "la constancia tiene una fecha inválida")
+    if not isinstance(constancia.archivos, list) or not constancia.archivos:
+        return Verificacion(Vigencia.INCOMPLETA, "la constancia no registra archivos entregados")
     if constancia.estado != EstadoDeEntrega.COMPLETA:
-        return Vigencia.INCOMPLETA
+        return Verificacion(
+            Vigencia.INCOMPLETA, f"la entrega anterior se cortó a mitad ({constancia.fecha[:16].replace('T', ' ')})"
+        )
     try:
         tamano, modificado = huella if huella and huella != (0, 0) else huella_del_origen(origen)
-    except (OSError, red_smb.CredencialesDeRed):
+    except (OSError, red_smb.CredencialesDeRed) as error:
         # Sin poder mirar el origen no se sabe si cambió: se procesa, y será su
         # lectura la que diga qué le pasa.
-        return Vigencia.ORIGEN_CAMBIADO
-    if tamano != constancia.tamano or modificado != constancia.modificado_ns:
-        return Vigencia.ORIGEN_CAMBIADO
+        return Verificacion(Vigencia.ORIGEN_CAMBIADO, f"no se pudo mirar el PDF de origen ({error})")
+    if tamano != constancia.tamano:
+        return Verificacion(
+            Vigencia.ORIGEN_CAMBIADO,
+            f"el PDF de origen cambió de tamaño: {_peso(constancia.tamano)} → {_peso(tamano)}",
+        )
+    if modificado != constancia.modificado_ns and not (
+        constancia.firma and _firma_o_nada(origen) == constancia.firma
+    ):
+        return Verificacion(Vigencia.ORIGEN_CAMBIADO, "el PDF de origen tiene otra fecha de modificación")
     try:
         en_la_carpeta = {entrada.name: entrada for entrada in os.scandir(carpeta)}
-    except OSError:
-        return Vigencia.INCOMPLETA
+    except OSError as error:
+        return Verificacion(Vigencia.INCOMPLETA, f"no se pudo leer la carpeta de destino ({error})")
+    # Los que un orden cortado de la carpeta del NIC dejó con su nombre de paso:
+    # están entregados, con otro nombre por un momento.
+    de_paso = {
+        nombre.split("-", 2)[2]: entrada
+        for nombre, entrada in en_la_carpeta.items()
+        if nombre.startswith(PREFIJO_DE_PASO) and nombre.count("-") >= 2
+    }
+    a_medio_ordenar = False
     for archivo in constancia.archivos:
-        ruta = str(archivo.get("ruta") or "")
+        if (
+            not isinstance(archivo, dict)
+            or not isinstance(archivo.get("ruta"), str)
+            or type(archivo.get("bytes")) is not int
+            or archivo["bytes"] < 0
+        ):
+            return Verificacion(Vigencia.INCOMPLETA, "la constancia tiene un registro de archivo inválido")
+        ruta = archivo["ruta"].replace("\\", "/")
+        destino = ruta_de_entrega(carpeta, ruta)
+        if destino is None:
+            return Verificacion(Vigencia.INCOMPLETA, "la constancia tiene una ruta de archivo inválida")
         try:
             if "/" in ruta:
-                tamano = (carpeta / ruta).stat().st_size
+                if not destino.is_file():
+                    return Verificacion(Vigencia.INCOMPLETA, f"falta «{ruta}» en el destino")
+                tamano = destino.stat().st_size
             else:
-                entrada = en_la_carpeta.get(ruta)
+                nombre = destino.name
+                entrada = en_la_carpeta.get(nombre)
+                if entrada is None and nombre in de_paso:
+                    entrada, a_medio_ordenar = de_paso[nombre], True
                 if entrada is None:
-                    return Vigencia.INCOMPLETA
+                    return Verificacion(Vigencia.INCOMPLETA, f"falta «{ruta}» en el destino")
                 tamano = entrada.stat().st_size
-        except OSError:
-            return Vigencia.INCOMPLETA
-        if tamano != archivo.get("bytes"):
-            return Vigencia.INCOMPLETA
-    return Vigencia.VIGENTE
+        except FileNotFoundError:
+            return Verificacion(Vigencia.INCOMPLETA, f"falta «{ruta}» en el destino")
+        except OSError as error:
+            return Verificacion(Vigencia.INCOMPLETA, f"no se pudo verificar «{ruta}» en el destino ({error})")
+        if tamano != archivo["bytes"]:
+            return Verificacion(
+                Vigencia.INCOMPLETA,
+                f"«{ruta}» cambió en el destino: {_peso(archivo['bytes'])} → {_peso(tamano)}",
+            )
+    pdfs = sum(1 for archivo in constancia.archivos if str(archivo.get("ruta") or "").lower().endswith(".pdf"))
+    motivo = f"entregado completo el {constancia.fecha[:16].replace('T', ' ')} ({pdfs} PDF)"
+    if a_medio_ordenar:
+        motivo += "; su carpeta quedó a medio ordenar y se termina de ordenar"
+    return Verificacion(Vigencia.VIGENTE, motivo, a_medio_ordenar=a_medio_ordenar)
+
+
+def firma_del_origen(path: Path) -> str:
+    """SHA-256 del PDF: permite reconocer una copia idéntica aunque cambie su fecha."""
+    import hashlib
+
+    resumen = hashlib.sha256()
+    if red_smb.por_smb(path):
+        return red_smb.firma(str(path))
+    with path.open("rb") as archivo:
+        while bloque := archivo.read(1024 * 1024):
+            resumen.update(bloque)
+    return resumen.hexdigest()
+
+
+def _firma_o_nada(path: Path) -> str | None:
+    try:
+        return firma_del_origen(path)
+    except (OSError, red_smb.CredencialesDeRed):
+        return None

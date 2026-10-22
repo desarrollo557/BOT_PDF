@@ -124,12 +124,41 @@ def _archivo(error: OSError) -> str:
     return f" «{nombre}»" if nombre else ""
 
 
+#: Los errores de Windows de un archivo que otro programa tiene abierto:
+#: «The process cannot access the file because it is being used by another
+#: process» (32) y el de una parte bloqueada (33).
+_EN_USO_DE_WINDOWS = (32, 33)
+
+
+def archivo_en_uso(error: BaseException | None) -> bool:
+    """Si el fallo es que otro programa -- un visor, Excel, el antivirus -- tiene el archivo tomado.
+
+    Mira también la causa: quien espera a que se libere y se rinde lanza su
+    propio error con el de Windows debajo.
+    """
+    for candidato in (error, getattr(error, "__cause__", None)):
+        if candidato is None:
+            continue
+        if getattr(candidato, "winerror", None) in _EN_USO_DE_WINDOWS:
+            return True
+        texto = str(candidato).lower()
+        if "being used by another process" in texto or "locked a portion" in texto:
+            return True
+    return False
+
+
 def fallo_conocido(error: BaseException) -> str | None:
     """El fallo en palabras del operador si es uno de los que se saben explicar.
 
     Sin el texto crudo de la excepción, que lleva rutas e interioridades: lo que
     devuelve se puede enseñar en cualquier pantalla. ``None`` si no se reconoce.
     """
+    if archivo_en_uso(error):
+        return (
+            f"El archivo{_archivo(error) if isinstance(error, OSError) else ''} está abierto en otro "
+            "programa (un visor de PDF, Excel, el antivirus u otra corrida sobre la misma carpeta) y "
+            "Windows no deja usarlo. Ciérrelo: el PDF se vuelve a intentar al final de la carpeta."
+        )
     if isinstance(error, PermissionError):
         return (
             f"No hay permiso para usar{_archivo(error)}. Si es un Excel o un PDF, "

@@ -21,7 +21,7 @@ from ..adapters import red_smb
 from ..adapters.excel_inventory import NOMBRE_DEL_INVENTARIO_DE_PROCESOS
 from . import constancia as constancias
 from .constancia import Constancia, EstadoDeEntrega, Vigencia
-from .errores import explicar_fallo
+from .errores import archivo_en_uso, explicar_fallo
 from .jobs import Job, JobRegistry, JobState
 from .planificador import Planificador
 from .reintentos import merece_otra_vuelta
@@ -306,6 +306,13 @@ class FolderRun:
     #: Las carpetas de NIC entregadas a la manera de antes -- con el UPD delante
     #: y un índice por UPD -- que hay que ordenar aunque no se procese nada.
     cajas_por_ordenar: set[Path] = field(default_factory=set, repr=False)
+    #: Qué se decidió de cada PDF al verificar lo ya entregado, y por qué
+    #: (ruta relativa → (decisión, motivo)): lo que lee el análisis de la entrega.
+    verificaciones: dict[str, tuple[str, str]] = field(default_factory=dict, repr=False)
+    #: El motivo de la última verificación de cada PDF (ruta → motivo).
+    motivos: dict[str, str] = field(default_factory=dict, repr=False)
+    #: Dónde quedó «00.ANALISIS DE LA ENTREGA.xlsx», cuando ya se escribió.
+    analisis: str | None = None
 
     @property
     def current(self) -> str | None:
@@ -361,6 +368,9 @@ class FolderRun:
             "retirados": self.retirados,
             "control": Path(self.control).name if self.control else None,
             "control_ruta": al_operador(self.control) if self.control else None,
+            # Lo procesado y lo que no, por carpeta y por PDF, con el porqué.
+            "analisis": Path(self.analisis).name if self.analisis else None,
+            "analisis_ruta": al_operador(self.analisis) if self.analisis else None,
             "controles": [control.as_dict() for control in islice(self.controles.values(), 500)],
             "operator": self.operator,
             "state": str(self.state),
@@ -965,23 +975,50 @@ class FolderRunner:
                 continue
             if key in huellas:
                 run.huellas_del_origen[key] = huellas[key]
+            relativa = str(self._relative(run, path))
             if run.retomar == Retomar.NO:
                 vigencia, constancia = self._vigencia(run, path)
+                motivo = run.motivos.pop(key, "")
                 if vigencia is Vigencia.VIGENTE:
+                    self._anotar_la_verificacion(run, relativa, DECISION_YA_ENTREGADO, motivo)
                     entregados.append((path, constancia))
                     continue
                 if vigencia is Vigencia.SIN_CONSTANCIA and self._tiene_pdf_entregado(run, path):
                     run.sin_constancia += 1
+                    self._anotar_la_verificacion(
+                        run,
+                        relativa,
+                        DECISION_YA_ENTREGADO,
+                        "su carpeta ya trae PDF entregados por una corrida de antes, sin constancia",
+                    )
                     entregados.append((path, None))
                     continue
                 if vigencia in (Vigencia.INCOMPLETA, Vigencia.ORIGEN_CAMBIADO):
                     run.a_rehacer[key] = (vigencia, constancia)
+                    self._anotar_la_verificacion(run, relativa, DECISION_SE_REHACE, motivo)
+                else:
+                    self._anotar_la_verificacion(run, relativa, DECISION_NUEVO, motivo)
             elif run.retomar == Retomar.TODO:
                 # Todo otra vez, y lo entregado antes se aparta para no dejar
                 # cada archivo con su «(2)» al lado.
                 vigencia, constancia = self._vigencia(run, path)
+                motivo = run.motivos.pop(key, "")
                 if constancia is not None or self._tiene_pdf_entregado(run, path):
                     run.a_rehacer[key] = (vigencia, constancia)
+                    self._anotar_la_verificacion(
+                        run, relativa, DECISION_OTRA_VEZ, f"se eligió procesar todo otra vez ({motivo})"
+                    )
+                else:
+                    self._anotar_la_verificacion(run, relativa, DECISION_NUEVO, motivo)
+            else:
+                self._anotar_la_verificacion(
+                    run,
+                    relativa,
+                    DECISION_SE_COMPARA,
+                    "se eligió sólo revisar: se compara con el destino sin procesar nada"
+                    if run.retomar == Retomar.REVISAR
+                    else "se eligió retomar: se compara con el destino y se procesa sólo lo que falte",
+                )
             if key not in huellas:
                 try:
                     run.huellas_del_origen[key] = constancias.huella_del_origen(path)
@@ -990,6 +1027,12 @@ class FolderRunner:
             pending.append(path)
 
         return pending, entregados
+
+    @staticmethod
+    def _anotar_la_verificacion(run: FolderRun, relativa: str, decision: str, motivo: str) -> None:
+        """Lo que se decidió de un PDF al verificarlo, para el análisis y para el registro del servicio."""
+        run.verificaciones[relativa] = (decision, motivo)
+        logger.info("verificación «%s»: %s — %s", relativa, decision, motivo or "sin detalle")
 
     def _avisar(self, run: FolderRun, aviso: str) -> None:
         logger.warning("%s: %s", run.source, aviso)
@@ -1013,6 +1056,7 @@ class FolderRunner:
             # Una entrega de antes del 2026-10-21, en su subcarpeta UPD: también
             # vale, para que «Saltar lo ya entregado» no repita lo ya pagado.
             rutas.append(self._entrega_de_antes(run, path) / constancias.NOMBRE)
+        danada = None
         for indice, ruta in enumerate(rutas):
             actas = indice == 1
             constancia = constancias.leer(ruta)
@@ -1021,7 +1065,23 @@ class FolderRunner:
                 # La huella que ya trajo el listado, si la hay: en una carpeta
                 # de red, preguntarla otra vez es una ida y vuelta por PDF.
                 huella = run.huellas_del_origen.get(str(path))
-                return constancias.vigencia(constancia, path, base, huella=huella), constancia
+                verificacion = constancias.verificar(constancia, path, base, huella=huella)
+                run.motivos[str(path)] = verificacion.motivo
+                if verificacion.a_medio_ordenar:
+                    run.cajas_por_ordenar.add(base)
+                return verificacion.vigencia, constancia
+            try:
+                if danada is None and ruta.exists():
+                    danada = ruta
+            except OSError as error:
+                run.motivos[str(path)] = f"no se pudo comprobar la constancia de entrega ({error})"
+                return Vigencia.INCOMPLETA, None
+        if danada is not None:
+            run.motivos[str(path)] = f"la constancia de entrega está dañada y no se pudo leer («{danada.name}»)"
+            return Vigencia.INCOMPLETA, None
+        run.motivos[str(path)] = (
+            "no tiene constancia de entrega: no se había entregado"
+        )
         return Vigencia.SIN_CONSTANCIA, None
 
     def _tiene_pdf_entregado(self, run: FolderRun, path: Path) -> bool:
@@ -1053,7 +1113,7 @@ class FolderRunner:
         apartado = carpeta / REEMPLAZADOS_DIR / sello / antes.name
         try:
             apartado.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(antes, apartado)
+            _mover(antes, apartado)
         except OSError as error:
             logger.warning("no se pudo apartar la entrega de antes %s: %s", antes, error)
             return
@@ -1373,6 +1433,11 @@ class FolderRunner:
                 # un fallo pasajero de este PDF, que vuelve en la vuelta de
                 # reintento, y no de la carpeta.
                 await asyncio.to_thread(red_smb.traer, str(path), local)
+            # El PDF que tiene abierto otro programa -- el visor de alguien, el
+            # antivirus, otra corrida del bot -- se espera un poco antes de darlo
+            # por fallido («The process cannot access the file because it is
+            # being used by another process», 2026-10-22).
+            await asyncio.to_thread(_esperar_a_que_se_libere, local)
             await self._run_job(job)
 
             run.bytes_total += job.bytes
@@ -1638,10 +1703,18 @@ class FolderRunner:
             # ya se sabe que está entero.
             vigencia, constancia = await asyncio.to_thread(self._vigencia, run, path)
             if vigencia is Vigencia.VIGENTE:
+                relativa = str(self._relative(run, path))
+                run.verificaciones[relativa] = (
+                    DECISION_YA_ENTREGADO,
+                    run.motivos.get(str(path), "la constancia y los archivos entregados siguen vigentes"),
+                )
                 control.accion = "ya estaba completo (constancia de entrega): no se volvió a leer"
                 run.ya_entregados += 1
                 self._contar_lo_ya_entregado(run, path, constancia)
                 return control, None, False
+            motivo = run.motivos.get(str(path))
+            if motivo:
+                run.verificaciones[str(self._relative(run, path))] = (DECISION_SE_COMPARA, motivo)
         try:
             # El libro se abre de su copia local si viene de la red.
             control.antes, control.ilegibles = await asyncio.to_thread(
@@ -1725,6 +1798,8 @@ class FolderRunner:
             filas = list(run.procesos.values())
             indices = sorted(run.indices.items())
             fuids = self._fuids_del_destino(run)
+            analisis = self._filas_del_analisis(run)
+            avisos = list(run.avisos)
         try:
             inventario_de_procesos_de(
                 filas,
@@ -1739,6 +1814,108 @@ class FolderRunner:
                 fuid_general_de(fuids, run.destination, lecturas=run.lecturas_de_fuid)
         except Exception:  # noqa: BLE001 - la entrega de cada PDF ya está hecha
             logger.warning("no se pudieron escribir los generales de %s", run.source, exc_info=True)
+        self._escribir_el_analisis(run, analisis, avisos)
+
+    def _escribir_el_analisis(self, run: FolderRun, filas: list, avisos: list[str]) -> None:
+        """«00.ANALISIS DE LA ENTREGA.xlsx» en la raíz del destino. Que falle no deshace nada."""
+        from ..adapters.analisis_de_la_entrega import escribir_analisis
+
+        try:
+            ruta = escribir_analisis(
+                run.destination,
+                filas,
+                origen=al_operador(run.source),
+                fecha=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                avisos=avisos,
+            )
+            run.analisis = str(ruta)
+        except Exception as error:  # noqa: BLE001 - lo entregado ya está en el disco
+            logger.warning("no se pudo escribir el análisis de %s", run.source, exc_info=True)
+            self._avisar(
+                run,
+                f"No se pudo escribir «00.ANALISIS DE LA ENTREGA.xlsx» en el destino "
+                f"({run.destination}): {explicar_fallo(error)}. Cierre el archivo si está abierto "
+                "y vuelva a lanzar la carpeta.",
+            )
+
+    def _filas_del_analisis(self, run: FolderRun) -> list:
+        """Cada PDF de la corrida: qué se decidió al verificarlo, por qué, y qué pasó después.
+
+        Lo pidió el operador el 2026-10-22: reconocer de un vistazo las carpetas y
+        los PDF ya procesados y los que no. Se llama bajo ``run.cerrojo`` y sólo
+        lee lo que la corrida ya guarda: ni el origen ni el destino.
+        """
+        from ..adapters.analisis_de_la_entrega import (
+            CANCELADO,
+            EN_PROCESO,
+            FALLO,
+            PENDIENTE,
+            PROCESADO,
+            REVISADO,
+            YA_ENTREGADO,
+            FilaDelAnalisis,
+        )
+
+        resultados = {
+            "Ya entregado": YA_ENTREGADO,
+            "Listo": PROCESADO,
+            "Falló": FALLO,
+            "Cancelado": CANCELADO,
+        }
+        en_curso = set(run.en_curso.values())
+        en_cola = set(run.queue)
+        fallidos = {str(self._relative(run, Path(ruta))): motivo for ruta, motivo in run.fallidos.items()}
+        relanzar = "Vuelva a lanzar la carpeta: sólo se procesa lo que falte."
+        filas = []
+        for relativa in set(run.verificaciones) | set(run.procesos) | en_cola | en_curso | set(fallidos):
+            decision, motivo = run.verificaciones.get(relativa, ("—", ""))
+            proceso = run.procesos.get(relativa)
+            control = run.controles.get(relativa)
+            documentos = paginas = 0
+            if relativa in en_curso:
+                resultado, detalle = EN_PROCESO, "se está procesando ahora"
+            elif proceso is not None:
+                documentos, paginas = int(proceso.documentos or 0), int(proceso.paginas or 0)
+                resultado = resultados.get(proceso.estado, PENDIENTE)
+                partes = [f"en «{proceso.destino}»" if proceso.destino and resultado != FALLO else ""]
+                if resultado == FALLO:
+                    partes.append(proceso.observaciones or fallidos.get(relativa) or "sin detalle")
+                    if not run.active:
+                        partes.append(relanzar)
+                elif proceso.estado == "Cancelado":
+                    partes.append("lo canceló el operador")
+                if getattr(proceso, "en_revision", 0):
+                    partes.append(f"{proceso.en_revision} página(s) a revisión")
+                detalle = "; ".join(parte for parte in partes if parte)
+            elif relativa in fallidos:
+                resultado = FALLO
+                detalle = fallidos[relativa] + ("" if run.active else f"; {relanzar}")
+            elif control is not None:
+                if control.error:
+                    resultado = FALLO
+                elif run.retomar == Retomar.REVISAR:
+                    resultado = REVISADO
+                else:
+                    resultado = YA_ENTREGADO
+                detalle = control.error or control.accion or ""
+            elif relativa in en_cola:
+                resultado, detalle = PENDIENTE, "en la cola"
+            else:
+                resultado, detalle = PENDIENTE, "no se llegó a procesar en esta corrida"
+            carpeta = Path(relativa).parent.as_posix()
+            filas.append(
+                FilaDelAnalisis(
+                    carpeta="(raíz)" if carpeta == "." else carpeta,
+                    pdf=Path(relativa).name,
+                    verificacion=decision,
+                    motivo=motivo,
+                    resultado=resultado,
+                    detalle=detalle,
+                    documentos=documentos,
+                    paginas=paginas,
+                )
+            )
+        return filas
 
     def _fuids_del_destino(self, run: FolderRun) -> list[tuple[Path, str]]:
         """Los FUID de los libros de diplomas de esta corrida, tal como están en el destino.
@@ -2475,13 +2652,16 @@ class FolderRunner:
             if not informe.get("indice_electronico")
             else [],
             indice=entrega.indice,
+            # De la copia que se procesó, que es la del origen: sin otra lectura
+            # de la red.
+            firma=self._firma_de(job, origin),
         )
         try:
-            constancias.escribir(entrega.constancia, constancia)
+            with run.cerrojo:
+                constancias.escribir(entrega.constancia, constancia)
         except OSError as error:
-            # Sin ella la próxima corrida lo tomará por una entrega de antes y
-            # lo saltará igual si su carpeta trae PDF: no se pierde nada.
             logger.warning("no se pudo cerrar la constancia de %s: %s", origin.name, error)
+            self._avisar(run, f"No se pudo guardar la constancia de «{origin.name}»: {explicar_fallo(error)}")
         if self._plana(run):
             # La carpeta del NIC, con este UPD ya dentro: numerada seguida y con
             # un solo índice.
@@ -2528,6 +2708,13 @@ class FolderRunner:
                 for ruta in rutas
                 if (constancia := constancias.leer(ruta)) is not None
                 and constancia.estado == EstadoDeEntrega.COMPLETA
+                and all(
+                    isinstance(archivo, dict)
+                    and type(archivo.get("bytes")) is int
+                    and archivo["bytes"] >= 0
+                    and constancias.ruta_de_entrega(carpeta, archivo.get("ruta")) is not None
+                    for archivo in constancia.archivos
+                )
             ]
             if not leidas:
                 return
@@ -2536,10 +2723,10 @@ class FolderRunner:
             try:
                 # 0. Lo que un orden cortado a medias dejó con su nombre de paso,
                 #    a su nombre: es el que sigue en su constancia.
-                for paso in carpeta.glob(".ordenando-*"):
+                for paso in carpeta.glob(f"{PREFIJO_DE_PASO}*"):
                     original = paso.with_name(paso.name.split("-", 2)[2])
                     if not original.exists():
-                        os.replace(paso, original)
+                        _mover(paso, original)
                 # 1. El índice suelto de cada UPD, como se entregaba antes: sus
                 #    filas a la constancia y el archivo, apartado.
                 for _, constancia in leidas:
@@ -2554,7 +2741,7 @@ class FolderRunner:
                         if hoja.exists():
                             apartado = carpeta / REEMPLAZADOS_DIR / sello / hoja.name
                             apartado.parent.mkdir(parents=True, exist_ok=True)
-                            os.replace(hoja, apartado)
+                            _mover(hoja, apartado)
                         constancia.archivos.remove(archivo)
                 # 2. Los PDF, numerados seguidos por el orden de su UPD.
                 pdfs = [
@@ -2576,19 +2763,36 @@ class FolderRunner:
                 # Primero todos a un nombre de paso, después a su número: así el
                 # «02» de un UPD no pisa el «02» que otro está dejando libre.
                 de_paso = []
-                for puesto, (archivo, actual, nuevo) in enumerate(cambios):
-                    paso = carpeta / actual.with_name(f".ordenando-{puesto}-{actual.name}")
-                    os.replace(carpeta / actual, paso)
-                    de_paso.append((archivo, paso, nuevo))
-                for archivo, paso, nuevo in de_paso:
-                    destino = carpeta / nuevo
-                    if destino.exists():
-                        # Un archivo que no es del bot ocupa el nombre: no se pisa.
-                        destino = unique_path(destino.parent, destino.name)
-                    os.replace(paso, destino)
-                    archivo["ruta"] = destino.relative_to(carpeta).as_posix()
-                for ruta, constancia in leidas:
-                    constancias.escribir(ruta, constancia)
+                try:
+                    for puesto, (archivo, actual, nuevo) in enumerate(cambios):
+                        paso = carpeta / actual.with_name(f"{PREFIJO_DE_PASO}{puesto}-{actual.name}")
+                        _mover(carpeta / actual, paso)
+                        de_paso.append((archivo, paso, nuevo))
+                    for archivo, paso, nuevo in de_paso:
+                        destino = carpeta / nuevo
+                        if destino.exists():
+                            # Un archivo que no es del bot ocupa el nombre: no se pisa.
+                            destino = unique_path(destino.parent, destino.name)
+                        _mover(paso, destino)
+                        archivo["ruta"] = destino.relative_to(carpeta).as_posix()
+                finally:
+                    # Cortado a medias -- un PDF que sigue abierto en un visor --:
+                    # lo que quedó con su nombre de paso vuelve al suyo, sin pisar
+                    # nada, y las constancias dicen dónde quedó cada uno. Sin esto
+                    # la corrida siguiente veía «falta … en el destino» y rehacía
+                    # un UPD que ya estaba entregado.
+                    for archivo, paso, _ in de_paso:
+                        try:
+                            if paso.exists():
+                                vuelta = carpeta / str(archivo["ruta"])
+                                if vuelta.exists():
+                                    vuelta = unique_path(vuelta.parent, vuelta.name)
+                                os.replace(paso, vuelta)
+                                archivo["ruta"] = vuelta.relative_to(carpeta).as_posix()
+                        except OSError:
+                            logger.warning("no se pudo devolver %s a su nombre", paso, exc_info=True)
+                    for ruta, constancia in leidas:
+                        constancias.escribir(ruta, constancia)
                 # 3. Un solo índice, con las filas de todos sus UPD.
                 filas: list[FilaDelIndice] = []
                 nic = territorial = None
@@ -2630,6 +2834,19 @@ class FolderRunner:
             except Exception as error:  # noqa: BLE001 - las entregas ya están hechas
                 logger.warning("no se pudo ordenar la carpeta %s", carpeta, exc_info=True)
                 self._avisar(run, f"«{carpeta.name}»: no se pudo ordenar la carpeta del NIC: {explicar_fallo(error)}")
+
+    @staticmethod
+    def _firma_de(job: Job, origin: Path) -> str | None:
+        """La firma del PDF que se procesó: de su copia local si la hay, si no del origen."""
+        for candidata in (Path(str(job.source)) if job.source else None, origin):
+            if candidata is None:
+                continue
+            try:
+                if red_smb.por_smb(candidata) or candidata.exists():
+                    return constancias.firma_del_origen(candidata)
+            except (OSError, red_smb.CredencialesDeRed):
+                continue
+        return None
 
     def _liberar_salidas(self, job: Job) -> None:
         """Borra de salidas los PDF que ya están en el destino (ver ``liberar_salidas``)."""
@@ -2674,7 +2891,11 @@ class FolderRunner:
             except OSError:
                 rutas = []
         else:
-            rutas = [base / str(archivo.get("ruta")) for archivo in constancia.archivos]
+            rutas = [
+                ruta
+                for archivo in constancia.archivos
+                if (ruta := constancias.ruta_de_entrega(base, archivo.get("ruta"))) is not None
+            ]
         movidos = 0
         for ruta in rutas:
             if ruta.name.startswith(Path(constancias.NOMBRE).stem) or not ruta.exists():
@@ -2682,7 +2903,7 @@ class FolderRunner:
             try:
                 relativa = ruta.relative_to(base)
                 (apartado / relativa).parent.mkdir(parents=True, exist_ok=True)
-                os.replace(ruta, apartado / relativa)
+                _mover(ruta, apartado / relativa)
                 movidos += 1
             except (OSError, ValueError) as error:
                 logger.warning("no se pudo apartar %s: %s", ruta, error)
@@ -2709,6 +2930,15 @@ class Entrega:
     #: carpeta de un NIC va uno solo para todos sus UPD (``_ordenar_la_caja``).
     indice: dict | None = None
 
+
+#: Lo que se decide de cada PDF al verificar lo ya entregado (el análisis de la entrega).
+DECISION_YA_ENTREGADO = "Ya entregado: se salta"
+DECISION_SE_REHACE = "Se rehace"
+DECISION_NUEVO = "Nuevo: se procesa"
+DECISION_OTRA_VEZ = "Se procesa otra vez"
+DECISION_SE_COMPARA = "Se compara con el destino"
+
+PREFIJO_DE_PASO = constancias.PREFIJO_DE_PASO
 
 #: Un archivo de la caja de correspondencia en la carpeta de su NIC: «03_RECLAMO.pdf»,
 #: y como se entregaban hasta el 2026-10-21, con su UPD delante.
@@ -2745,6 +2975,54 @@ def _indice_a_dict(indice) -> dict:
     }
 
 
+#: Cuánto se espera, intento tras intento, a que otro programa suelte un PDF.
+ESPERAS_SI_ESTA_EN_USO = (1.0, 2.0, 4.0, 8.0)
+
+
+_en_uso = archivo_en_uso
+
+
+def _esperar_a_que_se_libere(ruta: Path) -> None:
+    """Abre el PDF para leerlo, y si otro programa lo tiene tomado espera y reintenta.
+
+    Si sigue tomado, el error lo dice con palabras -- quién puede tenerlo -- y
+    el PDF vuelve en la vuelta de reintento del final de la carpeta.
+    """
+    if red_smb.por_smb(ruta):
+        return
+    for espera in (*ESPERAS_SI_ESTA_EN_USO, None):
+        try:
+            with ruta.open("rb") as archivo:
+                archivo.read(1)
+            return
+        except OSError as error:
+            if not _en_uso(error):
+                return  # otro fallo: lo dirá quien lo procese
+            if espera is None:
+                # Con el error de Windows debajo: ``explicar_fallo`` lo reconoce
+                # y lo cuenta como un archivo abierto en otro programa.
+                raise PermissionError(errno.EACCES, "el archivo está abierto en otro programa", str(ruta)) from error
+        time.sleep(espera)
+
+
+def _mover(desde: Path, hasta: Path) -> None:
+    """``os.replace`` que espera a que otro programa suelte el archivo antes de fallar.
+
+    Ordenar la carpeta de un NIC o apartar una entrega renombra PDF que el
+    operador puede tener abiertos en un visor; sin esperar, el orden se cortaba
+    a medias («The process cannot access the file because it is being used by
+    another process», 2026-10-22).
+    """
+    for espera in (*ESPERAS_SI_ESTA_EN_USO, None):
+        try:
+            os.replace(desde, hasta)
+            return
+        except OSError as error:
+            if espera is None or not _en_uso(error):
+                raise
+        time.sleep(espera)
+
+
 def _copiar(desde: Path, hasta: Path) -> None:
     """Copia entera o nada: primero a «.part» y luego, comprobada, a su nombre.
 
@@ -2752,17 +3030,23 @@ def _copiar(desde: Path, hasta: Path) -> None:
     con su nombre definitivo, y la corrida siguiente lo daba por entregado.
     """
     parcial = hasta.with_name(hasta.name + ".part")
-    try:
-        shutil.copy2(desde, parcial)
-        if parcial.stat().st_size != desde.stat().st_size:
-            raise OSError(errno.EIO, "la copia quedó incompleta", str(hasta))
-        os.replace(parcial, hasta)
-    except BaseException:
+    for espera in (*ESPERAS_SI_ESTA_EN_USO, None):
         try:
-            parcial.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+            shutil.copy2(desde, parcial)
+            if parcial.stat().st_size != desde.stat().st_size:
+                raise OSError(errno.EIO, "la copia quedó incompleta", str(hasta))
+            os.replace(parcial, hasta)
+            return
+        except BaseException as error:
+            try:
+                parcial.unlink(missing_ok=True)
+            except OSError:
+                pass
+            # El destino abierto en otro programa -- el PDF en un visor --: se
+            # espera y se reintenta antes de dar la copia por fallida.
+            if espera is None or not isinstance(error, OSError) or not _en_uso(error):
+                raise
+        time.sleep(espera)
 
 
 def _acumular(retirados: dict, job: Job) -> None:
