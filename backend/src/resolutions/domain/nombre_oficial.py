@@ -87,6 +87,27 @@ def nombre_del_asunto(asunto: str | None) -> str | None:
     return nombre
 
 
+def estandarizar(nombre: str | None) -> str | None:
+    """El nombre con su forma del catálogo, si es la de uno de sus tipos.
+
+    Lo pidió el operador el 2026-10-22: «que los nombres de los tipos de
+    documentos estén estandarizados… manejemos los nombres por estándares». El
+    nombre que trae el papel con otra redacción -- «DECLARACION BAJO LA GRAVEDAD
+    DE JURAMENTO», «CONSTANCIA DE RECEPCION DE PETICIONES QUEJAS Y RECLAMOS PQR»
+    -- es el del catálogo: «DECLARACION BAJO GRAVEDAD DE JURAMENTO», «CONSTANCIA
+    DE RECEPCION DE PETICIONES QUEJAS Y RECLAMOS». Vale si el nombre es una de
+    sus formas o empieza por una de dos palabras o más; una palabra suelta dentro
+    de un nombre largo no lo cambia.
+    """
+    if not nombre:
+        return nombre
+    plano = re.sub(r"\s+", " ", re.sub(r"[^A-Z0-9 ]+", " ", _plano(nombre))).strip()
+    for frase, tipo in FRASES:
+        if plano == frase or (len(frase.split()) >= 2 and plano.startswith(f"{frase} ")):
+            return tipo.nombre
+    return nombre
+
+
 def instrucciones_para_nombrar() -> str:
     """Lo que se le pide a la IA para nombrar un documento que nada supo nombrar.
 

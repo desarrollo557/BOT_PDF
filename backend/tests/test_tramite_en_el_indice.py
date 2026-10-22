@@ -130,9 +130,10 @@ class TestElIndiceDelTramite:
             "inventory": {
                 "items": [
                     {
-                        "file_name": "UPD2321099/01-re3110202043677-02-12-2020_RECLAMO.pdf",
+                        "file_name": "UPD2321099/01_DERECHO-DE-PETICION.pdf",
                         "code": "01 RE3110202043677 02-12-2020",
-                        "type": "RECLAMO",
+                        # La fila dice lo mismo que el archivo (2026-10-22).
+                        "type": "DERECHO DE PETICION",
                         "fecha": "2020-12-02",
                         "page_count": 10,
                         "page_numbers": list(range(1, 11)),

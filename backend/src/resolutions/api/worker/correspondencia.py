@@ -926,26 +926,53 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         asunto = asunto_del_documento([textos.get(p, "") or "" for p in titulares], None)
         if asunto and not asunto.startswith("QUE "):
             return replace(g, kind=asunto[:MAX_ASUNTO_EN_EL_NOMBRE].rsplit(" ", 1)[0] if len(asunto) > MAX_ASUNTO_EN_EL_NOMBRE else asunto)
-        # Y si nada de eso lo nombra, con «OCR + IA», la IA lee su cuerpo con el
-        # catálogo del cliente delante y le pone el nombre (lo pidió el
-        # operador el 2026-10-22: «que no se vaya vacío»).
-        if nombrador is not None:
-            if not fuente_de_encabezados:
-                fuente_de_encabezados.append(PyMuPDFPageSource(tmp_path, taller.name))
-            # Todo el documento, no sólo su primera hoja: lo que dice ser puede
-            # estar en cualquiera.
-            de_la_ia = _nombre_con_la_ia(
-                fuente_de_encabezados[0],
-                [p for p in g.page_numbers if p not in guias] or list(g.page_numbers),
-                textos,
-                lector_de_pago_de_encabezados,
-                nombrador,
-            )
-            if de_la_ia:
-                return replace(g, kind=de_la_ia)
         sin_titulo.append(primera)
         return replace(g, kind=nombre_por_su_origen(taller.name, g.page_numbers))
 
+    def nombre_estandar(g):
+        """El nombre del archivo por el estándar: un tipo del catálogo del cliente.
+
+        Lo dictó el operador el 2026-10-22: «que los nombres o los tipos de
+        documentos estén estandarizados… manejemos los nombres por estándares»,
+        y el nombre libre sólo «cuando ni el OCR ni la IA, en última opción,
+        logren dar con el nombre del documento». Así:
+
+        1. Lo que dicen las reglas sobre el papel (``tipo_del_archivo``), con
+           su forma del catálogo (``estandarizar``).
+        2. Si no es un tipo del catálogo y el operador eligió «OCR + IA», la
+           IA lee el cuerpo del documento con el catálogo delante.
+        3. Si tampoco, el nombre libre: el título impreso, el asunto o el que
+           propuso la IA; y si nada, su caja y sus páginas, a revisión.
+        """
+        nombrado = tipo_del_archivo(g)
+        if entregado_por is Agrupacion.MES:
+            return nombrado
+        nombre = estandarizar(nombrado.kind)
+        if nombre in POR_NOMBRE or nombrador is None:
+            return replace(nombrado, kind=nombre)
+        if not fuente_de_encabezados:
+            fuente_de_encabezados.append(PyMuPDFPageSource(tmp_path, taller.name))
+        # Todo el documento, no sólo su primera hoja: lo que dice ser puede
+        # estar en cualquiera.
+        de_la_ia = _nombre_con_la_ia(
+            fuente_de_encabezados[0],
+            [p for p in g.page_numbers if p not in guias and p not in delanteras] or list(g.page_numbers),
+            textos,
+            lector_de_pago_de_encabezados,
+            nombrador,
+        )
+        sin_nombre = g.page_numbers[0] in sin_titulo or next(
+            (x for x in g.page_numbers if x not in guias and x not in delanteras), g.page_numbers[0]
+        ) in sin_titulo
+        if de_la_ia and (de_la_ia in POR_NOMBRE or sin_nombre):
+            for pagina in g.page_numbers:
+                if pagina in sin_titulo:
+                    sin_titulo.remove(pagina)
+            return replace(nombrado, kind=de_la_ia)
+        return replace(nombrado, kind=nombre)
+
+    from ...domain.catalogo import POR_NOMBRE
+    from ...domain.nombre_oficial import estandarizar
     from ...domain.titulo_impreso import nombre_por_su_origen, titulo_impreso
 
     fuente_de_encabezados: list = []
@@ -958,7 +985,7 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     nombrador = taller.nombrador()
     sin_titulo: list[int] = []
     try:
-        grupos = replace(grupos, groups=[tipo_del_archivo(g) for g in grupos.groups])
+        grupos = replace(grupos, groups=[nombre_estandar(g) for g in grupos.groups])
     finally:
         for fuente in fuente_de_encabezados:
             fuente.close()

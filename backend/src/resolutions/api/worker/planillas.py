@@ -305,7 +305,13 @@ def _nombre_de_la_fila(item: dict, report: dict) -> str:
     su petición. Todo en mayúsculas. Llevó detrás el radicado y la fecha
     («… - RE3110202043677 - 02/12/2020») hasta el 2026-10-20.
     """
-    titulo = _primera_pieza(item, report).get("titulo")
+    # El mismo nombre que su archivo, que ya es el estándar del catálogo (lo
+    # dictó el operador el 2026-10-22: «que los nombres estén estandarizados…
+    # tanto en el nombre del documento como en el inventario»). Por mes no: ese
+    # archivo junta documentos de toda clase, y su fila dice el de su primera hoja.
+    titulo = item.get("type") if report.get("agrupar") != "mes" else None
+    if not titulo or titulo == DOCUMENT_PREFIX:
+        titulo = _primera_pieza(item, report).get("titulo")
     # Lo que no tiene título conocido se llama como su archivo: el encabezado
     # impreso de su hoja o su caja y sus páginas, nunca «DOCUMENTO» a secas.
     if not titulo or titulo == DOCUMENT_PREFIX:

@@ -296,8 +296,16 @@ _TITULOS_DEL_ESCRITO: tuple[tuple[str, re.Pattern[str]], ...] = (
 ESCRITOS_DEL_TRAMITE = frozenset(nombre for nombre, _ in _TITULOS_DEL_ESCRITO) - {"SOLICITUD"}
 #: Lo que imprime la empresa en una carta suya.
 _DE_LA_EMPRESA = re.compile(r"\bCONSECUTIVO\s+N[O0°º]?\W")
-#: La constancia que firma el usuario al radicar en la oficina.
-_CONSTANCIA = re.compile(r"RECIBI\s+CONSTANCIA\s+DEL\s+CONTENIDO\s+DE\s+LA\s+RECLAMACION")
+#: La constancia que firma el usuario al radicar en la oficina. Con lo que la
+#: OCR hace de sus palabras: «Recibí Constanza del contenido» (UPD3102729 pág.
+#: 2), y por su formulario si el renglón no se lee: «PARA LA EMPRESA», «N° PQR»
+#: y «CAUSA:».
+_CONSTANCIA = re.compile(r"RECIB\w{0,2}\s+CONSTAN\w{1,4}\s+DE\w?\s+(?:\w{1,3}\s+)?CONTENIDO")
+_FORMULARIO_DE_LA_CONSTANCIA = (
+    re.compile(r"PARA\s+LA\s+EMPRESA"),
+    re.compile(r"\bN\W{0,3}\s*P\W?Q\W?R\b"),
+    re.compile(r"\bCAUSA\s*[:.]"),
+)
 #: Los títulos centrados de las comunicaciones de la empresa, en su renglón.
 _TITULOS_DE_LA_EMPRESA: tuple[tuple[str, re.Pattern[str]], ...] = (
     # «personai», «persona1»: la «L» que la OCR rompe (UPD2326502 p1).
@@ -476,7 +484,7 @@ def titulo_del_documento(primera_pagina: str, tipo: str | None = None) -> str:
             contestado = _titulo_del_escrito(asunto)
             if contestado and _CITA_RADICADO.search(asunto):
                 return f"RESPUESTA A {contestado}"
-    if _CONSTANCIA.search(cabeza):
+    if _CONSTANCIA.search(cabeza) or all(campo.search(cabeza) for campo in _FORMULARIO_DE_LA_CONSTANCIA):
         return "CONSTANCIA DE RECLAMACION"
     for renglon in renglones:
         for nombre, patron in _TITULOS_DE_LA_EMPRESA:
