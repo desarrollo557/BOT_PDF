@@ -44,6 +44,15 @@ _RUTA = re.compile(r"^(?:\\\\|//)([^\\/]+)[\\/]+([^\\/]+)(?:[\\/]+(.*))?$")
 SEGUNDOS_PARA_CONECTAR = 15
 #: De a cuánto se copia un PDF de la red.
 BLOQUE = 1024 * 1024
+#: Cuántas peticiones a la vez se le hacen a un mismo servidor. El servidor
+#: SMB reparte «créditos» -- turnos para atender peticiones -- por conexión, y
+#: con la carpeta entera leyéndose a la vez se acababan: «Request requires 1
+#: credits but only 0 credits are available», y el PDF fallaba sin haber nada
+#: malo en él (\\200.100.20.97, 2026-10-22). Se ajusta con BOTPDF_RED_A_LA_VEZ.
+A_LA_VEZ_POR_SERVIDOR = max(1, int(os.environ.get("BOTPDF_RED_A_LA_VEZ") or 4))
+#: Y si aun así el servidor se queda sin créditos, cuánto se espera antes de
+#: cada reintento: los devuelve en cuanto termina lo que estaba atendiendo.
+ESPERAS_SIN_CREDITOS = (0.5, 1.0, 2.0, 4.0, 8.0)
 
 
 class CredencialesDeRed(Exception):
@@ -110,6 +119,41 @@ def por_smb(ruta: object) -> bool:
 _cuentas: dict[str, tuple[str, str]] = {}
 _conectados: dict[str, str] = {}
 _cerrojo = threading.Lock()
+
+
+_turnos: dict[str, threading.BoundedSemaphore] = {}
+
+
+def _turno_del_servidor(servidor: str) -> threading.BoundedSemaphore:
+    with _cerrojo:
+        return _turnos.setdefault(servidor.lower(), threading.BoundedSemaphore(A_LA_VEZ_POR_SERVIDOR))
+
+
+def _sin_creditos(error: BaseException) -> bool:
+    """Si el servidor se quedó sin turnos para atender: «… credits are available»."""
+    texto = str(error).lower()
+    return "credits" in texto and "available" in texto
+
+
+def _con_turno(p: Partes, hacer: Callable[[], object]) -> object:
+    """Una petición al servidor dentro de su tope de peticiones a la vez.
+
+    Si el servidor contesta que no le quedan créditos, se espera un poco y se
+    vuelve a pedir: es que está terminando otras, no que algo esté mal.
+    """
+    import time
+
+    turno = _turno_del_servidor(p.servidor)
+    for espera in (*ESPERAS_SIN_CREDITOS, None):
+        with turno:
+            try:
+                return hacer()
+            except Exception as error:  # noqa: BLE001 - sólo se reintenta la falta de créditos
+                if espera is None or not _sin_creditos(error):
+                    raise
+        logger.info("el servidor %s no tiene créditos libres: se reintenta en %.1f s", p.servidor, espera)
+        time.sleep(espera)
+    raise AssertionError("inalcanzable")  # pragma: no cover
 
 
 def _cuenta(servidor: str) -> dict[str, str]:
@@ -180,6 +224,13 @@ def _traducir(error: Exception, p: Partes, *, con_usuario: bool) -> Exception:
         return RedNoDisponible(f"No se pudo conectar con el servidor {p.servidor}: {error}")
     from smbprotocol.exceptions import SMBException
 
+    if _sin_creditos(error):
+        # Ni con los reintentos: el servidor sigue ocupado. El PDF vuelve en la
+        # vuelta de reintento del final de la carpeta.
+        return RedNoDisponible(
+            f"El servidor {p.servidor} está atendiendo demasiadas peticiones a la vez y no tomó "
+            "ésta; se reintentará al final de la carpeta"
+        )
     if isinstance(error, SMBException) and not isinstance(error, OSError):
         # Cualquier otra negativa del protocolo se dice tal cual, no como un
         # fallo del servicio sin explicación.
@@ -332,7 +383,7 @@ def _llamar(ruta: str, hacer: Callable[[Partes, dict], object]) -> object:
         raise ValueError(f"No es una ruta de red: {ruta}")
     asegurar(p.raiz)
     try:
-        return hacer(p, _cuenta(p.servidor))
+        return _con_turno(p, lambda: hacer(p, _cuenta(p.servidor)))
     except Exception as error:  # noqa: BLE001 - se traduce
         from smbprotocol.exceptions import SMBAuthenticationError, SMBConnectionClosed
 
@@ -343,7 +394,7 @@ def _llamar(ruta: str, hacer: Callable[[Partes, dict], object]) -> object:
                 _conectados.pop(f"{p.servidor.lower()}/{p.recurso.lower()}", None)
             asegurar(p.raiz)
             try:
-                return hacer(p, _cuenta(p.servidor))
+                return _con_turno(p, lambda: hacer(p, _cuenta(p.servidor)))
             except Exception as otra:  # noqa: BLE001
                 raise _traducir(otra, p, con_usuario=bool(_cuenta(p.servidor))) from otra
         raise _traducir(error, p, con_usuario=bool(_cuenta(p.servidor))) from error
@@ -417,7 +468,9 @@ def iterar(
     def nivel(carpeta: str, *, primera: bool) -> list:
         cuenta = _cuenta(p.servidor)
         try:
-            return sorted(smbclient.scandir(carpeta, **cuenta), key=lambda e: e.name.lower())
+            return _con_turno(  # type: ignore[return-value]
+                p, lambda: sorted(smbclient.scandir(carpeta, **cuenta), key=lambda e: e.name.lower())
+            )
         except Exception as error:  # noqa: BLE001 - se traduce o se avisa
             if not primera and al_fallar is not None and isinstance(error, OSError):
                 al_fallar(partes(carpeta).del_servicio, error)  # type: ignore[union-attr]

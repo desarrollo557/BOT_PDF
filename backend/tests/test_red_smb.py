@@ -358,3 +358,38 @@ class TestLaPantallaRecibeUnaPregunta:
         assert {"name": "210847", "path": rf"{CARPETA}\210847"} in listado["folders"]
         raiz = asyncio.run(browse(SimpleNamespace(), RAIZ + "\\"))
         assert raiz["parent"] is None
+
+
+class TestSinCreditos:
+    """\\\\200.100.20.97, 2026-10-22: «Request requires 1 credits but only 0 credits are available»."""
+
+    def test_se_espera_y_se_reintenta(self, monkeypatch):
+        from resolutions.adapters import red_smb
+
+        monkeypatch.setattr(red_smb, "ESPERAS_SIN_CREDITOS", (0.0, 0.0))
+        intentos = []
+
+        def hacer():
+            intentos.append(1)
+            if len(intentos) < 3:
+                raise RuntimeError("Request requires 1 credits but only 0 credits are available")
+            return "ok"
+
+        assert red_smb._con_turno(red_smb.partes(r"\\srv\recurso\a.pdf"), hacer) == "ok"
+        assert len(intentos) == 3
+
+    def test_otro_error_no_se_reintenta(self, monkeypatch):
+        import pytest
+
+        from resolutions.adapters import red_smb
+
+        monkeypatch.setattr(red_smb, "ESPERAS_SIN_CREDITOS", (0.0, 0.0))
+        intentos = []
+
+        def hacer():
+            intentos.append(1)
+            raise RuntimeError("otra cosa")
+
+        with pytest.raises(RuntimeError):
+            red_smb._con_turno(red_smb.partes(r"\\srv\recurso\a.pdf"), hacer)
+        assert len(intentos) == 1
