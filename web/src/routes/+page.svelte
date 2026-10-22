@@ -322,8 +322,8 @@
     tipo: TipoPedido = 'auto',
     corte: CorteChoice = 'folio',
     agrupar: AgruparChoice = 'documento',
-    territorial = '',
-    paralelo = 0
+    paralelo = 0,
+    tipoDocumento?: string
   ) {
     errors = [];
     uploaded = 0;
@@ -354,7 +354,7 @@
 
     await withConcurrency(files, UPLOAD_CONCURRENCY, async (file) => {
       try {
-        await uploadDocument(file, batchId, task, oracle, lectura, tipo, corte, agrupar, territorial, paralelo);
+        await uploadDocument(file, batchId, task, oracle, lectura, tipo, corte, agrupar, paralelo, tipoDocumento);
         consoleLog.push('UP', `${formatBytes(file.size)} subidos`, 'net', file.name);
       } catch (error) {
         errors = [...errors, `${file.name}: ${(error as Error).message}`];

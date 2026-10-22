@@ -24,8 +24,8 @@
     tipo: TipoPedido;
     corte: CorteChoice;
     agrupar: AgruparChoice;
-    /** La territorial de una caja de correspondencia, para su Índice Electrónico. */
-    territorial?: string;
+    /** El tipo de documento de la caja (Afinia / Kingspan / mixto). */
+    tipoDocumento?: string;
     disabled?: boolean;
     onfiles: (
       files: File[],
@@ -62,7 +62,7 @@
     tipo,
     corte,
     agrupar,
-    territorial = '',
+    tipoDocumento,
     disabled = false,
     onfiles,
     blocked,
@@ -174,7 +174,7 @@
         {tipo}
         {corte}
         {agrupar}
-        {territorial}
+        {tipoDocumento}
         {habilidadId}
         {onusarHabilidad}
         paralelo={paralelo > 0 ? paralelo : undefined}

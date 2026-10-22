@@ -228,8 +228,8 @@ export async function uploadDocument(
   tipo: TipoPedido = 'auto',
   corte: CorteChoice = 'pagina',
   agrupar: AgruparChoice = 'documento',
-  territorial = '',
-  paralelo = 0
+  paralelo = 0,
+  tipoDocumento?: string
 ): Promise<{ id: string }> {
   const body = new FormData();
   body.append('file', file);
@@ -255,9 +255,10 @@ export async function uploadDocument(
   // Y qué va en cada archivo de una caja de correspondencia. 'documento' es lo
   // de siempre y no viaja, por lo mismo que el corte.
   if (agrupar !== 'documento') query.set('agrupar', agrupar);
-  // Y la territorial de una caja de correspondencia, para el encabezado de su
-  // Índice Electrónico. Sólo viaja si se escribió.
-  if (territorial.trim()) query.set('territorial', territorial.trim());
+  // Y la plantilla del inventario, que sale del tipo de documento elegido
+  // (índice electrónico, Kingspan o detección automática). Sólo viaja cuando se
+  // eligió una; el servicio asume su comportamiento de siempre sin ella.
+  if (tipoDocumento) query.set('tipo_documento', tipoDocumento);
   // Y cuántos archivos del lote a la vez. Cero es el automático y no viaja.
   if (paralelo > 0) query.set('paralelo', String(paralelo));
   const suffix = query.toString();
@@ -741,8 +742,8 @@ export function startFolderRun(options: {
   corte?: CorteChoice;
   /** Y qué va en cada archivo de una caja de correspondencia. */
   agrupar?: AgruparChoice;
-  /** Y la territorial de sus cajas, para el encabezado del Índice Electrónico. */
-  territorial?: string;
+  /** Y la plantilla del inventario: Afinia, Kingspan o automática. */
+  tipoDocumento?: string;
   /** Y qué clase de documento trae, cuando el operador lo sabe. */
   tipo?: TipoPedido;
   /** Y si retoma una entrega anterior (sólo libros de diplomas). */

@@ -44,8 +44,8 @@
      * corrida, como el corte.
      */
     agrupar?: AgruparChoice;
-    /** Y la territorial de sus cajas de correspondencia, para su Índice Electrónico. */
-    territorial?: string;
+    /** El tipo de documento de la caja (Afinia / Kingspan / mixto). */
+    tipoDocumento?: string;
     /**
      * Y qué clase de documento trae la carpeta. Una estantería suele ser
      * homogénea -- veinte libros de diplomas --, así que declararlo una vez
@@ -67,7 +67,7 @@
     tipo = 'auto',
     corte = 'pagina',
     agrupar = 'documento',
-    territorial = '',
+    tipoDocumento,
     habilidadId = 'auto',
     onusarHabilidad,
     paralelo
@@ -272,7 +272,7 @@
         tipo,
         corte,
         agrupar,
-        ...(territorial.trim() ? { territorial: territorial.trim() } : {}),
+        ...(tipoDocumento ? { tipoDocumento } : {}),
         ...(modoRetomar !== 'no' ? { retomar: modoRetomar } : {}),
         ...(paralelo ? { paralelo } : {})
       });

@@ -227,8 +227,8 @@ class JobStore {
     corte?: CorteChoice;
     /** Y qué va en cada archivo de una caja de correspondencia. */
     agrupar?: AgruparChoice;
-    /** Y la territorial de sus cajas, para el encabezado del Índice Electrónico. */
-    territorial?: string;
+    /** Y la plantilla del inventario: índice electrónico, Kingspan o automática. */
+    tipoDocumento?: string;
     /** Y qué clase de documento trae, cuando el operador lo sabe. */
     tipo?: TipoPedido;
     /** Y si retoma una entrega anterior (sólo libros de diplomas). */

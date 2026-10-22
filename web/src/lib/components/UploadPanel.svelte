@@ -5,6 +5,7 @@
   import UploadSummary from '$lib/components/UploadSummary.svelte';
   import Callout from '$lib/components/wizard/Callout.svelte';
   import PasoAgrupar from '$lib/components/wizard/PasoAgrupar.svelte';
+  import PasoClaseDocumento from '$lib/components/wizard/PasoClaseDocumento.svelte';
   import PasoCorte from '$lib/components/wizard/PasoCorte.svelte';
   import PasoLectura from '$lib/components/wizard/PasoLectura.svelte';
   import PasoOracle from '$lib/components/wizard/PasoOracle.svelte';
@@ -18,7 +19,8 @@
     motivoNoDisponible,
     motivoSinAgrupar,
     type AgruparChoice,
-    type CorteChoice
+    type CorteChoice,
+    type TipoDocumentoChoice
   } from '$lib/habilidades';
   import { lecturaOptions, reasonForLectura, type LecturaChoice } from '$lib/lectura';
   import { oracleOptions, reasonFor, type OracleChoice } from '$lib/oracles';
@@ -35,8 +37,8 @@
       tipo: TipoPedido,
       corte: CorteChoice,
       agrupar: AgruparChoice,
-      territorial: string,
-      paralelo: number
+      paralelo: number,
+      tipoDocumento?: string
     ) => void;
     disabled?: boolean;
   }
@@ -57,8 +59,8 @@
   let lectura = $state<LecturaChoice>('local');
   let corte = $state<CorteChoice>('pagina');
   let agrupar = $state<AgruparChoice>('documento');
-  /** La territorial de una caja de correspondencia, para su Índice Electrónico. */
-  let territorial = $state('');
+  /** El tipo de documento de la caja: Afinia, Kingspan o mixto. */
+  let tipoDocumento = $state<TipoDocumentoChoice>('indice_electronico');
   /** Cuántos archivos a la vez. Cero es el automático del servicio. */
   let paralelo = $state(0);
   let health = $state<Health | null>(null);
@@ -84,31 +86,59 @@
     cortes.some((opcion) => opcion.id === corte) ? corte : (cortes[0]?.id ?? 'pagina')
   );
 
-  const agrupaciones = $derived(habilidad.agrupar?.opciones ?? []);
+  /** Las opciones de tipo de documento que declara la habilidad (sólo correspondencia). */
+  const tiposDocumento = $derived(habilidad.tipoDocumento?.opciones ?? []);
+  /** La opción elegida, si la habilidad la declara. */
+  const opcionTipoDocumento = $derived(tiposDocumento.find((t) => t.id === tipoDocumento));
+  /**
+   * La plantilla del inventario. No se pregunta aparte: sale del tipo de
+   * documento. «Mixto» deja que el servicio la detecte por documento.
+   */
+  const plantilla = $derived(opcionTipoDocumento?.plantilla ?? 'auto');
+
+  /**
+   * Las agrupaciones que este tipo de documento admite.
+   *
+   * Kingspan no agrupa (cada documento es único) y su lista queda vacía: el
+   * paso ni se muestra. «Grupo de páginas» se anuncia pero todavía no se puede
+   * elegir, así que va deshabilitado.
+   */
+  const agrupaciones = $derived(
+    (habilidad.agrupar?.opciones ?? []).filter(
+      (opcion) => !opcion.disponiblePara || opcion.disponiblePara.includes(tipoDocumento)
+    )
+  );
+  const agrupacionesElegibles = $derived(agrupaciones.filter((opcion) => !opcion.proximamente));
   const agruparElegido = $derived<AgruparChoice>(
-    agrupaciones.some((opcion) => opcion.id === agrupar && !motivoSinAgrupar(opcion, health))
+    agrupacionesElegibles.some(
+      (opcion) => opcion.id === agrupar && !motivoSinAgrupar(opcion, health)
+    )
       ? agrupar
-      : 'documento'
+      : (agrupacionesElegibles[0]?.id ?? 'documento')
   );
   const opcionDeAgrupar = $derived(agrupaciones.find((opcion) => opcion.id === agruparElegido));
-  /* Una caja de correspondencia sale con su Índice Electrónico, y su encabezado
-     pide la territorial -- el municipio --: el papel no la trae. Al subir archivos se
-     escribe; en una carpeta el servicio la toma de la ruta («…\MAGANGUE\210847\…»),
-     así que sólo se exige al subir (ver `recibirArchivos`), no para avanzar de paso. */
-  const faltaTerritorial = $derived(
-    habilidad.agrupar && !territorial.trim()
-      ? 'Escriba la territorial de la caja (ej.: CESAR): va en el Índice Electrónico.'
-      : null
-  );
 
-  /** Lo que se puede pedir de vuelta con esta habilidad. */
-  const acciones = $derived(habilidad.acciones ?? RESULTADOS);
+  /**
+   * Lo que se puede pedir de vuelta con esta habilidad, acotado al tipo de
+   * documento elegido.
+   *
+   * Con Kingspan no se ofrece «dividir por documento» a secas: esa salida es
+   * de la plantilla de Afinia. Si el tipo no declara sus acciones, se ofrecen
+   * todas las de la habilidad.
+   */
+  const acciones = $derived(
+    (habilidad.acciones ?? RESULTADOS).filter(
+      (accion) =>
+        !opcionTipoDocumento?.accionesDisponibles ||
+        opcionTipoDocumento.accionesDisponibles.includes(accion.id as TaskKind)
+    )
+  );
   /* La acción elegida si esta habilidad la admite; si no, su primera. Al cambiar
      de habilidad el «split» de la anterior no vale para un libro de actas, que
      se inventaría o se divide. */
   const task = $derived<TaskKind>(
     habilidad.task ??
-      (acciones.some((accion) => accion.id === resultado) ? resultado : acciones[0].id)
+      (acciones.some((accion) => accion.id === resultado) ? resultado : (acciones[0]?.id ?? 'split'))
   );
   const tipo = $derived<TipoPedido>(habilidad.tipo);
   const eligeResultado = $derived(habilidad.task === null);
@@ -127,13 +157,17 @@
   const entrega = $derived(
     opcionDeAgrupar?.entrega ??
       (task === 'inventory' || task === 'inventory_file'
-        ? 'Deja el inventario. No escribe ningún PDF.'
+        ? plantilla === 'kingspan'
+          ? 'Deja el inventario Kingspan (No. DOCUMENTO / DESDE / HASTA). No escribe ningún PDF.'
+          : 'Deja el inventario. No escribe ningún PDF.'
         : task === 'both' && habilidad.tipo === 'acta-consejo'
           ? 'Deja un PDF por sesión y el inventario.'
           : task === 'both' && habilidad.tipo === 'acta'
             ? 'Deja un PDF por graduado y el FUID.'
           : task === 'both'
-            ? 'Deja un PDF por documento y el inventario.'
+            ? plantilla === 'kingspan'
+              ? 'Los dos: PDFs por documento + inventario Kingspan (DESDE/HASTA).'
+              : 'Deja un PDF por documento y el inventario.'
           : 'Deja un PDF por documento.')
   );
 
@@ -145,10 +179,19 @@
    * drifted apart: the correspondence box jumped from step 1 straight to the
    * origin and never showed its grouping or model steps.
    */
-  type StepId = 'tipo' | 'lectura' | 'resultado' | 'corte' | 'agrupar' | 'oracle' | 'origen';
+  type StepId =
+    | 'tipo'
+    | 'claseDocumento'
+    | 'lectura'
+    | 'resultado'
+    | 'corte'
+    | 'agrupar'
+    | 'oracle'
+    | 'origen';
 
   const STEP_LABELS: Record<StepId, string> = {
     tipo: 'Tipo',
+    claseDocumento: 'Documento',
     lectura: 'Lectura',
     resultado: 'Resultado',
     corte: 'Corte',
@@ -157,8 +200,23 @@
     origen: 'Origen'
   };
 
+  /**
+   * El tipo de documento se pregunta sólo en la caja de correspondencia: es la
+   * única habilidad que sirve para papeles con plantillas de inventario
+   * distintas (Afinia o Kingspan).
+   */
+  const mostrarClaseDocumento = $derived(
+    habilidadId === 'correspondencia' && tiposDocumento.length > 0
+  );
+
+  /** El agrupar sólo aparece si el tipo elegido admite alguna agrupación. */
+  const mostrarAgrupar = $derived(habilidad.agrupar !== undefined && agrupaciones.length > 0);
+
   const pasos = $derived<StepId[]>([
     'tipo',
+    // Qué tipo de documento trae la caja: de aquí cuelgan la plantilla del
+    // inventario y las agrupaciones que tienen sentido.
+    ...(mostrarClaseDocumento ? (['claseDocumento'] as const) : []),
     // Todas las habilidades preguntan cómo se lee el papel, también «No estoy
     // seguro»: antes sólo lo preguntaban las que recomiendan IA, y las demás
     // corrían con «Solo OCR» sin que nadie lo eligiera -- una carpeta de actas
@@ -166,7 +224,7 @@
     'lectura',
     ...(eligeResultado ? (['resultado'] as const) : []),
     ...(habilidad.cortes ? (['corte'] as const) : []),
-    ...(habilidad.agrupar ? (['agrupar'] as const) : []),
+    ...(mostrarAgrupar ? (['agrupar'] as const) : []),
     // El modelo de las costuras dudosas es una IA de pago: sólo se pregunta
     // con «OCR + IA». Con «Solo OCR» no se consulta ningún modelo y lo dudoso
     // va a revisión.
@@ -217,19 +275,15 @@
       notice = blockedLectura;
       return;
     }
-    if (faltaTerritorial) {
-      notice = faltaTerritorial;
-      return;
-    }
     if (mode === 'batch') {
-      onfiles(files, true, task, oracle, lectura, tipo, corteElegido, agruparElegido, territorial, paralelo);
+      onfiles(files, true, task, oracle, lectura, tipo, corteElegido, agruparElegido, paralelo, tipoDocumento);
       return;
     }
     if (files.length > SINGLE_LIMIT) {
       notice = `La carga individual admite ${SINGLE_LIMIT} documentos. Cambie a carga por lote para subir los ${files.length}.`;
       return;
     }
-    onfiles(files, false, task, oracle, lectura, tipo, corteElegido, agruparElegido, territorial, paralelo);
+    onfiles(files, false, task, oracle, lectura, tipo, corteElegido, agruparElegido, paralelo, tipoDocumento);
   }
 
   /**
@@ -246,10 +300,6 @@
     }
     if (blockedLectura) {
       notice = blockedLectura;
-      return;
-    }
-    if (faltaTerritorial) {
-      notice = faltaTerritorial;
       return;
     }
     if (mode !== 'batch' && files.length > SINGLE_LIMIT) {
@@ -310,12 +360,39 @@
     }
     // Choices that belong to the previous skill do not travel to this one.
     corte = cortes[0]?.id ?? 'pagina';
-    agrupar = agrupaciones[0]?.id ?? 'documento';
+    agrupar = (habilidad.agrupar?.opciones ?? []).find((o) => !o.proximamente)?.id ?? 'documento';
+    tipoDocumento = habilidad.tipoDocumento?.opciones[0]?.id ?? 'indice_electronico';
     oracle = 'auto';
     resultado = 'split';
     notice = null;
     pendientes = [];
     paso = 1;
+  }
+
+  /**
+   * Elegir el tipo de documento fija la plantilla del inventario y qué
+   * agrupaciones se ofrecen. Si la agrupación elegida antes no vale para el
+   * tipo nuevo, vuelve a la primera que sí valga.
+   */
+  function elegirClaseDocumento(id: TipoDocumentoChoice) {
+    tipoDocumento = id;
+    const opcion = tiposDocumento.find((t) => t.id === id);
+    const validas = (habilidad.agrupar?.opciones ?? [])
+      .filter((o) => !o.disponiblePara || o.disponiblePara.includes(id))
+      .filter((o) => !o.proximamente);
+    if (!validas.some((o) => o.id === agrupar)) {
+      agrupar = validas[0]?.id ?? 'documento';
+    }
+    // Y la acción elegida: Kingspan no ofrece «dividir por documento» a secas.
+    const accionesValidas = (habilidad.acciones ?? RESULTADOS).filter(
+      (accion) =>
+        !opcion?.accionesDisponibles || opcion.accionesDisponibles.includes(accion.id as TaskKind)
+    );
+    if (!accionesValidas.some((accion) => accion.id === resultado)) {
+      resultado = accionesValidas[0]?.id ?? 'split';
+    }
+    notice = null;
+    siguiente();
   }
 
   function elegirResultado_(r: TaskKind) {
@@ -428,6 +505,15 @@
             {disabled}
             numero={pasoActual}
           />
+        {:else if pasoId === 'claseDocumento'}
+          <PasoClaseDocumento
+            {tipoDocumento}
+            onElegir={elegirClaseDocumento}
+            opciones={tiposDocumento}
+            pregunta={habilidad.tipoDocumento?.pregunta}
+            {disabled}
+            numero={pasoActual}
+          />
         {:else if pasoId === 'corte'}
           <PasoCorte
             {cortes}
@@ -446,12 +532,6 @@
             {health}
             pregunta={habilidad.agrupar?.pregunta}
             numero={pasoActual}
-            {territorial}
-            onTerritorial={(valor) => {
-              territorial = valor;
-              notice = null;
-            }}
-            onListo={siguiente}
           />
         {:else if pasoId === 'oracle'}
           <PasoOracle {oracle} onElegir={elegirOracle} {oracles} {blocked} numero={pasoActual} />
@@ -466,7 +546,7 @@
               {tipo}
               corte={corteElegido}
               agrupar={agruparElegido}
-              {territorial}
+              {tipoDocumento}
               {disabled}
               onfiles={prepararArchivos}
               {blocked}
