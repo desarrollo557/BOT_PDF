@@ -25,8 +25,6 @@
   import type { TipoPedido } from '$lib/tipos';
   import type { TaskKind } from '$lib/types';
 
-  const habilidades = HABILIDADES;
-
   interface Props {
     onfiles: (
       files: File[],
@@ -387,192 +385,443 @@
     territorial = valor;
     notice = null;
   }
+
+  function volverAlInicio() {
+    paso = 1;
+  }
 </script>
 
-<!-- ========================================================================
-     VISTA
-     ======================================================================== -->
-<div class="upload-panel">
-  <header class="panel-header">
-    <h1 class="panel-title">Nuevo trabajo</h1>
-    {#if health}
-      <HealthBadge {health} />
-    {/if}
-  </header>
+<section
+  class="wizard"
+  data-paso={pasoActual}
+  data-total={totalPasos}
+  data-habilidad={habilidadId}
+>
+  <nav class="progress" aria-label="Pasos del asistente">
+    <ol>
+      {#each pasos as id, indice (id)}
+        {@const numero = indice + 1}
+        <li class:done={numero < pasoActual} class:current={numero === pasoActual}>
+          <button
+            type="button"
+            onclick={() => irAPaso(numero)}
+            disabled={numero > pasoActual}
+            aria-current={numero === pasoActual ? 'step' : undefined}
+          >
+            <span class="dot">
+              {#if numero < pasoActual}
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" /></svg>
+              {:else}
+                {numero}
+              {/if}
+            </span>
+            <span class="label">{STEP_LABELS[id]}</span>
+          </button>
+        </li>
+      {/each}
+    </ol>
+  </nav>
 
-  <div class="panel-body">
-    <!-- Paso 1: Tipo de documento -->
-    {#if pasoId === 'tipo'}
-      <PasoTipoDocumento
-        {habilidadId}
-        {habilidades}
-        {noDisponible}
-        onElegir={elegirHabilidad}
-        onUsarSugerencia={usarSugerencia}
-        {sugerencias}
-        {reconociendo}
-        {errorDeReconocer}
-        {disabled}
-        numero={pasoActual}
-      />
-    {:else if pasoId === 'lectura'}
-      <PasoLectura
-        {lectura}
-        onElegir={elegirLectura}
-        {lecturas}
-        {blockedLectura}
-        {faltaLectura}
-        {disabled}
-        numero={pasoActual}
-      />
-    {:else if pasoId === 'resultado'}
-      <PasoResultado
-        {resultado}
-        onElegir={elegirResultado_}
-        {acciones}
-        {entrega}
-        {disabled}
-        numero={pasoActual}
-      />
-    {:else if pasoId === 'corte'}
-      <PasoCorte
-        {cortes}
-        {corteElegido}
-        onElegir={elegirCorte}
-        {disabled}
-        numero={pasoActual}
-      />
-    {:else if pasoId === 'agrupar'}
-      <PasoAgrupar
-        {agruparElegido}
-        onElegir={elegirAgrupar}
-        {agrupacionesElegibles}
-        {health}
-        pregunta={habilidad.agrupar?.pregunta}
-        {disabled}
-        {territorial}
-        onTerritorial={elegirTerritorial}
-        onListo={siguiente}
-        numero={pasoActual}
-      />
-    {:else if pasoId === 'oracle'}
-      <PasoOracle {oracle} onElegir={elegirOracle} {oracles} {blocked} numero={pasoActual} />
-    {:else if pasoId === 'origen'}
-      <PasoOrigen
-        {mode}
-        onElegirModo={elegirModo}
-        {prepararArchivos}
-        {confirmarSubida}
-        {pendientes}
-        {sugerencias}
-        {reconociendo}
-        {errorDeReconocer}
-        {disabled}
-        {blocked}
-        {blockedLectura}
-        {territorial}
-        onTerritorial={elegirTerritorial}
-        numero={pasoActual}
-      />
-    {/if}
-  </div>
+  <div class="card">
+    {#key pasoId}
+      <div class="stage" in:fly={{ y: 6, duration: reduceMotion ? 0 : 180 }}>
+        {#if pasoId === 'tipo'}
+          <PasoTipoDocumento
+            {habilidadId}
+            onElegir={elegirHabilidad}
+            {disabled}
+            {health}
+            numero={pasoActual}
+          />
+        {:else if pasoId === 'lectura'}
+          <PasoLectura
+            {lectura}
+            onElegir={elegirLectura}
+            {lecturas}
+            {faltaLectura}
+            {conIa}
+            {blockedLectura}
+            numero={pasoActual}
+          />
+        {:else if pasoId === 'resultado'}
+          <PasoResultado
+            resultado={task}
+            opciones={acciones}
+            onElegir={elegirResultado_}
+            {disabled}
+            numero={pasoActual}
+          />
 
-  <!-- Barra de progreso -->
-  <div class="progress-bar" role="navigation" aria-label="Pasos del asistente">
-    {#each pasos as pasoId, i}
-      <span class="progress-step" class:current={i + 1 === pasoActual} class:done={i + 1 < pasoActual}>
-        <span class="step-number">{i + 1}</span>
-        <span class="step-label">{STEP_LABELS[pasoId]}</span>
-      </span>
-      {#if i < pasos.length - 1}
-        <span class="progress-separator" aria-hidden="true">/</span>
+        {:else if pasoId === 'corte'}
+          <PasoCorte
+            {cortes}
+            {corte}
+            onElegir={elegirCorte}
+            {corteElegido}
+            pregunta={habilidad.cortes?.pregunta}
+            numero={pasoActual}
+          />
+        {:else if pasoId === 'agrupar'}
+          <PasoAgrupar
+            {agrupar}
+            onElegir={elegirAgrupar}
+            {agruparElegido}
+            {agrupaciones}
+            {health}
+            pregunta={habilidad.agrupar?.pregunta}
+            numero={pasoActual}
+          />
+        {:else if pasoId === 'oracle'}
+          <PasoOracle {oracle} onElegir={elegirOracle} {oracles} {blocked} numero={pasoActual} />
+        {:else}
+          <div class="final">
+            <PasoOrigen
+              {mode}
+              onCambiar={elegirModo}
+              {task}
+              {oracle}
+              {lectura}
+              {tipo}
+              corte={corteElegido}
+              agrupar={agruparElegido}
+              {tipoDocumento}
+              {disabled}
+              onfiles={prepararArchivos}
+              {blocked}
+              {blockedLectura}
+              numero={pasoActual}
+              {habilidadId}
+              onusarHabilidad={usarSugerencia}
+              {paralelo}
+              onParalelo={(valor) => (paralelo = valor)}
+              maximoEnParalelo={health?.document_workers ?? 0}
+              automaticoEnParalelo={health?.folder_documents ?? 0}
+            />
+            {#if mode !== 'folder' && (reconociendo || sugerencias.length || errorDeReconocer)}
+              <div class="sugerencia">
+                <SugerenciaDeTipo
+                  {habilidadId}
+                  archivos={sugerencias}
+                  cargando={reconociendo && !sugerencias.length}
+                  error={errorDeReconocer}
+                  onusar={usarSugerencia}
+                />
+              </div>
+            {/if}
+            <aside>
+              <UploadSummary
+                files={pendientes}
+                {mode}
+                {habilidad}
+                {lectura}
+                {task}
+                {tipo}
+                corte={corteElegido}
+                agrupar={agruparElegido}
+                {oracle}
+                {entrega}
+                busy={disabled}
+                onback={volverAlInicio}
+                onconfirm={() => confirmarSubida()}
+                onclear={() => {
+                  pendientes = [];
+                  sugerencias = [];
+                }}
+              />
+            </aside>
+          </div>
+        {/if}
+      </div>
+    {/key}
+
+    {#if notice}
+      <Callout tone="warning">{notice}</Callout>
+    {/if}
+
+    <footer class="nav">
+      <button type="button" class="btn" onclick={anterior} disabled={pasoActual === 1}>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5" /></svg>
+        Anterior
+      </button>
+
+      <span class="counter">Paso {pasoActual} de {totalPasos}</span>
+
+      {#if !esUltimo}
+        <button
+          type="button"
+          class="btn btn-primary"
+          onclick={siguiente}
+          disabled={disabled || !!bloqueoDelPaso}
+          title={bloqueoDelPaso ?? undefined}
+        >
+          Siguiente
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" /></svg>
+        </button>
+      {:else}
+        <span class="spacer" aria-hidden="true"></span>
       {/if}
-    {/each}
+    </footer>
   </div>
-
-  {#if notice}
-    <div class="notice" role="alert" tabindex="-1">
-      {notice}
-    </div>
-  {/if}
-</div>
+</section>
 
 <style>
-  .upload-panel {
+  /* El asistente usa la escala común de app.css (--space-*, --radius-*,
+     --text-*): antes traía la suya, casi igual pero no del todo, y cada paso
+     se veía un punto distinto del resto de la aplicación. */
+  .wizard {
     display: flex;
     flex-direction: column;
-    height: 100%;
-    min-height: 600px;
+    gap: var(--space-4);
+    width: 100%;
+    max-width: 68rem;
+    margin: 0 auto;
+    font-family: inherit;
+    color: var(--ink);
   }
 
-  .panel-header {
+  /* -- progress ------------------------------------------------------------ */
+
+  .progress ol {
+    display: flex;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .progress li {
+    position: relative;
+    display: flex;
+    flex: 1;
+    justify-content: center;
+  }
+
+  /* The connector to the previous step, drawn behind the dot. */
+  .progress li + li::before {
+    content: '';
+    position: absolute;
+    top: 14px;
+    right: 50%;
+    left: -50%;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--grid);
+  }
+
+  .progress li.done + li::before,
+  .progress li.done + li.current::before {
+    background: var(--accent);
+  }
+
+  .progress button {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2);
+    border: 0;
+    background: none;
+    padding: 0 var(--space-1);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .progress button:disabled {
+    cursor: default;
+  }
+
+  .progress button:focus-visible {
+    outline: none;
+  }
+
+  .progress button:focus-visible .dot {
+    box-shadow: 0 0 0 3px var(--ring);
+  }
+
+  .dot {
+    display: grid;
+    width: 30px;
+    height: 30px;
+    place-items: center;
+    border: 1.5px solid var(--axis);
+    border-radius: 50%;
+    background: var(--surface-2);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+    transition:
+      background-color 0.2s ease,
+      border-color 0.2s ease,
+      color 0.2s ease;
+  }
+
+  .dot svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .done .dot {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--on-accent);
+  }
+
+  .current .dot {
+    border-color: var(--accent);
+    color: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-soft);
+  }
+
+  .label {
+    font-size: var(--text-xs);
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--muted);
+  }
+
+  .done .label {
+    color: var(--ink-2);
+  }
+
+  .current .label {
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  .done button:hover .label {
+    color: var(--accent);
+  }
+
+  /* -- content ------------------------------------------------------------- */
+
+  .wizard {
+    container: wizard / inline-size;
+  }
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-lg);
+    background: var(--surface-2);
+    padding: var(--space-6) var(--space-6) 0;
+    box-shadow: var(--shadow);
+  }
+
+  .stage {
+    min-height: 18rem;
+  }
+
+  /* An explicit track: the implicit `auto` one grows to the summary's
+     min-content and pushes the cards past the frame on a phone. */
+  .final {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: var(--space-6);
+  }
+
+  .final > :global(*) {
+    min-width: 0;
+  }
+
+  /* Lo que el bot reconoce, de lado a lado: es lo primero que hay que leer
+     antes de confirmar la subida. */
+  .sugerencia {
+    grid-column: 1 / -1;
+  }
+
+  @container wizard (min-width: 56rem) {
+    .final {
+      grid-template-columns: minmax(0, 1fr) 21rem;
+    }
+
+    .final aside {
+      position: sticky;
+      top: var(--space-4);
+    }
+  }
+
+  /* -- navigation ---------------------------------------------------------- */
+
+  /* Pegada al pie de la pantalla mientras el paso sea más alto que ella:
+     elegir una opción de abajo y tener que bajar otra vez a buscar
+     «Siguiente» era la mitad del recorrido del ratón. */
+  .nav {
+    position: sticky;
+    bottom: 0;
+    z-index: 3;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: var(--space-4) var(--space-6);
-    border-bottom: 1px solid var(--color-border);
-    background: var(--color-surface);
-  }
-
-  .panel-title {
-    font-size: var(--text-lg);
-    font-weight: 600;
-    color: var(--color-text);
-    margin: 0;
-  }
-
-  .panel-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: var(--space-6);
-  }
-
-  .notice {
-    margin: var(--space-4) var(--space-6);
-    padding: var(--space-3) var(--space-4);
-    background: var(--color-warning-bg);
-    border: 1px solid var(--color-warning-border);
-    border-radius: var(--radius-md);
-    color: var(--color-warning-text);
-    font-size: var(--text-sm);
-  }
-
-  /* Progress bar */
-  .progress-bar {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
+    gap: var(--space-3);
+    margin-inline: calc(var(--space-6) * -1);
+    border-top: 1px solid var(--rule);
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+    background: var(--surface-2);
     padding: var(--space-3) var(--space-6);
-    border-top: 1px solid var(--color-border);
-    background: var(--color-surface);
-    flex-wrap: wrap;
   }
 
-  .progress-step {
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
+  .counter {
     font-size: var(--text-xs);
-    color: var(--color-text-muted);
-    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
   }
 
-  .progress-step.current {
-    color: var(--color-primary);
-    font-weight: 600;
+  .spacer {
+    width: 7.5rem;
   }
 
-  .progress-step.done {
-    color: var(--color-success);
+  /* Los botones son los globales (`.btn`, `.btn-primary`); aquí sólo el ancho
+     mínimo, para que «Anterior» y «Siguiente» no bailen al cambiar de paso. */
+  .nav .btn {
+    min-width: 7.5rem;
   }
 
-  .progress-separator {
-    color: var(--color-border);
+  /* Deshabilitado se dice con algo más que un tono más claro: sin relleno,
+     borde punteado, y el motivo como tooltip de «Siguiente». */
+  .nav .btn:disabled {
+    border-style: dashed;
+    border-color: var(--axis);
+    background: transparent;
+    color: var(--muted);
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .progress-step {
-      transition: none;
+  /* -- small screens ------------------------------------------------------- */
+
+  @container wizard (max-width: 36rem) {
+    .card {
+      padding: var(--space-4) var(--space-4) 0;
+    }
+
+    .nav {
+      margin-inline: calc(var(--space-4) * -1);
+      padding-inline: var(--space-4);
+    }
+
+    /* Only the current step keeps its name; the others stay as dots. */
+    .progress li:not(.current) .label {
+      display: none;
+    }
+
+    .counter {
+      display: none;
+    }
+
+    .nav .btn {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .spacer {
+      display: none;
     }
   }
 </style>

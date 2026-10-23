@@ -64,6 +64,8 @@ export interface Agrupar {
    * como siempre, así que la pantalla no la ofrece contra uno que no la trae.
    */
   requiere?: string;
+  /** Se muestra, pero todavía no se puede elegir. */
+  proximamente?: boolean;
 }
 
 export interface Habilidad {
