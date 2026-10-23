@@ -480,7 +480,7 @@
   <!-- Barra de progreso -->
   <div class="progress-bar" role="navigation" aria-label="Pasos del asistente">
     {#each pasos as pasoId, i}
-      <span class:progress-step class:current={i + 1 === pasoActual} class:done={i + 1 < pasoActual}>
+      <span class="progress-step" class:current={i + 1 === pasoActual} class:done={i + 1 < pasoActual}>
         <span class="step-number">{i + 1}</span>
         <span class="step-label">{STEP_LABELS[pasoId]}</span>
       </span>
