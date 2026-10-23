@@ -25,6 +25,8 @@
   import type { TipoPedido } from '$lib/tipos';
   import type { TaskKind } from '$lib/types';
 
+  const habilidades = HABILIDADES;
+
   interface Props {
     onfiles: (
       files: File[],
@@ -476,7 +478,17 @@
   </div>
 
   <!-- Barra de progreso -->
-  <ProgressBar {pasos} {pasoActual} {reduceMotion} {STEP_LABELS} />
+  <div class="progress-bar" role="navigation" aria-label="Pasos del asistente">
+    {#each pasos as pasoId, i}
+      <span class:progress-step class:current={i + 1 === pasoActual} class:done={i + 1 < pasoActual}>
+        <span class="step-number">{i + 1}</span>
+        <span class="step-label">{STEP_LABELS[pasoId]}</span>
+      </span>
+      {#if i < pasos.length - 1}
+        <span class="progress-separator" aria-hidden="true">/</span>
+      {/if}
+    {/each}
+  </div>
 
   {#if notice}
     <div class="notice" role="alert" tabindex="-1">
