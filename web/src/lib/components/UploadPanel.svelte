@@ -37,6 +37,7 @@
       tipo: TipoPedido,
       corte: CorteChoice,
       agrupar: AgruparChoice,
+      territorial: string,
       paralelo: number,
       tipoDocumento?: string
     ) => void;
@@ -59,6 +60,8 @@
   let lectura = $state<LecturaChoice>('local');
   let corte = $state<CorteChoice>('pagina');
   let agrupar = $state<AgruparChoice>('documento');
+  /** La territorial de la caja (municipio), para el encabezado del Índice Electrónico. */
+  let territorial = $state('');
   /** El tipo de documento de la caja: Afinia, Kingspan o mixto. */
   let tipoDocumento = $state<TipoDocumentoChoice>('indice_electronico');
   /** Cuántos archivos a la vez. Cero es el automático del servicio. */
@@ -276,14 +279,14 @@
       return;
     }
     if (mode === 'batch') {
-      onfiles(files, true, task, oracle, lectura, tipo, corteElegido, agruparElegido, paralelo, tipoDocumento);
+      onfiles(files, true, task, oracle, lectura, tipo, corteElegido, agruparElegido, territorial, paralelo, tipoDocumento);
       return;
     }
     if (files.length > SINGLE_LIMIT) {
       notice = `La carga individual admite ${SINGLE_LIMIT} documentos. Cambie a carga por lote para subir los ${files.length}.`;
       return;
     }
-    onfiles(files, false, task, oracle, lectura, tipo, corteElegido, agruparElegido, paralelo, tipoDocumento);
+    onfiles(files, false, task, oracle, lectura, tipo, corteElegido, agruparElegido, territorial, paralelo, tipoDocumento);
   }
 
   /**
@@ -362,6 +365,7 @@
     corte = cortes[0]?.id ?? 'pagina';
     agrupar = (habilidad.agrupar?.opciones ?? []).find((o) => !o.proximamente)?.id ?? 'documento';
     tipoDocumento = habilidad.tipoDocumento?.opciones[0]?.id ?? 'indice_electronico';
+    territorial = '';
     oracle = 'auto';
     resultado = 'split';
     notice = null;
