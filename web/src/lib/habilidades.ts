@@ -43,60 +43,7 @@ export interface Corte {
  * es qué se entrega después -- cada documento por separado, o todos los de un
  * mismo mes juntos --, y por eso viaja aparte del corte de los diplomas.
  */
-export type AgruparChoice = 'documento' | 'mes' | 'tramite' | 'grupo_paginas';
-
-/**
- * Qué empresa trae la caja.
- *
- * La misma habilidad —caja de correspondencia— sirve para dos papeles que se
- * inventarían distinto: la plantilla de Afinia, que se agrupa por RE, trámite
- * o mes, y el inventario Kingspan, que no agrupa nada porque cada documento es
- * único y su formato es No. DOCUMENTO / DESDE / HASTA.
- *
- * Se pregunta antes de leer el papel porque de aquí cuelgan la plantilla del
- * inventario y qué agrupaciones tienen sentido ofrecer.
- *
- * El identificador `indice_electronico` se conserva por dentro —viaja por HTTP
- * y lo valida el servicio—: «Afinia» es sólo el nombre con el que se muestra.
- */
-export type TipoDocumentoChoice = 'indice_electronico' | 'kingspan' | 'mixto';
-
-/** La plantilla con la que se escribe el inventario. */
-export type PlantillaChoice = 'indice_electronico' | 'kingspan' | 'auto';
-
-export interface TipoDocumento {
-  id: TipoDocumentoChoice;
-  label: string;
-  descripcion: string;
-  /** La plantilla que impone esta elección (en «mixto» se detecta por documento). */
-  plantilla: PlantillaChoice;
-  /** Las agrupaciones que esta elección admite. */
-  agruparDisponibles: AgruparChoice[];
-  /**
-   * Las acciones que este tipo de documento admite.
-   *
-   * Sin esto se ofrecen todas las de la habilidad. Con esto, la pantalla
-   * esconde las que no aplican: el inventario Kingspan se inventaría o se
-   * divide e inventaría, pero no se ofrece «dividir por documento» a secas,
-   * que es una salida de la plantilla de Afinia.
-   */
-  accionesDisponibles?: TaskKind[];
-}
-
-/** Un segundo criterio de división dentro de cada grupo primario. */
-export type AgruparSecundariaChoice = 'ninguna' | 'grupo_paginas';
-
-export interface AgruparSecundaria {
-  id: AgruparSecundariaChoice;
-  label: string;
-  hint: string;
-  /** Las agrupaciones primarias sobre las que tiene sentido aplicarla. */
-  disponiblePara: AgruparChoice[];
-  /** La capacidad que el servicio debe anunciar para poder pedirla. */
-  requiere?: string;
-  /** Todavía no implementada: se anuncia pero no se puede elegir. */
-  proximamente?: boolean;
-}
+export type AgruparChoice = 'documento' | 'mes' | 'tramite';
 
 export interface Agrupar {
   id: AgruparChoice;
@@ -117,15 +64,6 @@ export interface Agrupar {
    * como siempre, así que la pantalla no la ofrece contra uno que no la trae.
    */
   requiere?: string;
-  /**
-   * Los tipos de documento para los que esta agrupación tiene sentido.
-   *
-   * Sin esto la opción se ofrece siempre. Con esto, la pantalla la esconde
-   * cuando el tipo elegido no la admite: el inventario Kingspan no se agrupa.
-   */
-  disponiblePara?: TipoDocumentoChoice[];
-  /** Se muestra, pero todavía no se puede elegir. */
-  proximamente?: boolean;
 }
 
 export interface Habilidad {
@@ -175,22 +113,6 @@ export interface Habilidad {
    * es lo de siempre, o uno por mes, que junta las páginas de un mismo mes.
    */
   agrupar?: { pregunta: string; opciones: Agrupar[] };
-  /**
-   * Qué empresa trae la caja, cuando la misma habilidad sirve para papeles que
-   * se inventarían con plantillas distintas.
-   *
-   * Sólo la caja de correspondencia lo ofrece: Afinia o inventario Kingspan.
-   * De aquí cuelgan la plantilla del inventario y las agrupaciones.
-   */
-  tipoDocumento?: { pregunta: string; opciones: TipoDocumento[] };
-  /**
-   * Un segundo criterio de división dentro de cada grupo primario.
-   *
-   * «Dividir por las dos»: primero por trámite y luego, dentro de cada trámite,
-   * por grupo de páginas. Se modela ya, aunque la segunda opción todavía no
-   * esté implementada, para no tener que cambiar el contrato después.
-   */
-  agruparSecundaria?: { pregunta: string; hint?: string; opciones: AgruparSecundaria[] };
   /**
    * Las acciones que admite, cuando no son las de siempre.
    *
@@ -291,81 +213,28 @@ export const HABILIDADES: Habilidad[] = [
   },
   {
     id: 'correspondencia',
-    titulo: 'Caja de correspondencia',
-    papel: 'Expediente revuelto: facturas, actas, reclamos y sus respuestas, mezclados.',
+    titulo: 'Caja de correspondencia (Afinia)',
+    papel: 'Expediente revuelto: facturas, actas, reclamos y sus respuestas, mezclados. Inventario Índice Electrónico (Afinia).',
     corta: 'Hoja contra hoja, por continuidad. No hay ningún número que mande.',
     nombra: 'Por su puesto en la caja y su tipo documental.',
     aportaIa:
       'El texto de las hojas que llegaron sin capa de texto, para que las reglas de continuidad tengan con qué decidir.',
     tipo: 'auto',
-    task: null,
-    /** Tipo de documento a procesar: define plantilla de inventario y agrupaciones disponibles. */
-    tipoDocumento: {
-      pregunta: '¿Para qué empresa es esta caja?',
-      opciones: [
-        {
-          id: 'indice_electronico',
-          label: 'Afinia',
-          descripcion: 'Inventario por RE/trámite, en la plantilla de Afinia (correspondencia estándar).',
-          plantilla: 'indice_electronico',
-          agruparDisponibles: ['tramite', 'documento', 'mes', 'grupo_paginas'],
-          accionesDisponibles: ['split', 'inventory', 'both']
-        },
-        {
-          id: 'kingspan',
-          label: 'Kingspan',
-          descripcion: 'Inventario Kingspan con campos No. DOCUMENTO, DESDE, HASTA. Cada documento es único.',
-          plantilla: 'kingspan',
-          agruparDisponibles: [], // Kingspan no agrupa, cada doc es único
-          accionesDisponibles: ['inventory', 'both']
-        },
-        {
-          id: 'mixto',
-          label: 'Mixto',
-          descripcion: 'Detecta la empresa por documento y aplica su plantilla, sin tener que declararla antes.',
-          plantilla: 'auto',
-          agruparDisponibles: ['tramite', 'documento', 'mes', 'grupo_paginas'],
-          accionesDisponibles: ['split', 'inventory', 'both']
-        }
-      ]
-    },
-    acciones: [
-      {
-        id: 'segment',
-        label: 'Dividir por documento',
-        hint: 'Un PDF por unidad documental según agrupación elegida'
-      },
-      {
-        id: 'inventory',
-        label: 'Solo inventariar',
-        hint: 'Genera el inventario (Afinia o Kingspan). El PDF queda intacto.'
-      },
-      {
-        id: 'both',
-        label: 'Dividir e inventariar',
-        hint: 'Los dos: PDFs por documento + inventario correspondiente.'
-      }
-    ],
-    /**
-     * Agrupación primaria: qué va en cada archivo.
-     *
-     * Es el `agrupar` de siempre, pero ahora cada opción declara para qué tipo
-     * de documento sirve. El inventario Kingspan no agrupa: cada documento es
-     * único, así que con ese tipo este paso ni se muestra.
-     */
+    task: 'segment',
     agrupar: {
       pregunta: '¿Qué va en cada archivo?',
       opciones: [
         {
+          // La primera y la que viene elegida: estas cajas se dividen e
+          // inventarían por trámite, como lo dictó el operador.
           id: 'tramite',
           label: 'Por trámite: un archivo por número RE',
           agrupa:
-            'Cada sello de radicación y cada carta con etiqueta de envío abren su propio PDF; la respuesta o la notificación que citan el mismo número RE van con su escrito. La cédula y la factura van con la hoja anterior.',
+            'Cada sello de radicación y cada carta con la etiqueta de envío de LECTA abren su propio PDF; la respuesta o la notificación que citan el mismo número RE van con su escrito. Un RE nuevo corta. La cédula y la factura van siempre con la hoja anterior, y lo que el escrito enumera en «ANEXOS» va con él.',
           cuesta:
             'Las páginas escaneadas se leen con OCR para encontrarles el número RE y la fecha. Con «Solo OCR» no cuesta nada. Si ninguna página trae un RE legible, la caja sale un archivo por documento.',
           nombra: 'Por su puesto, su RE y su fecha: 01-RE3110202138312-02-09-2021_RECLAMO.pdf',
           entrega: 'Deja un PDF por trámite.',
-          disponiblePara: ['indice_electronico', 'mixto'],
           requiere: 'agrupar-por-tramite'
         },
         {
@@ -373,8 +242,7 @@ export const HABILIDADES: Habilidad[] = [
           label: 'Un archivo por documento',
           agrupa:
             'Cada documento que sale del corte es un PDF, numerado por su puesto en la caja. La cédula y la factura van siempre dentro del documento anterior.',
-          cuesta: 'No lee con OCR: usa la capa de texto del PDF.',
-          disponiblePara: ['indice_electronico', 'mixto']
+          cuesta: 'No lee con OCR: usa la capa de texto del PDF.'
         },
         {
           id: 'mes',
@@ -382,48 +250,40 @@ export const HABILIDADES: Habilidad[] = [
           agrupa:
             'Se busca la fecha de cada página y se juntan en un solo PDF todas las del mismo mes, aunque sean de días distintos y estén separadas en la caja. Una página sin fecha se une a la anterior.',
           cuesta:
-            'Las páginas escaneadas se leen con OCR para encontrarles la fecha. Con «Solo OCR» no cuesta nada; con «OCR + IA» sólo se paga la página que el OCR local no logró leer.',
+            'Las páginas escaneadas se leen con OCR para encontrarles la fecha. Con «Solo OCR» no cuesta nada; con «OCR + IA» sólo se paga la página que el OCR local no logró leer. La que queda sin fecha entre dos meses distintos, o al principio de la caja, va a revisión.',
           nombra: 'Por su mes y su tipo documental: 2023-05_OFICIO.pdf',
           entrega: 'Deja un PDF por mes.',
-          disponiblePara: ['indice_electronico', 'mixto'],
           requiere: 'agrupar-por-mes'
-        },
-        {
-          id: 'grupo_paginas',
-          label: 'Grupo de páginas: cada N páginas',
-          agrupa:
-            'Corta la caja en bloques de un número fijo de páginas, sin mirar el contenido: cada 50, cada 100. Sirve para cajas que se entregan por tomos y no por documento.',
-          cuesta: 'No lee nada: sólo cuenta páginas.',
-          disponiblePara: ['indice_electronico', 'mixto'],
-          proximamente: true
         }
       ]
-    },
-    /**
-     * «Dividir por las dos»: un segundo criterio dentro de cada grupo primario.
-     *
-     * Se modela ya para no cambiar el contrato después. La segunda opción se
-     * anuncia pero todavía no se puede elegir.
-     */
-    agruparSecundaria: {
-      pregunta: '¿Subdividir cada grupo por un segundo criterio?',
-      hint: 'Opcional. Primero se agrupa como arriba y luego se parte cada grupo otra vez. Todavía no está disponible.',
-      opciones: [
-        {
-          id: 'ninguna',
-          label: 'No subdividir',
-          hint: 'Sólo la agrupación principal.',
-          disponiblePara: ['tramite', 'documento', 'mes', 'grupo_paginas']
-        },
-        {
-          id: 'grupo_paginas',
-          label: 'Por grupo de páginas',
-          hint: 'Dentro de cada grupo principal, cortar cada N páginas.',
-          disponiblePara: ['tramite', 'documento', 'mes'],
-          requiere: 'agrupar-por-grupo-paginas',
-          proximamente: true
-        }
-      ]
+    }
+  },
+  {
+    id: 'kingspan',
+    titulo: 'Caja de correspondencia (Kingspan)',
+    papel: 'Expediente de Kingspan: cada documento es único y se inventaría con campos No. DOCUMENTO, DESDE, HASTA, PDF_ORIGEN, ORDEN.',
+    corta: 'Hoja contra hoja, por continuidad. Cada documento tiene su número en el encabezado.',
+    nombra: 'Por número de documento (DESDE-HASTA) y orden en la caja.',
+    aportaIa:
+      'El OCR local lee el número de documento del encabezado de cada página. Con «OCR + IA» se re-lee la primera hoja si el OCR falla.',
+    tipo: 'auto',
+    task: null,
+    acciones: [
+      {
+        id: 'inventory',
+        label: 'Solo inventariar',
+        hint: 'Genera el inventario Kingspan (No. DOCUMENTO / DESDE / HASTA). El PDF queda intacto.'
+      },
+      {
+        id: 'both',
+        label: 'Dividir e inventariar',
+        hint: 'PDFs por documento + inventario Kingspan.'
+      }
+    ],
+    pideLectura: {
+      id: 'local',
+      porque:
+        'El inventario Kingspan lee el número de documento del encabezado con OCR local. No requiere IA.'
     }
   },
   {
