@@ -196,6 +196,49 @@ class TestCajaYUpd:
         assert _caja(taller) == "100C000235"
 
 
+class TestSeConfirmaEnLaImagen:
+    """La capa de texto del escaneo puede cambiar una cifra: la p.107 de la
+    UPD3869754 dice 14346 y la capa traía 14345. Lo que va al inventario se
+    relee en la imagen."""
+
+    def _taller(self, lecturas):
+        from types import SimpleNamespace
+
+        class Ocr:
+            def read(self, imagen):
+                return SimpleNamespace(text=lecturas.get(imagen, ""))
+
+        control = SimpleNamespace(check=lambda: None)
+        return SimpleNamespace(ocr=lambda: Ocr(), control=control)
+
+    def _fuente(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(render=lambda pagina, banda, dpi: pagina)
+
+    def test_una_punta_mal_leida_se_corrige_y_se_anota(self):
+        from resolutions.api.worker.kingspan import _confirmar
+
+        documentos = _notas([14368, 14300, 14161])  # páginas 2, 3 y 4
+        lecturas = {2: "Número:\n001-NI-00014388\nFecha:\n26/05/2024", 4: "Número:\n001-NI-00014161\nFecha:\n26/05/2024"}
+        corregidos, notas, releidas = _confirmar(self._taller(lecturas), self._fuente(), documentos)
+
+        assert releidas == 2
+        assert corregidos[0].numero == 14388
+        assert filas_de(corregidos)[0].hasta == "001-NI-00014388"
+        assert notas["NI"] == [
+            "verificar p.2: la imagen dice 001-NI-00014388 del 26/05/2024 y el texto del escaneo 001-NI-00014368"
+        ]
+
+    def test_si_la_imagen_no_se_lee_se_queda_la_capa(self):
+        from resolutions.api.worker.kingspan import _confirmar
+
+        documentos = _notas([14368, 14161])
+        corregidos, notas, _ = _confirmar(self._taller({}), self._fuente(), documentos)
+        assert corregidos == documentos
+        assert notas == {}
+
+
 class TestEntidadProductora:
     def test_por_el_nit_del_encabezado(self):
         assert entidad_productora([NOTA_14368]) == "PANELMET SAS"

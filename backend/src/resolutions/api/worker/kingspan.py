@@ -25,6 +25,7 @@ De dónde sale cada columna:
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -135,6 +136,64 @@ def _leer(taller: Taller, source) -> tuple[list[str], list[Documento], int]:
     return textos, documentos, ocr_usado
 
 
+def _confirmar(
+    taller: Taller, source, documentos: list[Documento]
+) -> tuple[list[Documento], dict[str, list[str]], int]:
+    """Relee en la imagen los documentos que van al inventario y corrige la capa.
+
+    La capa de texto de estos escaneos es un OCR viejo y a veces cambia una
+    cifra: en la UPD3869754 la página 107 dice «001-NI-00014346» y la capa
+    traía 14345. Dentro del rango no se nota, pero en una punta cambiaría el
+    DESDE o el HASTA sin que nadie lo viera. Por eso se releen con Tesseract,
+    sobre la franja del encabezado, los que salen escritos: las dos puntas de
+    cada serie y los que quedan fuera del rango. Son unas pocas páginas por UPD.
+
+    Si las dos lecturas no coinciden manda la de la imagen, y se anota para que
+    alguien lo mire con el papel delante. Si Tesseract no lee nada, se queda la
+    de la capa: no es una contradicción, es una lectura que falta.
+    """
+    a_releer: dict[int, Documento] = {}
+    for fila in filas_de(documentos):
+        if not fila.documentos:
+            continue
+        puntas = {fila.documentos[0], fila.documentos[-1]}
+        desde = min(documento.numero for documento in puntas)
+        hasta = max(documento.numero for documento in puntas)
+        for documento in fila.documentos:
+            if documento in puntas or not desde <= documento.numero <= hasta:
+                a_releer[documento.pagina] = documento
+    if not a_releer:
+        return documentos, {}, 0
+
+    ocr = taller.ocr()
+    corregidos: dict[int, Documento] = {}
+    notas: dict[str, list[str]] = {}
+    for pagina, documento in sorted(a_releer.items()):
+        taller.control.check()
+        try:
+            leido = documento_de(ocr.read(source.render(pagina, ENCABEZADO, dpi=300)).text, pagina)
+        except Exception as error:  # noqa: BLE001 - confirmar es una ayuda, no un requisito
+            logger.warning("no se pudo releer la página %s: %s", pagina, error)
+            continue
+        if leido is None or leido.serie != documento.serie:
+            continue
+        if (leido.numero, leido.fecha) == (documento.numero, documento.fecha):
+            continue
+        corregido = Documento(
+            pagina=pagina,
+            serie=documento.serie,
+            numero=leido.numero,
+            fecha=leido.fecha or documento.fecha,
+        )
+        corregidos[pagina] = corregido
+        notas.setdefault(documento.serie, []).append(
+            f"verificar p.{pagina}: la imagen dice {corregido.codigo}"
+            f"{' del ' + corregido.fecha.strftime('%d/%m/%Y') if corregido.fecha else ''}"
+            f" y el texto del escaneo {documento.codigo}"
+        )
+    return [corregidos.get(d.pagina, d) for d in documentos], notas, len(a_releer)
+
+
 def _sin_numeros(textos: list[str]) -> FilaKingspan:
     """La fila de una UPD sin documentos numerados: conciliaciones, cartas, formatos.
 
@@ -163,6 +222,10 @@ def _caja(taller: Taller) -> str:
             if caja != NO_APLICA:
                 return caja
     return NO_APLICA
+
+
+def _serie(fila: FilaKingspan) -> str | None:
+    return fila.documentos[0].serie if fila.documentos else None
 
 
 def _upd(nombre: str) -> str:
@@ -266,10 +329,22 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
     source = _open_source(taller)
     try:
         textos, documentos, ocr_usado = _leer(taller, source)
+        taller.progress.emit(
+            ProgressEvent(
+                stage=Stage.IDENTIFYING,
+                done=0,
+                total=1,
+                detail="confirmando en la imagen el primer y el último documento",
+            )
+        )
+        documentos, discrepancias, releidas = _confirmar(taller, source, documentos)
     finally:
         source.close()
 
-    filas = filas_de(documentos) or [_sin_numeros(textos)]
+    filas = [
+        replace(fila, notas="; ".join(filter(None, [fila.notas, *discrepancias.get(_serie(fila), [])])))
+        for fila in filas_de(documentos)
+    ] or [_sin_numeros(textos)]
 
     taller.progress.emit(
         ProgressEvent(
@@ -315,6 +390,12 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
         )
     if ocr_usado:
         notices.append(f"{ocr_usado} página(s) se leyeron por OCR.")
+    if releidas:
+        corregidas = sum(len(notas) for notas in discrepancias.values())
+        notices.append(
+            f"se confirmaron en la imagen {releidas} documento(s) del inventario"
+            + (f"; {corregidas} no coincidía(n) con el texto del escaneo (ver NOTAS)." if corregidas else ".")
+        )
 
     taller.progress.emit(ProgressEvent(stage=Stage.DONE, done=1, total=1))
 
