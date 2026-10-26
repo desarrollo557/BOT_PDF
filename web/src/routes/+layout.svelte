@@ -142,10 +142,16 @@
         {/each}
       </nav>
 
-      <div class="rail">
-        <StatusRail {active} />
-        <SessionMenu />
-      </div>
+      <div class="estado"><StatusRail {active} /></div>
+      <!-- Sólo en el teléfono: ahí la consola no deja riel en el borde. -->
+      <button
+        type="button"
+        class="btn btn-ghost btn-sm consola-movil"
+        onclick={() => window.dispatchEvent(new CustomEvent('folia:consola'))}
+      >
+        Consola
+      </button>
+      <div class="sesion"><SessionMenu /></div>
     </header>
 
     <main>
@@ -168,6 +174,10 @@
 <CredencialesDeRed />
 
 <style>
+  /* Una fila en pantalla ancha: marca · SIAR · pestañas · estado · sesión.
+     Por debajo de 1024 px, dos: arriba quién es y quién opera, abajo adónde ir
+     y cómo está el servicio. Por debajo de 640 px el subtítulo se calla y el
+     riel se queda en su luz y su palabra. */
   .topbar {
     position: sticky;
     top: 0;
@@ -175,18 +185,18 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.75rem 1.5rem;
+    gap: var(--space-3) var(--space-6);
     border-bottom: 1px solid var(--hairline);
     /* Sólida: el filete de abajo ya separa la barra del contenido, y un fondo
        translúcido y desenfocado es un adorno que esta consola no lleva. */
     background: var(--surface-1);
-    padding: 0.7rem 1.5rem;
+    padding: var(--space-3) var(--space-6);
   }
 
   .brand {
     display: flex;
     align-items: center;
-    gap: 0.7rem;
+    gap: var(--space-3);
     color: inherit;
     text-decoration: none;
   }
@@ -226,7 +236,7 @@
     display: flex;
     align-items: center;
     border-left: 1px solid var(--hairline);
-    padding-left: 0.9rem;
+    padding-left: var(--space-4);
   }
   .owner img {
     width: auto;
@@ -244,17 +254,60 @@
   .tabs > a {
     display: flex;
     align-items: center;
-    gap: 0.45rem;
+    gap: var(--space-2);
     transition:
       background-color var(--duration-fast) var(--ease-out),
       color var(--duration-fast) var(--ease-out);
   }
 
-  .rail {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
+  .estado {
     margin-left: auto;
+  }
+  .consola-movil {
+    display: none;
+  }
+
+  @media (max-width: 1023px) {
+    .brand {
+      order: 1;
+    }
+    .owner {
+      order: 2;
+    }
+    .sesion {
+      order: 3;
+      margin-left: auto;
+    }
+    .tabs {
+      order: 4;
+    }
+    .estado {
+      order: 5;
+    }
+  }
+
+  @media (max-width: 639px) {
+    .topbar {
+      gap: var(--space-2) var(--space-3);
+      padding: var(--space-2) var(--space-4);
+    }
+    .titles small {
+      display: none;
+    }
+    .owner {
+      padding-left: var(--space-3);
+    }
+    .tabs > a {
+      padding-inline: 0.6rem;
+    }
+    .consola-movil {
+      display: inline-flex;
+      order: 3;
+      margin-left: auto;
+    }
+    .sesion {
+      margin-left: 0;
+    }
   }
 
   /* The console publishes how much room it is taking down the right edge; the
@@ -262,13 +315,18 @@
      the operator drags it. */
   .beside {
     margin-right: var(--console-space, 34px);
-    transition: margin-right 0.12s ease-out;
+    transition: margin-right var(--duration-fast) var(--ease-out);
   }
 
   main {
     display: block;
     min-height: calc(100dvh - 4.5rem);
-    padding: 1.25rem 1.5rem 2rem;
+    padding: var(--space-5) var(--space-6) var(--space-8);
+  }
+  @media (max-width: 639px) {
+    main {
+      padding: var(--space-4) var(--space-4) var(--space-6);
+    }
   }
   @media (min-width: 1536px) {
     main {

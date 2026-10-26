@@ -322,9 +322,14 @@ body {
     border-color: var(--ink-2);
     color: var(--ink);
   }
+  /* Apagado se dice con algo más que un tono más claro: sin relleno, borde
+     punteado y letra tenue -- el mismo lenguaje que una tarjeta apagada. */
   .btn:disabled,
   .btn[aria-disabled='true'] {
-    opacity: 0.5;
+    border-style: dashed;
+    border-color: var(--axis);
+    background: transparent;
+    color: var(--muted);
     cursor: not-allowed;
   }
   .btn svg {

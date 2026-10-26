@@ -144,4 +144,18 @@
     padding-left: var(--space-2);
     color: var(--muted);
   }
+
+  /* En el teléfono, la luz y su palabra: los procesos, la cola y la visión
+     son detalle que cabe en pantallas más anchas. */
+  @media (max-width: 639px) {
+    .rail {
+      border: 0;
+      background: none;
+      padding: 0;
+    }
+    .sep,
+    .item {
+      display: none;
+    }
+  }
 </style>

@@ -50,14 +50,34 @@
   let open = $state(true);
   let width = $state(DEFAULT_WIDTH);
 
+  /**
+   * En un teléfono la consola no puede ser una columna: abierta taparía la
+   * pantalla y además le quitaría su ancho al contenido. Ahí no reserva sitio:
+   * abierta es una hoja a pantalla completa, cerrada un botón flotante, y la
+   * primera vez arranca cerrada.
+   */
+  let estrecha = $state(false);
+
   onMount(() => {
-    open = remembered(OPEN_KEY, true, (raw) => raw !== '0');
+    const pantalla = window.matchMedia('(max-width: 639px)');
+    estrecha = pantalla.matches;
+    const alCambiar = (cambio: MediaQueryListEvent) => (estrecha = cambio.matches);
+    pantalla.addEventListener('change', alCambiar);
+
+    open = remembered(OPEN_KEY, !estrecha, (raw) => raw !== '0');
     width = remembered(WIDTH_KEY, DEFAULT_WIDTH, (raw) => {
       const value = Number(raw);
       return Number.isFinite(value)
         ? Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, value))
         : DEFAULT_WIDTH;
     });
+    // En el teléfono quien la abre es el botón «Consola» de la barra (ver
+    // +layout.svelte): ahí no hay borde ni esquina libre para un riel.
+    window.addEventListener('folia:consola', toggle);
+    return () => {
+      pantalla.removeEventListener('change', alCambiar);
+      window.removeEventListener('folia:consola', toggle);
+    };
   });
 
   function toggle() {
@@ -91,7 +111,7 @@
   $effect(() => {
     document.documentElement.style.setProperty(
       '--console-space',
-      `${open ? width : RAIL}px`
+      `${estrecha ? 0 : open ? width : RAIL}px`
     );
     return () => document.documentElement.style.removeProperty('--console-space');
   });
@@ -113,7 +133,7 @@
 </script>
 
 {#if open}
-  <aside class="dock" style:width={`${width}px`} aria-label="Consola de procesamiento">
+  <aside class="dock" style:width={estrecha ? '100%' : `${width}px`} aria-label="Consola de procesamiento">
     <div
       class="grip"
       class:dragging
@@ -489,5 +509,15 @@
     letter-spacing: 0.14em;
     text-transform: uppercase;
     writing-mode: vertical-rl;
+  }
+
+  /* El teléfono: la hoja ocupa la pantalla y no se arrastra; cerrada no deja
+     riel -- abajo taparía el pie fijo del asistente --, y la abre el botón
+     «Consola» de la barra. */
+  @media (max-width: 639px) {
+    .grip,
+    .rail {
+      display: none;
+    }
   }
 </style>

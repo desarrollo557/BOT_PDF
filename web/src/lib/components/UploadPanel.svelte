@@ -779,15 +779,6 @@
     min-width: 7.5rem;
   }
 
-  /* Deshabilitado se dice con algo más que un tono más claro: sin relleno,
-     borde punteado, y el motivo como tooltip de «Siguiente». */
-  .nav .btn:disabled {
-    border-style: dashed;
-    border-color: var(--axis);
-    background: transparent;
-    color: var(--muted);
-  }
-
   /* -- small screens ------------------------------------------------------- */
 
   @container wizard (max-width: 36rem) {
