@@ -1821,6 +1821,12 @@ class FolderRunner:
                 if indices:
                     libro_de_indices_de(indices, run.destination)
                 fuid_general_de(fuids, run.destination, lecturas=run.lecturas_de_fuid)
+            if run.tipo_documento == "kingspan":
+                # El inventario oficial de Kingspan es un solo libro para toda
+                # la entrega, no uno por UPD.
+                from .worker.kingspan import inventario_general
+
+                inventario_general(run.destination)
         except Exception:  # noqa: BLE001 - la entrega de cada PDF ya está hecha
             logger.warning("no se pudieron escribir los generales de %s", run.source, exc_info=True)
         self._escribir_el_analisis(run, analisis, avisos)

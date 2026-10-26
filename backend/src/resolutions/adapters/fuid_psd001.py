@@ -102,13 +102,28 @@ def celdas_de(fila: FuidRow, cabecera: Cabecera, *, inventariado: date | None) -
 
 
 class FuidPsd001:
-    """Rellena la plantilla F-PSD-001 con las filas que se le den."""
+    """Rellena la plantilla F-PSD-001 con las filas que se le den.
 
-    def __init__(self, plantilla: Path, progress: ProgressReporter | None = None) -> None:
+    ``hoja`` y ``primera_fila`` existen porque el mismo formato circula en dos
+    versiones: la de la plantilla de siempre (hoja «F-PSD-001», datos desde la
+    fila 8) y la del inventario oficial de Kingspan (hoja «FUID», datos desde la
+    7). Las columnas son las mismas; sólo cambia dónde empiezan.
+    """
+
+    def __init__(
+        self,
+        plantilla: Path,
+        progress: ProgressReporter | None = None,
+        *,
+        hoja: str = HOJA,
+        primera_fila: int = PRIMERA_FILA,
+    ) -> None:
         self._plantilla = Path(plantilla)
         if not self._plantilla.is_file():
             raise FileNotFoundError(f"no se encuentra la plantilla del FUID: {plantilla}")
         self._progress = progress or NullProgressReporter()
+        self._hoja = hoja
+        self._primera_fila = primera_fila
 
     def write(
         self,
@@ -118,26 +133,37 @@ class FuidPsd001:
         cabecera: Cabecera | None = None,
         inventariado: date | None = None,
     ) -> Path:
+        fecha = inventariado or date.today()
+        return self.write_cells(
+            [celdas_de(fila, cabecera or Cabecera(), inventariado=fecha) for fila in filas],
+            destino,
+        )
+
+    def write_cells(self, filas: list[list[object]], destino: Path | str) -> Path:
+        """Escribe filas ya repartidas en las columnas A a AA.
+
+        Es la mitad de `write` que no sabe de `FuidRow`: la usa el inventario
+        general de una carpeta, que junta filas leídas de otros FUID ya escritos
+        y no tiene de dónde reconstruir la fila original.
+        """
+        destino_path = Path(destino)
         total = len(filas)
         # Abrir la plantilla es lo que más tarda, y ocurre antes de la primera
         # fila: sin este aviso la pantalla parece colgada justo al empezar.
         self._anunciar(0, total, "abriendo la plantilla del formato")
         libro = load_workbook(self._plantilla)
-        hoja = libro[HOJA]
+        hoja = libro[self._hoja]
 
-        estilos = self._estilos_de_fila(hoja)
-        fecha = inventariado or date.today()
-        for indice, fila in enumerate(filas):
-            self._escribir_fila(
-                hoja, PRIMERA_FILA + indice, fila, cabecera or Cabecera(), estilos, fecha
-            )
+        estilos = self._estilos_de_fila(hoja, self._primera_fila)
+        for indice, celdas in enumerate(filas):
+            self._escribir_celdas(hoja, self._primera_fila + indice, celdas, estilos)
             if (indice + 1) % FILAS_POR_AVISO == 0:
                 self._anunciar(indice + 1, total, "escribiendo las filas")
 
         self._anunciar(total, total, "guardando la planilla")
-        destino.parent.mkdir(parents=True, exist_ok=True)
-        libro.save(destino)
-        return destino
+        destino_path.parent.mkdir(parents=True, exist_ok=True)
+        libro.save(str(destino_path))
+        return destino_path
 
     def _anunciar(self, hechas: int, total: int, detalle: str) -> None:
         """Decir por dónde va. Un fallo del aviso nunca pierde la planilla."""
@@ -153,11 +179,11 @@ class FuidPsd001:
             logger.debug("no se pudo anunciar el avance del FUID", exc_info=True)
 
     @staticmethod
-    def _estilos_de_fila(hoja: Worksheet) -> list[dict]:
-        """El formato de la fila 8, que es el que llevan todos los registros."""
+    def _estilos_de_fila(hoja: Worksheet, fila: int = FILA_ESTILO) -> list[dict]:
+        """El formato de la primera fila de datos, que es el que llevan todos los registros."""
         estilos = []
         for columna in range(1, COLUMNAS + 1):
-            celda = hoja.cell(row=FILA_ESTILO, column=columna)
+            celda = hoja.cell(row=fila, column=columna)
             estilos.append(
                 {
                     "font": copy(celda.font),
@@ -169,16 +195,13 @@ class FuidPsd001:
         return estilos
 
     @staticmethod
-    def _escribir_fila(
+    def _escribir_celdas(
         hoja: Worksheet,
         numero: int,
-        fila: FuidRow,
-        cabecera: Cabecera,
+        celdas: list[object],
         estilos: list[dict],
-        inventariado: date,
     ) -> None:
-        for indice, valor in enumerate(celdas_de(fila, cabecera, inventariado=inventariado)):
-
+        for indice, valor in enumerate(celdas[:COLUMNAS]):
             celda = hoja.cell(row=numero, column=indice + 1, value=valor)
             estilo = estilos[indice]
             celda.font = copy(estilo["font"])
@@ -192,4 +215,11 @@ class FuidPsd001:
             # como el 8 de marzo. Además la celda puede llevar N/A, que no es
             # una fecha en ningún formato. El número de orden y los folios sí
             # son números y se dejan como tales.
-            celda.number_format = "@" if isinstance(valor, str) else "General"
+            #
+            # Quien pase una fecha de verdad -- el inventario de Kingspan, que
+            # en su oficial las guarda así para poder ordenarlas -- la recibe
+            # como fecha, pero con el día delante para que no se lea al revés.
+            if isinstance(valor, date):
+                celda.number_format = "DD/MM/YYYY"
+            else:
+                celda.number_format = "@" if isinstance(valor, str) else "General"

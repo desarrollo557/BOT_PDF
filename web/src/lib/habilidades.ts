@@ -263,29 +263,31 @@ export const HABILIDADES: Habilidad[] = [
   {
     id: 'kingspan',
     titulo: 'Caja de correspondencia (Kingspan)',
-    papel: 'Expediente de Kingspan: cada documento es único y se inventaría con campos No. DOCUMENTO, DESDE, HASTA, PDF_ORIGEN, ORDEN.',
-    corta: 'Hoja contra hoja, por continuidad. Cada documento tiene su número en el encabezado.',
-    nombra: 'Por número de documento (DESDE-HASTA) y orden en la caja.',
+    papel:
+      'Cada PDF es una UPD de Kingspan: un paquete de notas internas, comprobantes de egreso, recibos de caja… con su número impreso (001-NI-00014161).',
+    corta: 'Si lo pides, un PDF por documento: cada uno con sus anexos grapados detrás.',
+    nombra:
+      'Una fila por UPD en el inventario oficial de Kingspan: asunto, el primer y el último documento del paquete (DESDE / HASTA) con su fecha, caja y UPD. En una carpeta, además, un solo libro con todas las UPD.',
     aportaIa:
-      'El OCR local lee el número de documento del encabezado de cada página. Con «OCR + IA» se re-lee la primera hoja si el OCR falla.',
+      'No hace falta IA: el número y la fecha están impresos y los lee el OCR local, que relee el encabezado cuando el texto del escaneo lo perdió.',
     tipo: 'auto',
     task: null,
     acciones: [
       {
         id: 'inventory',
         label: 'Solo inventariar',
-        hint: 'Genera el inventario Kingspan (No. DOCUMENTO / DESDE / HASTA). El PDF queda intacto.'
+        hint: 'El inventario oficial de Kingspan, una fila por UPD. El PDF queda intacto.'
       },
       {
         id: 'both',
         label: 'Dividir e inventariar',
-        hint: 'PDFs por documento + inventario Kingspan.'
+        hint: 'Un PDF por documento (001-NI-00014161.pdf) y el inventario oficial de Kingspan.'
       }
     ],
     pideLectura: {
       id: 'local',
       porque:
-        'El inventario Kingspan lee el número de documento del encabezado con OCR local. No requiere IA.'
+        'El número y la fecha de cada documento están impresos: el OCR local los lee. No requiere IA.'
     }
   },
   {
