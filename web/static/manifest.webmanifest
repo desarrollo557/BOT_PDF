@@ -1,0 +1,18 @@
+{
+  "name": "División de documentos AFINIA",
+  "short_name": "División AFINIA",
+  "description": "Clasificación y división automática de documentos",
+  "lang": "es",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fcfcfb",
+  "theme_color": "#fcfcfb",
+  "icons": [
+    {
+      "src": "/icono.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

@@ -112,7 +112,7 @@
           <path class="split" d="M13 11h5M13 14h5M13 17h3" />
         </svg>
         <span class="titles">
-          <b>Separador de resoluciones</b>
+          <b>División de documentos AFINIA</b>
           <small>Clasificación y división automática de documentos</small>
         </span>
       </a>
@@ -123,9 +123,9 @@
         <img src="/siar-marca.png" alt="SIAR" width="72" height="38" />
       </span>
 
-      <nav class="tabs segmented">
+      <nav class="tabs segmented" aria-label="Secciones">
         {#each TABS as tab (tab.href)}
-          <a href={tab.href} class:current={tab.match(here)}>
+          <a href={tab.href} aria-current={tab.match(here) ? 'page' : undefined}>
             {tab.label}
             {#if tab.badge}
               <span class="badge tabular" data-tone={tab.tone}>{tab.badge}</span>

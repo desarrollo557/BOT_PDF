@@ -365,8 +365,9 @@ body {
   }
 
   /* Control segmentado: las pestañas de la barra, «Por documento / Por PDF
-     generado», los filtros por estado. El botón elegido lleva `.current` o
-     `aria-selected="true"` / `aria-pressed="true"`. */
+     generado», los filtros por estado. El botón elegido lleva `.current`,
+     `aria-selected="true"` / `aria-pressed="true"`, o `aria-current="page"`
+     cuando es un enlace de navegación. */
   .segmented {
     display: inline-flex;
     flex-wrap: wrap;
@@ -392,7 +393,7 @@ body {
   .segmented > :is(button, a):hover {
     color: var(--ink);
   }
-  .segmented > :is(button, a):is(.current, [aria-selected='true'], [aria-pressed='true']) {
+  .segmented > :is(button, a):is(.current, [aria-selected='true'], [aria-pressed='true'], [aria-current='page']) {
     background: var(--surface-2);
     color: var(--ink);
     box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);

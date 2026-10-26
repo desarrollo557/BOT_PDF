@@ -37,7 +37,7 @@
         <path class="split" d="M13 11h5M13 14h5M13 17h3" />
       </svg>
       <div>
-        <h1>Separador de resoluciones</h1>
+        <h1>División de documentos AFINIA</h1>
         <p>Clasificación y división automática de documentos</p>
       </div>
     </header>
