@@ -306,6 +306,14 @@ _FORMULARIO_DE_LA_CONSTANCIA = (
     re.compile(r"\bN\W{0,3}\s*P\W?Q\W?R\b"),
     re.compile(r"\bCAUSA\s*[:.]"),
 )
+#: Las otras dos formas de la constancia en las cajas de Magangué (2026-10-26):
+#: la del contenido de la reclamación, con su RE en el título (1003064 pág.
+#: 10), y la de recepción de peticiones, quejas y reclamos (1000265 pág. 1).
+#: Con lo que el escáner hace de la palabra: «CONSTANOA DE RECEPCIÓN» (1000186
+#: pág. 3), «CONSTANZA».
+_OTRAS_CONSTANCIAS = re.compile(
+    r"CONSTAN\w{1,4}\s+DEL?\s+CONTENIDO\s+DE\s+LA\s+RECLAMACION|CONSTAN\w{1,4}\s+DE\s+RECEPCION\s+DE\s+PETICIONES"
+)
 #: La publicación del aviso, por su título en su renglón: lleva al lado el aviso,
 #: cuyo «Asunto: Notificación por aviso» no la nombra (1000690, 2026-10-22).
 _PUBLICACION_DEL_AVISO = re.compile(r"^\W*PUBLICACION\s+DEL?\s+AVISO\W*$")
@@ -396,6 +404,19 @@ PIEZAS_DEL_ACUERDO = frozenset(
 #: Cómo se llama el documento que las junta.
 ACUERDO_DE_PAGO = "RECONOCIMIENTO DE DEUDA Y ACUERDO DE PAGO"
 
+#: Los formularios de la oficina que van cada uno en su documento. Lo dictó el
+#: operador el 2026-10-26 sobre las cajas de Magangué: «una constancia de
+#: reclamación siempre va sola a menos que lleve algún anexo, y sea evidente el
+#: anexo», y «la notificación personal también va sola»; la carta de respuesta
+#: que la sigue es otro documento, con sus anexos.
+CONSTANCIA_DE_RECLAMACION = "CONSTANCIA DE RECLAMACION"
+#: En cuántos renglones del principio se busca el «Consecutivo No.» de la
+#: carta de la empresa.
+RENGLONES_DEL_CONSECUTIVO = 6
+NOTIFICACION_PERSONAL = "NOTIFICACION PERSONAL"
+RESPUESTA_DE_LA_EMPRESA = "RESPUESTA DE LA EMPRESA"
+LEY_HABEAS_DATA = "LEY HABEAS DATA"
+
 #: Cuánto de la cabecera se mira para los formatos.
 CABEZA_DEL_FORMATO = 600
 #: El radicado que la carta de la empresa cita en su asunto: «No. RE3110…».
@@ -464,6 +485,37 @@ def es_carta_de_la_empresa(texto: str) -> bool:
     return titulo_del_documento(texto).startswith(("RESPUESTA", "CITACION", "NOTIFICACION", "CONSTANCIA"))
 
 
+def formulario_que_abre(texto: str) -> str | None:
+    """El formulario que empieza en esta hoja y que abre su propio documento.
+
+    - La constancia de reclamación, la notificación personal y la carta de la
+      empresa con su «Consecutivo No.» -- la respuesta que la notificación
+      entrega -- van cada una en su documento.
+    - La Ley Habeas Data y las piezas del acuerdo de pago también se separan
+      de lo que tengan delante; después el acuerdo las junta en el suyo.
+
+    Sólo la primera hoja: la que sigue a la respuesta («Por lo anterior…») no
+    trae consecutivo y sigue con ella.
+    """
+    titulo = titulo_del_documento(texto or "")
+    if titulo in PIEZAS_DEL_ACUERDO:
+        return ACUERDO_DE_PAGO
+    if titulo == CONSTANCIA_DE_RECLAMACION:
+        return CONSTANCIA_DE_RECLAMACION
+    if titulo.startswith(NOTIFICACION_PERSONAL):
+        return NOTIFICACION_PERSONAL
+    if titulo == LEY_HABEAS_DATA:
+        return LEY_HABEAS_DATA
+    # El consecutivo en el encabezado, no citado en el cuerpo: en las
+    # respuestas de Magangué está en los primeros cuatro renglones; en las
+    # cajas de referencia aparecía en el renglón 13 o el 37 de hojas que no
+    # abren nada (UPD2366126, UPD2365925).
+    renglones = [r for r in (texto or "").splitlines() if r.strip()][:RENGLONES_DEL_CONSECUTIVO]
+    if _DE_LA_EMPRESA.search(" ".join(_plano(r) for r in renglones) + " "):
+        return RESPUESTA_DE_LA_EMPRESA
+    return None
+
+
 def _titulo_del_escrito(texto: str) -> str | None:
     for nombre, patron in _TITULOS_DEL_ESCRITO:
         if patron.search(texto):
@@ -521,8 +573,12 @@ def titulo_del_documento(primera_pagina: str, tipo: str | None = None) -> str:
             contestado = _titulo_del_escrito(asunto)
             if contestado and _CITA_RADICADO.search(asunto):
                 return f"RESPUESTA A {contestado}"
-    if _CONSTANCIA.search(cabeza) or all(campo.search(cabeza) for campo in _FORMULARIO_DE_LA_CONSTANCIA):
-        return "CONSTANCIA DE RECLAMACION"
+    if (
+        _CONSTANCIA.search(cabeza)
+        or _OTRAS_CONSTANCIAS.search(cabeza)
+        or all(campo.search(cabeza) for campo in _FORMULARIO_DE_LA_CONSTANCIA)
+    ):
+        return CONSTANCIA_DE_RECLAMACION
     for nombre, patron in _POR_LO_QUE_DICEN:
         if patron.search(cabeza):
             return nombre

@@ -46,6 +46,28 @@ def _grupos(*paginas: list[int]) -> GroupingResult:
     )
 
 
+class TestLaConstanciaConLoQueHaceElEscaner:
+    def test_constanoa_de_recepcion(self):
+        """1000186 pág. 3: el escáner lee «CONSTANOA»."""
+        from resolutions.domain.asunto_del_documento import (
+            formulario_que_abre,
+            titulo_del_documento,
+        )
+
+        texto = "CARIBEMAR DE LA COSTA S.A.S. ESP\nCONSTANOA DE RECEPCIÓN DE PETICIONES. QUEJAS Y RECLAMOS (POR)\n"
+        assert titulo_del_documento(texto) == "CONSTANCIA DE RECLAMACION"
+        assert formulario_que_abre(texto) == "CONSTANCIA DE RECLAMACION"
+
+    def test_la_respuesta_y_la_notificacion_abren(self):
+        from resolutions.domain.asunto_del_documento import formulario_que_abre
+
+        notificacion = "aFinia\nGrupo-epm\nNOTIFICACIÓN PERSONAL RECLAMOS\nEn la fecha"
+        respuesta = "Grupo-epm\nConsecutivo No. 220907090405128\nMAGANGUE, 07 de septiembre"
+        assert formulario_que_abre(notificacion) == "NOTIFICACION PERSONAL"
+        assert formulario_que_abre(respuesta) == "RESPUESTA DE LA EMPRESA"
+        assert formulario_que_abre("No obstante, de conformidad con el artículo 155 de la ley 142") is None
+
+
 class TestLaCausa:
     def test_la_causa_de_la_constancia(self):
         assert causa_de_la_constancia(_constancia("02/04/2024", "Gestionar financiación")) == "GESTIONAR FINANCIACION"
@@ -54,7 +76,10 @@ class TestLaCausa:
 
 
 class TestElAcuerdoConLoSuyo:
-    def test_upd3102729_es_un_solo_documento(self):
+    def test_upd3102729_las_constancias_van_solas(self):
+        """El operador, 2026-10-26: «una constancia de reclamación siempre va
+        sola», y sobre UPD3102729 eligió las constancias aparte y la Habeas Data
+        de la hoja 1 dentro del acuerdo «aunque no estén seguidas»."""
         textos = {
             1: HABEAS,
             2: _constancia("22/09/2023", "Facilidades de pago"),
@@ -65,19 +90,35 @@ class TestElAcuerdoConLoSuyo:
             7: RECONOCIMIENTO,
         }
         grupos, anexos, del_acuerdo = unir_el_acuerdo_de_pago(_grupos([1], [2], [3], [4], [5], [6], [7]), textos)
-        assert [g.page_numbers for g in grupos.groups] == [[1, 2, 3, 4, 5, 6, 7]]
-        assert grupos.groups[0].kind == "RECONOCIMIENTO DE DEUDA Y ACUERDO DE PAGO"
-        assert del_acuerdo == {1, 2, 3, 4, 5, 6, 7}
-        # Lo que no era pieza del acuerdo va como su anexo.
-        assert set(anexos["01"]) >= {1, 2, 3, 4}
+        # El acuerdo queda en el puesto de sus pagarés, con la Habeas Data de arriba.
+        assert [g.page_numbers for g in grupos.groups] == [[2], [3], [4], [1, 5, 6, 7]]
+        assert grupos.groups[3].kind == "RECONOCIMIENTO DE DEUDA Y ACUERDO DE PAGO"
+        assert del_acuerdo == {1, 5, 6, 7}
+        # La Habeas Data va como anexo del acuerdo.
+        assert 1 in anexos[grupos.groups[3].code.value]
+
+    def test_un_reconocimiento_con_dos_pagares_es_un_solo_acuerdo(self):
+        """«Pagaré No. 1000265 2» y «… 3» con un reconocimiento: un acuerdo, aunque
+        una constancia quede en medio (2026-10-26)."""
+        segundo = PAGARE.replace("-2", "-3")
+        textos = {1: PAGARE, 2: CARTA, 3: _constancia("02/04/2024", "Daño medidor"), 4: segundo, 5: RECONOCIMIENTO}
+        grupos, _, _ = unir_el_acuerdo_de_pago(_grupos([1, 2], [3], [4], [5]), textos)
+        assert sorted(g.page_numbers for g in grupos.groups) == [[1, 2, 4, 5], [3]]
+
+    def test_dos_reconocimientos_son_dos_acuerdos(self):
+        otro = RECONOCIMIENTO.replace("2 de abril", "9 de junio")
+        textos = {1: HABEAS, 2: PAGARE, 3: RECONOCIMIENTO, 4: DERECHO_DE_PETICION, 5: PAGARE, 6: otro}
+        grupos, _, _ = unir_el_acuerdo_de_pago(_grupos([1], [2], [3], [4], [5], [6]), textos)
+        assert [g.page_numbers for g in grupos.groups] == [[1, 2, 3], [4], [5, 6]]
 
     def test_la_habeas_data_tambien_debajo(self):
         textos = {1: PAGARE, 2: RECONOCIMIENTO, 3: HABEAS}
         grupos, _, _ = unir_el_acuerdo_de_pago(_grupos([1], [2], [3]), textos)
         assert [g.page_numbers for g in grupos.groups] == [[1, 2, 3]]
 
-    def test_otro_tramite_corta(self):
-        """Una constancia de otra causa y de otro día es otro trámite, y lo de antes no se toca."""
+    def test_la_constancia_de_en_medio_no_entra_y_lo_de_antes_no_se_toca(self):
+        """La Habeas Data va con su acuerdo aunque una constancia quede en medio;
+        la constancia va sola y el escrito de antes no se toca."""
         textos = {
             1: DERECHO_DE_PETICION,
             2: HABEAS,
@@ -86,7 +127,28 @@ class TestElAcuerdoConLoSuyo:
             5: RECONOCIMIENTO,
         }
         grupos, _, _ = unir_el_acuerdo_de_pago(_grupos([1], [2], [3], [4], [5]), textos)
-        assert [g.page_numbers for g in grupos.groups] == [[1], [2], [3], [4, 5]]
+        assert [g.page_numbers for g in grupos.groups] == [[1], [3], [2, 4, 5]]
+
+    def test_la_habeas_data_cruza_la_carta_de_otra_persona(self):
+        """1002421: el acuerdo de Luis Horacio Rangel (1-7), la carta de otra
+        persona (8) y la Habeas Data de Luis Horacio (10): va con su acuerdo
+        aunque la carta, que abre su documento, quede en medio."""
+        carta = "Santa Rosa del Sur-Bolívar, Enero 28 de 2021\nSeñores Funcionarios\nCARIBEMAR\n"
+        textos = {1: RECONOCIMIENTO, 2: PAGARE, 3: CARTA, 4: carta, 5: HABEAS}
+        grupos, _, _ = unir_el_acuerdo_de_pago(_grupos([1], [2], [3], [4], [5]), textos, abren={4})
+        assert [g.page_numbers for g in grupos.groups] == [[1, 2, 3, 5], [4]]
+
+    def test_el_pagare_sin_reconocimiento_no_se_pega_a_la_constancia(self):
+        """1000186: un recurso, una constancia y un pagaré sin reconocimiento.
+        La constancia va sola: el pagaré queda como su acuerdo."""
+        recurso = "FORMATO PARA LA PRESENTACION DE RECURSO DE REPOSICION Y EN SUBSIDIO EL DE APELACION\n"
+        textos = {1: recurso, 2: _constancia("09/11/2020", "Daño medidor"), 3: PAGARE, 4: CARTA}
+        grupos, _, del_acuerdo = unir_el_acuerdo_de_pago(
+            _grupos([1], [2], [3], [4]), textos, abren={2}, cruzan={2}
+        )
+        assert [g.page_numbers for g in grupos.groups] == [[1], [2], [3, 4]]
+        assert grupos.groups[2].kind == "RECONOCIMIENTO DE DEUDA Y ACUERDO DE PAGO"
+        assert del_acuerdo == {3, 4}
 
     def test_lo_que_abre_corta(self):
         textos = {1: HABEAS, 2: PAGARE, 3: RECONOCIMIENTO}

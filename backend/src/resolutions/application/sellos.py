@@ -949,3 +949,66 @@ def separar_las_actas(
         if suyos:
             nuevos[valor] = suyos
     return replace(grupos, groups=salida), nuevos, abiertas
+
+
+def separar_los_formularios(
+    grupos: GroupingResult,
+    formularios: Mapping[int, tuple[str, str | None]],
+    anexos: dict[str, list[int]] | None = None,
+    *,
+    intocables: set[int] | frozenset[int] = frozenset(),
+) -> tuple[GroupingResult, dict[str, list[int]], list[int]]:
+    """Cada formulario de la oficina, en su documento.
+
+    Lo dictó el operador el 2026-10-26 sobre las cajas de Magangué: la
+    constancia de reclamación va sola salvo un anexo evidente, la notificación
+    personal también, y la carta de respuesta que la sigue es otro documento.
+    La continuidad las pegaba: cuatro constancias seguidas salían en un
+    archivo, y la notificación con su respuesta, la foto del medidor y la
+    cédula en otro.
+
+    ``formularios`` dice, de cada hoja que empieza uno, qué es y su radicado:
+    ``("CONSTANCIA DE RECLAMACION", "RE2310202205541")``. Una hoja así abre
+    documento, salvo que siga al mismo formulario con el mismo radicado -- las
+    dos hojas de una misma constancia -- o sea otra pieza del acuerdo de pago,
+    que después se junta entero. Lo que no es formulario -- la cédula, la
+    factura, la foto, la hoja que continúa la carta -- sigue con el que viene
+    abierto: es su anexo.
+
+    ``intocables`` son las hojas que no abren aunque lo parezcan: las que caen
+    dentro de los folios de un sello o se aportaron como prueba de un escrito,
+    que son de ese escrito.
+    """
+    from ..domain.asunto_del_documento import ACUERDO_DE_PAGO
+
+    anexos = anexos or {}
+    piezas: list[tuple[PageGroup, list[int]]] = []
+    abiertas: list[int] = []
+    for grupo in grupos.groups:
+        suyos = set(anexos.get(grupo.code.value, []))
+        tramos: list[list[int]] = []
+        actual: tuple[str, str | None] | None = None
+        for pagina in grupo.page_numbers:
+            clave = None if pagina in intocables else formularios.get(pagina)
+            continua = clave is not None and clave == actual and (clave[1] is not None or clave[0] == ACUERDO_DE_PAGO)
+            if not tramos or (clave is not None and not continua):
+                if tramos:
+                    abiertas.append(pagina)
+                tramos.append([])
+            if clave is not None:
+                actual = clave
+            tramos[-1].append(pagina)
+        for tramo in tramos:
+            pieza = grupo if len(tramos) == 1 else replace(grupo, page_numbers=tramo)
+            piezas.append((pieza, [p for p in tramo if p in suyos]))
+    if not abiertas:
+        return grupos, dict(anexos), []
+    ancho = max(2, len(grupos.groups[0].code.value)) if grupos.groups else 2
+    salida: list[PageGroup] = []
+    nuevos: dict[str, list[int]] = {}
+    for puesto, (pieza, suyos) in enumerate(piezas, start=1):
+        valor = f"{puesto:0{ancho}d}"
+        salida.append(replace(pieza, code=type(pieza.code)(value=valor, raw=valor)))
+        if suyos:
+            nuevos[valor] = suyos
+    return replace(grupos, groups=salida), nuevos, abiertas

@@ -251,6 +251,7 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         leer_sellos,
         retener_los_folios,
         separar_las_actas,
+        separar_los_formularios,
         unir_lo_que_no_abre,
     )
     from ...domain.carta import abre_carta, asunto_de_la_carta
@@ -479,12 +480,58 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     grupos, anexos, abiertas_por_carta, unidas_por_carta, de_prueba = ajustar_por_cartas(
         grupos, anexos, abren=que_abren, siguen=cartas.siguen, pruebas=cartas.pruebas
     )
+    # F2e. Cada formulario de la oficina en su documento (lo dictó el operador
+    # el 2026-10-26 sobre las cajas de Magangué): la constancia de reclamación
+    # y la notificación personal van solas salvo un anexo evidente, y la carta
+    # de respuesta que sigue a la notificación es otro documento. La Habeas
+    # Data y las piezas del acuerdo también se separan de lo de delante; el
+    # acuerdo (F4b) las junta después en el suyo.
+    from ...domain.asunto_del_documento import ACUERDO_DE_PAGO as _ACUERDO
+    from ...domain.asunto_del_documento import LEY_HABEAS_DATA as _HABEAS
+    from ...domain.asunto_del_documento import formulario_que_abre
+    from ...domain.tramites import radicado_de as _radicado_de
+
+    formularios = {}
+    for p, texto in textos.items():
+        tipo_de_formulario = formulario_que_abre(texto or "")
+        if tipo_de_formulario:
+            formularios[p] = (
+                tipo_de_formulario,
+                None if tipo_de_formulario == _ACUERDO else _radicado_de(texto or ""),
+            )
+    # La respuesta sólo abre aparte cuando sigue a una notificación personal:
+    # es el caso que dictó el operador («notificación sola, respuesta
+    # aparte»). En lo demás sigue con su escrito, como se validó antes en las
+    # cajas de referencia.
+    from ...domain.asunto_del_documento import NOTIFICACION_PERSONAL as _NOTIFICACION
+    from ...domain.asunto_del_documento import RESPUESTA_DE_LA_EMPRESA as _RESPUESTA
+
+    for p in [p for p, (tipo_f, _) in formularios.items() if tipo_f == _RESPUESTA]:
+        if not any(formularios.get(p - atras, ("", None))[0] == _NOTIFICACION for atras in (1, 2, 3)):
+            del formularios[p]
+    # Dentro de los folios de un sello, o aportado como prueba, un formulario
+    # es del escrito que lo trae: no abre. Salvo la Habeas Data, que nunca es
+    # prueba de una carta: es de su acuerdo de pago (1002421 pág. 10, detrás de
+    # la carta de otra persona).
+    intocables = set(por_folios) | {
+        p for p in de_prueba if formularios.get(p, ("", None))[0] != _HABEAS
+    }
+    grupos, anexos, _ = separar_los_formularios(grupos, formularios, anexos, intocables=intocables)
+    # Los que van solos abren documento para todo lo que viene después: ni la
+    # lista de anexos, ni la cédula, ni el trámite por RE los une a otro. El
+    # acuerdo y la Habeas Data no: el acuerdo los busca para juntarlos.
+    formularios_solos = {
+        g.page_numbers[0]
+        for g in grupos.groups
+        if g.page_numbers[0] in formularios and formularios[g.page_numbers[0]][0] not in (_ACUERDO, _HABEAS)
+    }
     # El trámite no une a su anterior un escrito del cliente, aunque cite su
     # RE: sólo la respuesta o la notificación de la empresa (lo dictó el
     # operador: «cada trámite va solo, no unido a otros trámites por código de
-    # referencia»).
-    abren_el_tramite = abren | cartas.escritos(que_abren)
-    abren = abren | que_abren
+    # referencia»). Y desde el 2026-10-26 tampoco la constancia, la
+    # notificación ni la respuesta: cada una va sola.
+    abren_el_tramite = abren | cartas.escritos(que_abren) | formularios_solos
+    abren = abren | que_abren | formularios_solos
     # F3. Lista de ANEXOS.
     retencion = retener_anexos(grupos, textos, anexos, abren=abren)
     grupos, anexos = retencion.grupos, retencion.anexos
@@ -494,7 +541,11 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     grupos, anexos = soportes.grupos, soportes.anexos
     # F4b. El acuerdo de pago -- pagarés, cartas de instrucciones,
     # reconocimiento de deuda, simulador -- es un solo documento, sin RE.
-    grupos, anexos, del_acuerdo = unir_el_acuerdo_de_pago(grupos, textos, anexos, abren=abren)
+    # La constancia, la notificación y la respuesta abren su documento pero no
+    # cortan el acuerdo: la Habeas Data y los pagarés las cruzan.
+    grupos, anexos, del_acuerdo = unir_el_acuerdo_de_pago(
+        grupos, textos, anexos, abren=abren, cruzan=formularios_solos
+    )
     dudosas = [
         b
         for b in dudosas
@@ -989,6 +1040,10 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     finally:
         for fuente in fuente_de_encabezados:
             fuente.close()
+    # Las hojas de cada PDF, en el orden del papel. Un documento con hojas que
+    # no van seguidas -- el acuerdo con la Habeas Data de arriba -- recibía la
+    # que se le unió al final: 1, 6…14, 2 (1001508/UPD3102736).
+    grupos = replace(grupos, groups=[replace(g, page_numbers=sorted(g.page_numbers)) for g in grupos.groups])
     # F6. El nombre. Ningún documento se llama como su anexo: el que abre con
     # un reclamo y trae una cédula detrás es el reclamo, no un «DOCUMENTO DE
     # IDENTIDAD».

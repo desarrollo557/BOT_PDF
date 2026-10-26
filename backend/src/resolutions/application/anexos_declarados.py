@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ..domain.anexos_declarados import (
     HOJA_MUDA,
@@ -653,6 +653,7 @@ def unir_el_acuerdo_de_pago(
     anexos: dict[str, list[int]] | None = None,
     *,
     abren: set[int] | frozenset[int] = frozenset(),
+    cruzan: set[int] | frozenset[int] = frozenset(),
 ) -> tuple[GroupingResult, dict[str, list[int]], set[int]]:
     """Junta en un documento las piezas seguidas de un acuerdo de pago.
 
@@ -666,19 +667,33 @@ def unir_el_acuerdo_de_pago(
     Y se lleva lo que se firmó con él (lo dictó el operador el 2026-10-22 ante
     UPD3102729: «la Ley Habeas Data siempre irá anexada a su respectivo
     reconocimiento de deuda y propuesta de acuerdo de pago… este documento
-    parece ser uno solo»): pegado a sus piezas, arriba o abajo, la
-    autorización de Habeas Data y las constancias de PQR de esa misma visita --
-    las que piden la financiación o las facilidades de pago, o que llevan la
-    fecha del reconocimiento --. Lo que abre su propio documento -- un sello,
-    una carta del cliente -- corta.
+    parece ser uno solo»): la autorización de Habeas Data. Lo que abre su
+    propio documento -- un sello, una carta del cliente -- corta.
+
+    Las constancias de PQR de esa misma visita ya **no** entran: el 2026-10-26
+    el operador dictó que «una constancia de reclamación siempre va sola», y
+    sobre la misma UPD3102729 eligió las constancias de las hojas 2 a 5 aparte
+    del acuerdo.
+
+    Y es **un solo acuerdo por PDF** cuando hay un solo reconocimiento (lo
+    dictó el operador el 2026-10-26): sus pagarés -- «Pagaré No. 1000265 2» y
+    «… 3» -- y la Habeas Data van juntos aunque haya otros documentos en medio.
+    En UPD3102729 la Habeas Data es la hoja 1 y el acuerdo va de la 6 a la 14:
+    el PDF del acuerdo es 1, 6-14. Con varios reconocimientos, cada uno es su
+    acuerdo y la Habeas Data suelta va con el más cercano.
+
+    ``cruzan`` son las hojas que abren su documento pero no cortan el acuerdo:
+    la constancia, la notificación y la respuesta que quedan en medio. Lo que
+    sí lo corta es lo demás que abre -- un sello, una etiqueta de envío, la
+    carta de un cliente --: es otro escrito radicado, y el pagaré de antes no
+    es de este acuerdo.
 
     Devuelve los documentos, sus anexos y las hojas del acuerdo.
     """
     from ..domain.asunto_del_documento import (
         ACUERDO_DE_PAGO,
+        LEY_HABEAS_DATA,
         PIEZAS_DEL_ACUERDO,
-        causa_de_la_constancia,
-        es_causa_del_acuerdo,
         titulo_del_documento,
     )
     from ..domain.fechas import fecha_de_la_pagina
@@ -688,6 +703,15 @@ def unir_el_acuerdo_de_pago(
     def es_pieza(grupo: PageGroup) -> bool:
         primera = grupo.page_numbers[0]
         return primera not in abren and titulo_del_documento(textos.get(primera, "") or "") in PIEZAS_DEL_ACUERDO
+
+    def es_habeas(grupo: PageGroup) -> bool:
+        primera = grupo.page_numbers[0]
+        return primera not in abren and titulo_del_documento(textos.get(primera, "") or "") == LEY_HABEAS_DATA
+
+    def tiene_reconocimiento(grupo: PageGroup) -> bool:
+        return any(
+            titulo_del_documento(textos.get(p, "") or "") == ACUERDO_DE_PAGO for p in grupo.page_numbers
+        )
 
     salida: list[PageGroup] = []
     del_acuerdo: set[int] = set()
@@ -733,18 +757,7 @@ def unir_el_acuerdo_de_pago(
         primera = grupo.page_numbers[0]
         if primera in abren or grupo.kind == ACUERDO_DE_PAGO:
             return False
-        texto = textos.get(primera, "") or ""
-        if titulo_del_documento(texto) == "LEY HABEAS DATA":
-            return True
-        # La constancia de PQR, por su «CAUSA:», que sólo trae ese formulario:
-        # su título puede no leerse («Recibí Constanza del contenido…»,
-        # UPD3102729 pág. 2).
-        causa = causa_de_la_constancia(texto)
-        if causa is None:
-            return False
-        if es_causa_del_acuerdo(causa):
-            return True
-        return fecha is not None and fecha_de_la_pagina(texto) == fecha
+        return es_habeas(grupo)
 
     i = 0
     while i < len(salida):
@@ -773,6 +786,67 @@ def unir_el_acuerdo_de_pago(
             i = desde
         i += 1
 
+    # Un solo acuerdo por PDF cuando hay un solo reconocimiento, con la Habeas
+    # Data aunque no esté pegada; con varios, la Habeas Data suelta va con el
+    # acuerdo más cercano.
+    acuerdos = [k for k, g in enumerate(salida) if g.kind == ACUERDO_DE_PAGO]
+    if acuerdos:
+        sueltas = [
+            k for k, g in enumerate(salida) if g.kind != ACUERDO_DE_PAGO and (es_habeas(g) or es_pieza(g))
+        ]
+        con_reconocimiento = [k for k in acuerdos if tiene_reconocimiento(salida[k])]
+
+        def cortado(desde: int, hasta: int) -> bool:
+            """Si entre los dos hay un documento que corta el acuerdo."""
+            lo, hi = min(desde, hasta), max(desde, hasta)
+            return any(
+                salida[x].page_numbers[0] in abren and salida[x].page_numbers[0] not in cruzan
+                for x in range(lo + 1, hi)
+            )
+
+        if len(con_reconocimiento) <= 1:
+            principal = con_reconocimiento[0] if con_reconocimiento else acuerdos[0]
+            candidatos = {k: principal for k in acuerdos + sueltas if k != principal}
+        else:
+
+            def mas_cercano(k: int) -> int:
+                centro = salida[k].page_numbers[0]
+                return min(con_reconocimiento, key=lambda a: min(abs(p - centro) for p in salida[a].page_numbers))
+
+            candidatos = {k: mas_cercano(k) for k in sueltas}
+            candidatos.update({k: mas_cercano(k) for k in acuerdos if k not in con_reconocimiento})
+        destinos = {
+            k: d for k, d in candidatos.items() if es_habeas(salida[k]) or not cortado(k, d)
+        }
+        if destinos:
+            juntos: dict[int, list[int]] = {}
+            for origen, destino in destinos.items():
+                juntos.setdefault(destino, []).append(origen)
+            nueva: list[PageGroup] = []
+            for k, grupo in enumerate(salida):
+                if k in destinos:
+                    continue
+                if k in juntos:
+                    miembros = [grupo, *(salida[o] for o in juntos[k])]
+                    paginas = sorted({p for g in miembros for p in g.page_numbers})
+                    propios = [p for g in miembros for p in anexos.pop(g.code.value, [])]
+                    # La Habeas Data va como anexo del acuerdo; los pagarés son sus piezas.
+                    propios += [p for g in miembros if es_habeas(g) for p in g.page_numbers]
+                    unido = PageGroup(
+                        code=grupo.code, page_numbers=paginas, title=grupo.title, kind=ACUERDO_DE_PAGO, fecha=grupo.fecha
+                    )
+                    if propios:
+                        anexos[unido.code.value] = sorted(set(propios))
+                    del_acuerdo.update(paginas)
+                    nueva.append(unido)
+                else:
+                    nueva.append(grupo)
+            # El acuerdo se queda en el puesto de sus pagarés, no en el de la
+            # Habeas Data que se le unió desde arriba: lo que viene detrás del
+            # reconocimiento -- la cédula, la autorización -- se une después al
+            # documento de delante, y ése tiene que ser el acuerdo y no la
+            # constancia que quedó en medio (1000483 págs. 12-15, 1001381 pág. 9).
+            salida = nueva
     # Ninguna pieza suelta (lo dictó el operador el 2026-10-22: «ningún pagaré
     # puede ir suelto, siempre anexado a un reconocimiento de deuda»): el pagaré
     # o la carta de instrucciones sola va con el acuerdo de al lado y, si no hay
@@ -786,6 +860,18 @@ def unir_el_acuerdo_de_pago(
         siguiente = salida[i + 1] if i + 1 < len(salida) else None
         con_el_siguiente = i == 0 or (siguiente is not None and siguiente.kind == ACUERDO_DE_PAGO)
         j = i + 1 if con_el_siguiente else i - 1
+        # Nunca con un formulario que va solo -- la constancia, la notificación,
+        # la respuesta --: con el otro vecino, o se queda como su acuerdo
+        # (1000186: el pagaré sin reconocimiento detrás de una constancia).
+        if salida[j].page_numbers[0] in cruzan:
+            otro = i - 1 if j == i + 1 else i + 1
+            if 0 <= otro < len(salida) and salida[otro].page_numbers[0] not in cruzan:
+                j, con_el_siguiente = otro, otro == i + 1
+            else:
+                salida[i] = replace(suelta, kind=ACUERDO_DE_PAGO)
+                del_acuerdo.update(suelta.page_numbers)
+                i += 1
+                continue
         destino = salida[j]
         paginas = (
             list(suelta.page_numbers) + list(destino.page_numbers)
@@ -805,6 +891,7 @@ def unir_el_acuerdo_de_pago(
         salida[lo : hi + 1] = [unido]
         anexos[unido.code.value] = sorted(set(propios))
         i = lo
+
     if len(salida) < len(grupos.groups):
         salida, anexos = _renumerar(salida, anexos)
     return (
