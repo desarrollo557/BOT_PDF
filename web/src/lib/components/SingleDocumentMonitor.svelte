@@ -105,6 +105,9 @@
     <span class="status-dot {luz}" aria-hidden="true"></span>
     <h3 title={job.filename}>{job.filename}</h3>
     <span class="stage">{stageActivity(progress)}</span>
+    {#if progress.health && progress.health !== 'ok'}
+      <span class="pill {healthTone}">{healthLabel}</span>
+    {/if}
     <RunControls jobId={job.id} runState={job.state} />
   </header>
 
@@ -120,8 +123,8 @@
     </p>
   {/if}
 
-  {#if progress.health || warnings.length}
-    <div class="health-strip" data-health={progress.health ?? 'ok'}>
+  {#if progress.health && progress.health !== 'ok'}
+    <div class="health-strip" data-health={progress.health}>
       <span class="pill {healthTone}">{healthLabel}</span>
       {#if warnings.length}
         <ul class="warnings">
@@ -132,6 +135,14 @@
       {:else if running && silence >= SILENCE_THRESHOLD_SECONDS}
         <span class="silence">Sin novedades desde hace {Math.round(silence)} s</span>
       {/if}
+    </div>
+  {:else if warnings.length}
+    <div class="health-strip" data-health="ok">
+      <ul class="warnings">
+        {#each warnings as warning (warning)}
+          <li class="pill pill-neutral">{warning}</li>
+        {/each}
+      </ul>
     </div>
   {:else if running && silence >= SILENCE_THRESHOLD_SECONDS}
     <p class="silence">Sin novedades desde hace {Math.round(silence)} s</p>

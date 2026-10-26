@@ -140,7 +140,7 @@
   {/if}
 
   <div class="panel panel-flush table-wrap">
-    <table>
+      <table>
       <thead>
         <tr>
           <th>N° / código</th>
@@ -267,7 +267,8 @@
     flex: 1;
   }
 
-  /* La tabla va en un `.panel` sin relleno: las celdas traen el suyo. */
+  /* La tabla va en un `.panel` sin relleno: las celdas traen el suyo.
+     El scroll horizontal queda dentro del contenedor, nunca de la página. */
   .table-wrap {
     overflow-x: auto;
   }

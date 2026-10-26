@@ -171,10 +171,12 @@
 <style>
   /* Una sola rejilla para todas las cargas: las tejas caen en el mismo sitio
      tenga el trabajo cuatro cifras o siete, así que la vista no se recoloca al
-     pasar de un documento suelto a un lote. */
+     pasar de un documento suelto a un lote.
+     Se usa 10rem (160px) como mínimo para que 6 tejas entren en 5 columnas
+     sin que la sexta caiga sola a una segunda fila. */
   .stats {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
     gap: 0.9rem 1.5rem;
   }
 </style>

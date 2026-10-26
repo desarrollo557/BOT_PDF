@@ -145,14 +145,22 @@
     margin: 1.1rem 0 0.5rem;
   }
   .search {
-    min-width: 16rem;
-    flex: 1;
+    min-width: 0;
+    flex: 1 1 100%;
+    max-width: 100%;
+  }
+  @media (min-width: 480px) {
+    .search {
+      min-width: 16rem;
+      flex: 1;
+    }
   }
 
   .select {
     display: flex;
     align-items: center;
     gap: 0.4rem;
+    flex-wrap: wrap;
   }
 
   .confirm {
@@ -161,5 +169,20 @@
     gap: 0.4rem;
     font-size: var(--text-sm);
     color: var(--ink-2);
+    flex-wrap: wrap;
+  }
+
+  /* En móvil, los controles segmentados se apilan si no caben */
+  @media (max-width: 479px) {
+    .segmented {
+      width: 100%;
+      justify-content: flex-start;
+    }
+    .select {
+      width: 100%;
+    }
+    .filters > .btn {
+      width: 100%;
+    }
   }
 </style>

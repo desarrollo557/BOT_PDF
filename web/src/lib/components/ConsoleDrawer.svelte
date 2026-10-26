@@ -199,8 +199,6 @@
         }}>limpiar</button
       >
     </footer>
-
-    <div class="scanlines" aria-hidden="true"></div>
   </aside>
 {:else}
   <!-- Closed, it stays on the same edge as something you can see and click,
@@ -232,15 +230,11 @@
     --term-chip: #1d3d46;
     --term-time: #2f545d;
     --term-close: #3b2a2f;
-    --term-glow: #0b1a1e;
     --term-bar: #0c1a1f;
     --term-bar-end: #081215;
     --term-page: #7fb8ac;
     --term-ok: #d6fff0;
-    --term-ok-glow: rgb(44 230 155 / 0.35);
-    --term-caret-glow: rgb(44 230 155 / 0.6);
     --term-shadow: -18px 0 40px rgb(0 0 0 / 0.3);
-    --term-scan: rgb(255 255 255 / 0.025);
   }
 
   .dock {
@@ -252,9 +246,7 @@
     display: flex;
     flex-direction: column;
     border-left: 1px solid var(--term-line);
-    background:
-      radial-gradient(120% 60% at 50% 0%, var(--term-glow) 0%, var(--term-bg) 70%),
-      var(--term-bg);
+    background: var(--term-bg);
     box-shadow: var(--term-shadow);
     font-family: var(--font-mono);
   }
@@ -405,7 +397,6 @@
   }
   .lvl-ok .text {
     color: var(--term-ok);
-    text-shadow: 0 0 8px var(--term-ok-glow);
   }
   .lvl-warn .tag,
   .lvl-warn .text {
@@ -428,7 +419,6 @@
     width: 7px;
     height: 13px;
     background: var(--term-green);
-    box-shadow: 0 0 8px var(--term-caret-glow);
     /* El latido común a saltos: el cursor parpadea en vez de respirar. */
     animation: latido 1.05s steps(1) infinite;
   }

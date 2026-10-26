@@ -188,7 +188,7 @@
       </span>
     </header>
 
-    <div class="cards">
+    <div class="cards" class:single-carpeta={day.items.length === 1 && day.items[0]?.kind === 'grupo'}>
       {#each day.items as item (item.key)}
         {#if item.kind === 'grupo'}
           <CarpetaCard grupo={item.grupo} {selected} onselectmany={onpickmany} {onchange} />
@@ -302,8 +302,14 @@
   .cards {
     display: grid;
     align-items: start;
-    grid-template-columns: repeat(auto-fill, minmax(16.5rem, 1fr));
-    gap: 0.9rem;
+    grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+    gap: 0.75rem;
+  }
+
+  /* Una sola CarpetaCard en su día: que ocupe el ancho completo
+     para que no quede una tarjeta flotando en una columna. */
+  .cards.single-carpeta {
+    grid-template-columns: 1fr;
   }
 
   .list-bar {
