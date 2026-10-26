@@ -2,10 +2,10 @@
   <!-- La marca de la cabecera (una hoja que se parte en dos) sobre una placa
        cuadrada: el icono de la aplicación instalada. Los colores son los de
        --surface-1 y --accent en claro. -->
-  <rect width="24" height="24" rx="5" fill="#fcfcfb" />
-  <g transform="translate(3 3) scale(0.75)" fill="none" stroke="#1f6fd0" stroke-width="1.6">
+  <rect width="24" height="24" rx="5" fill="#fafbfc" />
+  <g transform="translate(3 3) scale(0.75)" fill="none" stroke="#2160e0" stroke-width="1.6">
     <rect x="2.5" y="2.5" width="12" height="16" rx="2" />
-    <rect x="9.5" y="5.5" width="12" height="16" rx="2" fill="#1f6fd0" fill-opacity="0.09" />
+    <rect x="9.5" y="5.5" width="12" height="16" rx="2" fill="#2160e0" fill-opacity="0.09" />
     <path d="M13 11h5M13 14h5M13 17h3" stroke-linecap="round" stroke-opacity="0.7" />
   </g>
 </svg>

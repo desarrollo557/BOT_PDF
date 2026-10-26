@@ -1,43 +1,60 @@
 @import 'tailwindcss';
 
 /*
- * Chart and chrome tokens. The four series slots are the validated categorical
- * order (blue, orange, aqua, yellow) with their own steps for the dark surface --
- * a selected dark palette, not an automatic flip of the light one.
+ * Los colores. Una consola de operación, en minimalismo suizo: superficies planas,
+ * filetes finos, un solo acento y nada de adorno. Claro y oscuro los decide el
+ * sistema operativo (`prefers-color-scheme`), y `data-theme` lo fuerza.
  *
- * Everything outside those four is chrome for an operations console: two surface
- * levels so a card can sit on a plane without a shadow doing the work, one
- * accent, and one focus ring. Chrome never borrows a series colour, because a
- * series colour means "this slice of the data" and nothing else.
+ * - Tres superficies: `--plane` (el fondo de la página), `--surface-1` (la barra)
+ *   y `--surface-2` (tarjetas y paneles). Una tarjeta se distingue del plano por
+ *   el color y el filete, no por una sombra.
+ * - Tres tintas: `--ink` (texto), `--ink-2` (secundario) y `--muted` (rótulos y
+ *   ayudas). Las tres pasan 4,5:1 sobre cualquier superficie de su tema.
+ * - Cuatro líneas: `--grid` y `--axis` para los gráficos, `--hairline` y `--rule`
+ *   para separar. `--control` es el borde de un campo o de un botón: 3:1 contra el
+ *   fondo, porque es lo único que dice dónde está el control.
+ * - Un acento, el mismo azul en los dos temas: más oscuro en claro y más claro en
+ *   oscuro, para que como texto pase 4,5:1 contra la superficie. Por eso la letra
+ *   sobre el acento (`--on-accent`) es blanca en claro y tinta en oscuro.
+ * - Estados: `--good`, `--warning`, `--critical`. Como texto se leen sobre su tinte
+ *   (`--*-soft`) a 4,5:1; el amarillo de aviso no, y por eso tiene `--warning-ink`.
+ * - Series `--s1`…`--s4`: sólo para datos (los peldaños de la cascada, los
+ *   gráficos), nunca para el cromo. Es el orden validado de la paleta categórica
+ *   (azul, naranja, aguamarina, violeta) con el amarillo cambiado por el violeta:
+ *   el amarillo se confundía con el aviso (ΔE 4,8). Ninguna queda a menos de
+ *   ΔE 13 de un estado.
+ *
+ * La tabla de contraste de cada par está en la nota «Sistema de diseno (BOT-PDF)».
  */
 :root {
   color-scheme: light;
 
-  --surface-1: #fcfcfb;
+  --plane: #f4f5f7;
+  --surface-1: #fafbfc;
   --surface-2: #ffffff;
-  --plane: #f4f4f1;
-  --ink: #0b0b0b;
-  --ink-2: #52514e;
-  --muted: #898781;
-  --grid: #e1e0d9;
-  --axis: #c3c2b7;
-  --hairline: rgb(11 11 11 / 0.09);
-  --rule: rgb(11 11 11 / 0.05);
+  --ink: #12151a;
+  --ink-2: #3e4450;
+  --muted: #636a75;
+  --grid: #e4e7eb;
+  --axis: #c3c8cf;
+  --hairline: rgb(18 21 26 / 0.1);
+  --rule: rgb(18 21 26 / 0.06);
+  --control: #878e98;
 
   --s1: #2a78d6;
   --s2: #eb6834;
   --s3: #1baf7a;
-  --s4: #eda100;
+  --s4: #6250d6;
 
-  --good: #0ca30c;
-  --warning: #fab219;
-  --critical: #d03b3b;
+  --good: #127536;
+  --warning: #a98400;
+  --critical: #b8283a;
 
-  --accent: #1f6fd0;
-  --accent-soft: rgb(31 111 208 / 0.09);
-  --ring: rgb(31 111 208 / 0.35);
-  --shadow: 0 1px 2px rgb(11 11 11 / 0.04), 0 8px 24px rgb(11 11 11 / 0.05);
-  --texture: rgb(11 11 11 / 0.028);
+  --accent: #2160e0;
+  --on-accent: #ffffff;
+  --warning-ink: color-mix(in srgb, var(--warning) 50%, var(--ink));
+  --shadow: 0 1px 2px rgb(18 21 26 / 0.05);
+  --texture: rgb(18 21 26 / 0.03);
   /* El logotipo de SIAR es gris oscuro y rojo sobre nada: sobre el papel claro
      se apoya solo. En oscuro se lo monta en una placa clara en vez de teñirlo,
      que es la única forma de mostrar una marca ajena sin alterarle el color. */
@@ -48,27 +65,32 @@
   :root:where(:not([data-theme='light'])) {
     color-scheme: dark;
 
-    --surface-1: #16181b;
-    --surface-2: #1c1f23;
-    --plane: #0a0c0e;
-    --ink: #f4f6f7;
-    --ink-2: #b6bec6;
-    --muted: #7d858d;
-    --grid: #262a2f;
-    --axis: #343940;
-    --hairline: rgb(255 255 255 / 0.09);
-    --rule: rgb(255 255 255 / 0.05);
+    --plane: #0d0f12;
+    --surface-1: #14171b;
+    --surface-2: #1a1e23;
+    --ink: #eceef1;
+    --ink-2: #b8bfc8;
+    --muted: #8f97a2;
+    --grid: #262b31;
+    --axis: #3b424b;
+    --hairline: rgb(255 255 255 / 0.1);
+    --rule: rgb(255 255 255 / 0.06);
+    --control: #6e7681;
 
     --s1: #3987e5;
     --s2: #d95926;
     --s3: #199e70;
-    --s4: #c98500;
+    --s4: #9085e9;
 
-    --accent: #4b9bf5;
-    --accent-soft: rgb(75 155 245 / 0.12);
-    --ring: rgb(75 155 245 / 0.4);
-    --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 10px 30px rgb(0 0 0 / 0.35);
-    --texture: rgb(255 255 255 / 0.022);
+    --good: #7cc244;
+    --warning: #e6c046;
+    --critical: #ff6f86;
+
+    --accent: #6a9cff;
+    --on-accent: #0b1220;
+    --warning-ink: color-mix(in srgb, var(--warning) 70%, var(--ink));
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.5);
+    --texture: rgb(255 255 255 / 0.03);
     --logo-plate: rgb(250 250 248 / 0.94);
   }
 }
@@ -76,27 +98,32 @@
 :root[data-theme='dark'] {
   color-scheme: dark;
 
-  --surface-1: #16181b;
-  --surface-2: #1c1f23;
-  --plane: #0a0c0e;
-  --ink: #f4f6f7;
-  --ink-2: #b6bec6;
-  --muted: #7d858d;
-  --grid: #262a2f;
-  --axis: #343940;
-  --hairline: rgb(255 255 255 / 0.09);
-  --rule: rgb(255 255 255 / 0.05);
+  --plane: #0d0f12;
+  --surface-1: #14171b;
+  --surface-2: #1a1e23;
+  --ink: #eceef1;
+  --ink-2: #b8bfc8;
+  --muted: #8f97a2;
+  --grid: #262b31;
+  --axis: #3b424b;
+  --hairline: rgb(255 255 255 / 0.1);
+  --rule: rgb(255 255 255 / 0.06);
+  --control: #6e7681;
 
   --s1: #3987e5;
   --s2: #d95926;
   --s3: #199e70;
-  --s4: #c98500;
+  --s4: #9085e9;
 
-  --accent: #4b9bf5;
-  --accent-soft: rgb(75 155 245 / 0.12);
-  --ring: rgb(75 155 245 / 0.4);
-  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 10px 30px rgb(0 0 0 / 0.35);
-  --texture: rgb(255 255 255 / 0.022);
+  --good: #7cc244;
+  --warning: #e6c046;
+  --critical: #ff6f86;
+
+  --accent: #6a9cff;
+  --on-accent: #0b1220;
+  --warning-ink: color-mix(in srgb, var(--warning) 70%, var(--ink));
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.5);
+  --texture: rgb(255 255 255 / 0.03);
   --logo-plate: rgb(250 250 248 / 0.94);
 }
 
@@ -111,6 +138,7 @@
   --color-axis: var(--axis);
   --color-hairline: var(--hairline);
   --color-rule: var(--rule);
+  --color-control: var(--control);
 
   --color-s1: var(--s1);
   --color-s2: var(--s2);
@@ -124,8 +152,12 @@
   --color-accent: var(--accent);
   --color-accent-soft: var(--accent-soft);
 
-  --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: ui-monospace, 'SFMono-Regular', 'Cascadia Code', monospace;
+  /* Autoalojadas (`@fontsource-variable/*`, importadas en el layout): el servicio
+     corre en equipos de la intranet y no puede depender de Google Fonts. Inter
+     para todo; JetBrains Mono sólo para cifras y códigos (radicados, cédulas,
+     nombres de archivo), donde distinguir 0/O y 1/l/I importa. */
+  --font-sans: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'Cascadia Code', monospace;
 }
 
 html,
@@ -134,15 +166,20 @@ body {
 }
 
 body {
-  /* A 32px engineering grid at the threshold of visibility. It gives the plane
-     a sense of scale behind the cards without ever competing with them. */
-  background:
-    linear-gradient(var(--texture) 1px, transparent 1px) 0 0 / 32px 32px,
-    linear-gradient(90deg, var(--texture) 1px, transparent 1px) 0 0 / 32px 32px,
-    var(--plane);
+  /* Plano: sin la rejilla de fondo. Lo que separa una tarjeta del plano es el
+     color de su superficie y su filete. */
+  background: var(--plane);
   color: var(--ink);
   font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Los códigos se leen carácter a carácter: sin ligaduras que junten «--» o «!=». */
+:where(code, kbd, samp, pre, .font-mono, .mono) {
+  font-variant-ligatures: none;
 }
 
 /* Numbers that change in place must not reflow the label beside them. */
@@ -150,7 +187,9 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+/* El foco: un contorno sólido del acento, 2 px, separado 2 px del control. Pasa
+   3:1 contra cualquier superficie de los dos temas. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
@@ -163,22 +202,25 @@ body {
  * en claro y en oscuro sin redefinirlos.
  */
 :root {
-  --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius: 8px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 16px;
+  /* Radios cortos: un control se lee como control sin parecer una píldora. */
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
   --radius-pill: 999px;
 
-  --text-2xs: 0.62rem;
-  --text-xs: 0.72rem;
-  --text-sm: 0.8rem;
-  --text-md: 0.85rem;
-  --text-lg: 0.95rem;
+  /* Letra: 14 px el cuerpo, 13 px los controles y las tablas, 11 px el mínimo
+     (rótulos en versalitas). Nada por debajo de 11 px. */
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.875rem;
+  --text-lg: 1rem;
   --text-xl: 1.25rem;
-  --text-stat: 1.6rem;
-  --tracking-caps: 0.055em;
+  --text-stat: 1.75rem;
+  --tracking-caps: 0.06em;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -188,16 +230,52 @@ body {
   --space-6: 24px;
   --space-8: 32px;
 
-  --on-accent: #fff;
-  /* El amarillo de aviso no se lee como texto sobre blanco (1.9:1): para letra
-     se oscurece con la tinta, y en oscuro se aclara con ella. */
-  --warning-ink: color-mix(in srgb, var(--warning) 55%, var(--ink));
+  /* Movimiento: corto y sin rebote. Lo que se mueve informa (algo cambió, algo
+     está vivo); nada se mueve por adornar. */
+  --duration-fast: 120ms;
+  --duration: 180ms;
+  --duration-slow: 280ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+  --ring: var(--accent);
   --warning-soft: color-mix(in srgb, var(--warning) 16%, transparent);
   --critical-soft: color-mix(in srgb, var(--critical) 12%, transparent);
   --good-soft: color-mix(in srgb, var(--good) 14%, transparent);
   --scrim: rgb(0 0 0 / 0.45);
-  --shadow-lg: 0 24px 70px rgb(0 0 0 / 0.35);
-  --shadow-hover: 0 8px 22px rgb(0 0 0 / 0.12);
+  --shadow-lg: 0 16px 48px rgb(0 0 0 / 0.22);
+  --shadow-hover: 0 4px 12px rgb(0 0 0 / 0.08);
+}
+
+/*
+ * Las dos animaciones de la aplicación. `latido`: algo está vivo (un trabajo en
+ * curso, la consola escuchando). `entrada`: algo acaba de aparecer (un aviso, un
+ * diálogo). Con «reducir movimiento» no se anima nada: el estado final se pinta
+ * directamente.
+ */
+@keyframes latido {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes entrada {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /*
@@ -214,7 +292,7 @@ body {
     gap: 0.4rem;
     min-height: 2rem;
     padding: 0.4rem 0.85rem;
-    border: 1px solid var(--hairline);
+    border: 1px solid var(--control);
     border-radius: var(--radius);
     background: var(--surface-2);
     color: var(--ink-2);
@@ -226,12 +304,12 @@ body {
     white-space: nowrap;
     cursor: pointer;
     transition:
-      background-color 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease;
+      background-color var(--duration-fast) var(--ease-out),
+      border-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
   }
   .btn:hover:not(:disabled) {
-    border-color: var(--axis);
+    border-color: var(--ink-2);
     color: var(--ink);
   }
   .btn:disabled,
@@ -324,7 +402,7 @@ body {
      foco sin poner otro en su lugar. */
   .input {
     min-height: 2.1rem;
-    border: 1px solid var(--hairline);
+    border: 1px solid var(--control);
     border-radius: var(--radius);
     background: var(--surface-2);
     padding: 0.45rem 0.75rem;
@@ -333,15 +411,15 @@ body {
     color: var(--ink);
     outline: none;
     transition:
-      border-color 0.12s ease,
-      box-shadow 0.12s ease;
+      border-color var(--duration-fast) var(--ease-out),
+      box-shadow var(--duration-fast) var(--ease-out);
   }
   .input::placeholder {
     color: var(--muted);
   }
   .input:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--ring);
+    border-color: var(--ring);
+    box-shadow: 0 0 0 1px var(--ring);
   }
   .input[aria-invalid='true'] {
     border-color: var(--critical);

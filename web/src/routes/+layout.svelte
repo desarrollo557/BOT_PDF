@@ -1,4 +1,9 @@
 <script lang="ts">
+  // Las fuentes van dentro del build: el servicio corre en la intranet y no
+  // puede depender de Google Fonts. Cada archivo declara su `unicode-range`, así
+  // que el navegador sólo baja los alfabetos que la página usa.
+  import '@fontsource-variable/inter';
+  import '@fontsource-variable/jetbrains-mono';
   import '../app.css';
   import { onMount } from 'svelte';
   import { page } from '$app/state';
