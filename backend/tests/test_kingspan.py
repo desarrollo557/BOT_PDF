@@ -281,7 +281,40 @@ class TestLaPlanilla:
         assert (fila7["O"], fila7["P"]) == ("100C000235", "UPD3869754")
         assert fila7["W"] == "N/A"
         assert fila7["AA"] == "N/A"
-        assert hoja["M7"].number_format == "DD/MM/YYYY"
+
+    def test_cada_celda_lleva_el_formato_del_oficial(self, tmp_path):
+        # Igual que la primera fila de «1. INVENTARIO DOCUMENTAL KINGSPAN.xlsx»:
+        # fechas mm-dd-yy, texto en CAJA y ACTA, General en el resto.
+        from resolutions.api.worker.kingspan import PLANTILLA
+
+        celdas = celdas_kingspan(
+            FilaKingspan(asunto="NOTAS INTERNAS", fecha_inicial=date(2024, 5, 5)),
+            orden=1,
+            caja="100C000235",
+            upd="UPD3869754",
+            productora="PANELMET SAS",
+            settings={},
+            inventariado=date(2026, 10, 26),
+        )
+        escrito = openpyxl.load_workbook(escritor().write_cells([celdas], tmp_path / "i.xlsx"))[HOJA]
+        plantilla = openpyxl.load_workbook(PLANTILLA)[HOJA]
+        assert [c.number_format for c in escrito[PRIMERA_FILA]] == [
+            c.number_format for c in plantilla[PRIMERA_FILA]
+        ]
+        assert escrito["M7"].number_format == "mm-dd-yy"
+        assert escrito["O7"].number_format == "@"
+
+    def test_notas_va_como_en_el_oficial_aunque_haya_algo_que_revisar(self):
+        celdas = celdas_kingspan(
+            FilaKingspan(asunto="NOTAS INTERNAS", notas="9 documento(s) fuera del rango"),
+            orden=1,
+            caja="N/A",
+            upd="N/A",
+            productora="PANELMET SAS",
+            settings={},
+            inventariado=date(2026, 10, 26),
+        )
+        assert celdas[22] == "N/A"
 
     def test_la_fila_escrita_se_ve(self, tmp_path):
         # El oficial traía un filtro que ocultaba 1.436 filas, la 7 entre

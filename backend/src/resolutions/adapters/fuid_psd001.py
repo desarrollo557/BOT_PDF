@@ -108,6 +108,12 @@ class FuidPsd001:
     versiones: la de la plantilla de siempre (hoja «F-PSD-001», datos desde la
     fila 8) y la del inventario oficial de Kingspan (hoja «FUID», datos desde la
     7). Las columnas son las mismas; sólo cambia dónde empiezan.
+
+    ``formato_de_la_plantilla`` deja en cada celda el formato de número que trae
+    la fila de estilo, en vez del de texto que se impone por omisión. Lo pide
+    el inventario de Kingspan, que tiene que salir igual que su oficial: fechas
+    guardadas como fechas con el formato del oficial, texto donde el oficial
+    pone texto y General en el resto.
     """
 
     def __init__(
@@ -117,6 +123,7 @@ class FuidPsd001:
         *,
         hoja: str = HOJA,
         primera_fila: int = PRIMERA_FILA,
+        formato_de_la_plantilla: bool = False,
     ) -> None:
         self._plantilla = Path(plantilla)
         if not self._plantilla.is_file():
@@ -124,6 +131,7 @@ class FuidPsd001:
         self._progress = progress or NullProgressReporter()
         self._hoja = hoja
         self._primera_fila = primera_fila
+        self._formato_de_la_plantilla = formato_de_la_plantilla
 
     def write(
         self,
@@ -156,7 +164,9 @@ class FuidPsd001:
 
         estilos = self._estilos_de_fila(hoja, self._primera_fila)
         for indice, celdas in enumerate(filas):
-            self._escribir_celdas(hoja, self._primera_fila + indice, celdas, estilos)
+            self._escribir_celdas(
+                hoja, self._primera_fila + indice, celdas, estilos, self._formato_de_la_plantilla
+            )
             if (indice + 1) % FILAS_POR_AVISO == 0:
                 self._anunciar(indice + 1, total, "escribiendo las filas")
 
@@ -190,6 +200,7 @@ class FuidPsd001:
                     "border": copy(celda.border),
                     "fill": copy(celda.fill),
                     "alignment": copy(celda.alignment),
+                    "number_format": celda.number_format,
                 }
             )
         return estilos
@@ -200,6 +211,7 @@ class FuidPsd001:
         numero: int,
         celdas: list[object],
         estilos: list[dict],
+        formato_de_la_plantilla: bool = False,
     ) -> None:
         # Una fila escrita se ve. La plantilla de Kingspan salió de un oficial
         # con un filtro que ocultaba 1.436 filas, la 7 entre ellas, y el
@@ -220,10 +232,10 @@ class FuidPsd001:
             # una fecha en ningún formato. El número de orden y los folios sí
             # son números y se dejan como tales.
             #
-            # Quien pase una fecha de verdad -- el inventario de Kingspan, que
-            # en su oficial las guarda así para poder ordenarlas -- la recibe
-            # como fecha, pero con el día delante para que no se lea al revés.
-            if isinstance(valor, date):
-                celda.number_format = "DD/MM/YYYY"
+            # Con ``formato_de_la_plantilla`` manda el de la fila de estilo: el
+            # inventario de Kingspan guarda fechas de verdad y sale igual que
+            # su oficial.
+            if formato_de_la_plantilla:
+                celda.number_format = estilo["number_format"]
             else:
                 celda.number_format = "@" if isinstance(valor, str) else "General"

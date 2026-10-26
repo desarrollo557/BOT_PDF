@@ -272,7 +272,9 @@ def celdas_kingspan(
         NO_APLICA,                                               # T  FOLIOS
         NO_APLICA,                                               # U  SOPORTE
         NO_APLICA,                                               # V  FRECUENCIA
-        fila.notas or NO_APLICA,                                 # W  NOTAS
+        # Las notas del archivo son del archivista, como en el oficial: lo que
+        # el bot encuentra para revisar va a los avisos del trabajo, no aquí.
+        NO_APLICA,                                               # W  NOTAS
         ajuste("fuid_elaborado_por", NO_APLICA),                 # X  ELABORADO POR
         inventariado,                                            # Y  FECHA DE INVENTARIO
         NO_APLICA,                                               # Z  No. ACTA DE TRANSFERENCIA
@@ -281,7 +283,7 @@ def celdas_kingspan(
 
 
 def escritor() -> FuidPsd001:
-    return FuidPsd001(PLANTILLA, hoja=HOJA, primera_fila=PRIMERA_FILA)
+    return FuidPsd001(PLANTILLA, hoja=HOJA, primera_fila=PRIMERA_FILA, formato_de_la_plantilla=True)
 
 
 def _dividir(taller: Taller, fila: FilaKingspan, total: int, *, con_portada: bool) -> list[Path]:
@@ -383,6 +385,12 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
             divididos = _dividir(taller, fila, len(textos), con_portada=indice == 0)
             outputs.extend(str(ruta) for ruta in divididos)
 
+    # Lo que hay que revisar con el papel delante -- documentos fuera del rango,
+    # fechas que no se leyeron, una cifra en que la imagen y el texto del
+    # escaneo no coinciden -- se dice aquí y no en la columna NOTAS.
+    for fila in filas:
+        if fila.notas:
+            notices.append(f"{fila.asunto}: {fila.notas}")
     if not documentos:
         notices.append(
             "la UPD no trae documentos numerados (001-XX-NNNNNNNN): la fila sale del "
