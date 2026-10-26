@@ -103,7 +103,7 @@
 </script>
 
 {#if summary}
-  <section class="summary">
+  <section class="panel summary">
     <StatTile label="PDF generados" value={summary.resolutions} />
     <StatTile label="Números distintos" value={summary.codes} />
     <StatTile label="Documentos de origen" value={summary.documents} />
@@ -139,7 +139,7 @@
     </p>
   {/if}
 
-  <div class="table-wrap">
+  <div class="panel panel-flush table-wrap">
     <table>
       <thead>
         <tr>
@@ -207,7 +207,7 @@
                         : 'el título'}. Una corrección se manda entera.
                   </p>
                 {/if}
-                {#if rowError}<p class="error inline">{rowError}</p>{/if}
+                {#if rowError}<p class="inline-error">{rowError}</p>{/if}
               </td>
             {:else}
               <td class="mono">{row.code}</td>
@@ -248,15 +248,11 @@
 {/if}
 
 <style>
+  /* Las cifras, sobre el `.panel` común. */
   .summary {
     display: flex;
     flex-wrap: wrap;
-    gap: 1rem 2.25rem;
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-lg);
-    background: var(--surface-2);
-    padding: 1rem 1.2rem;
-    box-shadow: var(--shadow);
+    gap: var(--space-4) var(--space-8);
   }
 
   .filters {
@@ -271,17 +267,14 @@
     flex: 1;
   }
 
+  /* La tabla va en un `.panel` sin relleno: las celdas traen el suyo. */
   .table-wrap {
     overflow-x: auto;
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-lg);
-    background: var(--surface-2);
-    box-shadow: var(--shadow);
   }
   table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
   }
   thead th {
     padding: 0.7rem 0.75rem;
@@ -300,7 +293,7 @@
   }
   .mono {
     font-family: var(--font-mono);
-    font-size: 0.76rem;
+    font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
@@ -312,7 +305,7 @@
   }
   .muted.small {
     margin: 0 0 0.5rem;
-    font-size: 0.76rem;
+    font-size: var(--text-xs);
   }
 
   .tools {
@@ -352,20 +345,11 @@
     width: 9rem;
   }
 
-  .error.inline {
-    margin: 0.5rem 0 0;
-    border-left: 2px solid var(--critical);
-    padding-left: 0.65rem;
-    font-size: 0.85rem;
-    color: var(--critical);
-  }
-
   /* Lo que falta no es un error: nadie se ha equivocado todavía. Va en el tono
      apagado del resto de las indicaciones, no en el del fallo. */
   .falta.inline {
     margin: 0.5rem 0 0;
-    font-size: 0.78rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
-
 </style>

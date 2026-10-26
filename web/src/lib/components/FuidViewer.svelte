@@ -138,10 +138,7 @@
 <svelte:window onkeydown={abierto ? porTeclado : undefined} />
 
 <button class="btn" onclick={abrir}>
-  <svg viewBox="0 0 16 16" aria-hidden="true">
-    <rect x="2.5" y="2" width="11" height="12" rx="1.5" />
-    <path d="M5 6h6M5 8.5h6M5 11h3.5" />
-  </svg>
+  <Icono nombre="documento" />
   Ver el FUID
 </button>
 
@@ -157,7 +154,7 @@
   >
     <header>
       <div class="titulo">
-        <span class="sello">FO-GD-008</span>
+        <span class="pill pill-sm sello">FO-GD-008</span>
         <b>Formato Único de Inventario Documental</b>
         {#if nombre}<small>{nombre}</small>{/if}
       </div>
@@ -272,7 +269,6 @@
     inset: 0;
     z-index: 60;
     background: var(--scrim);
-    backdrop-filter: blur(2px);
   }
   .sheet {
     position: fixed;
@@ -306,18 +302,12 @@
   .titulo {
     min-width: 0;
   }
+  /* El código del formato: la `.pill` común, en monoespaciada porque es un
+     código. */
   .sello {
-    display: inline-block;
-    margin-bottom: 0.3rem;
-    border: 1px solid color-mix(in oklab, var(--accent) 35%, transparent);
-    border-radius: var(--radius-sm);
-    background: var(--accent-soft);
-    padding: 0.08rem 0.4rem;
+    margin-bottom: var(--space-1);
     font-family: var(--font-mono);
-    font-size: var(--text-2xs);
-    font-weight: 600;
     letter-spacing: 0.04em;
-    color: var(--accent);
   }
   .titulo b {
     display: block;

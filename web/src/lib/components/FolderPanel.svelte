@@ -1,5 +1,6 @@
 <script lang="ts">
   import FolderPicker from '$lib/components/FolderPicker.svelte';
+  import Icono from '$lib/components/Icono.svelte';
   import SugerenciaDeTipo from '$lib/components/wizard/SugerenciaDeTipo.svelte';
   import { reconocerCarpeta, type SugerenciaDeCarpeta } from '$lib/api';
   import { confirmar } from '$lib/confirmar.svelte';
@@ -284,7 +285,7 @@
   }
 </script>
 
-<div class="carpeta">
+<div class="panel panel-inset carpeta">
   <p class="lead">
     El servicio lee carpetas de <b>esta máquina</b> o de la <b>red</b> y escribe en esta máquina.
     No se sube nada: toma los PDF
@@ -293,7 +294,7 @@
   </p>
 
   <div class="field">
-    <span class="label">Carpeta de origen</span>
+    <span class="caps">Carpeta de origen</span>
     <div class="control">
       <input
         class="input mono"
@@ -309,16 +310,12 @@
       />
       <button
         type="button"
-        class="pick"
+        class="btn btn-icon pick"
         onclick={() => choose('origen')}
         title="Elegir la carpeta de origen"
         aria-label="Elegir la carpeta de origen"
       >
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M2 4.2A1.2 1.2 0 0 1 3.2 3h3l1.4 1.6h5.2A1.2 1.2 0 0 1 14 5.8v6A1.2 1.2 0 0 1 12.8 13H3.2A1.2 1.2 0 0 1 2 11.8V4.2Z"
-          />
-        </svg>
+        <Icono nombre="carpeta" />
       </button>
     </div>
     <small>
@@ -351,7 +348,7 @@
   {/if}
 
   <div class="field">
-    <span class="label">Carpeta de destino</span>
+    <span class="caps">Carpeta de destino</span>
     <div class="control">
       <input
         class="input mono"
@@ -367,28 +364,25 @@
       />
       <button
         type="button"
-        class="pick"
+        class="btn btn-icon pick"
         onclick={() => choose('destino')}
         title="Elegir la carpeta de destino"
         aria-label="Elegir la carpeta de destino"
       >
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M2 4.2A1.2 1.2 0 0 1 3.2 3h3l1.4 1.6h5.2A1.2 1.2 0 0 1 14 5.8v6A1.2 1.2 0 0 1 12.8 13H3.2A1.2 1.2 0 0 1 2 11.8V4.2Z"
-          />
-        </svg>
+        <Icono nombre="carpeta" />
       </button>
     </div>
     <small>Se crea si no existe. No puede estar dentro del origen.</small>
   </div>
 
   <fieldset>
-    <legend class="label">Al terminar cada original</legend>
+    <legend class="caps">Al terminar cada original</legend>
     <div class="choices">
       {#each DISPOSITIONS as option (option.id)}
         <button
           type="button"
-          class:current={disposicion === option.id}
+          class="panel panel-interactive opcion"
+          aria-pressed={disposicion === option.id}
           disabled={origenDeRed && option.id !== 'leave'}
           onclick={() => (disposition = option.id)}
         >
@@ -403,12 +397,13 @@
   </fieldset>
 
   <fieldset>
-    <legend class="label">Lo que ya está en el destino</legend>
+    <legend class="caps">Lo que ya está en el destino</legend>
     <div class="choices">
       {#each opcionesDeRetomar as option (option.id)}
         <button
           type="button"
-          class:current={modoRetomar === option.id}
+          class="panel panel-interactive opcion"
+          aria-pressed={modoRetomar === option.id}
           onclick={() => (retomar = option.id)}
         >
           <b>{option.label}</b>
@@ -467,16 +462,13 @@
 {/if}
 
 <style>
-  /* No se llama `.panel`: ésa es la superficie común de app.css, y le ponía
-     una sombra que esta caja, dentro de la tarjeta del asistente, no lleva. */
+  /* El `.panel-inset` común: un escalón por debajo de la tarjeta del asistente
+     que lo contiene. El borde es el de siempre; antes llevaba el amarillo de
+     una serie, y las series son sólo para datos. */
   .carpeta {
     display: flex;
     flex-direction: column;
-    gap: 0.85rem;
-    border: 1px solid color-mix(in oklab, var(--s4) 30%, var(--hairline));
-    border-radius: var(--radius-lg);
-    background: var(--plane);
-    padding: 1.1rem;
+    gap: var(--space-3);
   }
 
   .lead {
@@ -498,21 +490,22 @@
 
   /* El icono va dentro del recuadro, no al lado: la ruta y el botón que la
      elige son un solo control, y así se lee como uno. El campo es el `.input`
-     común sin su borde; el borde y el anillo de foco los lleva el recuadro. */
+     común sin su borde; el borde (`--control`) y el foco -- el mismo de
+     `.input`: borde y 1 px más del anillo -- los lleva el recuadro. */
   .control {
     display: flex;
     align-items: stretch;
-    border: 1px solid var(--hairline);
+    border: 1px solid var(--control);
     border-radius: var(--radius);
     background: var(--surface-2);
     overflow: hidden;
     transition:
-      border-color 0.12s ease,
-      box-shadow 0.12s ease;
+      border-color var(--duration-fast) var(--ease-out),
+      box-shadow var(--duration-fast) var(--ease-out);
   }
   .control:focus-within {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--ring);
+    border-color: var(--ring);
+    box-shadow: 0 0 0 1px var(--ring);
   }
   .control .input {
     flex: 1;
@@ -522,41 +515,32 @@
     background: transparent;
     box-shadow: none;
   }
+  /* El `.btn-icon` común, encajado en el recuadro: sin radio propio, alto del
+     campo y un filete que lo separa de la ruta. */
   .pick {
-    display: grid;
-    flex-shrink: 0;
-    place-items: center;
+    --icono: 16px;
     width: 34px;
-    border: 0;
-    border-left: 1px solid var(--hairline);
+    height: auto;
+    border-radius: 0;
+    border-left-color: var(--hairline);
     background: var(--plane);
-    cursor: pointer;
-    transition: background 0.15s;
   }
+  /* El fondo propio de arriba tapa el de `.btn-icon` al pasar (lo local gana a
+     la capa de componentes), así que se repite aquí. */
   .pick:hover:not(:disabled) {
-    background: color-mix(in oklab, var(--s4) 16%, var(--plane));
+    background: var(--accent-soft);
   }
   .pick:disabled {
     cursor: progress;
-    opacity: 0.5;
-  }
-  .pick svg {
-    width: 16px;
-    height: 16px;
-    fill: var(--s4);
-  }
-
-  .label {
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    letter-spacing: var(--tracking-caps);
-    text-transform: uppercase;
-    color: var(--muted);
   }
 
   small {
     font-size: var(--text-xs);
     color: var(--muted);
+  }
+  /* La ruta de ejemplo, en la letra de los códigos. */
+  small .mono {
+    font-family: var(--font-mono);
   }
 
   fieldset {
@@ -565,7 +549,7 @@
     padding: 0;
   }
   legend {
-    margin-bottom: 0.3rem;
+    margin-bottom: var(--space-1);
     padding: 0;
   }
 
@@ -574,34 +558,24 @@
     grid-template-columns: repeat(3, 1fr);
     gap: 4px;
   }
-  .choices button {
+  /* Cada opción es una tarjeta-control (`.panel-interactive`): la elegida
+     lleva `aria-pressed` y el estado elegido común. Aquí sólo un relleno más
+     apretado, para que tres quepan en fila. */
+  .opcion {
     display: flex;
     flex-direction: column;
     gap: 1px;
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius);
-    background: var(--surface-2);
-    padding: 0.4rem 0.5rem;
-    font: inherit;
+    padding: var(--space-2) var(--space-3);
     text-align: left;
     color: var(--muted);
-    cursor: pointer;
-    transition:
-      border-color 0.15s,
-      color 0.15s;
   }
-  .choices button b {
+  .opcion b {
     font-size: var(--text-sm);
     font-weight: 600;
   }
-  .choices button.current {
-    border-color: var(--s4);
-    color: var(--ink);
-  }
   /* Lo que no cabe con este origen -- apartar o borrar un original de la red --. */
-  .choices button:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
+  .opcion:disabled > * {
+    opacity: 0.55;
   }
 
   .toggle {
@@ -612,7 +586,7 @@
   }
   .toggle input {
     margin-top: 0.2rem;
-    accent-color: var(--s4);
+    accent-color: var(--accent);
   }
   .toggle span {
     display: flex;

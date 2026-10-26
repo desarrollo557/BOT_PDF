@@ -133,7 +133,7 @@
     <!-- Cuántos archivos a la vez: lo elige el operador antes de procesar, para
          cualquier habilidad. El tope son los procesos del servicio: más no lee
          más rápido, sólo deja archivos esperando. -->
-    <div class="paralelo">
+    <div class="panel panel-sm paralelo">
       <div class="paralelo-texto">
         <span class="paralelo-titulo" id="paralelo-titulo">Archivos en paralelo</span>
         <small>{ayudaParalelo}</small>
@@ -210,19 +210,15 @@
     min-width: 0;
   }
 
-  /* Una franja con el mismo borde que las tarjetas de arriba: a la izquierda
-     qué es, a la derecha la cifra. Botones y no un desplegable: el menú
-     nativo se pinta claro sobre el tema oscuro y esconde las opciones. */
+  /* Una franja que es el `.panel` común, como las tarjetas de arriba: a la
+     izquierda qué es, a la derecha la cifra. Botones y no un desplegable: el
+     menú nativo se pinta claro sobre el tema oscuro y esconde las opciones. */
   .paralelo {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-2) var(--space-3);
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-lg);
-    background: var(--surface-2);
-    padding: 0.6rem 0.75rem;
   }
 
   .paralelo-texto {
@@ -239,20 +235,15 @@
   }
 
   .paralelo-texto small {
-    font-size: var(--text-xs, 0.75rem);
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
-  /* Las cifras, cuadradas y del mismo ancho: «1» y «11» no bailan. */
+  /* Las cifras, cuadradas y del mismo ancho: «1» y «11» no bailan. La elegida
+     es la del `.segmented` común, como en cualquier otro control segmentado. */
   .paralelo .segmented > .cifra {
     min-width: 2rem;
     padding-inline: 0.45rem;
     text-align: center;
-  }
-
-  .paralelo .segmented > button:is(.current, [aria-checked='true']) {
-    background: var(--accent-soft);
-    color: var(--accent);
-    box-shadow: inset 0 0 0 1px var(--ring);
   }
 </style>

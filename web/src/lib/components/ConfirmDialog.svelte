@@ -62,7 +62,6 @@
     inset: 0;
     z-index: 90;
     background: var(--scrim);
-    backdrop-filter: blur(3px);
   }
 
   .hoja {

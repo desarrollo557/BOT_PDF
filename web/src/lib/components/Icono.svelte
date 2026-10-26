@@ -18,6 +18,7 @@
     | 'chevron'
     | 'atras'
     | 'abajo'
+    | 'subir'
     | 'editar'
     | 'borrar'
     | 'hecho'
@@ -44,6 +45,7 @@
     chevron: ['M6 4l4 4-4 4'],
     atras: ['M10 4 6 8l4 4'],
     abajo: ['M4 6l4 4 4-4'],
+    subir: ['M6.5 3.5 3.5 6.5l3 3', 'M3.5 6.5H9a3.5 3.5 0 0 1 3.5 3.5v2.5'],
     editar: ['M10.5 3.5l2 2L6 12H4v-2z'],
     borrar: ['M3.5 4.5h9', 'M6.5 4.5V3h3v1.5', 'M5 4.5l.6 8h4.8l.6-8'],
     hecho: ['m3.5 8.5 3 3 6-7'],

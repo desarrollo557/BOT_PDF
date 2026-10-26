@@ -42,7 +42,7 @@
 {#if pregunta}
   <div class="velo" role="presentation" onclick={() => cerrar(null)}></div>
   <div
-    class="hoja"
+    class="panel hoja"
     role="dialog"
     aria-modal="true"
     aria-labelledby="red-titulo"
@@ -88,10 +88,10 @@
     inset: 0;
     z-index: 100;
     background: var(--scrim);
-    backdrop-filter: blur(3px);
   }
 
-  /* Por encima del explorador de carpetas (90), que es desde donde suele pedirse. */
+  /* Por encima del explorador de carpetas (90), que es desde donde suele pedirse.
+     Es el `.panel` común con el radio y la sombra de lo que flota. */
   .hoja {
     position: fixed;
     top: 50%;
@@ -99,11 +99,8 @@
     z-index: 101;
     width: min(26rem, calc(100vw - 2rem));
     transform: translate(-50%, -50%);
-    border: 1px solid var(--hairline);
     border-radius: var(--radius-xl);
-    background: var(--surface-2);
     box-shadow: var(--shadow-lg);
-    padding: 1.2rem 1.3rem 1rem;
   }
 
   form {
@@ -128,6 +125,7 @@
 
   .recurso {
     overflow-wrap: anywhere;
+    font-family: var(--font-mono);
     font-size: var(--text-sm);
     color: var(--muted);
   }

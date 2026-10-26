@@ -66,7 +66,7 @@
   {#if faltaLectura}
     <Callout tone="info">
       <span>{faltaLectura.porque}</span>
-      <button type="button" onclick={() => onElegir(faltaLectura.id)}>
+      <button type="button" class="btn btn-tonal btn-sm" onclick={() => onElegir(faltaLectura.id)}>
         Usar {etiquetaDe(faltaLectura.id)}
       </button>
     </Callout>

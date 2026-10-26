@@ -108,10 +108,10 @@
     if (event.target === event.currentTarget) onclose();
   }}
 >
-  <div class="sheet" role="dialog" aria-modal="true" aria-label={title}>
+  <div class="panel panel-flush sheet" role="dialog" aria-modal="true" aria-label={title}>
     <header>
       <div class="who">
-        <span class="pill pill-warn badge">Carpeta</span>
+        <span class="pill pill-neutral tipo">Carpeta</span>
         <h2>{title}</h2>
       </div>
       <button class="btn btn-icon" onclick={onclose} aria-label="Cerrar">
@@ -120,23 +120,24 @@
     </header>
 
     <nav class="crumbs" aria-label="Ruta actual">
-      <button class="crumb root" onclick={() => go(null)} title="Equipos y unidades">
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M2 4.2A1.2 1.2 0 0 1 3.2 3h3l1.4 1.6h5.2A1.2 1.2 0 0 1 14 5.8v6A1.2 1.2 0 0 1 12.8 13H3.2A1.2 1.2 0 0 1 2 11.8V4.2Z"
-          />
-        </svg>
+      <button
+        class="btn btn-ghost btn-sm crumb root"
+        onclick={() => go(null)}
+        title="Equipos y unidades"
+        aria-label="Equipos y unidades"
+      >
+        <Icono nombre="carpeta" />
       </button>
       {#each crumbs as crumb (crumb.path)}
-        <span class="sep" aria-hidden="true">›</span>
-        <button class="crumb" onclick={() => go(crumb.path)}>{crumb.label}</button>
+        <span class="sep" aria-hidden="true"><Icono nombre="chevron" /></span>
+        <button class="btn btn-ghost btn-sm crumb" onclick={() => go(crumb.path)}>{crumb.label}</button>
       {/each}
     </nav>
 
     <div class="panes">
       <!-- Los sitios a los que siempre se quiere volver, fijos a la izquierda. -->
       <aside>
-        <span class="rail-label">Accesos</span>
+        <span class="caps rail-label">Accesos</span>
         {#each drives as drive (drive.path)}
           <button
             class="shortcut"
@@ -144,11 +145,7 @@
             onclick={() => go(drive.path)}
             title={drive.path}
           >
-            <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
-              <path
-                d="M2 4.2A1.2 1.2 0 0 1 3.2 3h3l1.4 1.6h5.2A1.2 1.2 0 0 1 14 5.8v6A1.2 1.2 0 0 1 12.8 13H3.2A1.2 1.2 0 0 1 2 11.8V4.2Z"
-              />
-            </svg>
+            <span class="icon"><Icono nombre="carpeta" /></span>
             <span class="name">{drive.name}</span>
           </button>
         {/each}
@@ -164,19 +161,15 @@
         {:else}
           {#if parent}
             <button class="row up" onclick={() => go(parent)}>
-              <span class="icon up-arrow" aria-hidden="true">↰</span>
+              <span class="icon up-arrow"><Icono nombre="subir" /></span>
               <span class="name">Subir un nivel</span>
             </button>
           {/if}
           {#each folders as folder (folder.path)}
             <button class="row" onclick={() => go(folder.path)}>
-              <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
-                <path
-                  d="M2 4.2A1.2 1.2 0 0 1 3.2 3h3l1.4 1.6h5.2A1.2 1.2 0 0 1 14 5.8v6A1.2 1.2 0 0 1 12.8 13H3.2A1.2 1.2 0 0 1 2 11.8V4.2Z"
-                />
-              </svg>
+              <span class="icon"><Icono nombre="carpeta" /></span>
               <span class="name">{folder.name}</span>
-              <span class="enter" aria-hidden="true">›</span>
+              <span class="enter" aria-hidden="true"><Icono nombre="chevron" /></span>
             </button>
           {/each}
           {#if !folders.length}
@@ -193,7 +186,7 @@
     </div>
 
     <div class="chosen">
-      <span class="rail-label">Se usará</span>
+      <span class="caps rail-label">Se usará</span>
       <!-- Escribir la ruta sigue estando: es más rápido cuando ya se sabe. -->
       <input
         class="input input-sm mono"
@@ -220,6 +213,8 @@
 </div>
 
 <style>
+  /* Un velo plano, sin desenfoque: lo de detrás se apaga, no se vuelve
+     vidrio. */
   .scrim {
     position: fixed;
     inset: 0;
@@ -228,21 +223,19 @@
     place-items: center;
     background: var(--scrim);
     padding: 1.5rem;
-    backdrop-filter: blur(3px);
-    animation: fade 0.16s ease-out;
   }
 
+  /* El `.panel` común sin relleno (cada franja trae el suyo), con el radio y la
+     sombra de lo que flota sobre la página. Aparece con la `entrada` común. */
   .sheet {
     display: flex;
     width: min(52rem, 100%);
     max-height: min(82dvh, 44rem);
     flex-direction: column;
     overflow: hidden;
-    border: 1px solid var(--hairline);
     border-radius: var(--radius-xl);
-    background: var(--surface-2);
     box-shadow: var(--shadow-lg);
-    animation: rise 0.18s ease-out;
+    animation: entrada var(--duration) var(--ease-out);
   }
 
   header {
@@ -258,7 +251,7 @@
     flex-direction: column;
     gap: 0.25rem;
   }
-  .badge {
+  .tipo {
     align-self: flex-start;
   }
   header h2 {
@@ -272,6 +265,7 @@
   }
 
   .crumbs {
+    --icono: 12px;
     display: flex;
     align-items: center;
     gap: 0.15rem;
@@ -281,30 +275,21 @@
     padding: 0.45rem 1.25rem;
     white-space: nowrap;
   }
+  /* Cada tramo de la ruta es un `.btn-ghost` pequeño; la ruta se lee en la
+     letra de los códigos. */
   .crumb {
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: none;
-    padding: 0.15rem 0.4rem;
-    font: inherit;
+    padding-inline: 0.4rem;
     font-family: var(--font-mono);
-    font-size: var(--text-xs);
+    font-weight: 500;
     color: var(--ink-2);
-    cursor: pointer;
   }
-  .crumb:hover {
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-  .crumb.root svg {
-    display: block;
-    width: 15px;
-    height: 15px;
-    fill: var(--s4);
+  .crumb.root {
+    --icono: 15px;
   }
   .sep {
-    font-size: var(--text-xs);
-    color: var(--axis);
+    display: grid;
+    place-items: center;
+    color: var(--muted);
   }
 
   .panes {
@@ -324,12 +309,9 @@
   }
   .rail-label {
     padding: 0 0.4rem 0.3rem;
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    letter-spacing: var(--tracking-caps);
-    text-transform: uppercase;
-    color: var(--muted);
   }
+  /* Los accesos y las carpetas son filas de un explorador: la fila entera es
+     el control, así que no llevan la caja de `.btn`, sólo el fondo al pasar. */
   .shortcut {
     display: flex;
     align-items: center;
@@ -378,17 +360,15 @@
   .row:hover .enter {
     color: var(--accent);
   }
+  /* La carpeta en la tinta de la fila (o el acento, si es el acceso elegido),
+     no en el amarillo de una serie: las series son sólo para datos. */
   .icon {
-    width: 17px;
-    height: 17px;
+    --icono: 17px;
+    display: grid;
     flex-shrink: 0;
-    fill: var(--s4);
+    place-items: center;
   }
   .up-arrow {
-    display: grid;
-    width: 17px;
-    place-items: center;
-    font-size: var(--text-md);
     color: var(--muted);
   }
   .up .name {
@@ -401,8 +381,10 @@
     white-space: nowrap;
   }
   .enter {
+    --icono: 14px;
+    display: grid;
     flex-shrink: 0;
-    font-size: var(--text-md);
+    place-items: center;
     color: transparent;
   }
 
@@ -446,24 +428,6 @@
   }
   .windows {
     margin-right: auto;
-  }
-
-  @keyframes fade {
-    from {
-      opacity: 0;
-    }
-  }
-  @keyframes rise {
-    from {
-      opacity: 0;
-      transform: translateY(8px);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .scrim,
-    .sheet {
-      animation: none;
-    }
   }
 
   /* En una pantalla estrecha la columna de accesos estorba más de lo que ayuda. */

@@ -305,7 +305,7 @@
   .led.on {
     background: var(--term-green);
     box-shadow: 0 0 8px var(--term-green);
-    animation: pulse 1.4s ease-in-out infinite;
+    animation: latido 1.4s var(--ease-in-out) infinite;
   }
 
   .hide {
@@ -409,7 +409,8 @@
     height: 13px;
     background: var(--term-green);
     box-shadow: 0 0 8px var(--term-caret-glow);
-    animation: blink 1.05s steps(1) infinite;
+    /* El latido común a saltos: el cursor parpadea en vez de respirar. */
+    animation: latido 1.05s steps(1) infinite;
   }
 
   .foot {
@@ -488,31 +489,5 @@
     letter-spacing: 0.14em;
     text-transform: uppercase;
     writing-mode: vertical-rl;
-  }
-
-  @keyframes blink {
-    0%,
-    49% {
-      opacity: 1;
-    }
-    50%,
-    100% {
-      opacity: 0;
-    }
-  }
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.35;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .caret,
-    .led.on {
-      animation: none;
-    }
   }
 </style>

@@ -61,7 +61,9 @@
       <ul class="hallazgos">
         {#each shown as issue (issue.field + issue.page + issue.reason)}
           <li>
-            <span class="punto" class:error={issue.severity === 'error'}></span>
+            <span
+              class="status-dot status-dot-sm punto {issue.severity === 'error' ? 'bad' : 'warn'}"
+            ></span>
             <span>
               {#if issue.page}<b class="tabular">Pág. {issue.page}</b> · {/if}{issue.reason}
             </span>
@@ -118,17 +120,10 @@
     font-weight: 600;
     color: var(--ink);
   }
-  /* El color dice la gravedad, y la píldora de arriba lo dice en palabras. */
+  /* El punto de estado común: el color dice la gravedad, y la píldora de
+     arriba lo dice en palabras. Aquí sólo se alinea con la primera línea. */
   .punto {
-    flex-shrink: 0;
-    width: 6px;
-    height: 6px;
     margin-top: 0.4rem;
-    border-radius: var(--radius-pill);
-    background: var(--warning);
-  }
-  .punto.error {
-    background: var(--critical);
   }
 
   .pie {

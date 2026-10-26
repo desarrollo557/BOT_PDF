@@ -2,6 +2,7 @@
   import { fly } from 'svelte/transition';
 
   import { fetchHealth, reconocerArchivo, type Health, type Sugerencia } from '$lib/api';
+  import Icono from '$lib/components/Icono.svelte';
   import UploadSummary from '$lib/components/UploadSummary.svelte';
   import Callout from '$lib/components/wizard/Callout.svelte';
   import PasoAgrupar from '$lib/components/wizard/PasoAgrupar.svelte';
@@ -408,9 +409,9 @@
             disabled={numero > pasoActual}
             aria-current={numero === pasoActual ? 'step' : undefined}
           >
-            <span class="dot">
+            <span class="circulo">
               {#if numero < pasoActual}
-                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" /></svg>
+                <Icono nombre="hecho" />
               {:else}
                 {numero}
               {/if}
@@ -422,7 +423,7 @@
     </ol>
   </nav>
 
-  <div class="card">
+  <div class="panel cuerpo">
     {#key pasoId}
       <div class="stage" in:fly={{ y: 6, duration: reduceMotion ? 0 : 180 }}>
         {#if pasoId === 'tipo'}
@@ -540,7 +541,7 @@
 
     <footer class="nav">
       <button type="button" class="btn" onclick={anterior} disabled={pasoActual === 1}>
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5" /></svg>
+        <Icono nombre="atras" />
         Anterior
       </button>
 
@@ -555,7 +556,7 @@
           title={bloqueoDelPaso ?? undefined}
         >
           Siguiente
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" /></svg>
+          <Icono nombre="chevron" />
         </button>
       {:else}
         <span class="spacer" aria-hidden="true"></span>
@@ -595,7 +596,7 @@
     justify-content: center;
   }
 
-  /* The connector to the previous step, drawn behind the dot. */
+  /* The connector to the previous step, drawn behind the circle. */
   .pasos li + li::before {
     content: '';
     position: absolute;
@@ -630,20 +631,25 @@
     cursor: default;
   }
 
+  /* El foco va en el círculo, que es lo que se ve del botón. */
   .pasos button:focus-visible {
     outline: none;
   }
 
-  .pasos button:focus-visible .dot {
-    box-shadow: 0 0 0 3px var(--ring);
+  .pasos button:focus-visible .circulo {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
   }
 
-  .dot {
+  /* El círculo numerado de cada paso. No es un punto de estado: es el número
+     del paso, y con él se vuelve a uno anterior. */
+  .circulo {
+    --icono: 14px;
     display: grid;
     width: 30px;
     height: 30px;
     place-items: center;
-    border: 1.5px solid var(--axis);
+    border: 1.5px solid var(--control);
     border-radius: 50%;
     background: var(--surface-2);
     font-size: var(--text-sm);
@@ -651,28 +657,18 @@
     font-variant-numeric: tabular-nums;
     color: var(--muted);
     transition:
-      background-color 0.2s ease,
-      border-color 0.2s ease,
-      color 0.2s ease;
+      background-color var(--duration) var(--ease-out),
+      border-color var(--duration) var(--ease-out),
+      color var(--duration) var(--ease-out);
   }
 
-  .dot svg {
-    width: 14px;
-    height: 14px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
-  .done .dot {
+  .done .circulo {
     border-color: var(--accent);
     background: var(--accent);
     color: var(--on-accent);
   }
 
-  .current .dot {
+  .current .circulo {
     border-color: var(--accent);
     color: var(--accent);
     box-shadow: 0 0 0 4px var(--accent-soft);
@@ -704,15 +700,13 @@
     container: wizard / inline-size;
   }
 
-  .card {
+  /* La tarjeta del paso es el `.panel` común; aquí sólo su maquetación y un
+     relleno más holgado, que el pie pegajoso de abajo descuenta. */
+  .cuerpo {
     display: flex;
     flex-direction: column;
     gap: var(--space-5);
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-lg);
-    background: var(--surface-2);
     padding: var(--space-6) var(--space-6) 0;
-    box-shadow: var(--shadow);
   }
 
   .stage {
@@ -797,7 +791,7 @@
   /* -- small screens ------------------------------------------------------- */
 
   @container wizard (max-width: 36rem) {
-    .card {
+    .cuerpo {
       padding: var(--space-4) var(--space-4) 0;
     }
 
@@ -806,7 +800,7 @@
       padding-inline: var(--space-4);
     }
 
-    /* Only the current step keeps its name; the others stay as dots. */
+    /* Only the current step keeps its name; the others stay as circles. */
     .pasos li:not(.current) .label {
       display: none;
     }

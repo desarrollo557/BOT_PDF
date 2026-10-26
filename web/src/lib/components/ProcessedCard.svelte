@@ -138,8 +138,8 @@
 </script>
 
 <div
-  class="card"
-  class:failed={entry.failed}
+  class="panel panel-sm documento"
+  class:panel-bad={entry.failed}
   class:openable={entry.live && mode === 'idle'}
   class:picking={!!onselect}
   class:open={abierta}
@@ -231,17 +231,17 @@
         {:else}
           <!-- Two numbers, always in the same place, always meaning the same thing. -->
           <dl class="figures">
-            <div>
-              <dt>{unidad}</dt>
-              <dd class="tabular">{entry.resolutions}</dd>
+            <div class="stat">
+              <dt class="stat-label">{unidad}</dt>
+              <dd class="stat-value">{entry.resolutions}</dd>
             </div>
-            <div>
-              <dt>Páginas</dt>
-              <dd class="tabular">{entry.pages || '—'}</dd>
+            <div class="stat">
+              <dt class="stat-label">Páginas</dt>
+              <dd class="stat-value">{entry.pages || '—'}</dd>
             </div>
-            <div>
-              <dt>Tamaño</dt>
-              <dd class="tabular">{entry.bytes ? formatBytes(entry.bytes) : '—'}</dd>
+            <div class="stat">
+              <dt class="stat-label">Tamaño</dt>
+              <dd class="stat-value">{entry.bytes ? formatBytes(entry.bytes) : '—'}</dd>
             </div>
           </dl>
         {/if}
@@ -250,7 +250,7 @@
         {#if !entry.failed}
           <!-- Fuera del enlace: dentro, pulsarlo abriría el detalle. -->
           <button
-            class="toggle"
+            class="btn btn-ghost btn-sm toggle"
             aria-expanded={abierta}
             aria-controls={`archivos-${entry.jobId}`}
             onclick={() => (abierta = !abierta)}
@@ -273,10 +273,7 @@
 
         {#if entry.review}
           <span class="pill pill-warn review tabular" title={`${entry.review} páginas requieren revisión`}>
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M8 2.5 14 13H2L8 2.5Z" />
-              <path d="M8 6.5v3M8 11.3v.2" />
-            </svg>
+            <Icono nombre="aviso" />
             {entry.review}
           </span>
         {/if}
@@ -354,34 +351,26 @@
     siguen usando el ancho entero -- porque es la única línea que llega hasta
     ese borde.
   */
-  .card.picking header {
+  .documento.picking header {
     padding-left: 1.55rem;
   }
 
   /* Drawn as a folder: a finished document is something you open, not a row you
-     scroll past. La esquina de 4px es la que casa con la pestaña de arriba; el
-     resto es el radio de tarjeta común, el mismo de la tarjeta de una carpeta. */
-  .card {
+     scroll past. Es la tarjeta común (`.panel`); sólo la esquina de 4px es
+     propia, la que casa con la pestaña de arriba. Al pasar por encima cambia el
+     borde y la sombra, sin moverse: nada se mueve por adornar. */
+  .documento {
     position: relative;
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
-    border: 1px solid var(--hairline);
-    border-radius: 4px var(--radius-md) var(--radius-md) var(--radius-md);
-    background: var(--surface-2);
-    padding: 0.8rem 0.9rem;
-    box-shadow: var(--shadow);
-    color: inherit;
-    text-decoration: none;
+    gap: var(--space-2);
+    border-radius: var(--radius-xs) var(--radius-lg) var(--radius-lg) var(--radius-lg);
     transition:
-      border-color 0.15s,
-      transform 0.15s,
-      box-shadow 0.15s;
+      border-color var(--duration-fast) var(--ease-out),
+      box-shadow var(--duration-fast) var(--ease-out);
   }
-  .card.openable:hover {
+  .documento.openable:hover {
     border-color: var(--accent);
-    transform: translateY(-1px);
-    /* La sombra de siempre, más honda: el velo común rebajado a un cuarto. */
     box-shadow: var(--shadow-hover);
   }
 
@@ -403,12 +392,12 @@
     height: 8px;
     border: 1px solid var(--hairline);
     border-bottom: 0;
-    border-radius: 4px var(--radius-sm) 0 0;
+    border-radius: var(--radius-xs) var(--radius-sm) 0 0;
     background: var(--surface-2);
   }
-  .card.failed,
-  .card.failed .tab {
-    border-color: color-mix(in oklab, var(--critical) 40%, var(--hairline));
+  /* La pestaña sigue al borde de la tarjeta cuando falló (`.panel-bad`). */
+  .documento.panel-bad .tab {
+    border-color: color-mix(in srgb, var(--critical) 40%, var(--hairline));
   }
 
   header {
@@ -428,33 +417,16 @@
     flex-shrink: 0;
     font-family: var(--font-mono);
     font-size: var(--text-xs);
-    color: var(--axis);
+    color: var(--muted);
   }
 
-  /* Las mismas cifras que la tarjeta de una carpeta, con la misma escala: una
+  /* Las cifras comunes (`.stat`), las mismas que la tarjeta de una carpeta: una
      carpeta y un PDF suelto se comparan de un vistazo. */
   .figures {
     display: flex;
-    gap: 1.25rem;
+    flex-wrap: wrap;
+    gap: var(--space-3) var(--space-5);
     margin: 0;
-  }
-  .figures div {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-  .figures dt {
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    letter-spacing: var(--tracking-caps);
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-  .figures dd {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: var(--text-lg);
-    color: var(--ink);
   }
 
   /* Por qué falló, en un renglón: el texto entero va en el `title`. */
@@ -473,7 +445,7 @@
 
   /* Abierta ocupa la fila entera: la lista de PDF de un libro no cabe en una
      columna de la rejilla. */
-  .card.open {
+  .documento.open {
     grid-column: 1 / -1;
     container-type: inline-size;
   }
@@ -514,26 +486,15 @@
     }
   }
 
-  /* Plegar y desplegar queda como texto: no es una acción sobre el documento. */
+  /* Plegar y desplegar es un `.btn-ghost`: no es una acción sobre el
+     documento, así que va callado. La flecha gira para decir si está abierto. */
   .toggle {
-    display: inline-flex;
     align-self: flex-start;
-    align-items: center;
-    gap: 0.25rem;
-    border: 0;
-    background: none;
-    padding: 0;
-    font: inherit;
-    font-size: var(--text-xs);
-    font-weight: 600;
-    color: var(--accent);
-    cursor: pointer;
-  }
-  .toggle:hover {
-    text-decoration: underline;
+    gap: var(--space-1);
+    margin-left: calc(var(--space-2) * -1);
   }
   .toggle :global(.icono) {
-    transition: transform 0.15s ease;
+    transition: transform var(--duration-fast) var(--ease-out);
   }
   .toggle[aria-expanded='true'] :global(.icono) {
     transform: rotate(90deg);
@@ -562,15 +523,7 @@
 
   .review {
     flex-shrink: 0;
-  }
-  .review svg {
-    width: 0.75rem;
-    height: 0.75rem;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.6;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+    --icono: 0.75rem;
   }
 
   /* Tres botones pequeños en una tarjeta de 16.5rem: con el relleno lateral de
@@ -596,7 +549,7 @@
   }
 
   .open,
-  .card.openable:hover .open {
+  .documento.openable:hover .open {
     color: var(--accent);
   }
 

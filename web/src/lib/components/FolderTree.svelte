@@ -168,7 +168,7 @@
   <!-- La raíz: la carpeta, por su ruta. Es lo que el operador escribió y es
        como la reconoce, así que va entera y no recortada a su último tramo. -->
   <div class="nodo raiz">
-    <span class="glifo" aria-hidden="true">📁</span>
+    <span class="glifo" aria-hidden="true"><Icono nombre="carpeta" /></span>
     <span class="etiqueta" title={run.source}>{run.source}</span>
     <!-- Cuántos PDF tomó de la carpeta, sobre cuántos había. "1 de 2 PDF"
          contando sólo lo que quedaba en pantalla decía que la carpeta tenía dos
@@ -202,9 +202,11 @@
             aria-expanded={abiertos.has(job.id)}
           >
             <span class="chevron" aria-hidden="true">
-              {unidades.length === 0 ? '·' : abiertos.has(job.id) ? '▾' : '▸'}
+              {#if unidades.length > 0}
+                <Icono nombre={abiertos.has(job.id) ? 'abajo' : 'chevron'} />
+              {/if}
             </span>
-            <span class="glifo" aria-hidden="true">📄</span>
+            <span class="glifo" aria-hidden="true"><Icono nombre="hoja" /></span>
             <span class="etiqueta" title={job.filename}>{job.filename}</span>
           </button>
 
@@ -267,7 +269,7 @@
               <li class="unidad">
                 <div class="nodo">
                   <span class="rama" aria-hidden="true"></span>
-                  <span class="glifo" aria-hidden="true">📃</span>
+                  <span class="glifo" aria-hidden="true"><Icono nombre="documento" /></span>
                   <a
                     class="etiqueta enlace"
                     href={downloadUrl(job.id, unidad.file_name)}
@@ -317,7 +319,7 @@
   .nodo {
     display: flex;
     min-width: 0;
-    align-items: baseline;
+    align-items: center;
     gap: 0.4rem;
     padding: 2px 0;
   }
@@ -352,9 +354,14 @@
     background: var(--rule);
   }
 
+  /* Carpeta, PDF y unidad, del juego común de íconos (antes, emojis: cada
+     sistema los dibuja a su manera y ponen un tono que esta consola no tiene). */
   .glifo {
+    --icono: 14px;
+    display: grid;
     flex: none;
-    font-size: var(--text-sm);
+    place-items: center;
+    color: var(--muted);
   }
 
   .etiqueta {
@@ -392,11 +399,13 @@
     padding-block: 1px;
   }
 
+  /* La fila del PDF es el control que la despliega: no lleva la caja de
+     `.btn`, como cualquier rama de un árbol. */
   .pliegue {
     display: flex;
     min-width: 0;
     flex: 1;
-    align-items: baseline;
+    align-items: center;
     gap: 0.4rem;
     border: 0;
     background: transparent;
@@ -414,9 +423,11 @@
   }
 
   .chevron {
+    --icono: 12px;
+    display: grid;
     flex: none;
-    width: 0.7rem;
-    font-size: var(--text-2xs);
+    width: 0.75rem;
+    place-items: center;
     color: var(--muted);
   }
 

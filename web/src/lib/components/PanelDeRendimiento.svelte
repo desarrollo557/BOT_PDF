@@ -12,6 +12,7 @@
     type Muestra
   } from '$lib/rendimiento';
   import { STAGE_LABELS } from '$lib/rungs';
+  import Icono from '$lib/components/Icono.svelte';
   import type { Consumo } from '$lib/types';
 
   interface Documentos {
@@ -246,8 +247,9 @@
   const conIA = $derived(Boolean(consumo && consumo.peticiones));
 </script>
 
-<details class="panel" open={abierto} ontoggle={alternar}>
+<details class="rendimiento" open={abierto} ontoggle={alternar}>
   <summary>
+    <span class="flecha"><Icono nombre="chevron" /></span>
     <span class="titulo">Rendimiento detallado</span>
     <span class="resumen tabular">
       {cifra(velocidad)} p/s ahora · {cifra(media)} p/s de media
@@ -257,57 +259,57 @@
 
   <!-- Las cifras van también en texto: la gráfica no es la única forma de leerlas. -->
   <div class="cifras">
-    <div class="cifra">
-      <span class="rotulo">Velocidad ahora</span>
-      <b class="tabular">{cifra(velocidad)} <small>p/s</small></b>
-      <span class="nota tabular">{entero(velocidad * 60)} páginas por minuto</span>
+    <div class="stat">
+      <span class="stat-label">Velocidad ahora</span>
+      <b class="stat-value">{cifra(velocidad)} <small>p/s</small></b>
+      <span class="stat-note tabular">{entero(velocidad * 60)} páginas por minuto</span>
     </div>
-    <div class="cifra">
-      <span class="rotulo">Velocidad media</span>
-      <b class="tabular">{cifra(media)} <small>p/s</small></b>
-      <span class="nota tabular">{entero(media * 60)} p/min · {entero(media * 3600)} p/hora</span>
+    <div class="stat">
+      <span class="stat-label">Velocidad media</span>
+      <b class="stat-value">{cifra(media)} <small>p/s</small></b>
+      <span class="stat-note tabular">{entero(media * 60)} p/min · {entero(media * 3600)} p/hora</span>
     </div>
-    <div class="cifra">
-      <span class="rotulo">Pico</span>
-      <b class="tabular">{cifra(pico)} <small>p/s</small></b>
-      <span class="nota">la más alta medida en esta pantalla</span>
+    <div class="stat">
+      <span class="stat-label">Pico</span>
+      <b class="stat-value">{cifra(pico)} <small>p/s</small></b>
+      <span class="stat-note">la más alta medida en esta pantalla</span>
     </div>
-    <div class="cifra">
-      <span class="rotulo">Tiempo transcurrido</span>
-      <b class="tabular">{segundos >= 1 ? formatDuration(segundos) : '—'}</b>
-      <span class="nota tabular">
+    <div class="stat">
+      <span class="stat-label">Tiempo transcurrido</span>
+      <b class="stat-value">{segundos >= 1 ? formatDuration(segundos) : '—'}</b>
+      <span class="stat-note tabular">
         {paginasHechas && segundos ? `${cifra(segundos / paginasHechas, 2)} s por página` : 'midiendo…'}
       </span>
     </div>
-    <div class="cifra">
-      <span class="rotulo">Tiempo restante</span>
-      <b class="tabular">{faltan !== null ? formatDuration(faltan) : vivo ? 'calculando…' : '—'}</b>
-      <span class="nota">{fin ? `termina hacia las ${fin}` : vivo ? 'falta saber el total' : 'terminado'}</span>
+    <div class="stat">
+      <span class="stat-label">Tiempo restante</span>
+      <b class="stat-value">{faltan !== null ? formatDuration(faltan) : vivo ? 'calculando…' : '—'}</b>
+      <span class="stat-note">{fin ? `termina hacia las ${fin}` : vivo ? 'falta saber el total' : 'terminado'}</span>
     </div>
-    <div class="cifra">
-      <span class="rotulo">Páginas</span>
-      <b class="tabular">
+    <div class="stat">
+      <span class="stat-label">Páginas</span>
+      <b class="stat-value">
         {entero(paginasHechas)}{#if paginasTotal}<small> / {entero(paginasTotal)}</small>{/if}
       </b>
-      <span class="nota tabular">
+      <span class="stat-note tabular">
         {avance !== null ? `${cifra(avance)} % hecho` : 'total por contar'}
       </span>
     </div>
-    <div class="cifra" data-tono={revision ? 'aviso' : undefined}>
-      <span class="rotulo">Por revisar</span>
-      <b class="tabular">{entero(revision)}</b>
-      <span class="nota">páginas marcadas para mirar</span>
+    <div class="stat" class:warn={revision > 0}>
+      <span class="stat-label">Por revisar</span>
+      <b class="stat-value">{entero(revision)}</b>
+      <span class="stat-note">páginas marcadas para mirar</span>
     </div>
-    <div class="cifra" data-tono={fallidas ? 'fallo' : undefined}>
-      <span class="rotulo">Páginas con fallo</span>
-      <b class="tabular">{entero(fallidas)}</b>
-      <span class="nota">{fallidas ? 'no se pudieron leer' : 'ninguna'}</span>
+    <div class="stat" class:bad={fallidas > 0}>
+      <span class="stat-label">Páginas con fallo</span>
+      <b class="stat-value">{entero(fallidas)}</b>
+      <span class="stat-note">{fallidas ? 'no se pudieron leer' : 'ninguna'}</span>
     </div>
     {#if documentos}
-      <div class="cifra">
-        <span class="rotulo">Documentos por minuto</span>
-        <b class="tabular">{cifra(documentosPorMinuto, 2)}</b>
-        <span class="nota tabular">
+      <div class="stat">
+        <span class="stat-label">Documentos por minuto</span>
+        <b class="stat-value">{cifra(documentosPorMinuto, 2)}</b>
+        <span class="stat-note tabular">
           {faltanPorDocumentos !== null
             ? `al ritmo de documentos, faltan ${formatDuration(faltanPorDocumentos)}`
             : `${entero(documentos.hechos)} hechos`}
@@ -318,7 +320,7 @@
 
   <figure class="grafica">
     <figcaption>
-      <span class="rotulo">Avance y velocidad en el tiempo</span>
+      <span class="caps">Avance y velocidad en el tiempo</span>
       <span class="leyenda">
         <span><i style:background="var(--s1)"></i>páginas hechas</span>
         <span><i class="linea" style:background="var(--s2)"></i>páginas por segundo</span>
@@ -388,11 +390,11 @@
 
   <div class="dos">
     <figure class="grafica">
-      <figcaption><span class="rotulo">Dónde se resolvió cada página</span></figcaption>
+      <figcaption><span class="caps">Dónde se resolvió cada página</span></figcaption>
       {#if porciones.length}
-        <div class="barra" role="img" aria-label={porciones.map((p) => `${p.etiqueta}: ${p.valor}`).join(', ')}>
+        <div class="progress composicion" role="img" aria-label={porciones.map((p) => `${p.etiqueta}: ${p.valor}`).join(', ')}>
           {#each porciones as p (p.clave)}
-            <div style:width={`${(100 * p.valor) / totalPorciones}%`} style:background={p.color}></div>
+            <div class="progress-fill" style:width={`${(100 * p.valor) / totalPorciones}%`} style:background={p.color}></div>
           {/each}
         </div>
         <ul class="lista">
@@ -411,7 +413,7 @@
     </figure>
 
     <figure class="grafica">
-      <figcaption><span class="rotulo">Tiempo por etapa</span></figcaption>
+      <figcaption><span class="caps">Tiempo por etapa</span></figcaption>
       {#if etapasMedidas.length}
         <ul class="etapas">
           {#each etapasMedidas as e (e.clave)}
@@ -434,16 +436,16 @@
     <div class="dos">
       {#if documentos}
         <figure class="grafica">
-          <figcaption><span class="rotulo">Documentos</span></figcaption>
-          <div class="barra" role="img" aria-label={`${documentos.hechos} hechos, ${documentos.fallidos} con fallo, ${documentos.enCola} en cola`}>
-            <div style:width={`${(100 * documentos.hechos) / totalDocumentos}%`} style:background="var(--good)"></div>
-            <div style:width={`${(100 * documentos.fallidos) / totalDocumentos}%`} style:background="var(--critical)"></div>
-            <div style:width={`${(100 * documentos.enCola) / totalDocumentos}%`} style:background="var(--grid)"></div>
+          <figcaption><span class="caps">Documentos</span></figcaption>
+          <div class="progress composicion" role="img" aria-label={`${documentos.hechos} hechos, ${documentos.fallidos} con fallo, ${documentos.enCola} en cola`}>
+            <div class="progress-fill good" style:width={`${(100 * documentos.hechos) / totalDocumentos}%`}></div>
+            <div class="progress-fill bad" style:width={`${(100 * documentos.fallidos) / totalDocumentos}%`}></div>
+            <div class="progress-fill idle" style:width={`${(100 * documentos.enCola) / totalDocumentos}%`}></div>
           </div>
           <ul class="lista">
             <li><i style:background="var(--good)"></i><span>Hechos</span><b class="tabular">{entero(documentos.hechos)}</b></li>
             <li><i style:background="var(--critical)"></i><span>Con fallo</span><b class="tabular">{entero(documentos.fallidos)}</b></li>
-            <li><i style:background="var(--grid)"></i><span>En cola</span><b class="tabular">{entero(documentos.enCola)}</b></li>
+            <li><i style:background="var(--axis)"></i><span>En cola</span><b class="tabular">{entero(documentos.enCola)}</b></li>
             {#if documentos.total !== null}
               <li><i></i><span>Total</span><b class="tabular">{entero(documentos.total)}</b></li>
             {/if}
@@ -453,7 +455,7 @@
 
       {#if consumo && conIA}
         <figure class="grafica">
-          <figcaption><span class="rotulo">Consumo de IA</span></figcaption>
+          <figcaption><span class="caps">Consumo de IA</span></figcaption>
           <dl class="consumo">
             <dt>Peticiones</dt><dd class="tabular">{entero(consumo.peticiones)}</dd>
             <dt>Páginas facturadas</dt><dd class="tabular">{entero(consumo.paginas_facturadas)}</dd>
@@ -479,88 +481,62 @@
 </details>
 
 <style>
-  .panel {
+  /* Una sección plegable dentro del monitor, que ya es un `.panel`: no es otra
+     tarjeta con sombra, es el plano del monitor un tono más abajo. Se llamaba
+     `.panel` y pisaba la tarjeta común. */
+  .rendimiento {
     border: 1px solid var(--hairline);
     border-radius: var(--radius-lg);
     background: var(--surface-1);
-    padding: 0.2rem 1rem;
+    padding: 2px var(--space-4);
   }
-  .panel[open] {
-    padding-bottom: 1rem;
+  .rendimiento[open] {
+    padding-bottom: var(--space-4);
   }
 
   summary {
     display: flex;
     flex-wrap: wrap;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
-    gap: 0.4rem 1rem;
-    padding: 0.6rem 0;
+    gap: var(--space-1) var(--space-4);
+    padding: var(--space-2) 0;
     cursor: pointer;
     list-style: none;
   }
   summary::-webkit-details-marker {
     display: none;
   }
-  summary::before {
-    content: '▸';
-    margin-right: 0.4rem;
+  .flecha {
+    display: inline-flex;
     color: var(--muted);
-    transition: transform 0.15s;
+    transition: transform var(--duration-fast) var(--ease-out);
   }
-  .panel[open] summary::before {
+  .rendimiento[open] .flecha {
     transform: rotate(90deg);
   }
   .titulo {
     flex: 1;
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     font-weight: 650;
   }
   .resumen {
     font-family: var(--font-mono);
-    font-size: 0.7rem;
+    font-size: var(--text-2xs);
     color: var(--muted);
   }
 
-  .rotulo {
-    font-size: 0.62rem;
-    font-weight: 600;
-    letter-spacing: 0.055em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-
+  /* Las cifras son la `.stat` común; aquí sólo la rejilla y la unidad pequeña
+     al lado del valor. */
   .cifras {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr));
-    gap: 0.9rem 1rem;
-    margin: 0.3rem 0 1.1rem;
+    gap: var(--space-3) var(--space-4);
+    margin: var(--space-1) 0 var(--space-4);
   }
-  .cifra {
-    display: flex;
-    flex-direction: column;
-    gap: 0.1rem;
-    border-left: 2px solid var(--rule);
-    padding-left: 0.7rem;
-  }
-  .cifra[data-tono='aviso'] {
-    border-left-color: color-mix(in oklab, var(--warning) 65%, transparent);
-  }
-  .cifra[data-tono='fallo'] {
-    border-left-color: color-mix(in oklab, var(--critical) 65%, transparent);
-  }
-  .cifra b {
-    font-size: 1.15rem;
-    font-weight: 650;
-    letter-spacing: -0.01em;
-  }
-  .cifra small {
-    font-size: 0.72rem;
+  .stat-value small {
+    font-size: var(--text-xs);
     font-weight: 500;
-    color: var(--muted);
-  }
-  .nota {
-    font-size: 0.7rem;
     color: var(--muted);
   }
 
@@ -573,20 +549,20 @@
     flex-wrap: wrap;
     align-items: baseline;
     justify-content: space-between;
-    gap: 0.4rem 1rem;
-    margin-bottom: 0.45rem;
+    gap: var(--space-1) var(--space-4);
+    margin-bottom: var(--space-2);
   }
   .leyenda {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.9rem;
-    font-size: 0.7rem;
+    gap: var(--space-3);
+    font-size: var(--text-2xs);
     color: var(--ink-2);
   }
   .leyenda span {
     display: flex;
     align-items: center;
-    gap: 0.35rem;
+    gap: var(--space-1);
   }
   .leyenda i {
     display: inline-block;
@@ -614,10 +590,11 @@
     stroke-width: 1;
     vector-effect: non-scaling-stroke;
   }
+  /* En unidades de la gráfica, que mide 170 de alto como el SVG: 11 px. */
   .eje {
     fill: var(--muted);
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--text-2xs);
   }
   .area {
     fill: var(--s1);
@@ -656,50 +633,47 @@
   .detalle,
   .esperando,
   .pie {
-    margin: 0.35rem 0 0;
-    font-size: 0.72rem;
+    margin: var(--space-1) 0 0;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
   .detalle b {
     color: var(--ink);
   }
   .esperando {
-    padding: 1.2rem 0;
+    padding: var(--space-5) 0;
     text-align: center;
   }
 
   .dos {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
-    gap: 1.2rem 1.6rem;
-    margin-top: 1.1rem;
+    gap: var(--space-5) var(--space-6);
+    margin-top: var(--space-4);
   }
 
-  .barra {
-    display: flex;
+  /* Una composición, no un avance: la pista común más gruesa, con 2 px de
+     plano entre porción y porción. */
+  .composicion {
     gap: 2px;
     height: 12px;
-    overflow: hidden;
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     background: var(--plane);
-  }
-  .barra div {
-    height: 100%;
   }
 
   .lista {
     display: grid;
-    gap: 0.3rem;
-    margin: 0.6rem 0 0;
+    gap: var(--space-1);
+    margin: var(--space-2) 0 0;
     padding: 0;
     list-style: none;
-    font-size: 0.78rem;
+    font-size: var(--text-xs);
   }
   .lista li {
     display: grid;
     grid-template-columns: 10px 1fr auto 3.6rem;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
   .lista i {
     width: 10px;
@@ -708,24 +682,24 @@
   }
   .lista small,
   .etapas small {
-    font-size: 0.7rem;
+    font-size: var(--text-2xs);
     color: var(--muted);
     text-align: right;
   }
 
   .etapas {
     display: grid;
-    gap: 0.4rem;
+    gap: var(--space-1);
     margin: 0;
     padding: 0;
     list-style: none;
-    font-size: 0.78rem;
+    font-size: var(--text-xs);
   }
   .etapas li {
     display: grid;
     grid-template-columns: minmax(7rem, 11rem) 1fr auto 2.6rem;
     align-items: center;
-    gap: 0.6rem;
+    gap: var(--space-2);
   }
   .etapas .nombre {
     overflow: hidden;
@@ -737,15 +711,17 @@
     color: var(--ink);
     font-weight: 600;
   }
+  /* Un gráfico de barras (tiempo por etapa): la serie es dato; la etapa que
+     corre ahora se marca con el acento. */
   .pista {
     height: 8px;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     background: var(--plane);
   }
   .pista span {
     display: block;
     height: 100%;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     background: var(--s3);
   }
   .etapas li.viva .pista span {
@@ -755,9 +731,9 @@
   .consumo {
     display: grid;
     grid-template-columns: 1fr auto;
-    gap: 0.3rem 1rem;
+    gap: var(--space-1) var(--space-4);
     margin: 0;
-    font-size: 0.78rem;
+    font-size: var(--text-xs);
   }
   .consumo dt {
     color: var(--ink-2);

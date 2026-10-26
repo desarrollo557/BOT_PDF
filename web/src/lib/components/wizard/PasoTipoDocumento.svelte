@@ -1,6 +1,7 @@
 <script lang="ts">
   import { fly } from 'svelte/transition';
   import type { Health } from '$lib/api';
+  import Icono from '../Icono.svelte';
   import { HABILIDADES, motivoNoDisponible } from '$lib/habilidades';
   import Callout from './Callout.svelte';
   import ChoiceCard from './ChoiceCard.svelte';
@@ -81,13 +82,13 @@
     <div class="correspondencia-group">
       <button
         type="button"
-        class="correspondencia-trigger"
+        class="panel panel-interactive correspondencia-trigger"
         aria-expanded={expandida}
         aria-controls="correspondencia-opciones"
         onclick={() => (expandida = !expandida)}
         disabled={disabled}
       >
-        <div class="trigger-icon">
+        <div class="trigger-icon" aria-hidden="true">
           <SkillIcon id="correspondencia" />
         </div>
         <div class="trigger-content">
@@ -98,9 +99,9 @@
               : 'Afinia · Kingspan'}
           </span>
         </div>
-        <svg class="chevron" viewBox="0 0 16 16" aria-hidden="true" class:rotated={expandida}>
-          <path d="M4.5 5.5 8 9 11.5 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        <span class="chevron" aria-hidden="true" class:rotated={expandida}>
+          <Icono nombre="abajo" />
+        </span>
       </button>
 
       {#if expandida}
@@ -144,43 +145,30 @@
     grid-column: 1 / -1;
   }
 
+  /* La cabecera del grupo es una tarjeta-control (`.panel-interactive`), como
+     las opciones de al lado: el borde, el paso del ratón, el foco y la apagada
+     son los comunes. */
   .correspondencia-trigger {
     display: flex;
     align-items: center;
     gap: var(--space-3);
     width: 100%;
-    padding: var(--space-4);
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-lg);
-    background: var(--surface-2);
-    color: var(--ink);
-    font: inherit;
+    padding: var(--space-3) var(--space-4);
     text-align: left;
-    cursor: pointer;
-    transition: border-color 0.2s, background-color 0.2s, box-shadow 0.2s;
+    color: var(--ink);
   }
 
-  .correspondencia-trigger:hover:not(:disabled) {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-  }
-
-  .correspondencia-trigger:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 3px var(--ring);
-    border-color: var(--accent);
-  }
-
-  .correspondencia-trigger:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
+  /* El ícono en la misma caja que el de cada opción ([ChoiceCard]). */
   .trigger-icon {
+    --icono: 20px;
+    display: grid;
+    width: 32px;
+    height: 32px;
     flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    place-items: center;
+    border-radius: var(--radius);
+    background: var(--plane);
+    color: var(--ink-2);
   }
 
   .trigger-content {
@@ -193,7 +181,7 @@
 
   .trigger-title {
     font-weight: 600;
-    font-size: var(--text-base);
+    font-size: var(--text-lg);
     color: var(--ink);
     white-space: nowrap;
     overflow: hidden;
@@ -209,11 +197,12 @@
   }
 
   .chevron {
+    --icono: 18px;
+    display: grid;
     flex-shrink: 0;
-    width: 20px;
-    height: 20px;
+    place-items: center;
     color: var(--muted);
-    transition: transform 0.2s ease;
+    transition: transform var(--duration) var(--ease-out);
   }
 
   .chevron.rotated {

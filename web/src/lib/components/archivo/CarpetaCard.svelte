@@ -113,7 +113,7 @@
   }
 </script>
 
-<article class="card" class:open={abierta} class:picking={!!onselectmany}>
+<article class="panel panel-sm carpeta" class:open={abierta} class:picking={!!onselectmany}>
   {#if onselectmany}
     <label class="pick" title="Seleccionar todos sus PDF">
       <input
@@ -127,22 +127,13 @@
   {/if}
 
   <header>
-    <span class="icon" aria-hidden="true">
-      {#if esCarpeta}
-        <svg viewBox="0 0 20 20">
-          <path d="M2.5 5.5A1.5 1.5 0 0 1 4 4h3.6l1.6 1.8H16a1.5 1.5 0 0 1 1.5 1.5v7.2A1.5 1.5 0 0 1 16 16H4a1.5 1.5 0 0 1-1.5-1.5v-9Z" />
-        </svg>
-      {:else}
-        <svg viewBox="0 0 20 20">
-          <rect x="4.5" y="3" width="11" height="14" rx="1.5" />
-          <path d="M2.5 6v9.5A1.5 1.5 0 0 0 4 17M7.5 7h5M7.5 10h5M7.5 13h3" />
-        </svg>
-      {/if}
+    <span class="icon">
+      <Icono nombre={esCarpeta ? 'carpeta' : 'documentos'} />
     </span>
     <div class="title">
       <span class="name" title={grupo.origen.nombre}>{grupo.origen.nombre}</span>
       <span class="meta">
-        <span class="kind">{esCarpeta ? 'Carpeta local' : 'Lote'}</span>
+        <span class="pill pill-neutral kind">{esCarpeta ? 'Carpeta local' : 'Lote'}</span>
         <span>{grupo.entries.length} PDF</span>
         {#if grupo.operators.length}<span>{grupo.operators.join(', ')}</span>{/if}
       </span>
@@ -151,17 +142,17 @@
   </header>
 
   <dl class="figures">
-    <div>
-      <dt>{unidad}</dt>
-      <dd class="tabular">{grupo.resolutions}</dd>
+    <div class="stat">
+      <dt class="stat-label">{unidad}</dt>
+      <dd class="stat-value">{grupo.resolutions}</dd>
     </div>
-    <div>
-      <dt>Páginas</dt>
-      <dd class="tabular">{grupo.pages || '—'}</dd>
+    <div class="stat">
+      <dt class="stat-label">Páginas</dt>
+      <dd class="stat-value">{grupo.pages || '—'}</dd>
     </div>
-    <div>
-      <dt>Tamaño</dt>
-      <dd class="tabular">{grupo.bytes ? formatBytes(grupo.bytes) : '—'}</dd>
+    <div class="stat">
+      <dt class="stat-label">Tamaño</dt>
+      <dd class="stat-value">{grupo.bytes ? formatBytes(grupo.bytes) : '—'}</dd>
     </div>
   </dl>
 
@@ -179,7 +170,7 @@
   <Descargas grupos={descargas} />
 
   <button
-    class="toggle"
+    class="btn btn-ghost btn-sm toggle"
     aria-expanded={abierta}
     onclick={() => (abierta = !abierta)}
   >
@@ -254,23 +245,18 @@
 </article>
 
 <style>
-  /* La misma tarjeta que la de un PDF suelto -- radio, hairline, sombra --: lo
-     que la distingue es el ícono de carpeta y su rótulo, no un borde de color. */
-  .card {
+  /* La tarjeta común (`.panel`), la misma que la de un PDF suelto: lo que la
+     distingue es el ícono de carpeta y su rótulo, no un borde de color. */
+  .carpeta {
     position: relative;
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-md);
-    background: var(--surface-2);
-    padding: 0.8rem 0.9rem;
-    box-shadow: var(--shadow);
+    gap: var(--space-2);
   }
 
   /* Abierta ocupa el ancho de la fila: una lista de cuarenta PDF no cabe en
      una columna de la rejilla sin volverse ilegible. */
-  .card.open {
+  .carpeta.open {
     grid-column: 1 / -1;
   }
 
@@ -290,7 +276,7 @@
     cursor: pointer;
     accent-color: var(--accent);
   }
-  .card.picking header {
+  .carpeta.picking header {
     padding-left: 1.55rem;
   }
 
@@ -308,15 +294,7 @@
     border-radius: var(--radius);
     background: var(--accent-soft);
     color: var(--accent);
-  }
-  .icon svg {
-    width: 1.1rem;
-    height: 1.1rem;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.5;
-    stroke-linejoin: round;
-    stroke-linecap: round;
+    --icono: 1.1rem;
   }
   .title {
     display: flex;
@@ -339,43 +317,23 @@
     font-size: var(--text-xs);
     color: var(--muted);
   }
+  /* «Carpeta local» o «Lote»: una `.pill` neutra, pegada a la línea de datos. */
   .kind {
-    border-radius: var(--radius-pill);
-    background: var(--plane);
-    padding: 0 0.45rem;
-    font-weight: 600;
-    color: var(--ink-2);
+    padding-block: 0;
   }
   time {
     flex-shrink: 0;
     font-family: var(--font-mono);
     font-size: var(--text-xs);
-    color: var(--axis);
-  }
-
-  /* Las mismas cifras que la tarjeta de un PDF suelto, con la misma escala. */
-  .figures {
-    display: flex;
-    gap: 1.25rem;
-    margin: 0;
-  }
-  .figures div {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-  .figures dt {
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    letter-spacing: var(--tracking-caps);
-    text-transform: uppercase;
     color: var(--muted);
   }
-  .figures dd {
+
+  /* Las cifras comunes (`.stat`), las mismas que la tarjeta de un PDF suelto. */
+  .figures {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3) var(--space-5);
     margin: 0;
-    font-family: var(--font-mono);
-    font-size: var(--text-lg);
-    color: var(--ink);
   }
 
   .flags {
@@ -385,26 +343,15 @@
     margin: 0;
   }
 
-  /* Plegar y desplegar queda como texto: no es una acción sobre la carpeta. */
+  /* Plegar y desplegar es un `.btn-ghost`: no es una acción sobre la carpeta,
+     así que va callado. La flecha gira para decir si está abierta. */
   .toggle {
-    display: inline-flex;
     align-self: flex-start;
-    align-items: center;
-    gap: 0.25rem;
-    border: 0;
-    background: none;
-    padding: 0;
-    font: inherit;
-    font-size: var(--text-xs);
-    font-weight: 600;
-    color: var(--ink-2);
-    cursor: pointer;
-  }
-  .toggle:hover {
-    color: var(--accent);
+    gap: var(--space-1);
+    margin-left: calc(var(--space-2) * -1);
   }
   .toggle :global(.icono) {
-    transition: transform 0.15s ease;
+    transition: transform var(--duration-fast) var(--ease-out);
   }
   .toggle[aria-expanded='true'] :global(.icono) {
     transform: rotate(90deg);

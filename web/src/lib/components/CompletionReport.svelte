@@ -254,7 +254,7 @@
   >
     <header>
       <div class="who">
-        <span class="pill badge" class:pill-good={clean} class:pill-warn={!clean}>
+        <span class="pill tipo" class:pill-good={clean} class:pill-warn={!clean}>
           {KIND[completion.kind]}{clean ? '' : ' con pendientes'}
         </span>
         <h2 id="informe-titulo" tabindex="-1" bind:this={heading} title={completion.title}>
@@ -277,51 +277,51 @@
 
     <!-- Siempre a la vista: es lo que se viene a mirar. -->
     <dl class="tiles">
-      <div>
-        <dt>Documentos</dt>
-        <dd class="tabular" class:warn={completion.failedDocuments > 0}>
+      <div class="stat" class:warn={completion.failedDocuments > 0}>
+        <dt class="stat-label">Documentos</dt>
+        <dd class="stat-value">
           {completion.documents}
         </dd>
-        <dd class="note">
+        <dd class="stat-note">
           {completion.failedDocuments
             ? `${completion.failedDocuments} con error`
             : 'todos completos'}
         </dd>
       </div>
-      <div>
-        <dt>{Unidades}</dt>
-        <dd class="tabular">{completion.resolutions}</dd>
-        <dd class="note">{soloActas ? 'inventariadas en Excel' : 'archivos generados'}</dd>
+      <div class="stat">
+        <dt class="stat-label">{Unidades}</dt>
+        <dd class="stat-value">{completion.resolutions}</dd>
+        <dd class="stat-note">{soloActas ? 'inventariadas en Excel' : 'archivos generados'}</dd>
       </div>
-      <div>
-        <dt>Páginas</dt>
-        <dd class="tabular">{completion.pages}</dd>
-        <dd class="note">{rate ? `${rate.toFixed(1)} p/s` : 'leídas'}</dd>
+      <div class="stat">
+        <dt class="stat-label">Páginas</dt>
+        <dd class="stat-value">{completion.pages}</dd>
+        <dd class="stat-note">{rate ? `${rate.toFixed(1)} p/s` : 'leídas'}</dd>
       </div>
-      <div>
-        <dt>Peso neto</dt>
-        <dd class="tabular">{formatBytes(completion.bytes)}</dd>
-        <dd class="note">de los PDF de origen</dd>
+      <div class="stat">
+        <dt class="stat-label">Peso neto</dt>
+        <dd class="stat-value">{formatBytes(completion.bytes)}</dd>
+        <dd class="stat-note">de los PDF de origen</dd>
       </div>
-      <div>
-        <dt>Tardó</dt>
-        <dd class="tabular">{formatDuration(completion.elapsedSeconds)}</dd>
-        <dd class="note">de reloj</dd>
+      <div class="stat">
+        <dt class="stat-label">Tardó</dt>
+        <dd class="stat-value">{formatDuration(completion.elapsedSeconds)}</dd>
+        <dd class="stat-note">de reloj</dd>
       </div>
       {#if ocr.paginas}
-        <div>
-          <dt>Páginas facturadas</dt>
-          <dd class="tabular">{ocr.paginas.toLocaleString('es-CO')}</dd>
-          <dd class="note">
+        <div class="stat">
+          <dt class="stat-label">Páginas facturadas</dt>
+          <dd class="stat-value">{ocr.paginas.toLocaleString('es-CO')}</dd>
+          <dd class="stat-note">
             {ocr.peticiones} {ocr.peticiones === 1 ? 'petición' : 'peticiones'} al OCR de pago
           </dd>
         </div>
       {/if}
       {#if completion.consumo?.tokens}
-        <div>
-          <dt>Tokens de IA</dt>
-          <dd class="tabular">{completion.consumo.tokens.toLocaleString('es-CO')}</dd>
-          <dd class="note">
+        <div class="stat">
+          <dt class="stat-label">Tokens de IA</dt>
+          <dd class="stat-value">{completion.consumo.tokens.toLocaleString('es-CO')}</dd>
+          <dd class="stat-note">
             {completion.consumo.tokens_entrada.toLocaleString('es-CO')} entrada ·
             {completion.consumo.tokens_salida.toLocaleString('es-CO')} salida{#if ia}{' · '}{ia}
               {ia === 1 ? 'consulta' : 'consultas'}{/if}
@@ -329,29 +329,29 @@
         </div>
       {/if}
       {#if completion.consumo && completion.consumo.coste_estimado !== null}
-        <div>
-          <dt>Costó</dt>
-          <dd class="tabular">
+        <div class="stat">
+          <dt class="stat-label">Costó</dt>
+          <dd class="stat-value">
             {completion.consumo.coste_estimado.toFixed(2)} {completion.consumo.moneda}
           </dd>
-          <dd class="note">según el precio configurado</dd>
+          <dd class="stat-note">según el precio configurado</dd>
         </div>
       {/if}
       {#if completion.consumo && (completion.consumo.rechazos || completion.consumo.fallos)}
-        <div>
-          <dt>Proveedor</dt>
-          <dd class="tabular" class:warn={completion.consumo.fallos > 0}>
+        <div class="stat" class:warn={completion.consumo.fallos > 0}>
+          <dt class="stat-label">Proveedor</dt>
+          <dd class="stat-value">
             {completion.consumo.rechazos + completion.consumo.fallos}
           </dd>
-          <dd class="note">
+          <dd class="stat-note">
             {completion.consumo.rechazos} esperas · {completion.consumo.fallos} sin respuesta
           </dd>
         </div>
       {/if}
-      <div>
-        <dt>Requiere revisión</dt>
-        <dd class="tabular" class:warn={completion.reviewItems > 0}>{completion.reviewItems}</dd>
-        <dd class="note">
+      <div class="stat" class:warn={completion.reviewItems > 0}>
+        <dt class="stat-label">Requiere revisión</dt>
+        <dd class="stat-value">{completion.reviewItems}</dd>
+        <dd class="stat-note">
           {completion.reviewItems
             ? completion.reviewItems === 1
               ? 'página por revisar'
@@ -362,7 +362,13 @@
     </dl>
 
     {#if tabs.length > 1}
-      <div class="tabs" role="tablist" aria-label="Secciones del informe" tabindex="-1" onkeydown={tecladoDePestanas}>
+      <div
+        class="tabs segmented"
+        role="tablist"
+        aria-label="Secciones del informe"
+        tabindex="-1"
+        onkeydown={tecladoDePestanas}
+      >
         {#each tabs as item (item.id)}
           <button
             id={`informe-tab-${item.id}`}
@@ -374,7 +380,7 @@
             onclick={() => (tab = item.id)}
           >
             {item.label}
-            {#if item.count}<span class="count tabular">{item.count}</span>{/if}
+            {#if item.count}<span class="pill pill-neutral pill-sm">{item.count}</span>{/if}
           </button>
         {/each}
       </div>
@@ -510,7 +516,7 @@
         <ul class="units">
           {#each completion.parts ?? [] as part (part.id)}
             <li>
-              <span class="tag">{KIND[part.kind]}</span>
+              <span class="tag"><span class="pill pill-neutral">{KIND[part.kind]}</span></span>
               <span class="name" title={part.title}>{part.title}</span>
               <span class="num tabular">{unidadDe(part.resolutions, part.unidad)}</span>
               <span class="num tabular">{part.pages} pág.</span>
@@ -601,8 +607,6 @@
     place-items: center;
     background: var(--scrim);
     padding: 1.5rem;
-    backdrop-filter: blur(3px);
-    animation: fade 0.16s ease-out;
   }
 
   .sheet {
@@ -615,7 +619,9 @@
     border-radius: var(--radius-xl);
     background: var(--surface-2);
     box-shadow: var(--shadow-lg);
-    animation: rise 0.18s ease-out;
+    /* La entrada común: el informe acaba de aparecer. El velo no se anima:
+       ocupa la pantalla entera y desplazarlo dejaría ver un borde. */
+    animation: entrada var(--duration) var(--ease-out);
   }
 
   header {
@@ -638,7 +644,7 @@
     align-items: center;
     gap: 0.75rem;
   }
-  .badge {
+  .tipo {
     align-self: flex-start;
   }
   header h2 {
@@ -664,6 +670,7 @@
     outline-offset: 2px;
   }
 
+  /* Las cifras comunes (`.stat`, como StatTile), en rejilla. */
   .tiles {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
@@ -671,75 +678,18 @@
     margin: 0;
     padding: 0.35rem 1.25rem 1rem;
   }
-  /* Las cifras con la misma forma que StatTile: rótulo en versalitas, valor
-     grande y una nota debajo, con un filete a la izquierda en vez de una caja. */
-  .tiles div {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    border-left: 2px solid var(--rule);
-    padding-left: 0.75rem;
-  }
-  .tiles dt {
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    letter-spacing: var(--tracking-caps);
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-  .tiles dd {
-    margin: 0;
-    font-size: var(--text-xl);
-    font-weight: 550;
-    line-height: 1.15;
-    letter-spacing: -0.02em;
-  }
-  .tiles dd.warn {
-    color: var(--warning-ink);
-  }
-  .tiles .note {
-    font-size: var(--text-xs);
-    font-weight: 400;
-    letter-spacing: 0;
-    color: var(--ink-2);
-  }
 
+  /* Las secciones del informe son el control segmentado común (`.segmented`),
+     el mismo de las pestañas de la barra; aquí sólo se coloca y se alinea el
+     contador. */
   .tabs {
-    display: flex;
-    gap: 0.15rem;
-    border-bottom: 1px solid var(--hairline);
-    padding: 0 1rem;
+    align-self: flex-start;
+    margin: 0 1.25rem var(--space-3);
   }
-  .tabs button {
-    display: flex;
+  .tabs > button {
+    display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    background: none;
-    padding: 0.5rem 0.7rem;
-    font: inherit;
-    font-size: var(--text-sm);
-    color: var(--muted);
-    cursor: pointer;
-    transition:
-      color 0.15s,
-      border-color 0.15s;
-  }
-  .tabs button:hover {
-    color: var(--ink-2);
-  }
-  .tabs button.current {
-    border-bottom-color: var(--accent);
-    color: var(--ink);
-  }
-  .count {
-    border-radius: var(--radius-pill);
-    background: var(--plane);
-    padding: 0.02rem 0.4rem;
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--muted);
+    gap: var(--space-1);
   }
 
   .body {
@@ -748,6 +698,7 @@
     flex-direction: column;
     gap: 1.5rem;
     overflow-y: auto;
+    border-top: 1px solid var(--hairline);
     padding: 1.25rem;
   }
 
@@ -931,14 +882,11 @@
   .units li:nth-child(odd) {
     background: var(--plane);
   }
+  /* Qué fue cada cosa que corrió: una `.pill` neutra en una columna fija,
+     para que los nombres de al lado queden alineados. */
   .tag {
     flex-shrink: 0;
     width: 9.5rem;
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    letter-spacing: var(--tracking-caps);
-    text-transform: uppercase;
-    color: var(--muted);
   }
   .units .name {
     overflow: hidden;
@@ -1075,21 +1023,4 @@
     margin-left: auto;
   }
 
-  @keyframes fade {
-    from {
-      opacity: 0;
-    }
-  }
-  @keyframes rise {
-    from {
-      opacity: 0;
-      transform: translateY(8px);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .scrim,
-    .sheet {
-      animation: none;
-    }
-  }
 </style>

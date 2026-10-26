@@ -1,6 +1,7 @@
 <script lang="ts">
   import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/state';
+  import Icono from '$lib/components/Icono.svelte';
   import { migasDe, padreDe, vista } from '$lib/navegacion.svelte';
 
   const migas = $derived(migasDe(page.url, vista.titulo));
@@ -30,7 +31,7 @@
 {#if migas.length}
   <nav class="migas" aria-label="Dónde está">
     <button type="button" class="btn btn-sm volver" onclick={volver}>
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8 10 12.5" /></svg>
+      <Icono nombre="atras" />
       Volver
     </button>
     <ol>
@@ -52,8 +53,8 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem 0.9rem;
-    margin-bottom: 1rem;
+    gap: var(--space-2) var(--space-3);
+    margin-bottom: var(--space-4);
     font-size: var(--text-sm);
   }
 

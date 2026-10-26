@@ -115,7 +115,7 @@
   const LISTED = 6;
 </script>
 
-<section class="summary" aria-label="Resumen de la carga">
+<section class="panel panel-inset summary" aria-label="Resumen de la carga">
   <header>
     <div>
       <h3>{totalFiles ? 'Revisa antes de subir' : 'Resumen de la configuración'}</h3>
@@ -233,14 +233,12 @@
 </section>
 
 <style>
+  /* El `.panel-inset` común: un escalón por debajo de la tarjeta del asistente
+     que lo contiene. */
   .summary {
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-lg);
-    background: var(--surface-1);
-    padding: var(--space-5);
   }
 
   header {

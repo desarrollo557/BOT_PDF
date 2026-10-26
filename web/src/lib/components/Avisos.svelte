@@ -6,7 +6,7 @@
 <!-- Abajo a la izquierda: la consola ocupa el borde derecho. -->
 <ol class="avisos" aria-live="polite">
   {#each avisos.lista as aviso (aviso.id)}
-    <li data-tono={aviso.tono} role={aviso.tono === 'error' ? 'alert' : 'status'}>
+    <li class="panel panel-sm" data-tono={aviso.tono} role={aviso.tono === 'error' ? 'alert' : 'status'}>
       <div class="texto">
         <b>{aviso.titulo}</b>
         {#if aviso.detalle}<span>{aviso.detalle}</span>{/if}
@@ -39,18 +39,15 @@
     pointer-events: none;
   }
 
+  /* La tarjeta es el `.panel` común; aquí sólo la raya del tono, que dice de
+     qué clase es el aviso antes de leerlo, y la entrada. */
   li {
     display: flex;
     align-items: flex-start;
-    gap: 0.6rem;
-    border: 1px solid var(--hairline);
+    gap: var(--space-2);
     border-left: 4px solid var(--accent);
-    border-radius: var(--radius-md);
-    background: var(--surface-2);
-    box-shadow: var(--shadow);
-    padding: 0.65rem 0.6rem 0.65rem 0.8rem;
     pointer-events: auto;
-    animation: entra 0.18s ease-out;
+    animation: entrada var(--duration) var(--ease-out);
   }
   li[data-tono='error'] {
     border-left-color: var(--critical);
@@ -86,12 +83,5 @@
     width: 1.6rem;
     height: 1.6rem;
     margin: -0.2rem -0.1rem 0 0;
-  }
-
-  @keyframes entra {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
-    }
   }
 </style>

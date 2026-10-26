@@ -5,6 +5,7 @@
   import ColaDeProcesos, { type Proceso } from '$lib/components/ColaDeProcesos.svelte';
   import EncabezadoDePagina from '$lib/components/EncabezadoDePagina.svelte';
   import FolderRunMonitor from '$lib/components/FolderRunMonitor.svelte';
+  import Icono from '$lib/components/Icono.svelte';
   import JobCard from '$lib/components/JobCard.svelte';
   import SingleDocumentMonitor from '$lib/components/SingleDocumentMonitor.svelte';
   import UploadPanel from '$lib/components/UploadPanel.svelte';
@@ -391,10 +392,12 @@
         {#if busy}
           <!-- Un nivel por debajo de la cola: se dice, y se puede volver. -->
           <nav class="sub-nivel" aria-label="Dónde está">
-            <button type="button" onclick={() => (agregando = false)}>
-              ← Procesos en curso ({procesos.length})
+            <button type="button" class="btn btn-ghost btn-sm volver" onclick={() => (agregando = false)}>
+              <Icono nombre="atras" />
+              Procesos en curso ({procesos.length})
             </button>
-            <span>› Agregar a la cola</span>
+            <Icono nombre="chevron" />
+            <span aria-current="page">Agregar a la cola</span>
           </nav>
           <h2>Agregar otro proceso a la cola</h2>
         {:else}
@@ -407,8 +410,15 @@
 
     {#if uploading}
       <div class="subida">
-        <div class="track">
-          <div class="fill" style:width={`${(uploaded / uploadTotal) * 100}%`}></div>
+        <div
+          class="progress"
+          role="progressbar"
+          aria-valuenow={uploaded}
+          aria-valuemin="0"
+          aria-valuemax={uploadTotal}
+          aria-label="Archivos subidos"
+        >
+          <div class="progress-fill" style:width={`${(uploaded / uploadTotal) * 100}%`}></div>
         </div>
         <p class="tabular">Subiendo {uploaded} de {uploadTotal} archivos…</p>
       </div>
@@ -489,16 +499,16 @@
   .closed {
     display: flex;
     flex-direction: column;
-    gap: 0.8rem;
-    margin-top: 0.4rem;
+    gap: var(--space-3);
+    margin-top: var(--space-1);
     border-top: 1px solid var(--rule);
-    padding-top: 0.9rem;
+    padding-top: var(--space-4);
   }
   .closed header {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: 0.6rem;
+    gap: var(--space-2);
   }
   .closed h3 {
     margin: 0;
@@ -529,7 +539,7 @@
   .workspace {
     display: grid;
     justify-content: center;
-    gap: 1.5rem;
+    gap: var(--space-6);
     grid-template-columns: minmax(0, 72rem);
   }
   .workspace.busy {
@@ -552,7 +562,7 @@
   .intake {
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: var(--space-4);
   }
   .busy .intake {
     position: sticky;
@@ -564,25 +574,19 @@
     scroll-margin-top: 5.5rem;
   }
 
+  /* Un nivel por debajo de la cola, dicho como las migas: «Volver» es un
+     botón fantasma con su flecha, y el chevron separa el nivel en que se está. */
   .sub-nivel {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.4rem;
-    margin-bottom: 0.4rem;
+    gap: var(--space-1);
+    margin-bottom: var(--space-2);
     font-size: var(--text-sm);
     color: var(--muted);
   }
-  .sub-nivel button {
-    border: 0;
-    background: none;
-    padding: 0;
-    font: inherit;
-    color: var(--accent);
-    cursor: pointer;
-  }
-  .sub-nivel button:hover {
-    text-decoration: underline;
+  .sub-nivel .volver {
+    margin-left: calc(var(--space-2) * -1);
   }
 
   .intake-head h2 {
@@ -592,20 +596,8 @@
     letter-spacing: -0.015em;
   }
 
-  .subida .track {
-    height: 6px;
-    overflow: hidden;
-    border-radius: var(--radius-pill);
-    background: var(--grid);
-  }
-  .subida .fill {
-    height: 100%;
-    border-radius: 0 4px 4px 0;
-    background: var(--accent);
-    transition: width 0.2s;
-  }
   .subida p {
-    margin: 0.45rem 0 0;
+    margin: var(--space-2) 0 0;
     font-size: var(--text-sm);
     color: var(--muted);
   }
@@ -620,7 +612,7 @@
     display: flex;
     min-width: 0;
     flex-direction: column;
-    gap: 1.1rem;
+    gap: var(--space-4);
   }
 
   .closing {

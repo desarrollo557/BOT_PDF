@@ -51,7 +51,7 @@
 
 {#if stale && !dismissed}
   <div class="banner" role="alert">
-    <span class="icon" aria-hidden="true">⚠</span>
+    <span class="icon"><Icono nombre="aviso" /></span>
     <div class="body">
       <b>El servicio está corriendo una versión anterior.</b>
       <p>
@@ -80,7 +80,7 @@
   .banner {
     display: flex;
     align-items: flex-start;
-    gap: 0.75rem;
+    gap: var(--space-3);
     border-bottom: 1px solid color-mix(in oklab, var(--warning) 40%, var(--hairline));
     /* El tinte de aviso común, sobre la superficie para que no transparente lo
        que pasa por debajo. */
@@ -88,11 +88,13 @@
     padding: 0.8rem 1.5rem;
   }
 
+  /* El triángulo de aviso común, a la altura de la primera línea. */
   .icon {
+    display: inline-flex;
     flex-shrink: 0;
-    font-size: 1rem;
-    line-height: 1.3;
+    margin-top: 2px;
     color: var(--warning-ink);
+    --icono: var(--text-lg);
   }
 
   .body {

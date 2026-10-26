@@ -20,7 +20,7 @@
 </script>
 
 <div class="stage">
-  <div class="card">
+  <div class="panel entrada">
     <div class="owner">
       <img
         src="/siar.png"
@@ -97,13 +97,11 @@
     padding: 1.5rem;
   }
 
-  .card {
+  /* La tarjeta es el `.panel` común; la de entrada es la única de la pantalla
+     y respira un poco más. */
+  .entrada {
     width: min(28rem, 100%);
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-xl);
-    background: var(--surface-2);
-    padding: 1.75rem;
-    box-shadow: var(--shadow);
+    padding: var(--space-6);
   }
 
   .owner {

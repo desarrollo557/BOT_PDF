@@ -7,48 +7,18 @@
   }
 
   let { label, value, note, tone = 'neutral' }: Props = $props();
+
+  // El tono de la cifra común (`.stat`) que corresponde al de la prop.
+  const TONO = { neutral: '', good: 'good', warning: 'warn' } as const;
 </script>
 
-<!-- Tone is carried by the value's ink, and the note always spells the meaning
-     out in words, so nothing here depends on colour alone. -->
-<div class="tile" data-tone={tone}>
-  <span class="caps">{label}</span>
-  <span class="value tabular">{value}</span>
-  {#if note}<span class="note">{note}</span>{/if}
+<!-- La cifra común `.stat` de app.css, en su tamaño grande (`.stat-lg`): es la
+     cifra protagonista de un trabajo. Rótulo en versalitas, valor y nota, con
+     un filete a la izquierda en vez de una caja. El tono va en el filete (y en
+     la tinta del valor si es aviso), y la nota lo dice en palabras, así que
+     nada depende sólo del color. -->
+<div class="stat stat-lg {TONO[tone]}">
+  <span class="stat-label">{label}</span>
+  <span class="stat-value">{value}</span>
+  {#if note}<span class="stat-note">{note}</span>{/if}
 </div>
-
-<style>
-  .tile {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    /* A hairline on the left instead of a box: at six tiles in a row, six boxes
-       is six frames competing with the card that already holds them. */
-    border-left: 2px solid var(--rule);
-    padding-left: 0.75rem;
-  }
-  [data-tone='good'] {
-    border-left-color: color-mix(in oklab, var(--good) 55%, transparent);
-  }
-  [data-tone='warning'] {
-    border-left-color: color-mix(in oklab, var(--warning) 65%, transparent);
-  }
-
-  .value {
-    font-size: var(--text-stat);
-    font-weight: 550;
-    line-height: 1.15;
-    letter-spacing: -0.02em;
-  }
-  [data-tone='good'] .value {
-    color: var(--good);
-  }
-  [data-tone='warning'] .value {
-    color: var(--warning-ink);
-  }
-
-  .note {
-    font-size: var(--text-xs);
-    color: var(--ink-2);
-  }
-</style>

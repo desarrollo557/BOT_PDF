@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import Icono from '../Icono.svelte';
 
   /**
    * A short message tied to the step it sits in: a block, a missing key, a
@@ -15,15 +16,7 @@
 </script>
 
 <div class="callout" data-tone={tone} role={tone === 'critical' ? 'alert' : 'status'}>
-  <svg viewBox="0 0 16 16" aria-hidden="true">
-    {#if tone === 'info'}
-      <circle cx="8" cy="8" r="6.25" />
-      <path d="M8 7.25v4M8 4.9v.1" />
-    {:else}
-      <path d="M8 2.2 14.3 13H1.7Z" />
-      <path d="M8 6.5v3M8 11.2v.1" />
-    {/if}
-  </svg>
+  <span class="glifo"><Icono nombre={tone === 'info' ? 'info' : 'aviso'} /></span>
   <div class="text">{@render children()}</div>
 </div>
 
@@ -52,24 +45,21 @@
     background: color-mix(in oklab, var(--critical) 6%, var(--surface-2));
   }
 
-  svg {
-    width: 16px;
-    height: 16px;
+  /* El ícono del tono, del juego común ([Icono]): información o aviso. */
+  .glifo {
+    --icono: 16px;
+    display: grid;
     flex-shrink: 0;
     margin-top: 2px;
-    fill: none;
-    stroke: var(--accent);
-    stroke-width: 1.5;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+    color: var(--accent);
   }
 
-  [data-tone='warning'] svg {
-    stroke: color-mix(in oklab, var(--warning) 70%, var(--ink));
+  [data-tone='warning'] .glifo {
+    color: var(--warning-ink);
   }
 
-  [data-tone='critical'] svg {
-    stroke: var(--critical);
+  [data-tone='critical'] .glifo {
+    color: var(--critical);
   }
 
   .text {
@@ -80,7 +70,10 @@
     gap: var(--space-1) var(--space-3);
   }
 
-  .text :global(button) {
+  /* Un botón suelto dentro del aviso se lee como enlace. Los `.btn` no: son
+     botones de verdad («Usar «…»» en la sugerencia de tipo), y esta regla les
+     quitaba el borde y el fondo. */
+  .text :global(button:not(.btn)) {
     border: 0;
     background: none;
     padding: 0;

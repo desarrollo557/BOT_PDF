@@ -2,7 +2,7 @@
   import { page } from '$app/state';
 </script>
 
-<section class="fallo">
+<section class="panel fallo">
   <p class="codigo tabular">{page.status}</p>
   <h1>{page.status === 404 ? 'Esta pantalla no existe' : 'No se pudo mostrar esta pantalla'}</h1>
   <p class="detalle">{page.error?.message ?? 'Ocurrió un error inesperado.'}</p>
@@ -16,15 +16,13 @@
 </section>
 
 <style>
+  /* La tarjeta común (`.panel`), con el filete rojo arriba: la pantalla es un
+     fallo antes de leer nada. */
   .fallo {
     max-width: 34rem;
     margin: 4rem auto;
-    border: 1px solid var(--hairline);
     border-top: 3px solid var(--critical);
-    border-radius: var(--radius-lg);
-    background: var(--surface-2);
-    box-shadow: var(--shadow);
-    padding: 1.5rem 1.6rem;
+    padding: var(--space-6);
   }
   .codigo {
     margin: 0;

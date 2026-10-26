@@ -78,15 +78,20 @@
                   </span>
                   {#if descarga.detalle}<span class="detalle">{descarga.detalle}</span>{/if}
                 </span>
-                <span class="formato">{descarga.formato}</span>
+                <span class="pill pill-neutral pill-sm formato">{descarga.formato}</span>
               {/snippet}
               {#if descarga.href && !descarga.bajar}
-                <a class="item" class:principal={descarga.principal} href={descarga.href} download>
+                <a
+                  class="item panel panel-sm panel-interactive"
+                  class:principal={descarga.principal}
+                  href={descarga.href}
+                  download
+                >
                   {@render contenido()}
                 </a>
               {:else}
                 <button
-                  class="item"
+                  class="item panel panel-sm panel-interactive"
                   class:principal={descarga.principal}
                   onclick={() => correr(descarga)}
                   disabled={ocupada === descarga.id}
@@ -131,29 +136,20 @@
     padding: 0;
     list-style: none;
   }
+  /* Cada descarga es una fila entera que se pulsa: la tarjeta-control común
+     (`.panel-interactive`). Aquí sólo la fila y dos casos propios. */
   .item {
     display: flex;
     width: 100%;
     align-items: center;
-    gap: 0.6rem;
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-md);
-    background: var(--surface-2);
-    padding: 0.5rem 0.7rem;
-    font: inherit;
-    color: var(--ink);
+    gap: var(--space-2);
     text-align: left;
-    text-decoration: none;
-    cursor: pointer;
-    transition:
-      border-color 0.12s ease,
-      background-color 0.12s ease;
   }
-  .item:hover:not(:disabled) {
-    border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-    background: var(--accent-soft);
-  }
+  /* Apagada mientras baja: no es una opción que no se pueda elegir (borde
+     punteado), es una descarga en curso. */
   .item:disabled {
+    border-style: solid;
+    background: var(--surface-2);
     opacity: 0.6;
     cursor: progress;
   }
@@ -181,15 +177,10 @@
     font-size: var(--text-xs);
     color: var(--muted);
   }
+  /* El formato es una `.pill` neutra, en versalitas. */
   .formato {
     flex: none;
-    border-radius: var(--radius-pill);
-    background: var(--plane);
-    padding: 0.1rem 0.5rem;
-    font-size: var(--text-2xs);
-    font-weight: 700;
     letter-spacing: var(--tracking-caps);
     text-transform: uppercase;
-    color: var(--ink-2);
   }
 </style>

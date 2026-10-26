@@ -134,7 +134,7 @@
     <ul>
       {#each reports.history as item (item.id)}
         <li>
-          <button onclick={() => reports.open(item.id)}>
+          <button class="panel panel-sm panel-interactive" onclick={() => reports.open(item.id)}>
             <span class="pill kind">{item.kind}</span>
             <span class="run-name">{item.title}</span>
             <span class="run-meta tabular">
@@ -238,21 +238,14 @@
     padding: 0;
     list-style: none;
   }
+  /* Cada informe es una fila entera que se pulsa: la tarjeta-control común
+     (`.panel-interactive`), con el relleno corto de una lista. */
   .runs button {
     display: flex;
     width: 100%;
     align-items: baseline;
-    gap: 0.6rem;
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius);
-    background: var(--surface-2);
-    padding: 0.4rem 0.7rem;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-  .runs button:hover {
-    border-color: var(--accent);
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
   }
   /* El tipo de corrida es un rótulo, no un código: va en versalitas sans. */
   .kind {

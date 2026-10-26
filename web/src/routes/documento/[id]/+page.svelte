@@ -267,30 +267,30 @@
          versalitas y valor grande, sin cajas propias. «PDF generados» y no
          «Resoluciones»: la ficha es la misma para cualquier tipo de documento. -->
     <dl class="cifras">
-      <div>
-        <dt class="caps">PDF generados</dt>
-        <dd class="valor tabular">{archived.resolutions}</dd>
+      <div class="stat">
+        <dt class="stat-label">PDF generados</dt>
+        <dd class="stat-value">{archived.resolutions}</dd>
       </div>
-      <div>
-        <dt class="caps">Páginas</dt>
-        <dd class="valor tabular">{archived.source_pages || archived.pages}</dd>
+      <div class="stat">
+        <dt class="stat-label">Páginas</dt>
+        <dd class="stat-value">{archived.source_pages || archived.pages}</dd>
       </div>
-      <div>
-        <dt class="caps">Tamaño</dt>
-        <dd class="valor tabular">
+      <div class="stat">
+        <dt class="stat-label">Tamaño</dt>
+        <dd class="stat-value">
           {archived.bytes ? formatBytes(archived.bytes) : '—'}
         </dd>
       </div>
-      <div>
-        <dt class="caps">Requiere revisión</dt>
-        <dd class="valor tabular" class:aviso={archived.review}>
+      <div class="stat" class:warn={archived.review}>
+        <dt class="stat-label">Requiere revisión</dt>
+        <dd class="stat-value">
           {archived.review}
         </dd>
       </div>
       {#if archived.operator}
-        <div>
-          <dt class="caps">Operador</dt>
-          <dd class="valor">{archived.operator}</dd>
+        <div class="stat">
+          <dt class="stat-label">Operador</dt>
+          <dd class="stat-value">{archived.operator}</dd>
         </div>
       {/if}
     </dl>
@@ -401,27 +401,13 @@
     color: var(--ink-2);
   }
 
-  /* Las cifras del documento archivado, con la medida de StatTile: rótulo en
-     versalitas, valor grande. */
+  /* Las cifras del documento archivado: la cifra común (`.stat`), la misma de
+     StatTile, en fila. */
   .cifras {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-4) var(--space-8);
     margin: 0;
-  }
-  .cifras dt {
-    margin-bottom: 0.15rem;
-  }
-  .valor {
-    margin: 0;
-    font-size: var(--text-xl);
-    font-weight: 550;
-    line-height: 1.15;
-    letter-spacing: -0.02em;
-    color: var(--ink);
-  }
-  .valor.aviso {
-    color: var(--warning-ink);
   }
 
   /* La tabla del documento archivado, con la cabecera y la letra de las

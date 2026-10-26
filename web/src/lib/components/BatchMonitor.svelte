@@ -172,13 +172,22 @@
       : []
   );
 
+  /** El punto de cada documento de la cola: en curso, listo o con error; el
+   * resto (en cola, en pausa, cancelado) queda gris. */
+  const TONO_DE_CHIP: Partial<Record<Job['state'], string>> = {
+    // Quieto: con veinte chips en curso, que latan todos sería ruido.
+    running: 'accent',
+    done: 'good',
+    failed: 'bad'
+  };
+
   /** Lo que salió del lote, llamado por su nombre. */
   const unitLabel = $derived(unitFor(done[0]?.report?.stats, resolutions));
 </script>
 
-<section class="monitor" class:settled>
+<section class="monitor panel" class:settled>
   <header class="head">
-    <span class="lamp" aria-hidden="true"></span>
+    <span class="status-dot {settled ? 'good' : 'live'}" aria-hidden="true"></span>
     <h3>{name}</h3>
     <span class="counter tabular">{done.length + failed.length} / {jobs.length} documentos</span>
     {#if batchId}
@@ -189,13 +198,13 @@
   </header>
 
   <div
-    class="bar"
+    class="progress"
     role="progressbar"
     aria-valuenow={Math.round(percent)}
     aria-valuemin="0"
     aria-valuemax="100"
   >
-    <div class="fill" style:width={`${percent}%`}></div>
+    <div class="progress-fill" class:good={settled} style:width={`${percent}%`}></div>
   </div>
 
   <RunStats
@@ -249,19 +258,19 @@
          because eleven processes means eleven documents are open at once and a
          single "current file" would simply be untrue. -->
     <div class="now">
-      <span class="section-label">Leyendo ahora ({running.length})</span>
+      <span class="caps section-label">Leyendo ahora ({running.length})</span>
       {#each running as job (job.id)}
         <article class="current">
           <div class="line">
-            <span class="dot" aria-hidden="true"></span>
+            <span class="status-dot status-dot-sm live" aria-hidden="true"></span>
             <span class="file" title={job.filename}>{job.filename}</span>
             <span class="stage">{STAGE_LABELS[job.progress.stage] ?? job.progress.stage}</span>
             <span class="pages tabular">
               {job.progress.pages_done}/{job.progress.page_count || '?'}
             </span>
           </div>
-          <div class="bar thin">
-            <div class="fill" style:width={`${job.progress.percent}%`}></div>
+          <div class="progress progress-sm">
+            <div class="progress-fill" style:width={`${job.progress.percent}%`}></div>
           </div>
           {#if job.progress.page_count}
             <PageRibbon ribbon={job.progress.ribbon} pageCount={job.progress.page_count} />
@@ -273,7 +282,7 @@
 
   {#if jobs.length}
     <div class="queue">
-      <span class="section-label">
+      <span class="caps section-label">
         Cola del lote — {done.length} listos, {queued.length} esperando{failed.length
           ? `, ${failed.length} con error`
           : ''}
@@ -281,7 +290,7 @@
       <ul>
         {#each jobs as job (job.id)}
           <li data-state={job.state} title={job.filename}>
-            <span class="chip-dot" aria-hidden="true"></span>
+            <span class="status-dot status-dot-sm {TONO_DE_CHIP[job.state] ?? ''}" aria-hidden="true"></span>
             <span class="chip-name">{job.filename}</span>
           </li>
         {/each}
@@ -291,24 +300,21 @@
 </section>
 
 <style>
+  /* La tarjeta es el `.panel` común. Mientras el lote corre, el filete lleva un
+     tinte del acento: algo en curso. */
   .monitor {
     display: flex;
     flex-direction: column;
-    gap: 0.9rem;
-    border: 1px solid color-mix(in oklab, var(--s3) 30%, var(--hairline));
-    border-radius: var(--radius-lg);
-    background: var(--surface-2);
-    padding: 1.1rem 1.2rem;
-    box-shadow: var(--shadow);
+    gap: var(--space-4);
   }
-  .monitor.settled {
-    border-color: var(--hairline);
+  .monitor:not(.settled) {
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--hairline));
   }
 
   .head {
     display: flex;
     align-items: center;
-    gap: 0.6rem;
+    gap: var(--space-2);
   }
   .head h3 {
     margin: 0;
@@ -322,43 +328,8 @@
     color: var(--muted);
   }
 
-  .lamp {
-    width: 8px;
-    height: 8px;
-    flex-shrink: 0;
-    border-radius: 50%;
-    background: var(--s3);
-    box-shadow: 0 0 0 3px color-mix(in oklab, var(--s3) 18%, transparent);
-    animation: breathe 1.6s ease-in-out infinite;
-  }
-  .settled .lamp {
-    background: var(--good);
-    animation: none;
-  }
-
-  .bar {
-    height: 6px;
-    overflow: hidden;
-    border-radius: var(--radius-pill);
-    background: var(--grid);
-  }
-  .bar.thin {
-    height: 3px;
-  }
-  .fill {
-    height: 100%;
-    border-radius: var(--radius-pill);
-    background: linear-gradient(
-      90deg,
-      var(--s3),
-      color-mix(in oklab, var(--s3) 60%, var(--accent))
-    );
-    transition: width 0.3s ease-out;
-  }
-
-
   .footnote {
-    margin: 0.5rem 0 0;
+    margin: var(--space-2) 0 0;
     font-size: var(--text-xs);
     color: var(--muted);
   }
@@ -368,43 +339,30 @@
 
   .section-label {
     display: block;
-    margin-bottom: 0.45rem;
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    letter-spacing: var(--tracking-caps);
-    text-transform: uppercase;
-    color: var(--muted);
+    margin-bottom: var(--space-2);
   }
 
   .now {
     border-top: 1px solid var(--rule);
-    padding-top: 0.8rem;
+    padding-top: var(--space-3);
   }
 
   .current {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: var(--space-2);
     border-radius: var(--radius-md);
     background: var(--plane);
-    padding: 0.6rem 0.7rem;
+    padding: var(--space-2) var(--space-3);
   }
   .current + .current {
-    margin-top: 0.45rem;
+    margin-top: var(--space-2);
   }
 
   .line {
     display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-  }
-  .dot {
-    width: 6px;
-    height: 6px;
-    flex-shrink: 0;
-    border-radius: 50%;
-    background: var(--s3);
-    animation: breathe 1.2s ease-in-out infinite;
+    align-items: center;
+    gap: var(--space-2);
   }
   .file {
     overflow: hidden;
@@ -428,12 +386,12 @@
 
   .queue {
     border-top: 1px solid var(--rule);
-    padding-top: 0.8rem;
+    padding-top: var(--space-3);
   }
   .queue ul {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
+    gap: var(--space-1);
     margin: 0;
     padding: 0;
     list-style: none;
@@ -442,11 +400,11 @@
     display: flex;
     max-width: 15rem;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--space-2);
     border: 1px solid var(--hairline);
     border-radius: var(--radius-sm);
     background: var(--surface-1);
-    padding: 0.15rem 0.45rem;
+    padding: 2px var(--space-2);
     font-size: var(--text-xs);
     color: var(--muted);
   }
@@ -455,52 +413,20 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .chip-dot {
-    width: 5px;
-    height: 5px;
-    flex-shrink: 0;
-    border-radius: 50%;
-    background: var(--axis);
-  }
   [data-state='running'] {
-    border-color: color-mix(in oklab, var(--s3) 45%, var(--hairline));
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--hairline));
     color: var(--ink);
-  }
-  [data-state='running'] .chip-dot {
-    background: var(--s3);
   }
   [data-state='done'] {
     color: var(--ink-2);
   }
-  [data-state='done'] .chip-dot {
-    background: var(--good);
-  }
   [data-state='failed'] {
-    border-color: color-mix(in oklab, var(--critical) 45%, var(--hairline));
+    border-color: color-mix(in srgb, var(--critical) 45%, var(--hairline));
     color: var(--critical);
   }
-  [data-state='failed'] .chip-dot {
-    background: var(--critical);
-  }
 
-  @keyframes breathe {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.35;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .lamp,
-    .dot {
-      animation: none;
-    }
-  }
   .descargas {
-    margin-top: 0.85rem;
+    margin-top: var(--space-3);
     max-width: 34rem;
   }
 </style>

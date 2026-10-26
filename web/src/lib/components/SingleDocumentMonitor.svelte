@@ -61,6 +61,27 @@
   const silence = $derived(progress.silent_seconds ?? 0);
   const unitLabel = $derived(unitFor(job.report?.stats, units ?? 0));
   const warnings = $derived((progress.warnings ?? []).slice(0, 3));
+  /** La luz del encabezado: en curso late; listo, verde; con fallo, rojo. */
+  const luz = $derived(
+    running ? 'live' : job.state === 'done' ? 'good' : job.state === 'failed' ? 'bad' : ''
+  );
+
+  /** El tono de la insignia de salud, con la `.pill` común. */
+  const healthTone = $derived.by(() => {
+    switch (progress.health) {
+      case 'stalled':
+      case 'failed':
+        return 'pill-bad';
+      case 'slow':
+      case 'warning':
+        return 'pill-warn';
+      case 'done':
+        return 'pill-good';
+      default:
+        return 'pill-neutral';
+    }
+  });
+
   const healthLabel = $derived.by(() => {
     switch (progress.health) {
       case 'stalled':
@@ -79,9 +100,9 @@
   });
 </script>
 
-<section class="monitor" class:running>
+<section class="monitor panel" class:running>
   <header>
-    <span class="lamp" aria-hidden="true"></span>
+    <span class="status-dot {luz}" aria-hidden="true"></span>
     <h3 title={job.filename}>{job.filename}</h3>
     <span class="stage">{stageActivity(progress)}</span>
     <RunControls jobId={job.id} runState={job.state} />
@@ -101,11 +122,11 @@
 
   {#if progress.health || warnings.length}
     <div class="health-strip" data-health={progress.health ?? 'ok'}>
-      <span class="health-badge">{healthLabel}</span>
+      <span class="pill {healthTone}">{healthLabel}</span>
       {#if warnings.length}
         <ul class="warnings">
           {#each warnings as warning (warning)}
-            <li>{warning}</li>
+            <li class="pill pill-neutral">{warning}</li>
           {/each}
         </ul>
       {:else if running && silence >= SILENCE_THRESHOLD_SECONDS}
@@ -118,14 +139,18 @@
 
   <!-- A meter, not a chart: one ratio against a known total. -->
   <div
-    class="meter"
+    class="progress"
     role="progressbar"
     aria-valuenow={Math.round(percent)}
     aria-valuemin="0"
     aria-valuemax="100"
     aria-label="Avance del documento"
   >
-    <div class="fill" style:width={`${visualPercent}%`}></div>
+    <div
+      class="progress-fill"
+      class:good={job.state === 'done'}
+      style:width={`${visualPercent}%`}
+    ></div>
   </div>
 
   <RunStats
@@ -163,24 +188,21 @@
 </section>
 
 <style>
+  /* La tarjeta es el `.panel` común; mientras corre, el filete lleva un tinte
+     del acento: algo en curso. */
   .monitor {
     display: flex;
     flex-direction: column;
-    gap: 1rem;
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-lg);
-    background: var(--surface-2);
-    padding: 1.1rem 1.2rem;
-    box-shadow: var(--shadow);
+    gap: var(--space-4);
   }
   .monitor.running {
-    border-color: color-mix(in oklab, var(--s1) 32%, var(--hairline));
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--hairline));
   }
 
   header {
     display: flex;
     align-items: center;
-    gap: 0.6rem;
+    gap: var(--space-2);
   }
   h3 {
     overflow: hidden;
@@ -194,7 +216,7 @@
   .stage-detail {
     display: flex;
     align-items: baseline;
-    gap: 0.65rem;
+    gap: var(--space-2);
     margin: 0;
     font-size: var(--text-xs);
     color: var(--ink-2);
@@ -215,51 +237,32 @@
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
+  /* La salud del documento: una insignia común y, al lado, los avisos. El
+     filete toma el tono de la salud. */
   .health-strip {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem 0.85rem;
-    padding: 0.5rem 0.7rem;
+    gap: var(--space-2) var(--space-3);
     border: 1px solid var(--hairline);
-    border-radius: 999px;
-    background: color-mix(in oklab, var(--surface-3) 80%, transparent);
+    border-radius: var(--radius-pill);
+    background: var(--plane);
+    padding: var(--space-2) var(--space-3);
   }
   .health-strip[data-health='stalled'] {
-    border-color: color-mix(in oklab, var(--critical) 52%, var(--hairline));
+    border-color: color-mix(in srgb, var(--critical) 50%, var(--hairline));
   }
-  .health-strip[data-health='slow'] {
-    border-color: color-mix(in oklab, var(--warning) 60%, var(--hairline));
-  }
+  .health-strip[data-health='slow'],
   .health-strip[data-health='warning'] {
-    border-color: color-mix(in oklab, var(--s2) 48%, var(--hairline));
-  }
-  .health-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0.2rem 0.6rem;
-    border-radius: 999px;
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    color: var(--ink-2);
-    background: var(--surface-4);
+    border-color: color-mix(in srgb, var(--warning) 60%, var(--hairline));
   }
   .warnings {
     display: inline-flex;
     flex-wrap: wrap;
-    gap: 0.35rem;
+    gap: var(--space-1);
     margin: 0;
     padding: 0;
     list-style: none;
-    color: var(--ink-2);
-    font-size: var(--text-xs);
-  }
-  .warnings li {
-    padding: 0.2rem 0.45rem;
-    border-radius: 999px;
-    background: color-mix(in oklab, var(--surface-4) 80%, transparent);
   }
   .silence {
     margin: 0;
@@ -272,47 +275,5 @@
     flex-shrink: 0;
     font-size: var(--text-xs);
     color: var(--muted);
-  }
-
-  .lamp {
-    width: 8px;
-    height: 8px;
-    flex-shrink: 0;
-    border-radius: 50%;
-    background: var(--good);
-  }
-  .running .lamp {
-    background: var(--s1);
-    box-shadow: 0 0 0 3px color-mix(in oklab, var(--s1) 18%, transparent);
-    animation: breathe 1.6s ease-in-out infinite;
-  }
-
-  .meter {
-    height: 8px;
-    overflow: hidden;
-    border-radius: var(--radius-pill);
-    background: var(--grid);
-  }
-  .fill {
-    height: 100%;
-    /* Rounded data-end anchored to the baseline: the left edge stays square. */
-    border-radius: 0 4px 4px 0;
-    background: var(--s1);
-    transition: width 0.3s ease-out;
-  }
-
-  @keyframes breathe {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.35;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .lamp {
-      animation: none;
-    }
   }
 </style>

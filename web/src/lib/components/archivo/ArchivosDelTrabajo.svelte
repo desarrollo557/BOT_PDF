@@ -291,17 +291,8 @@
     height: 1.9rem;
     border-radius: var(--radius-sm);
     background: var(--plane);
-    animation: pulso 1.2s ease-in-out infinite;
-  }
-  @keyframes pulso {
-    50% {
-      opacity: 0.5;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .esqueleto span {
-      animation: none;
-    }
+    /* El latido común: algo está vivo (se están buscando los archivos). */
+    animation: latido 1.2s var(--ease-in-out) infinite;
   }
 
   /* La caja punteada global, a escala de una tarjeta. */

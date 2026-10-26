@@ -49,6 +49,20 @@
   const active = $derived(['scanning', 'processing', 'watching', 'recovering'].includes(run.state));
 
   /**
+   * La luz del encabezado: en curso late en el acento; vigilando, más despacio;
+   * recuperándose, en aviso; terminada o fallida, quieta en su estado. La
+   * palabra de al lado dice siempre cuál es.
+   */
+  const LUZ: Record<string, string> = {
+    scanning: 'live',
+    processing: 'live',
+    watching: 'live pulse-slow',
+    recovering: 'warn pulse',
+    done: 'good',
+    failed: 'bad'
+  };
+
+  /**
    * Cuántos documentos esperan turno. Lo cuenta el servicio, porque `run.queue`
    * sólo trae los primeros cuarenta: una carpeta de archivo real trae catorce
    * mil PDF, y mandarlos todos en cada aviso son cuatrocientos kilobytes por
@@ -242,9 +256,9 @@
   }
 </script>
 
-<section class="run" data-state={run.state}>
+<section class="run panel" data-state={run.state}>
   <header class="head">
-    <span class="lamp" aria-hidden="true"></span>
+    <span class="status-dot lamp {LUZ[run.state] ?? ''}" aria-hidden="true"></span>
     <div class="titles">
       <b>{STATES[run.state] ?? run.state}</b>
       <small class="paths">
@@ -447,14 +461,14 @@
        desaparece en vez de anunciar "ningún archivo abierto" para siempre. -->
   {#if active}
     <div class="column">
-      <span class="section-label">
+      <span class="caps section-label">
         Consumiendo ahora{abiertos.length > 1 ? ` (${abiertos.length} a la vez)` : ''}
       </span>
       {#if abiertos.length}
         {#each abiertos as item (item.job_id)}
           <article class="current">
             <div class="line">
-              <span class="dot" aria-hidden="true"></span>
+              <span class="status-dot status-dot-sm live" aria-hidden="true"></span>
               <span class="file" title={item.nombre}>{item.nombre}</span>
               {#if item.job}
                 <span class="stage">
@@ -482,8 +496,8 @@
               </small>
             {/if}
             {#if item.job?.progress.page_count}
-              <div class="bar">
-                <div class="fill" style:width={`${item.job.progress.percent}%`}></div>
+              <div class="progress progress-sm">
+                <div class="progress-fill" style:width={`${item.job.progress.percent}%`}></div>
               </div>
               <PageRibbon
                 ribbon={item.job.progress.ribbon}
@@ -508,7 +522,7 @@
            carpeta viva la cola es lo que va a procesarse; en una detenida es lo
            que se quedó sin procesar, y llamarlo "esperando turno" prometía un
            turno que no iba a llegar nunca. -->
-      <span class="section-label" class:pendiente={!active}>
+      <span class="caps section-label" class:pendiente={!active}>
         {active
           ? `Esperando turno (${enCola})`
           : `Quedaron sin procesar (${enCola})`}
@@ -530,7 +544,7 @@
        destino, pero no de cuál habían salido, y eso había que reconstruirlo de
        memoria. -->
   <div class="column">
-    <span class="section-label">Lo que produjo</span>
+    <span class="caps section-label">Lo que produjo</span>
     <FolderTree {run} />
   </div>
 </section>
@@ -538,62 +552,36 @@
 <style>
   .validacion {
     display: block;
-    margin-top: 0.25rem;
+    margin-top: var(--space-1);
     color: var(--good);
   }
   .validacion[data-pendientes='si'] {
     color: var(--ink-2);
   }
+  /* La tarjeta es el `.panel` común. Mientras la carpeta corre, el filete lleva
+     un tinte del acento (algo en curso); si falló, del rojo. */
   .run {
     display: flex;
     flex-direction: column;
-    gap: 0.9rem;
-    border: 1px solid color-mix(in oklab, var(--s4) 32%, var(--hairline));
-    border-radius: var(--radius-lg);
-    background: var(--surface-2);
-    padding: 1.1rem 1.2rem;
-    box-shadow: var(--shadow);
+    gap: var(--space-4);
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--hairline));
   }
   [data-state='done'],
   [data-state='stopped'] {
     border-color: var(--hairline);
   }
   [data-state='failed'] {
-    border-color: color-mix(in oklab, var(--critical) 45%, var(--hairline));
+    border-color: color-mix(in srgb, var(--critical) 45%, var(--hairline));
   }
 
   .head {
     display: flex;
     align-items: flex-start;
-    gap: 0.6rem;
+    gap: var(--space-2);
   }
+  /* Centrada con la primera línea del título. */
   .lamp {
-    margin-top: 0.3rem;
-    width: 8px;
-    height: 8px;
-    flex-shrink: 0;
-    border-radius: 50%;
-    background: var(--axis);
-  }
-  [data-state='processing'] .lamp,
-  [data-state='scanning'] .lamp {
-    background: var(--s4);
-    box-shadow: 0 0 0 3px color-mix(in oklab, var(--s4) 18%, transparent);
-    animation: breathe 1.6s ease-in-out infinite;
-  }
-  [data-state='recovering'] .lamp {
-    background: var(--warning, var(--s4));
-    animation: breathe 2.4s ease-in-out infinite;
-  }
-  [data-state='watching'] .lamp {
-    background: var(--s4);
-    animation: breathe 3s ease-in-out infinite;
-  }
-  [data-state='done'] .lamp {
-    background: var(--good);
-  }
-  [data-state='failed'] .lamp {
-    background: var(--critical);
+    margin-top: 0.4rem;
   }
 
   .titles {
@@ -609,7 +597,7 @@
     display: flex;
     min-width: 0;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--space-1);
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     color: var(--muted);
@@ -621,7 +609,7 @@
   }
   .arrow {
     flex-shrink: 0;
-    color: var(--s4);
+    color: var(--ink-2);
   }
 
   /* Pegado a la derecha del encabezado; el aspecto es el de `.btn`. Detener
@@ -637,31 +625,37 @@
     margin: 0;
   }
 
+  .section-label {
+    display: block;
+    margin-bottom: var(--space-2);
+  }
   .section-label.pendiente {
     color: var(--warning-ink);
   }
 
   .column {
     border-top: 1px solid var(--rule);
-    padding-top: 0.8rem;
+    padding-top: var(--space-3);
   }
 
+  /* Lo que se entrega (el inventario, el control, el análisis): un aviso con
+     el tinte del acento, arriba de todo. */
   .inventario {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.8rem 1.2rem;
-    border: 1px solid color-mix(in oklab, var(--s4) 45%, var(--hairline));
+    gap: var(--space-3) var(--space-5);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--hairline));
     border-radius: var(--radius-md);
-    background: color-mix(in oklab, var(--s4) 9%, var(--surface-2));
-    padding: 0.85rem 1rem;
+    background: var(--accent-soft);
+    padding: var(--space-3) var(--space-4);
   }
   .inventario .texto {
     display: flex;
     min-width: 0;
     flex: 1 1 18rem;
     flex-direction: column;
-    gap: 0.2rem;
+    gap: 2px;
   }
   .inventario .texto b {
     font-size: var(--text-lg);
@@ -676,38 +670,19 @@
     font-size: var(--text-xs);
     overflow-wrap: anywhere;
   }
-  /* La descarga es la tonal común: el relleno ámbar con letra blanca que
-     tenía antes no se leía. */
-  .section-label {
-    display: block;
-    margin-bottom: 0.45rem;
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    letter-spacing: var(--tracking-caps);
-    text-transform: uppercase;
-    color: var(--muted);
-  }
 
   .current {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: var(--space-2);
     border-radius: var(--radius-md);
     background: var(--plane);
-    padding: 0.6rem 0.7rem;
+    padding: var(--space-2) var(--space-3);
   }
   .line {
     display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-  }
-  .dot {
-    width: 6px;
-    height: 6px;
-    flex-shrink: 0;
-    border-radius: 50%;
-    background: var(--s4);
-    animation: breathe 1.2s ease-in-out infinite;
+    align-items: center;
+    gap: var(--space-2);
   }
   .file {
     overflow: hidden;
@@ -728,11 +703,11 @@
   }
   .sin-novedad {
     display: block;
-    margin-top: 0.2rem;
+    margin-top: 2px;
+    border-left: 3px solid var(--warning);
+    padding-left: var(--space-2);
     font-size: var(--text-xs);
     color: var(--ink);
-    border-left: 3px solid var(--warning);
-    padding-left: 0.4rem;
   }
   .pages {
     margin-left: auto;
@@ -740,19 +715,6 @@
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     color: var(--muted);
-  }
-
-  .bar {
-    height: 3px;
-    overflow: hidden;
-    border-radius: var(--radius-pill);
-    background: var(--grid);
-  }
-  .fill {
-    height: 100%;
-    border-radius: var(--radius-pill);
-    background: var(--s4);
-    transition: width 0.3s ease-out;
   }
 
   .idle {
@@ -764,7 +726,7 @@
   .queue {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
+    gap: var(--space-1);
     margin: 0;
     padding: 0;
     list-style: none;
@@ -775,7 +737,7 @@
     border: 1px solid var(--hairline);
     border-radius: var(--radius-sm);
     background: var(--surface-1);
-    padding: 0.12rem 0.45rem;
+    padding: 2px var(--space-2);
     font-size: var(--text-xs);
     color: var(--muted);
     text-overflow: ellipsis;
@@ -786,7 +748,7 @@
   }
 
   .descargas {
-    margin: 0.85rem 0;
+    margin: var(--space-3) 0;
     max-width: 34rem;
   }
 </style>

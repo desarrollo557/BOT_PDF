@@ -567,6 +567,12 @@ body {
   .panel-flush {
     padding: 0;
   }
+  /* Un escalón por debajo de la tarjeta que lo contiene: hundido en el plano y
+     sin sombra, que dentro de otra tarjeta sería una segunda capa flotando. */
+  .panel-inset {
+    background: var(--plane);
+    box-shadow: none;
+  }
   /* La tarjeta entera es el control: una opción, algo que se abre. */
   .panel-interactive {
     color: inherit;
@@ -579,7 +585,16 @@ body {
       background-color var(--duration-fast) var(--ease-out),
       box-shadow var(--duration-fast) var(--ease-out);
   }
-  .panel-interactive:hover:not(:disabled, [aria-disabled='true']) {
+  /* Al pasar, salvo si ya está elegida: el estado elegido no se pierde bajo el
+     ratón. */
+  .panel-interactive:hover:not(
+      :disabled,
+      [aria-disabled='true'],
+      .selected,
+      [aria-checked='true'],
+      [aria-pressed='true'],
+      [aria-current='true']
+    ) {
     border-color: var(--control);
     box-shadow: var(--shadow-hover);
   }
@@ -662,6 +677,11 @@ body {
     background: var(--accent);
     animation: latido 1.6s var(--ease-in-out) infinite;
   }
+  /* En curso pero quieto: cuando hay muchos a la vez (los chips de una cola),
+     que latan todos sería ruido. */
+  .status-dot.accent {
+    background: var(--accent);
+  }
   .status-dot.good {
     background: var(--good);
   }
@@ -708,6 +728,10 @@ body {
   .stat-note {
     font-size: var(--text-xs);
     color: var(--ink-2);
+  }
+  /* La cifra protagonista de un trabajo (StatTile). */
+  .stat-lg .stat-value {
+    font-size: var(--text-stat);
   }
   .stat.good {
     border-left-color: color-mix(in srgb, var(--good) 55%, transparent);

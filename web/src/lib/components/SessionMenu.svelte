@@ -43,7 +43,7 @@
 
 <div class="menu">
   <button
-    class="trigger"
+    class="btn btn-sm trigger"
     onclick={() => {
       open = !open;
       confirming = false;
@@ -53,7 +53,7 @@
   >
     <span class="avatar">{initials}</span>
     <span class="who">{session.name}</span>
-    <span class="chevron" aria-hidden="true">▾</span>
+    <span class="chevron"><Icono nombre="abajo" /></span>
   </button>
 
   {#if open}
@@ -148,22 +148,13 @@
     position: relative;
   }
 
+  /* El `.btn` común en forma de píldora: el avatar se apoya en el borde
+     izquierdo y la flecha dice que abre algo. */
   .trigger {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-    border: 1px solid var(--hairline);
+    gap: var(--space-2);
     border-radius: var(--radius-pill);
-    background: var(--surface-2);
     padding: 0.2rem 0.55rem 0.2rem 0.2rem;
-    font: inherit;
-    font-size: var(--text-sm);
-    color: var(--ink-2);
-    cursor: pointer;
-    transition: border-color 0.15s;
-  }
-  .trigger:hover {
-    border-color: var(--accent);
+    font-weight: 500;
   }
 
   .avatar {
@@ -190,7 +181,9 @@
     white-space: nowrap;
   }
   .chevron {
+    display: inline-flex;
     color: var(--muted);
+    --icono: 0.75rem;
   }
 
   /* El velo común de los diálogos: el menú se lee como algo puesto encima

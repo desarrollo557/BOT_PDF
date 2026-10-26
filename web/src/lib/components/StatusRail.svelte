@@ -31,6 +31,18 @@
     idle: 'En servicio'
   };
 
+  /**
+   * One lamp, four states, and the word beside it always says which -- the
+   * colour is a second reading of the label, never the only one. Es el
+   * `.status-dot` común: conectando late en gris, procesando late en el acento.
+   */
+  const LAMP: Record<string, string> = {
+    probing: 'pulse',
+    down: 'bad',
+    busy: 'live',
+    idle: 'good'
+  };
+
   /** Time the operator has had this console open, which is what they can see. */
   const uptime = $derived.by(() => {
     const seconds = Math.floor((now - since) / 1000);
@@ -61,7 +73,7 @@
 </script>
 
 <div class="rail" data-state={condition}>
-  <span class="lamp" aria-hidden="true"></span>
+  <span class="status-dot {LAMP[condition]}" aria-hidden="true"></span>
   <span class="state">{LABEL[condition]}</span>
 
   <span class="sep" aria-hidden="true"></span>
@@ -90,41 +102,16 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.55rem;
+    gap: var(--space-2);
     border: 1px solid var(--hairline);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--surface-2);
-    padding: 0.35rem 0.85rem;
+    padding: var(--space-1) var(--space-3);
     font-family: var(--font-mono);
-    font-size: 0.7rem;
+    font-size: var(--text-2xs);
     letter-spacing: 0.01em;
     color: var(--muted);
     white-space: nowrap;
-  }
-
-  /* One lamp, four states, and the word beside it always says which -- the
-     colour is a second reading of the label, never the only one. */
-  .lamp {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--axis);
-  }
-  [data-state='idle'] .lamp {
-    background: var(--good);
-    box-shadow: 0 0 0 3px color-mix(in oklab, var(--good) 18%, transparent);
-  }
-  [data-state='busy'] .lamp {
-    background: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-soft);
-    animation: breathe 1.6s ease-in-out infinite;
-  }
-  [data-state='down'] .lamp {
-    background: var(--critical);
-    box-shadow: 0 0 0 3px color-mix(in oklab, var(--critical) 18%, transparent);
-  }
-  [data-state='probing'] .lamp {
-    animation: breathe 1.6s ease-in-out infinite;
   }
 
   .state {
@@ -150,25 +137,11 @@
     color: var(--ink-2);
   }
 
+  /* El reloj es lo menos importante de la barra, pero se lee: `--muted`, no el
+     gris de los ejes, que como letra no pasaba 2:1. */
   .uptime {
     margin-left: auto;
-    padding-left: 0.5rem;
-    color: var(--axis);
-  }
-
-  @keyframes breathe {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.4;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .lamp {
-      animation: none;
-    }
+    padding-left: var(--space-2);
+    color: var(--muted);
   }
 </style>

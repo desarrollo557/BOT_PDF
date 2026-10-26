@@ -54,7 +54,7 @@
 
 {#if cargando}
   <div class="estado" aria-live="polite">
-    <span class="punto" aria-hidden="true"></span>
+    <span class="status-dot live" aria-hidden="true"></span>
     Reconociendo qué documentos son…
   </div>
 {:else if error}
@@ -77,7 +77,7 @@
       {#if mezcla || conteo.some((fila) => fila.tipo === DESCONOCIDO)}
         <ul class="tipos" aria-label="Documentos por tipo">
           {#each conteo as fila (fila.tipo)}
-            <li class:sin={fila.tipo === DESCONOCIDO}>
+            <li class="pill pill-neutral" class:sin={fila.tipo === DESCONOCIDO}>
               <b class="tabular">{fila.cantidad}</b>
               {fila.etiqueta}
             </li>
@@ -115,23 +115,6 @@
     font-size: var(--text-sm);
     color: var(--muted);
   }
-  .punto {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--accent);
-    animation: latido 1s ease-in-out infinite;
-  }
-  @keyframes latido {
-    50% {
-      opacity: 0.3;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .punto {
-      animation: none;
-    }
-  }
   .cuerpo {
     display: flex;
     flex-direction: column;
@@ -153,11 +136,10 @@
     padding: 0;
     list-style: none;
   }
+  /* Cada tipo es una `.pill` neutra; lo reconocido en la tinta secundaria y lo
+     que no se reconoce, apagado. */
   .tipos li {
-    border-radius: var(--radius-pill);
-    background: var(--surface-2);
-    padding: 2px 10px;
-    font-size: var(--text-xs);
+    color: var(--ink-2);
   }
   .tipos li.sin {
     color: var(--muted);

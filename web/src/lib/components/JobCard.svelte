@@ -130,14 +130,21 @@
   {#if live}
     <!-- The live view: one cell per page, painted by the rung that answered it. -->
     <div class="mt-4">
-      <div class="barra mb-3">
-        <div class="relleno transition-[width] duration-300" style:width={`${progress.percent}%`}></div>
+      <div
+        class="progress mb-3"
+        role="progressbar"
+        aria-valuenow={Math.round(progress.percent)}
+        aria-valuemin="0"
+        aria-valuemax="100"
+      >
+        <div class="progress-fill" style:width={`${progress.percent}%`}></div>
       </div>
       <PageRibbon ribbon={progress.ribbon} pageCount={progress.page_count} />
     </div>
   {:else if job.state === 'queued'}
-    <div class="barra fina mt-4">
-      <div class="relleno w-1/3 animate-[slide_1.1s_ease-in-out_infinite]"></div>
+    <!-- En cola: todavía no hay cifra, sólo que espera turno. -->
+    <div class="progress progress-sm progress-indeterminate mt-4">
+      <div class="progress-fill"></div>
     </div>
   {/if}
 
@@ -391,22 +398,6 @@
     color: var(--warning-ink);
   }
 
-  /* La barra de avance. */
-  .barra {
-    height: 6px;
-    overflow: hidden;
-    border-radius: var(--radius-pill);
-    background: var(--grid);
-  }
-  .barra.fina {
-    height: 3px;
-  }
-  .relleno {
-    height: 100%;
-    border-radius: var(--radius-pill);
-    background: var(--accent);
-  }
-
   .avisos {
     display: grid;
     gap: var(--space-1);
@@ -479,16 +470,5 @@
   .observacion {
     font-size: var(--text-xs);
     color: var(--warning-ink);
-  }
-
-  /* Global: la clase de Tailwind `animate-[slide…]` lo busca por su nombre, y
-     Svelte renombra los keyframes locales. */
-  @keyframes -global-slide {
-    from {
-      transform: translateX(-100%);
-    }
-    to {
-      transform: translateX(340%);
-    }
   }
 </style>

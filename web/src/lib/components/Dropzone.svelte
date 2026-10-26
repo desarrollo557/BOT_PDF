@@ -109,8 +109,8 @@
     text-align: center;
     cursor: pointer;
     transition:
-      border-color 0.18s,
-      background 0.18s;
+      border-color var(--duration) var(--ease-out),
+      background-color var(--duration) var(--ease-out);
   }
 
   /* A faint diagonal hatch: enough texture to read as a drop target without
@@ -137,10 +137,11 @@
 
   /* Batch intake is deliberately a different object: taller, darker, ruled
      rather than hatched. You should be able to tell the two modes apart with
-     the labels covered. */
+     the labels covered. El color es el del cromo -- borde neutro, acento al
+     pasar --, no una serie: las series son sólo para datos. */
   [data-variant='batch'] {
     border-style: solid;
-    border-color: color-mix(in oklab, var(--s3) 35%, var(--hairline));
+    border-color: var(--axis);
     background: var(--plane);
     padding: 3.1rem 1.5rem;
   }
@@ -154,15 +155,11 @@
   }
   [data-variant='batch']:hover,
   [data-variant='batch'].hovering {
-    border-color: var(--s3);
-    background: color-mix(in oklab, var(--s3) 7%, var(--plane));
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 7%, var(--plane));
   }
   [data-variant='batch'] .glyph svg {
-    stroke: color-mix(in oklab, var(--s3) 75%, var(--muted));
-  }
-  [data-variant='batch']:hover .glyph svg,
-  [data-variant='batch'].hovering .glyph svg {
-    stroke: var(--s3);
+    stroke: var(--ink-2);
   }
 
   .glyph svg {
@@ -174,7 +171,7 @@
     stroke-width: 1.6;
     stroke-linecap: round;
     stroke-linejoin: round;
-    transition: stroke 0.18s;
+    transition: stroke var(--duration) var(--ease-out);
   }
   .zone:hover .glyph svg,
   .zone.hovering .glyph svg {

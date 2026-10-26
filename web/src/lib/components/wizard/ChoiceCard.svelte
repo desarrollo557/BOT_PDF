@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import Icono from '../Icono.svelte';
 
   /**
    * One selectable option of a wizard step.
@@ -41,7 +42,7 @@
 
 <button
   type="button"
-  class="card"
+  class="panel panel-interactive choice"
   class:selected
   class:compact
   class:with-icon={!!icon}
@@ -61,10 +62,10 @@
       <span class="title">{title}</span>
       {#if badge}
         <span
-          class="pill badge"
+          class="pill insignia"
+          class:pill-neutral={badgeTone === 'neutral'}
           class:pill-warn={badgeTone === 'warning'}
-          class:pill-good={badgeTone === 'good'}
-          data-tone={badgeTone}>{badge}</span
+          class:pill-good={badgeTone === 'good'}>{badge}</span
         >
       {/if}
     </span>
@@ -73,10 +74,7 @@
     {/if}
     {#if disabled && disabledReason}
       <span class="reason">
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <rect x="3.5" y="7" width="9" height="6.5" rx="1.5" />
-          <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
-        </svg>
+        <Icono nombre="candado" />
         {disabledReason}
       </span>
     {/if}
@@ -86,62 +84,36 @@
 </button>
 
 <style>
-  .card {
+  /* La tarjeta es el `.panel` común como control (`.panel-interactive`): el
+     borde, el fondo, el paso del ratón, la elegida (`.selected`, que cubre
+     tanto `aria-checked` como `aria-selected`) y la apagada -- borde punteado
+     sobre el plano -- son los de todas las tarjetas. Aquí sólo la maquetación
+     y el hueco a la derecha para el círculo del radio. */
+  .choice {
     position: relative;
     display: flex;
     min-width: 0;
     align-items: flex-start;
     gap: var(--space-3);
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-lg);
-    background: var(--surface-2);
     padding: var(--space-3) var(--space-4);
     padding-right: calc(var(--space-4) + 20px);
-    font: inherit;
-    text-align: left;
     color: var(--ink-2);
-    cursor: pointer;
-    transition:
-      border-color 0.15s ease,
-      background-color 0.15s ease,
-      box-shadow 0.15s ease;
   }
 
-  .card.compact {
+  .choice.compact {
     padding: var(--space-2) var(--space-3);
     padding-right: calc(var(--space-4) + 20px);
   }
 
-  .card:hover:not(:disabled) {
-    border-color: var(--axis);
-    background: var(--surface-1);
-  }
-
-  .card:focus-visible {
-    outline: 2px solid var(--ring);
-    outline-offset: 2px;
-  }
-
-  .card.selected {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-    box-shadow: inset 0 0 0 1px var(--accent);
-    color: var(--ink);
-  }
-
-  .card:disabled {
-    border-style: dashed;
-    background: var(--plane);
-    cursor: not-allowed;
-  }
-
-  .card:disabled .title,
-  .card:disabled .description,
-  .card:disabled .icon {
+  .choice:disabled .title,
+  .choice:disabled .description,
+  .choice:disabled .icon {
     opacity: 0.55;
   }
 
+  /* El ícono de la opción, del juego común: el tamaño se lo da `--icono`. */
   .icon {
+    --icono: 20px;
     display: grid;
     width: 32px;
     height: 32px;
@@ -152,14 +124,9 @@
     color: var(--ink-2);
   }
 
-  .card.selected .icon {
+  .choice.selected .icon {
     background: var(--surface-2);
     color: var(--accent);
-  }
-
-  .icon :global(svg) {
-    width: 20px;
-    height: 20px;
   }
 
   .content {
@@ -194,16 +161,11 @@
     text-transform: uppercase;
   }
 
-  /* La etiqueta es la `.pill` común; el tono neutro, que no es estado sino
-     dato («Gratis», «Por página»), va en el gris del plano. */
-  .badge {
+  /* La etiqueta es la `.pill` común; el tono neutro (`.pill-neutral`), que no
+     es estado sino dato («Gratis», «Por página»), va en el gris del plano. */
+  .insignia {
     line-height: 1.5;
     white-space: nowrap;
-  }
-
-  .badge[data-tone='neutral'] {
-    background: var(--plane);
-    color: var(--ink-2);
   }
 
   .reason {
@@ -216,16 +178,12 @@
     color: var(--ink-2);
   }
 
-  .reason svg {
-    width: 14px;
-    height: 14px;
-    flex-shrink: 0;
+  .reason {
+    --icono: 14px;
+  }
+
+  .reason :global(.icono) {
     margin-top: 1px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.4;
-    stroke-linecap: round;
-    stroke-linejoin: round;
   }
 
   /* The radio dot: empty ring, filled when chosen. It is what tells a
@@ -236,24 +194,24 @@
     right: var(--space-4);
     width: 16px;
     height: 16px;
-    border: 1.5px solid var(--axis);
+    border: 1.5px solid var(--control);
     border-radius: 50%;
     background: var(--surface-2);
     transition:
-      border-color 0.15s ease,
-      box-shadow 0.15s ease;
+      border-color var(--duration-fast) var(--ease-out),
+      box-shadow var(--duration-fast) var(--ease-out);
   }
 
-  .card.compact .indicator {
+  .choice.compact .indicator {
     top: var(--space-2);
   }
 
-  .card.selected .indicator {
+  .choice.selected .indicator {
     border-color: var(--accent);
     box-shadow: inset 0 0 0 4px var(--accent);
   }
 
-  .card:disabled .indicator {
+  .choice:disabled .indicator {
     opacity: 0.4;
   }
 </style>

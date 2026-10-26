@@ -177,10 +177,10 @@
     align-items: center;
     gap: 0.75rem 1.5rem;
     border-bottom: 1px solid var(--hairline);
-    /* Translucent so content scrolling under it reads as depth, not a seam. */
-    background: color-mix(in oklab, var(--surface-1) 84%, transparent);
+    /* Sólida: el filete de abajo ya separa la barra del contenido, y un fondo
+       translúcido y desenfocado es un adorno que esta consola no lleva. */
+    background: var(--surface-1);
     padding: 0.7rem 1.5rem;
-    backdrop-filter: blur(10px);
   }
 
   .brand {

@@ -50,7 +50,7 @@
 </script>
 
 {#if totals.documents}
-  <section class="bulk" aria-live="polite">
+  <section class="panel panel-sm bulk" aria-live="polite">
     <span class="count">
       <b class="tabular">{totals.documents}</b>
       {totals.documents === 1 ? 'documento seleccionado' : 'documentos seleccionados'}
@@ -103,6 +103,8 @@
 {/if}
 
 <style>
+  /* La barra es el `.panel` común, pegada bajo la barra de arriba mientras
+     haya selección. */
   .bulk {
     position: sticky;
     /* Debajo de la barra fija de arriba, no escondida tras ella. */
@@ -111,13 +113,8 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.75rem;
-    margin-bottom: 0.9rem;
-    padding: 0.6rem 0.85rem;
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-md);
-    background: var(--surface-2);
-    box-shadow: var(--shadow);
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
   }
 
   .bulk .count {
