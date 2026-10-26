@@ -71,6 +71,9 @@
    * The badges carry the whole navigation story. An operator should be able to
    * tell from the bar alone whether anything is waiting for them, without
    * opening a screen to find out.
+   *
+   * Los contadores son la `.pill` común: lo que corre, en el acento (algo en
+   * curso); lo terminado, neutro; lo que espera una mirada, en aviso.
    */
   const TABS = $derived([
     {
@@ -78,21 +81,21 @@
       label: 'Procesar',
       match: (path: string) => path === '/',
       badge: active || null,
-      tone: 'live'
+      tone: ''
     },
     {
       href: '/archivo',
       label: 'Archivo',
       match: (path: string) => path.startsWith('/archivo') || path.startsWith('/documento'),
       badge: ready || null,
-      tone: 'quiet'
+      tone: 'pill-neutral'
     },
     {
       href: '/revision',
       label: 'Revisión',
       match: (path: string) => path.startsWith('/revision'),
       badge: pending || null,
-      tone: 'warn'
+      tone: 'pill-warn'
     }
     // Sin pestaña de Usuarios: se entra siempre como «siar», y con eso basta.
   ]);
@@ -133,7 +136,7 @@
           <a href={tab.href} aria-current={tab.match(here) ? 'page' : undefined}>
             {tab.label}
             {#if tab.badge}
-              <span class="badge tabular" data-tone={tab.tone}>{tab.badge}</span>
+              <span class="pill pill-sm {tab.tone}">{tab.badge}</span>
             {/if}
           </a>
         {/each}
@@ -243,27 +246,8 @@
     align-items: center;
     gap: 0.45rem;
     transition:
-      background 0.15s,
-      color 0.15s;
-  }
-
-  .badge {
-    border-radius: var(--radius-pill);
-    padding: 0 0.35rem;
-    font-size: var(--text-2xs);
-    font-weight: 600;
-  }
-  .badge[data-tone='live'] {
-    background: var(--good-soft);
-    color: var(--good);
-  }
-  .badge[data-tone='quiet'] {
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-  .badge[data-tone='warn'] {
-    background: var(--warning-soft);
-    color: var(--warning-ink);
+      background-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
   }
 
   .rail {

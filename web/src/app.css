@@ -249,9 +249,10 @@ body {
 }
 
 /*
- * Las dos animaciones de la aplicación. `latido`: algo está vivo (un trabajo en
- * curso, la consola escuchando). `entrada`: algo acaba de aparecer (un aviso, un
- * diálogo). Con «reducir movimiento» no se anima nada: el estado final se pinta
+ * Las animaciones de la aplicación, y no hay otras. `latido`: algo está vivo (un
+ * trabajo en curso, la consola escuchando). `entrada`: algo acaba de aparecer
+ * (un aviso, un diálogo). `avance`: la barra de un trabajo que no sabe cuánto le
+ * falta. Con «reducir movimiento» no se anima nada: el estado final se pinta
  * directamente.
  */
 @keyframes latido {
@@ -264,6 +265,15 @@ body {
   from {
     opacity: 0;
     transform: translateY(4px);
+  }
+}
+
+@keyframes avance {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
   }
 }
 
@@ -531,14 +541,188 @@ body {
     background: var(--good-soft);
     color: color-mix(in srgb, var(--good) 70%, var(--ink));
   }
+  /* Un contador al lado de un rótulo (las pestañas de la barra). */
+  .pill-sm {
+    padding: 0 0.4rem;
+    font-size: var(--text-2xs);
+    font-variant-numeric: tabular-nums;
+  }
 
-  /* Panel: la superficie de una sección -- resumen, tabla, monitor. */
+  /* Panel: la superficie de una sección -- resumen, tabla, monitor -- y la
+     tarjeta de todo lo demás. Antes había cinco tarjetas propias (`.card` en la
+     entrada, el asistente, las opciones, el documento y la carpeta) con cinco
+     rellenos y tres radios. Una sola, con tres medidas y dos estados. */
   .panel {
     border: 1px solid var(--hairline);
     border-radius: var(--radius-lg);
     background: var(--surface-2);
     box-shadow: var(--shadow);
-    padding: 1rem 1.2rem;
+    padding: var(--space-4) var(--space-5);
+  }
+  /* Dentro de una rejilla de tarjetas, o cuando la tarjeta es una fila. */
+  .panel-sm {
+    padding: var(--space-3) var(--space-4);
+  }
+  /* Cuando la tarjeta trae sus propias secciones con relleno (cabecera, pie). */
+  .panel-flush {
+    padding: 0;
+  }
+  /* La tarjeta entera es el control: una opción, algo que se abre. */
+  .panel-interactive {
+    color: inherit;
+    font: inherit;
+    text-align: inherit;
+    text-decoration: none;
+    cursor: pointer;
+    transition:
+      border-color var(--duration-fast) var(--ease-out),
+      background-color var(--duration-fast) var(--ease-out),
+      box-shadow var(--duration-fast) var(--ease-out);
+  }
+  .panel-interactive:hover:not(:disabled, [aria-disabled='true']) {
+    border-color: var(--control);
+    box-shadow: var(--shadow-hover);
+  }
+  /* Elegida: el borde y un tinte del acento, y el borde engrosado por dentro
+     para que no dependa sólo del color de fondo. */
+  .panel:is(.selected, [aria-checked='true'], [aria-pressed='true'], [aria-current='true']) {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  .panel-interactive:is(:disabled, [aria-disabled='true']) {
+    border-style: dashed;
+    background: var(--plane);
+    box-shadow: none;
+    cursor: not-allowed;
+  }
+  /* Algo falló dentro: el borde lo dice antes que el texto. */
+  .panel-bad {
+    border-color: color-mix(in srgb, var(--critical) 40%, var(--hairline));
+  }
+
+  /* La barra de avance. Una pista y uno o varios rellenos: uno es el avance;
+     varios, una composición (hechos, con fallo, en cola). El relleno es del
+     acento -- algo que avanza --; los tonos dicen el estado cuando importa. */
+  .progress {
+    display: flex;
+    height: 6px;
+    overflow: hidden;
+    border-radius: var(--radius-pill);
+    background: var(--grid);
+  }
+  .progress-sm {
+    height: 3px;
+  }
+  .progress-fill {
+    height: 100%;
+    flex: none;
+    background: var(--accent);
+    transition: width var(--duration-slow) var(--ease-out);
+  }
+  .progress-fill:only-child {
+    border-radius: var(--radius-pill);
+  }
+  .progress-fill.good {
+    background: var(--good);
+  }
+  .progress-fill.warn {
+    background: var(--warning);
+  }
+  .progress-fill.bad {
+    background: var(--critical);
+  }
+  .progress-fill.idle {
+    background: var(--axis);
+  }
+  /* Sin cifra: algo trabaja y no se sabe cuánto falta. Con «reducir
+     movimiento» queda un tercio quieto, que sigue diciendo «en curso». */
+  .progress-indeterminate .progress-fill {
+    width: 33%;
+    border-radius: var(--radius-pill);
+    animation: avance 1.2s var(--ease-in-out) infinite;
+  }
+
+  /* El punto de estado: va siempre al lado de su etiqueta, nunca solo. El color
+     dice el estado (gris: quieto o en espera); `.pulse` dice que está vivo.
+     `.live` es lo más común -- algo en curso -- y trae los dos. */
+  .status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--axis);
+  }
+  .status-dot-sm {
+    width: 6px;
+    height: 6px;
+  }
+  .status-dot.live {
+    background: var(--accent);
+    animation: latido 1.6s var(--ease-in-out) infinite;
+  }
+  .status-dot.good {
+    background: var(--good);
+  }
+  .status-dot.warn {
+    background: var(--warning);
+  }
+  .status-dot.bad {
+    background: var(--critical);
+  }
+  .status-dot.pulse {
+    animation: latido 1.6s var(--ease-in-out) infinite;
+  }
+  /* Vigilando: vivo, pero sin prisa. */
+  .status-dot.pulse-slow {
+    animation: latido 3s var(--ease-in-out) infinite;
+  }
+
+  /* Una cifra con su rótulo: rótulo en versalitas, valor grande y una nota
+     debajo, con un filete a la izquierda en vez de una caja -- seis cajas en
+     fila son seis marcos compitiendo con la tarjeta que ya las contiene. */
+  .stat {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+    border-left: 2px solid var(--rule);
+    padding-left: var(--space-3);
+  }
+  .stat-label {
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    letter-spacing: var(--tracking-caps);
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .stat-value {
+    margin: 0;
+    font-size: var(--text-xl);
+    font-weight: 600;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-note {
+    font-size: var(--text-xs);
+    color: var(--ink-2);
+  }
+  .stat.good {
+    border-left-color: color-mix(in srgb, var(--good) 55%, transparent);
+  }
+  .stat.warn {
+    border-left-color: color-mix(in srgb, var(--warning) 70%, transparent);
+  }
+  .stat.warn .stat-value {
+    color: var(--warning-ink);
+  }
+  .stat.bad {
+    border-left-color: color-mix(in srgb, var(--critical) 55%, transparent);
+  }
+  .stat.bad .stat-value {
+    color: var(--critical);
   }
 
   /* Sólo para lectores de pantalla. Estaba copiada en cuatro componentes. */

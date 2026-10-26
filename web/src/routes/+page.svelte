@@ -406,7 +406,7 @@
     {/if}
 
     {#if uploading}
-      <div class="progress">
+      <div class="subida">
         <div class="track">
           <div class="fill" style:width={`${(uploaded / uploadTotal) * 100}%`}></div>
         </div>
@@ -592,19 +592,19 @@
     letter-spacing: -0.015em;
   }
 
-  .progress .track {
+  .subida .track {
     height: 6px;
     overflow: hidden;
     border-radius: var(--radius-pill);
     background: var(--grid);
   }
-  .progress .fill {
+  .subida .fill {
     height: 100%;
     border-radius: 0 4px 4px 0;
     background: var(--accent);
     transition: width 0.2s;
   }
-  .progress p {
+  .subida p {
     margin: 0.45rem 0 0;
     font-size: var(--text-sm);
     color: var(--muted);

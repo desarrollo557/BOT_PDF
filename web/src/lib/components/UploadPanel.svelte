@@ -397,7 +397,7 @@
   data-total={totalPasos}
   data-habilidad={habilidadId}
 >
-  <nav class="progress" aria-label="Pasos del asistente">
+  <nav class="pasos" aria-label="Pasos del asistente">
     <ol>
       {#each pasos as id, indice (id)}
         {@const numero = indice + 1}
@@ -579,16 +579,16 @@
     color: var(--ink);
   }
 
-  /* -- progress ------------------------------------------------------------ */
+  /* -- pasos --------------------------------------------------------------- */
 
-  .progress ol {
+  .pasos ol {
     display: flex;
     margin: 0;
     padding: 0;
     list-style: none;
   }
 
-  .progress li {
+  .pasos li {
     position: relative;
     display: flex;
     flex: 1;
@@ -596,7 +596,7 @@
   }
 
   /* The connector to the previous step, drawn behind the dot. */
-  .progress li + li::before {
+  .pasos li + li::before {
     content: '';
     position: absolute;
     top: 14px;
@@ -607,12 +607,12 @@
     background: var(--grid);
   }
 
-  .progress li.done + li::before,
-  .progress li.done + li.current::before {
+  .pasos li.done + li::before,
+  .pasos li.done + li.current::before {
     background: var(--accent);
   }
 
-  .progress button {
+  .pasos button {
     position: relative;
     z-index: 1;
     display: flex;
@@ -626,15 +626,15 @@
     cursor: pointer;
   }
 
-  .progress button:disabled {
+  .pasos button:disabled {
     cursor: default;
   }
 
-  .progress button:focus-visible {
+  .pasos button:focus-visible {
     outline: none;
   }
 
-  .progress button:focus-visible .dot {
+  .pasos button:focus-visible .dot {
     box-shadow: 0 0 0 3px var(--ring);
   }
 
@@ -807,7 +807,7 @@
     }
 
     /* Only the current step keeps its name; the others stay as dots. */
-    .progress li:not(.current) .label {
+    .pasos li:not(.current) .label {
       display: none;
     }
 
