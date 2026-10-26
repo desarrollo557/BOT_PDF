@@ -11,6 +11,13 @@
   const valid = $derived(usuario.trim().length > 0);
   const resuming = $derived(session.state === 'idle');
 
+  // Lo que se le dice al campo: el aviso de vacío y el rechazo del servicio.
+  const describe = $derived(
+    [attempted && !valid ? 'usuario-vacio' : '', session.error ? 'usuario-rechazado' : '']
+      .filter(Boolean)
+      .join(' ') || undefined
+  );
+
   async function submit(event: Event) {
     event.preventDefault();
     attempted = true;
@@ -21,15 +28,9 @@
 
 <div class="stage">
   <div class="panel entrada">
-    <div class="owner">
-      <img
-        src="/siar.png"
-        alt="SIAR — Hacemos todo por su información"
-        width="148"
-        height="93"
-      />
-    </div>
-
+    <!-- El producto primero: es lo que el operador abre. La empresa dueña firma
+         al pie, separada por un filete; son dos cosas distintas y no deben
+         leerse como una sola. -->
     <header>
       <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
         <rect x="2.5" y="2.5" width="12" height="16" rx="2" />
@@ -69,23 +70,27 @@
             autocomplete="username"
             spellcheck="false"
             aria-invalid={attempted && !valid}
+            aria-describedby={describe}
           />
           {#if attempted && !valid}
-            <small class="bad">Escriba el usuario.</small>
+            <small id="usuario-vacio" class="bad">Escriba el usuario.</small>
           {/if}
         </label>
 
         {#if session.error}
-          <p class="inline-error rejected">{session.error}</p>
+          <p id="usuario-rechazado" class="inline-error rejected" role="alert">{session.error}</p>
         {/if}
 
-        <button class="btn btn-primary btn-block wide" type="submit" disabled={!valid || session.entrando}>
+        <button class="btn btn-primary btn-block" type="submit" disabled={!valid || session.entrando}>
           {session.entrando ? 'Ingresando…' : 'Ingresar'}
         </button>
       </form>
     {/if}
 
-    <p class="owner-note">Software de <b>SIAR</b></p>
+    <footer>
+      <span>Software de</span>
+      <img src="/siar-marca.png" alt="SIAR — Hacemos todo por su información" width="72" height="38" />
+    </footer>
   </div>
 </div>
 
@@ -94,55 +99,27 @@
     display: grid;
     min-height: 100dvh;
     place-items: center;
-    padding: 1.5rem;
+    padding: var(--space-6) var(--space-4);
   }
 
   /* La tarjeta es el `.panel` común; la de entrada es la única de la pantalla
      y respira un poco más. */
   .entrada {
-    width: min(28rem, 100%);
-    padding: var(--space-6);
-  }
-
-  .owner {
     display: flex;
-    justify-content: center;
-    border-bottom: 1px solid var(--rule);
-    padding-bottom: 1.25rem;
-  }
-  .owner img {
-    width: 148px;
-    height: auto;
-    border-radius: var(--radius);
-    /* Transparente en claro; en oscuro, una placa para no teñir la marca. */
-    background: var(--logo-plate);
-    padding: 6px 10px;
-  }
-
-  .owner-note {
-    margin: 1.1rem 0 0;
-    text-align: center;
-    font-size: var(--text-xs);
-    letter-spacing: 0.02em;
-    color: var(--muted);
-  }
-  .owner-note b {
-    font-weight: 600;
-    color: var(--ink-2);
+    width: min(24rem, 100%);
+    flex-direction: column;
+    gap: var(--space-6);
+    padding: var(--space-8) var(--space-6) var(--space-5);
   }
 
   header {
     display: flex;
     align-items: center;
-    gap: 0.85rem;
-    border-top: 1px solid var(--rule);
-    border-bottom: 1px solid var(--rule);
-    margin-top: 1.25rem;
-    padding: 1.1rem 0;
+    gap: var(--space-3);
   }
   .mark {
-    width: 34px;
-    height: 34px;
+    width: 40px;
+    height: 40px;
     flex-shrink: 0;
     fill: none;
     stroke: var(--accent);
@@ -157,26 +134,26 @@
   }
   h1 {
     margin: 0;
-    font-size: var(--text-lg);
+    font-size: var(--text-xl);
     font-weight: 650;
-    letter-spacing: -0.015em;
+    line-height: 1.2;
+    letter-spacing: -0.02em;
   }
   header p {
-    margin: 0.1rem 0 0;
-    font-size: var(--text-xs);
+    margin: 2px 0 0;
+    font-size: var(--text-sm);
     color: var(--muted);
   }
 
   form {
     display: flex;
     flex-direction: column;
-    gap: 0.9rem;
-    margin-top: 1.25rem;
+    gap: var(--space-4);
   }
   label {
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
+    gap: var(--space-1);
   }
   /* El campo y los botones son los comunes (`.input`, `.btn`); aquí sólo lo
      que esta tarjeta tiene de propio. */
@@ -188,19 +165,13 @@
     margin: 0;
     line-height: 1.5;
   }
-  .wide {
-    margin-top: 0.2rem;
-  }
 
-  .resume {
-    margin-top: 1.25rem;
-  }
   .lead {
     margin: 0;
     font-size: var(--text-lg);
   }
   .muted {
-    margin: 0.35rem 0 0;
+    margin: var(--space-1) 0 0;
     font-size: var(--text-sm);
     line-height: 1.5;
     color: var(--muted);
@@ -208,8 +179,27 @@
   .actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
-    margin-top: 1.1rem;
+    gap: var(--space-2);
+    margin-top: var(--space-4);
   }
 
+  /* La firma: un filete, «Software de» y la marca de SIAR, que se monta en una
+     placa clara en oscuro para no teñirla. */
+  footer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    border-top: 1px solid var(--rule);
+    padding-top: var(--space-4);
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+  footer img {
+    width: auto;
+    height: 22px;
+    border-radius: var(--radius-sm);
+    background: var(--logo-plate);
+    padding: 3px 6px;
+  }
 </style>
