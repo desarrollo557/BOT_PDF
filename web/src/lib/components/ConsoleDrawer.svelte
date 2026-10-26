@@ -124,7 +124,7 @@
 
     <header class="bar">
       <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-      <span class="title">resolutions@siar — <b>/proc/split</b></span>
+      <span class="title">folia@siar — <b>/proc/split</b></span>
       <span class="led" class:on={active > 0} aria-hidden="true"></span>
       <button class="hide" onclick={toggle} aria-label="Ocultar la consola">
         <Icono nombre="cerrar" />
@@ -134,7 +134,7 @@
     <div class="viewport" bind:this={viewport} onscroll={onScroll} role="log" aria-live="polite">
       <p class="line lvl-sys">
         <span class="time">--:--:--</span><span class="tag">BOOT</span>
-        <span class="text">separador de resoluciones · consola lista</span>
+        <span class="text">folia · consola lista</span>
       </p>
       {#each lines as line (line.id)}
         <p class="line lvl-{line.level}">

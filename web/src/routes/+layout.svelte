@@ -117,8 +117,8 @@
           <path class="split" d="M13 11h5M13 14h5M13 17h3" />
         </svg>
         <span class="titles">
-          <b>División de documentos AFINIA</b>
-          <small>Clasificación y división automática de documentos</small>
+          <b>Folia</b>
+          <small>División inteligente de documentos</small>
         </span>
       </a>
 

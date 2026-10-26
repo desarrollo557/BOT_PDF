@@ -90,10 +90,9 @@ if ($Ventanas) {
     # parar, se cierra cada ventana (o Ctrl+C dentro de ella).
     $env:PYTHONUNBUFFERED = "1"
     $env:API_URL = "http://127.0.0.1:$ApiPort"
-    # El nombre del software en el titulo de cada ventana. La o con tilde se
-    # arma con su codigo porque este archivo es ASCII: PowerShell 5.1 lee un
-    # .ps1 sin BOM en la pagina de codigos del sistema y la romperia.
-    $nombre = "Divisi$([char]0x00F3)n de documentos AFINIA"
+    # El nombre del software en el titulo de cada ventana. El comando sigue
+    # siendo "division-afinia"; lo que el operador lee es el nombre.
+    $nombre = "Folia"
     Start-Process -FilePath "cmd.exe" -WorkingDirectory (Join-Path $raiz "backend") -ArgumentList "/k title $nombre - backend :$ApiPort & `"$py`" -m uvicorn resolutions.api.main:app --port $ApiPort --no-access-log"
     Start-Process -FilePath "cmd.exe" -WorkingDirectory (Join-Path $raiz "web") -ArgumentList "/k title $nombre - front :$WebPort & node_modules\.bin\vite.cmd dev --port $WebPort --strictPort"
     Write-Host ""

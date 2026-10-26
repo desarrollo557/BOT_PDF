@@ -1,7 +1,7 @@
 {
-  "name": "División de documentos AFINIA",
-  "short_name": "División AFINIA",
-  "description": "Clasificación y división automática de documentos",
+  "name": "Folia · División inteligente de documentos",
+  "short_name": "Folia",
+  "description": "División inteligente de documentos. Software de SIAR.",
   "lang": "es",
   "start_url": "/",
   "display": "standalone",
