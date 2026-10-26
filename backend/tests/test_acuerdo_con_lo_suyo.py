@@ -147,8 +147,19 @@ class TestElAcuerdoConLoSuyo:
             _grupos([1], [2], [3], [4]), textos, abren={2}, cruzan={2}
         )
         assert [g.page_numbers for g in grupos.groups] == [[1], [2], [3, 4]]
-        assert grupos.groups[2].kind == "RECONOCIMIENTO DE DEUDA Y ACUERDO DE PAGO"
-        assert del_acuerdo == {3, 4}
+        # Sin reconocimiento de deuda no es el acuerdo: no se llama así
+        # (el operador, 2026-10-26).
+        assert grupos.groups[2].kind != "RECONOCIMIENTO DE DEUDA Y ACUERDO DE PAGO"
+        assert del_acuerdo == set()
+
+    def test_sin_reconocimiento_ningun_documento_se_llama_acuerdo(self):
+        """1001381/UPD2437831: pagaré, carta de instrucciones y cédula, sin
+        reconocimiento de deuda ni Habeas Data."""
+        textos = {1: PAGARE, 2: CARTA, 3: CARTA}
+        grupos, _, del_acuerdo = unir_el_acuerdo_de_pago(_grupos([1], [2], [3]), textos)
+        assert [g.page_numbers for g in grupos.groups] == [[1, 2, 3]]
+        assert grupos.groups[0].kind != "RECONOCIMIENTO DE DEUDA Y ACUERDO DE PAGO"
+        assert del_acuerdo == set()
 
     def test_lo_que_abre_corta(self):
         textos = {1: HABEAS, 2: PAGARE, 3: RECONOCIMIENTO}

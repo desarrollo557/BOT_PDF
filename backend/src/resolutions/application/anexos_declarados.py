@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from ..domain.anexos_declarados import (
     HOJA_MUDA,
@@ -726,15 +726,25 @@ def unir_el_acuerdo_de_pago(
         if len(racha) == 1 and not reconocimiento:
             salida.append(racha[0])
         else:
+            # Sólo es el acuerdo si trae el reconocimiento de deuda (lo dictó el
+            # operador el 2026-10-26: «para que sea nombrado reconocimiento de
+            # deuda, debe haber el documento»). Sin él, los pagarés con sus
+            # cartas son un documento, pero se llaman por lo que son.
             primero = racha[0]
             paginas = [p for g in racha for p in g.page_numbers]
             propios = [p for g in racha for p in anexos.pop(g.code.value, [])]
             salida.append(
-                PageGroup(code=primero.code, page_numbers=paginas, title=primero.title, kind=ACUERDO_DE_PAGO)
+                PageGroup(
+                    code=primero.code,
+                    page_numbers=paginas,
+                    title=primero.title,
+                    kind=ACUERDO_DE_PAGO if reconocimiento else None,
+                )
             )
             if propios:
                 anexos[primero.code.value] = propios
-        del_acuerdo.update(p for g in racha for p in g.page_numbers)
+        if reconocimiento:
+            del_acuerdo.update(p for g in racha for p in g.page_numbers)
         racha.clear()
 
     for grupo in grupos.groups:
@@ -868,8 +878,8 @@ def unir_el_acuerdo_de_pago(
             if 0 <= otro < len(salida) and salida[otro].page_numbers[0] not in cruzan:
                 j, con_el_siguiente = otro, otro == i + 1
             else:
-                salida[i] = replace(suelta, kind=ACUERDO_DE_PAGO)
-                del_acuerdo.update(suelta.page_numbers)
+                # Sin reconocimiento no es el acuerdo: va solo y se llama
+                # por lo que es, «PAGARE» (1000186 págs. 4-7).
                 i += 1
                 continue
         destino = salida[j]
