@@ -46,6 +46,7 @@ async def enqueue(
     agrupar: str | None = None,
     territorial: str | None = None,
     paralelo: str | None = None,
+    acta: str | None = None,
     x_operator: str | None = Header(default=None),
 ) -> dict[str, object]:
     if not (file.filename or "").lower().endswith(".pdf"):
@@ -64,6 +65,7 @@ async def enqueue(
     _require_identity_reader(tipo_choice, lectura_choice)
     corte_choice = _corte_choice(corte)
     agrupar_choice = _agrupar_choice(agrupar)
+    acta_choice = _acta(acta)
     a_la_vez = _paralelo(ctx, paralelo)
     lote = ctx.registry.get_batch(batch_id) if batch_id else None
     if batch_id and lote is None:
@@ -95,6 +97,7 @@ async def enqueue(
         corte=str(corte_choice),
         agrupar=str(agrupar_choice),
         territorial=_territorial(territorial),
+        acta=acta_choice,
         # El lote con su nombre, para que el Archivo lo muestre como una sola
         # tarjeta con sus documentos dentro.
         origen={"id": lote.id, "nombre": lote.name, "tipo": "lote"} if lote else None,
@@ -118,6 +121,7 @@ async def enqueue(
         "corte": job.corte,
         "agrupar": job.agrupar,
         "territorial": job.territorial,
+        "acta": job.acta,
         "bytes": written,
     }
 
@@ -391,6 +395,27 @@ def _territorial(raw: object) -> str | None:
     """
     texto = " ".join(str(raw or "").split()).upper()[:MAX_OPERATOR]
     return texto or None
+
+def _acta(raw: object) -> str | None:
+    """El número de acta de transferencia del inventario de Kingspan, o ``None``.
+
+    Lo elige el operador en el asistente entre las actas del inventario
+    oficial. Uno que no esté en la lista es un 422 antes de recibir el archivo:
+    escribirlo en el inventario sería anotar una transferencia que no existe.
+    """
+    from ...domain.kingspan import ACTAS_DE_TRANSFERENCIA
+
+    texto = str(raw or "").strip()
+    if not texto:
+        return None
+    if texto not in ACTAS_DE_TRANSFERENCIA:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Acta de transferencia desconocida: {texto}. "
+            f"Las válidas son {', '.join(ACTAS_DE_TRANSFERENCIA)}",
+        )
+    return texto
+
 
 def _operator(raw: str | None) -> str | None:
     """Accept a name from the browser, trimmed and bounded.

@@ -230,7 +230,8 @@ export async function uploadDocument(
   agrupar: AgruparChoice = 'documento',
   territorial = '',
   paralelo = 0,
-  tipoDocumento?: string
+  tipoDocumento?: string,
+  acta?: string
 ): Promise<{ id: string }> {
   const body = new FormData();
   body.append('file', file);
@@ -265,6 +266,9 @@ export async function uploadDocument(
   if (tipoDocumento) query.set('tipo_documento', tipoDocumento);
   // Y cuántos archivos del lote a la vez. Cero es el automático y no viaja.
   if (paralelo > 0) query.set('paralelo', String(paralelo));
+  // Y el acta de transferencia del inventario de Kingspan. Sólo viaja si se
+  // eligió; el servicio rechaza una que no sea de su lista.
+  if (acta) query.set('acta', acta);
   const suffix = query.toString();
 
   const url = suffix ? `${BASE}/jobs?${suffix}` : `${BASE}/jobs`;
@@ -750,6 +754,8 @@ export function startFolderRun(options: {
   territorial?: string;
   /** Y la plantilla del inventario: Afinia, Kingspan o automática. */
   tipoDocumento?: string;
+  /** Y el acta de transferencia del inventario de Kingspan. */
+  acta?: string;
   /** Y qué clase de documento trae, cuando el operador lo sabe. */
   tipo?: TipoPedido;
   /** Y si retoma una entrega anterior (sólo libros de diplomas). */

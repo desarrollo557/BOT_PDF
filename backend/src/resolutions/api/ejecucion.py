@@ -150,6 +150,9 @@ async def _correr(ctx: Contexto, job: Job, hilos: int | None) -> None:
         "agrupar": job.agrupar,
         # Y la territorial que va al encabezado del Índice Electrónico.
         "territorial": job.territorial,
+        # Y el acta de transferencia del inventario de Kingspan, que tampoco
+        # está en el papel.
+        "acta": job.acta,
         # Y qué dijo el operador que es. Va con el trabajo porque decide a qué
         # habilidad entra, que es la decisión más consecuente de todas.
         "tipo": job.tipo,

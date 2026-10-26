@@ -74,7 +74,11 @@ async def start_folder_run(
     # o mixto. Viaja igual que en una subida, para que elegir Kingspan en una
     # carpeta no se quede en nada.
     tipo_documento_choice = _tipo_documento_choice(payload.get("tipo_documento"))
-    from .trabajos import _paralelo
+    from .trabajos import _acta, _paralelo
+
+    # El acta de transferencia del inventario de Kingspan, la misma para toda
+    # la carpeta.
+    acta_choice = _acta(payload.get("acta"))
 
     a_la_vez = _paralelo(ctx, payload.get("paralelo"))
 
@@ -93,6 +97,7 @@ async def start_folder_run(
             territorial=_territorial(payload.get("territorial")),
             tipo=str(tipo_choice),
             tipo_documento=tipo_documento_choice,
+            acta=acta_choice,
             # Retomar una entrega anterior: procesar sólo lo que falta en el
             # destino, o sólo revisarlo. Sólo para libros de diplomas.
             retomar=str(payload.get("retomar") or "no"),

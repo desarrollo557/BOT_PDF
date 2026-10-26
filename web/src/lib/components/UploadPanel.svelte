@@ -5,6 +5,7 @@
   import Icono from '$lib/components/Icono.svelte';
   import UploadSummary from '$lib/components/UploadSummary.svelte';
   import Callout from '$lib/components/wizard/Callout.svelte';
+  import PasoActa from '$lib/components/wizard/PasoActa.svelte';
   import PasoAgrupar from '$lib/components/wizard/PasoAgrupar.svelte';
   import PasoCorte from '$lib/components/wizard/PasoCorte.svelte';
   import PasoLectura from '$lib/components/wizard/PasoLectura.svelte';
@@ -38,7 +39,8 @@
       agrupar: AgruparChoice,
       territorial: string,
       paralelo: number,
-      tipoDocumento?: string
+      tipoDocumento?: string,
+      acta?: string
     ) => void;
     disabled?: boolean;
   }
@@ -61,6 +63,8 @@
   let agrupar = $state<AgruparChoice>('documento');
   /** La territorial de la caja (municipio), para el encabezado del Índice Electrónico. */
   let territorial = $state('');
+  /** El acta de transferencia del inventario de Kingspan, elegida en su paso. */
+  let acta = $state('');
   /** Cuántos archivos a la vez. Cero es el automático del servicio. */
   let paralelo = $state(0);
   let health = $state<Health | null>(null);
@@ -165,6 +169,7 @@
     | 'tipo'
     | 'lectura'
     | 'resultado'
+    | 'acta'
     | 'corte'
     | 'agrupar'
     | 'oracle'
@@ -174,6 +179,7 @@
     tipo: 'Tipo',
     lectura: 'Lectura',
     resultado: 'Resultado',
+    acta: 'Acta',
     corte: 'Corte',
     agrupar: 'Agrupar',
     oracle: 'Modelo IA',
@@ -191,6 +197,9 @@
     // de grado entera salió sin folios por eso.
     'lectura',
     ...(eligeResultado ? (['resultado'] as const) : []),
+    // El inventario de Kingspan pide el acta de transferencia: no está en el
+    // papel y va a todas las filas del FUID.
+    ...(habilidad.actasDeTransferencia ? (['acta'] as const) : []),
     ...(habilidad.cortes ? (['corte'] as const) : []),
     ...(eligeAgrupar ? (['agrupar'] as const) : []),
     // El modelo de las costuras dudosas es una IA de pago: sólo se pregunta
@@ -213,7 +222,9 @@
         ? blockedLectura
         : pasoId === 'oracle'
           ? blocked
-          : null
+          : pasoId === 'acta' && !acta
+            ? 'Elige el acta de transferencia para seguir.'
+            : null
   );
 
   const reduceMotion =
@@ -243,15 +254,19 @@
       notice = blockedLectura;
       return;
     }
+    if (habilidad.actasDeTransferencia && !acta) {
+      notice = 'Elige el acta de transferencia antes de procesar.';
+      return;
+    }
     if (mode === 'batch') {
-      onfiles(files, true, task, oracle, lectura, tipo, corteElegido, agruparElegido, territorial, paralelo, tipoDocumento);
+      onfiles(files, true, task, oracle, lectura, tipo, corteElegido, agruparElegido, territorial, paralelo, tipoDocumento, acta || undefined);
       return;
     }
     if (files.length > SINGLE_LIMIT) {
       notice = `La carga individual admite ${SINGLE_LIMIT} documentos. Cambie a carga por lote para subir los ${files.length}.`;
       return;
     }
-    onfiles(files, false, task, oracle, lectura, tipo, corteElegido, agruparElegido, territorial, paralelo, tipoDocumento);
+    onfiles(files, false, task, oracle, lectura, tipo, corteElegido, agruparElegido, territorial, paralelo, tipoDocumento, acta || undefined);
   }
 
   /**
@@ -268,6 +283,10 @@
     }
     if (blockedLectura) {
       notice = blockedLectura;
+      return;
+    }
+    if (habilidad.actasDeTransferencia && !acta) {
+      notice = 'Elige el acta de transferencia antes de procesar.';
       return;
     }
     if (mode !== 'batch' && files.length > SINGLE_LIMIT) {
@@ -330,6 +349,7 @@
     corte = cortes[0]?.id ?? 'pagina';
     agrupar = (habilidad.agrupar?.opciones ?? []).find((o) => !o.proximamente)?.id ?? 'documento';
     territorial = '';
+    acta = '';
     oracle = 'auto';
     resultado = 'split';
     notice = null;
@@ -453,6 +473,16 @@
             numero={pasoActual}
           />
 
+        {:else if pasoId === 'acta'}
+          <PasoActa
+            actas={habilidad.actasDeTransferencia ?? []}
+            {acta}
+            onElegir={(valor) => {
+              acta = valor;
+              notice = null;
+            }}
+            numero={pasoActual}
+          />
         {:else if pasoId === 'corte'}
           <PasoCorte
             {cortes}
@@ -486,6 +516,7 @@
               corte={corteElegido}
               agrupar={agruparElegido}
               {tipoDocumento}
+              acta={acta || undefined}
               {disabled}
               onfiles={prepararArchivos}
               {blocked}

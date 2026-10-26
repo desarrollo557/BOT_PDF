@@ -344,6 +344,10 @@ class Job:
     #: escribe al cargarla: va al encabezado del Índice Electrónico y no está en
     #: el papel. Vacía en las demás rutas, que no la usan.
     territorial: str | None = None
+    #: El número de acta de transferencia que el operador eligió para el
+    #: inventario de Kingspan («092»). No está en el papel; va a su columna del
+    #: FUID. Vacío en las demás rutas.
+    acta: str | None = None
     #: Qué clase de documento declaró el operador estar cargando, o "auto" para
     #: que lo averigüe el sistema. Se guarda con el trabajo porque cambia a qué
     #: habilidad fue, y el informe tiene que poder decir por qué se cortó como
@@ -405,6 +409,7 @@ class Job:
             "corte": self.corte,
             "agrupar": self.agrupar,
             "territorial": self.territorial,
+            "acta": self.acta,
             "tipo": self.tipo,
             "tipo_documento": self.tipo_documento,
             "origen": self.origen,
@@ -522,6 +527,7 @@ class JobRegistry:
         territorial: str | None = None,
         paginas: list[int] | None = None,
         paralelo: int | None = None,
+        acta: str | None = None,
     ) -> Job:
         job = Job(
             id=uuid4().hex,
@@ -537,6 +543,7 @@ class JobRegistry:
             corte=corte,
             agrupar=agrupar,
             territorial=territorial,
+            acta=acta,
             tipo=tipo,
             tipo_documento=tipo_documento,
             destination=destination,

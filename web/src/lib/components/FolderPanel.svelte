@@ -47,6 +47,8 @@
     agrupar?: AgruparChoice;
     /** El tipo de documento de la caja (Afinia / Kingspan / mixto). */
     tipoDocumento?: string;
+    /** El acta de transferencia del inventario de Kingspan, para toda la carpeta. */
+    acta?: string;
     /**
      * Y qué clase de documento trae la carpeta. Una estantería suele ser
      * homogénea -- veinte libros de diplomas --, así que declararlo una vez
@@ -69,6 +71,7 @@
     corte = 'pagina',
     agrupar = 'documento',
     tipoDocumento,
+    acta,
     habilidadId = 'auto',
     onusarHabilidad,
     paralelo
@@ -274,6 +277,7 @@
         corte,
         agrupar,
         ...(tipoDocumento ? { tipoDocumento } : {}),
+        ...(acta ? { acta } : {}),
         ...(modoRetomar !== 'no' ? { retomar: modoRetomar } : {}),
         ...(paralelo ? { paralelo } : {})
       });

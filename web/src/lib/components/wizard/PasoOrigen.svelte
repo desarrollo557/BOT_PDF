@@ -26,6 +26,8 @@
     agrupar: AgruparChoice;
     /** El tipo de documento de la caja (Afinia / Kingspan / mixto). */
     tipoDocumento?: string;
+    /** El acta de transferencia del inventario de Kingspan, para la carpeta. */
+    acta?: string;
     disabled?: boolean;
     onfiles: (
       files: File[],
@@ -63,6 +65,7 @@
     corte,
     agrupar,
     tipoDocumento,
+    acta,
     disabled = false,
     onfiles,
     blocked,
@@ -175,6 +178,7 @@
         {corte}
         {agrupar}
         {tipoDocumento}
+        {acta}
         {habilidadId}
         {onusarHabilidad}
         paralelo={paralelo > 0 ? paralelo : undefined}

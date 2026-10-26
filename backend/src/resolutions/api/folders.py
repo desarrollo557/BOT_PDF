@@ -164,6 +164,9 @@ class FolderRun:
     #: La territorial de las cajas de correspondencia de esta carpeta, para el
     #: encabezado de su Índice Electrónico. Se copia a cada archivo que entre.
     territorial: str | None = None
+    #: El acta de transferencia del inventario de Kingspan, que el operador
+    #: eligió para la carpeta. Se copia a cada archivo que entre.
+    acta: str | None = None
     #: Y qué clase de documento trae esta carpeta, cuando el operador lo sabe.
     #: Una carpeta suele ser homogénea -- una estantería de libros de diplomas
     #: --, así que declararlo una vez vale para todos sus archivos.
@@ -359,6 +362,7 @@ class FolderRun:
             "corte": self.corte,
             "agrupar": self.agrupar,
             "territorial": self.territorial,
+            "acta": self.acta,
             "tipo": self.tipo,
             "tipo_documento": self.tipo_documento,
             "retomar": self.retomar,
@@ -621,6 +625,7 @@ class FolderRunner:
         tipo_documento: str | None = None,
         retomar: str = "no",
         paralelo: int | None = None,
+        acta: str | None = None,
     ) -> FolderRun:
         try:
             modo = Retomar.parse(retomar)
@@ -657,6 +662,7 @@ class FolderRunner:
             corte=corte,
             agrupar=agrupar,
             territorial=territorial,
+            acta=acta,
             tipo=tipo,
             tipo_documento=tipo_documento,
             retomar=str(modo),
@@ -1410,6 +1416,7 @@ class FolderRunner:
             corte=run.corte,
             agrupar=run.agrupar,
             territorial=run.territorial,
+            acta=run.acta,
             tipo=run.tipo,
             tipo_documento=run.tipo_documento,
             # Adónde irá lo que produzca. Se calcula antes de procesarlo, con
@@ -2130,6 +2137,23 @@ class FolderRunner:
             except OSError as error:
                 logger.warning("no se pudo entregar el índice de %s: %s", job.filename, error)
                 entrega.fallos.append(f"el índice: {explicar_fallo(error)}")
+        elif job.tipo_documento == "kingspan":
+            # El inventario de Kingspan es el FUID oficial de la UPD y va en
+            # lugar de la planilla, como el Índice Electrónico de una caja de
+            # correspondencia. Sin esto la corrida sólo copiaba los PDF: el FUID
+            # se quedaba en las salidas del servicio y en el destino aparecía
+            # una planilla genérica en su lugar.
+            from .worker.kingspan import INVENTORY_SUFFIX as INVENTARIO_KINGSPAN
+
+            for hoja in sorted(produced.rglob(f"*{INVENTARIO_KINGSPAN}")):
+                try:
+                    destino_del_fuid = unique_path(carpeta, hoja.name)
+                    _copiar(hoja, destino_del_fuid)
+                    if entrega.archivos is not None:
+                        entrega.archivos.append(destino_del_fuid)
+                except OSError as error:
+                    logger.warning("no se pudo entregar el inventario de %s: %s", job.filename, error)
+                    entrega.fallos.append(f"el inventario: {explicar_fallo(error)}")
         else:
             self._write_sheet(run, job, carpeta)
             # Y la que quedó junto al trabajo, ahora que se sabe dónde acabaron

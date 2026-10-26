@@ -116,6 +116,12 @@ export interface Habilidad {
    */
   agrupar?: { pregunta: string; opciones: Agrupar[] };
   /**
+   * Los números de acta de transferencia entre los que elige el operador antes
+   * de procesar. Sólo el inventario de Kingspan lo pide: el acta no está en el
+   * papel y va a su columna del FUID. El servicio rechaza cualquier otra.
+   */
+  actasDeTransferencia?: string[];
+  /**
    * Las acciones que admite, cuando no son las de siempre.
    *
    * Con `task: null` el operador elige qué quiere de vuelta. Las tres de
@@ -272,6 +278,9 @@ export const HABILIDADES: Habilidad[] = [
       'No hace falta IA: el número y la fecha están impresos y los lee el OCR local, que relee el encabezado cuando el texto del escaneo lo perdió.',
     tipo: 'auto',
     task: null,
+    // Las actas del inventario oficial de Kingspan. Las mismas que valida el
+    // servicio (ACTAS_DE_TRANSFERENCIA en domain/kingspan.py).
+    actasDeTransferencia: ['012', '015', '070', '088', '092', '094'],
     acciones: [
       {
         id: 'inventory',

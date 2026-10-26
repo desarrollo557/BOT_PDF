@@ -229,6 +229,8 @@ class JobStore {
     agrupar?: AgruparChoice;
     /** Y la plantilla del inventario: índice electrónico, Kingspan o automática. */
     tipoDocumento?: string;
+    /** Y el acta de transferencia del inventario de Kingspan. */
+    acta?: string;
     /** Y qué clase de documento trae, cuando el operador lo sabe. */
     tipo?: TipoPedido;
     /** Y si retoma una entrega anterior (sólo libros de diplomas). */

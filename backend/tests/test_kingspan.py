@@ -24,7 +24,6 @@ from resolutions.domain.kingspan import (
     Documento,
     FilaKingspan,
     documento_de,
-    entidad_productora,
     filas_de,
     leer_numero,
 )
@@ -239,13 +238,49 @@ class TestSeConfirmaEnLaImagen:
         assert notas == {}
 
 
-class TestEntidadProductora:
-    def test_por_el_nit_del_encabezado(self):
-        assert entidad_productora([NOTA_14368]) == "PANELMET SAS"
-        assert entidad_productora(["KINGSPAN COMERCIAL SAS\nNIT 901090638-1"]) == "KINGSPAN SAS"
+class TestEntidadesYActa:
+    """Las entidades van fijas y el acta la elige el operador (2026-10-26)."""
 
-    def test_sin_nit_conocido(self):
-        assert entidad_productora(["sin encabezado"]) == "N/A"
+    def _celdas(self, **extra):
+        return celdas_kingspan(
+            FilaKingspan(asunto="NOTAS INTERNAS"),
+            orden=1,
+            caja="N/A",
+            upd="N/A",
+            settings=extra.pop("settings", {}),
+            inventariado=date(2026, 10, 26),
+            **extra,
+        )
+
+    def test_remitente_y_productora_siempre_kingspan(self):
+        celdas = self._celdas(
+            settings={"fuid_entidad_remitente": "OTRA", "fuid_entidad_productora": "OTRA"}
+        )
+        assert (celdas[2], celdas[3]) == ("KINGSPAN SAS", "KINGSPAN SAS")
+
+    def test_el_acta_elegida_va_en_su_columna(self):
+        assert self._celdas(acta="092")[25] == "092"
+
+    def test_sin_acta_va_n_a(self):
+        assert self._celdas()[25] == "N/A"
+
+    def test_el_servicio_rechaza_un_acta_que_no_existe(self):
+        import pytest
+        from fastapi import HTTPException
+
+        from resolutions.api.routers.trabajos import _acta
+
+        assert _acta("092") == "092"
+        assert _acta("") is None
+        assert _acta(None) is None
+        with pytest.raises(HTTPException) as error:
+            _acta("999")
+        assert error.value.status_code == 422
+
+    def test_las_actas_son_las_del_oficial(self):
+        from resolutions.domain.kingspan import ACTAS_DE_TRANSFERENCIA
+
+        assert ACTAS_DE_TRANSFERENCIA == ("012", "015", "070", "088", "092", "094")
 
 
 class TestLaPlanilla:
@@ -264,7 +299,6 @@ class TestLaPlanilla:
             orden=1,
             caja="100C000235",
             upd="UPD3869754",
-            productora="PANELMET SAS",
             settings={},
             inventariado=date(2026, 10, 26),
         )
@@ -292,7 +326,6 @@ class TestLaPlanilla:
             orden=1,
             caja="100C000235",
             upd="UPD3869754",
-            productora="PANELMET SAS",
             settings={},
             inventariado=date(2026, 10, 26),
         )
@@ -310,7 +343,6 @@ class TestLaPlanilla:
             orden=1,
             caja="N/A",
             upd="N/A",
-            productora="PANELMET SAS",
             settings={},
             inventariado=date(2026, 10, 26),
         )
@@ -324,7 +356,6 @@ class TestLaPlanilla:
             orden=1,
             caja="N/A",
             upd="N/A",
-            productora="PANELMET SAS",
             settings={},
             inventariado=date(2026, 10, 26),
         )
@@ -350,7 +381,6 @@ class TestLaPlanilla:
                 orden=1,
                 caja=caja,
                 upd=numero,
-                productora="PANELMET SAS",
                 settings={},
                 inventariado=date(2026, 10, 26),
             )
@@ -383,9 +413,73 @@ class TestLaPlanilla:
             orden=1,
             caja="N/A",
             upd="N/A",
-            productora="PANELMET SAS",
             settings={"fuid_elaborado_por": "JOSE TORRES", "fuid_oficina": "COMERCIAL"},
             inventariado=date(2026, 10, 26),
         )
         assert celdas[5] == "COMERCIAL"
         assert celdas[23] == "JOSE TORRES"
+
+
+class TestEntregaEnCarpeta:
+    """Una corrida de carpeta entrega el FUID de Kingspan junto a la UPD, en
+    lugar de la planilla genérica, y arma con ellos el libro de la carpeta."""
+
+    def test_el_fuid_llega_al_destino_y_al_libro_general(self, tmp_path):
+        from resolutions.adapters.excel_inventory import SUFFIX
+        from resolutions.api.folders import FolderRun, FolderRunner
+        from resolutions.api.jobs import JobRegistry
+        from resolutions.api.settings import Settings
+
+        async def _no_corre(job) -> None:
+            pass
+
+        ajustes = Settings(output_dir=tmp_path / "outputs")
+        registro = JobRegistry()
+        runner = FolderRunner(registro, ajustes, run_job=_no_corre)
+        origen = tmp_path / "origen"
+        run = FolderRun(
+            id="corrida", source=origen, destination=tmp_path / "destino", tipo_documento="kingspan", acta="094"
+        )
+        pdf = origen / "100C000999" / "UPD3869754.pdf"
+        job = registro.create("100C000999/UPD3869754.pdf", pdf, tipo_documento="kingspan", acta="094")
+        celdas = celdas_kingspan(
+            FilaKingspan(asunto="NOTAS INTERNAS", desde="001-NI-00014161", hasta="001-NI-00014368"),
+            orden=1,
+            caja="100C000999",
+            upd="UPD3869754",
+            settings={},
+            inventariado=date(2026, 10, 26),
+            acta="094",
+        )
+        producido = ajustes.output_dir / job.id / f"UPD3869754{INVENTORY_SUFFIX}"
+        escritor().write_cells([celdas], producido)
+        job.report = {"outputs": [str(producido)], "inventory": {"items": []}, "notices": []}
+
+        runner._entregar(run, job, pdf)
+
+        entregados = {
+            ruta.name for ruta in run.destination.rglob("*") if ruta.is_file() and not ruta.name.startswith(".bot-")
+        }
+        assert f"UPD3869754{INVENTORY_SUFFIX}" in entregados
+        assert not any(nombre.endswith(SUFFIX) for nombre in entregados)
+
+        general = inventario_general(run.destination)
+        fila = next(openpyxl.load_workbook(general)[HOJA].iter_rows(min_row=PRIMERA_FILA, values_only=True))
+        assert (fila[10], fila[14], fila[15], fila[25]) == ("001-NI-00014161", "100C000999", "UPD3869754", "094")
+
+    def test_el_general_no_cuenta_lo_apartado_al_rehacer(self, tmp_path):
+        celdas = celdas_kingspan(
+            FilaKingspan(asunto="NOTAS INTERNAS"),
+            orden=1,
+            caja="100C000999",
+            upd="UPD0000001",
+            settings={},
+            inventariado=date(2026, 10, 26),
+        )
+        escritor().write_cells([celdas], tmp_path / "100C000999" / f"UPD0000001{INVENTORY_SUFFIX}")
+        apartado = tmp_path / "100C000999" / "_reemplazados" / "20261026" / f"UPD0000001{INVENTORY_SUFFIX}"
+        escritor().write_cells([celdas], apartado)
+
+        hoja = openpyxl.load_workbook(inventario_general(tmp_path))[HOJA]
+        filas = [f for f in hoja.iter_rows(min_row=PRIMERA_FILA, values_only=True) if f[0] is not None]
+        assert len(filas) == 1

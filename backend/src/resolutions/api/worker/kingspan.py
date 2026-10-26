@@ -10,16 +10,17 @@ PDF, se pide el OCR donde la capa de texto no alcanza y se escribe la planilla.
 
 De dónde sale cada columna:
 
-- ASUNTO, DESDE, HASTA, INICIAL, FINAL y NOTAS, del papel.
+- ASUNTO, DESDE, HASTA, INICIAL y FINAL, del papel.
 - CAJA, de la carpeta de la caja en la ruta («100C000235»); UPD, del nombre del
   archivo («UPD3869754.pdf»).
-- ENTIDAD PRODUCTORA, del NIT de los encabezados.
-- ENTIDAD REMITENTE, OFICINA PRODUCTORA y OBJETO, los fijos del oficial, salvo
-  que los ajustes digan otra cosa.
+- ENTIDAD REMITENTE y ENTIDAD PRODUCTORA, fijas: KINGSPAN SAS.
+- OFICINA PRODUCTORA y OBJETO, los fijos del oficial, salvo que los ajustes
+  digan otra cosa.
+- No. ACTA DE TRANSFERENCIA, la que el operador eligió en el asistente.
 - FECHA DE INVENTARIO, el día en que corre.
-- Lo que el sistema no puede saber -- quién lo elaboró, el acta y la fecha de
-  transferencia, el tomo, los folios -- sale N/A, como en el oficial. No se saca
-  de fechas sueltas del texto: eso sería inventarlo.
+- Lo que el sistema no puede saber -- quién lo elaboró, la fecha de
+  transferencia, el tomo, los folios, las notas -- sale N/A, como en el oficial.
+  No se saca de fechas sueltas del texto: eso sería inventarlo.
 """
 
 from __future__ import annotations
@@ -37,11 +38,12 @@ from ...application.ports import Band
 from ...application.progress import ProgressEvent, Stage
 from ...domain.ficha import fichar
 from ...domain.kingspan import (
+    ACTAS_DE_TRANSFERENCIA,
+    ENTIDAD,
     NO_APLICA,
     Documento,
     FilaKingspan,
     documento_de,
-    entidad_productora,
     filas_de,
 )
 from .taller import Taller
@@ -57,7 +59,6 @@ HOJA = "FUID"
 PRIMERA_FILA = 7
 
 #: Los valores fijos del oficial en todas sus filas recientes.
-ENTIDAD_REMITENTE = "KINGSPAN SAS"
 OFICINA_PRODUCTORA = "CONTABILIDAD"
 OBJETO = "TRANSFERENCIA PRIMARIA"
 
@@ -240,9 +241,9 @@ def celdas_kingspan(
     orden: int,
     caja: str,
     upd: str,
-    productora: str,
     settings: dict,
     inventariado: date,
+    acta: str | None = None,
 ) -> list[object]:
     """Los valores de la fila en las columnas A a AA del formato."""
 
@@ -252,8 +253,8 @@ def celdas_kingspan(
     return [
         orden,                                                   # A  N° ORDEN
         NO_APLICA,                                               # B  CÓDIGO
-        ajuste("fuid_entidad_remitente", ENTIDAD_REMITENTE),     # C  ENTIDAD REMITENTE
-        ajuste("fuid_entidad_productora", productora),           # D  ENTIDAD PRODUCTORA
+        ENTIDAD,                                                 # C  ENTIDAD REMITENTE
+        ENTIDAD,                                                 # D  ENTIDAD PRODUCTORA
         NO_APLICA,                                               # E  UNIDAD ADMINISTRATIVA
         ajuste("fuid_oficina", OFICINA_PRODUCTORA),              # F  OFICINA PRODUCTORA
         ajuste("fuid_objeto", OBJETO),                           # G  OBJETO
@@ -277,7 +278,7 @@ def celdas_kingspan(
         NO_APLICA,                                               # W  NOTAS
         ajuste("fuid_elaborado_por", NO_APLICA),                 # X  ELABORADO POR
         inventariado,                                            # Y  FECHA DE INVENTARIO
-        NO_APLICA,                                               # Z  No. ACTA DE TRANSFERENCIA
+        acta or NO_APLICA,                                       # Z  No. ACTA DE TRANSFERENCIA
         NO_APLICA,                                               # AA FECHA DE TRANSFERENCIA
     ]
 
@@ -362,7 +363,9 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
     # relativa, «100C000235/UPD3869754.pdf», que también trae la caja.
     caja = _caja(taller)
     upd = _upd(Path(taller.name).name)
-    productora = entidad_productora(textos)
+    # La que eligió el operador en el asistente. El servicio ya rechazó una que
+    # no fuera de la lista; si aun así llega otra, no se escribe.
+    acta = payload.get("acta") if payload.get("acta") in ACTAS_DE_TRANSFERENCIA else None
     hoy = date.today()
     celdas = [
         celdas_kingspan(
@@ -370,9 +373,9 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
             orden=orden,
             caja=caja,
             upd=upd,
-            productora=productora,
             settings=taller.settings,
             inventariado=hoy,
+            acta=acta,
         )
         for orden, fila in enumerate(filas, start=1)
     ]
@@ -475,7 +478,12 @@ def inventario_general(destino: Path) -> Path | None:
     así que también cuenta las UPD de una corrida anterior que se retoma.
     """
     filas: list[list[object]] = []
-    for planilla in sorted(Path(destino).rglob(f"*{INVENTORY_SUFFIX}")):
+    raiz = Path(destino)
+    for planilla in sorted(raiz.rglob(f"*{INVENTORY_SUFFIX}")):
+        # Lo apartado al rehacer una entrega (`_reemplazados`) ya no cuenta:
+        # está ahí para no perderlo, no porque siga entregado.
+        if any(parte.startswith("_") for parte in planilla.relative_to(raiz).parts[:-1]):
+            continue
         try:
             filas.extend(_filas_escritas(planilla))
         except Exception:  # noqa: BLE001 - una planilla ilegible no tumba el general

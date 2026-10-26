@@ -253,25 +253,11 @@ def filas_de(documentos: list[Documento]) -> list[FilaKingspan]:
     return filas
 
 
-#: La compañía que produjo el papel, por el NIT de su encabezado. 900447906 es
-#: Kingspan Paneles Aislados, que el oficial sigue llamando por su nombre de
-#: antes; 901090638 es Kingspan Comercial.
-PRODUCTORAS: dict[str, str] = {
-    "900447906": "PANELMET SAS",
-    "901090638": "KINGSPAN SAS",
-}
+#: Las entidades remitente y productora van fijas: lo pidió el operador el
+#: 2026-10-26, «son campos que van quemados». Es la forma con razón social que
+#: más usa el oficial.
+ENTIDAD = "KINGSPAN SAS"
 
-_NIT = re.compile(r"(?<!\d)(9\d{2})[ .,]?(\d{3})[ .,]?(\d{3})(?!\d)")
-
-
-def entidad_productora(paginas: list[str]) -> str:
-    """La entidad productora según el NIT que más se repite en los encabezados."""
-    cuantos: Counter[str] = Counter()
-    for texto in paginas:
-        for hallazgo in _NIT.finditer(texto):
-            nit = "".join(hallazgo.groups())
-            if nit in PRODUCTORAS:
-                cuantos[nit] += 1
-    if not cuantos:
-        return NO_APLICA
-    return PRODUCTORAS[cuantos.most_common(1)[0][0]]
+#: Los números de acta de transferencia que el operador elige en el asistente
+#: antes de procesar. Son los del oficial: las únicas actas que tiene.
+ACTAS_DE_TRANSFERENCIA: tuple[str, ...] = ("012", "015", "070", "088", "092", "094")
