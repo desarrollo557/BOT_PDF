@@ -26,6 +26,7 @@ De dónde sale cada columna:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -33,7 +34,7 @@ from pathlib import Path
 import openpyxl
 
 from ...adapters.fuid_psd001 import FuidPsd001
-from ...application.fuid import caja_de_la_ruta, upd_del_archivo
+from ...application.fuid import upd_del_archivo
 from ...application.ports import Band
 from ...application.progress import ProgressEvent, Stage
 from ...domain.ficha import fichar
@@ -215,13 +216,21 @@ def _sin_numeros(textos: list[str]) -> FilaKingspan:
     )
 
 
-def _caja(taller: Taller) -> str:
-    """La caja que dice la ruta del PDF: la relativa con que llegó, la de entrega o la suya."""
-    for ruta in (taller.name, taller.delivered_to, str(taller.source)):
-        if ruta:
-            caja = caja_de_la_ruta(str(ruta))
-            if caja != NO_APLICA:
-                return caja
+def _caja(taller: Taller, origen: dict | None = None) -> str:
+    """La caja: el nombre de la carpeta donde está el PDF, se llame como se llame.
+
+    Lo dijo el operador el 2026-10-26: «la caja será el nombre de la carpeta en
+    la que se encontrarán los PDF». En una corrida el PDF llega con su ruta
+    desde la carpeta elegida: «100C000235/UPD3869754.pdf» está en la carpeta
+    100C000235. Si llega sin carpeta -- el operador eligió la de la caja y los
+    PDF están sueltos dentro --, la caja es la carpeta elegida. Una subida
+    suelta no viene de ninguna carpeta y sale N/A.
+    """
+    partes = [parte for parte in re.split(r"[\\/]", taller.name or "") if parte.strip()]
+    if len(partes) > 1:
+        return partes[-2].strip()
+    if origen and origen.get("tipo") == "carpeta" and str(origen.get("nombre") or "").strip():
+        return Path(str(origen["nombre"]).strip()).name or str(origen["nombre"]).strip()
     return NO_APLICA
 
 
@@ -361,7 +370,7 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
     # subida se almacena con un nombre generado («C157F939….pdf») y con él la
     # UPD y el Excel salían sin nombre. En una carpeta llega con su ruta
     # relativa, «100C000235/UPD3869754.pdf», que también trae la caja.
-    caja = _caja(taller)
+    caja = _caja(taller, payload.get("origen"))
     upd = _upd(Path(taller.name).name)
     # La que eligió el operador en el asistente. El servicio ya rechazó una que
     # no fuera de la lista; si aun así llega otra, no se escribe.

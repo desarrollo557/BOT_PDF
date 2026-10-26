@@ -194,6 +194,26 @@ class TestCajaYUpd:
         )
         assert _caja(taller) == "100C000235"
 
+    def test_la_caja_es_la_carpeta_se_llame_como_se_llame(self):
+        # «La caja será el nombre de la carpeta en la que se encontrarán los
+        # PDF» (el operador, 2026-10-26): no tiene que parecer un número.
+        from types import SimpleNamespace
+
+        from resolutions.api.worker.kingspan import _caja
+
+        assert _caja(SimpleNamespace(name="CAJA 235 NOTAS\\UPD3869754.pdf")) == "CAJA 235 NOTAS"
+        assert _caja(SimpleNamespace(name="ENTREGA/100C000235/UPD3869754.pdf")) == "100C000235"
+
+    def test_con_los_pdf_sueltos_en_la_carpeta_elegida_la_caja_es_esa(self):
+        from types import SimpleNamespace
+
+        from resolutions.api.worker.kingspan import _caja
+
+        origen = {"tipo": "carpeta", "nombre": "100C000235"}
+        assert _caja(SimpleNamespace(name="UPD3869754.pdf"), origen) == "100C000235"
+        # Un lote no es una carpeta: no dice en qué caja está el papel.
+        assert _caja(SimpleNamespace(name="UPD3869754.pdf"), {"tipo": "lote", "nombre": "Lote 1"}) == "N/A"
+
 
 class TestSeConfirmaEnLaImagen:
     """La capa de texto del escaneo puede cambiar una cifra: la p.107 de la
