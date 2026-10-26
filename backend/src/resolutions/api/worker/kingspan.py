@@ -155,6 +155,16 @@ def _sin_numeros(textos: list[str]) -> FilaKingspan:
     )
 
 
+def _caja(taller: Taller) -> str:
+    """La caja que dice la ruta del PDF: la relativa con que llegó, la de entrega o la suya."""
+    for ruta in (taller.name, taller.delivered_to, str(taller.source)):
+        if ruta:
+            caja = caja_de_la_ruta(str(ruta))
+            if caja != NO_APLICA:
+                return caja
+    return NO_APLICA
+
+
 def _upd(nombre: str) -> str:
     """El UPD como lo escribe el oficial: «UPD3869754»."""
     numero = upd_del_archivo(nombre)
@@ -269,9 +279,12 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
             detail=f"escribiendo el inventario ({len(filas)} fila(s))",
         )
     )
-    ruta = str(taller.source)
-    caja = caja_de_la_ruta(ruta)
-    upd = _upd(Path(ruta).name)
+    # El nombre con que llegó el trabajo, no el del archivo guardado: una
+    # subida se almacena con un nombre generado («C157F939….pdf») y con él la
+    # UPD y el Excel salían sin nombre. En una carpeta llega con su ruta
+    # relativa, «100C000235/UPD3869754.pdf», que también trae la caja.
+    caja = _caja(taller)
+    upd = _upd(Path(taller.name).name)
     productora = entidad_productora(textos)
     hoy = date.today()
     celdas = [
@@ -286,7 +299,7 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
         )
         for orden, fila in enumerate(filas, start=1)
     ]
-    destino = taller.destination / f"{Path(taller.source).stem.upper()}{INVENTORY_SUFFIX}"
+    destino = taller.destination / f"{Path(taller.name).stem.upper()}{INVENTORY_SUFFIX}"
     inventario = escritor().write_cells(celdas, destino)
 
     outputs: list[str] = [str(inventario)]

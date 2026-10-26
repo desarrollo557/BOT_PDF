@@ -201,6 +201,10 @@ class FuidPsd001:
         celdas: list[object],
         estilos: list[dict],
     ) -> None:
+        # Una fila escrita se ve. La plantilla de Kingspan salió de un oficial
+        # con un filtro que ocultaba 1.436 filas, la 7 entre ellas, y el
+        # inventario llegaba con su única fila escondida: parecía vacío.
+        hoja.row_dimensions[numero].hidden = False
         for indice, valor in enumerate(celdas[:COLUMNAS]):
             celda = hoja.cell(row=numero, column=indice + 1, value=valor)
             estilo = estilos[indice]

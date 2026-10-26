@@ -169,6 +169,33 @@ class TestUnaFilaPorUpd:
         assert filas_de([]) == []
 
 
+class TestCajaYUpd:
+    """Del nombre con que llegó el trabajo, no del archivo que guardó el servicio."""
+
+    def test_una_subida_suelta(self):
+        from types import SimpleNamespace
+
+        from resolutions.api.worker.kingspan import _caja, _upd
+
+        taller = SimpleNamespace(
+            name="UPD3869754.pdf",
+            delivered_to=None,
+            source="/data/uploads/C157F939EEE64BDF8D21A5249B58EC6C.pdf",
+        )
+        assert _upd(taller.name) == "UPD3869754"
+        assert _caja(taller) == "N/A"
+
+    def test_una_carpeta_trae_la_caja_en_la_ruta(self):
+        from types import SimpleNamespace
+
+        from resolutions.api.worker.kingspan import _caja
+
+        taller = SimpleNamespace(
+            name="100C000235/UPD3869754.pdf", delivered_to=None, source="/tmp/copia.pdf"
+        )
+        assert _caja(taller) == "100C000235"
+
+
 class TestEntidadProductora:
     def test_por_el_nit_del_encabezado(self):
         assert entidad_productora([NOTA_14368]) == "PANELMET SAS"
@@ -212,6 +239,32 @@ class TestLaPlanilla:
         assert fila7["W"] == "N/A"
         assert fila7["AA"] == "N/A"
         assert hoja["M7"].number_format == "DD/MM/YYYY"
+
+    def test_la_fila_escrita_se_ve(self, tmp_path):
+        # El oficial traía un filtro que ocultaba 1.436 filas, la 7 entre
+        # ellas: el inventario llegaba con su fila escondida y parecía vacío.
+        celdas = celdas_kingspan(
+            FilaKingspan(asunto="NOTAS INTERNAS"),
+            orden=1,
+            caja="N/A",
+            upd="N/A",
+            productora="PANELMET SAS",
+            settings={},
+            inventariado=date(2026, 10, 26),
+        )
+        destino = escritor().write_cells([celdas, celdas], tmp_path / "inventario.xlsx")
+        hoja = openpyxl.load_workbook(destino)[HOJA]
+        assert not hoja.row_dimensions[7].hidden
+        assert not hoja.row_dimensions[8].hidden
+        assert hoja.auto_filter.ref is None
+
+    def test_la_plantilla_no_trae_filas_ocultas_ni_filtro(self):
+        from resolutions.api.worker.kingspan import PLANTILLA
+
+        hoja = openpyxl.load_workbook(PLANTILLA)[HOJA]
+        assert not [n for n, d in hoja.row_dimensions.items() if d.hidden]
+        assert hoja.auto_filter.ref is None
+        assert hoja.sheet_view.selection[0].activeCell == "A7"
 
     def test_el_general_de_la_carpeta_ordena_por_caja_y_reinicia_el_orden(self, tmp_path):
         def upd(caja, numero, desde):
