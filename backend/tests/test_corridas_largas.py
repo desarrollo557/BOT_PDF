@@ -1060,6 +1060,44 @@ class TestLaConstanciaSoloListaLoDelBot:
         assert verificacion.vigencia is Vigencia.VIGENTE, verificacion.motivo
 
 
+class TestLosGeneralesNoParanLasEntregas:
+    def test_buscar_los_fuid_en_el_disco_va_fuera_del_cerrojo(self, ajustes, tmp_path, monkeypatch):
+        """Con cientos de libros, recorrer el destino cada 45 s paraba todas las entregas a la vez."""
+        from resolutions.api import indices, retomar
+
+        run = FolderRun(id="r", source=tmp_path / "origen", destination=tmp_path / "destino")
+        (tmp_path / "destino" / "L1").mkdir(parents=True)
+        run.carpetas_con_fuid["L1"] = tmp_path / "destino" / "L1"
+        motor, _ = _motor(ajustes, JobRegistry())
+        con_el_cerrojo: list[bool] = []
+
+        def mirar(carpeta):
+            # Desde otro hilo, como una entrega: el cerrojo es reentrante y
+            # desde este mismo hilo se dejaría tomar aunque estuviera tomado.
+            resultado: list[bool] = []
+
+            def otra_entrega():
+                libre = run.cerrojo.acquire(blocking=False)
+                if libre:
+                    run.cerrojo.release()
+                resultado.append(libre)
+
+            hilo = threading.Thread(target=otra_entrega)
+            hilo.start()
+            hilo.join()
+            con_el_cerrojo.append(not resultado[0])
+            return None
+
+        monkeypatch.setattr(retomar, "fuid_del_libro", mirar)
+        monkeypatch.setattr(indices, "inventario_de_procesos_de", lambda *a, **k: None)
+        monkeypatch.setattr(indices, "fuid_general_de", lambda *a, **k: None)
+        monkeypatch.setattr(motor, "_escribir_el_analisis", lambda *a, **k: None)
+
+        motor._escribir_generales(run)
+
+        assert con_el_cerrojo == [False]
+
+
 class TestUnFalloNoTumbaLaCarpeta:
     """Lo pidió el operador: que si algo falla, lo pare, lo anote, se acomode y lo reintente."""
 

@@ -1864,9 +1864,12 @@ class FolderRunner:
         with run.cerrojo:
             filas = list(run.procesos.values())
             indices = sorted(run.indices.items())
-            fuids = self._fuids_del_destino(run)
+            carpetas_con_fuid = self._carpetas_con_fuid(run)
             analisis = self._filas_del_analisis(run)
             avisos = list(run.avisos)
+        # Buscar cada FUID en el disco va fuera del cerrojo: con cientos de
+        # libros, recorrer el destino cada 45 s paraba todas las entregas.
+        fuids = self._fuids_en(carpetas_con_fuid)
         self._escribir_general(
             run,
             NOMBRE_DEL_INVENTARIO_DE_PROCESOS,
@@ -1997,18 +2000,25 @@ class FolderRunner:
             )
         return filas
 
-    def _fuids_del_destino(self, run: FolderRun) -> list[tuple[Path, str]]:
-        """Los FUID de los libros de diplomas de esta corrida, tal como están en el destino.
-
-        Del destino y no de los trabajos: al retomar, los libros que ya estaban
-        completos no se procesan y su FUID sólo está ahí, y uno retomado a
-        medias tiene ahí el suyo ya sumado a lo anterior.
-        """
-        from .retomar import fuid_del_libro
-
+    @staticmethod
+    def _carpetas_con_fuid(run: FolderRun) -> dict[str, Path]:
+        """Las carpetas del destino con un libro de diplomas de esta corrida. Sólo memoria."""
         carpetas: dict[str, Path] = dict(run.carpetas_con_fuid)
         for control in run.controles.values():
             carpetas.setdefault(control.carpeta, run.destination / control.carpeta)
+        return carpetas
+
+    @staticmethod
+    def _fuids_en(carpetas: dict[str, Path]) -> list[tuple[Path, str]]:
+        """Los FUID de esas carpetas, tal como están en el destino.
+
+        Del destino y no de los trabajos: al retomar, los libros que ya estaban
+        completos no se procesan y su FUID sólo está ahí, y uno retomado a
+        medias tiene ahí el suyo ya sumado a lo anterior. Mira el disco: se
+        llama sin el cerrojo de la corrida.
+        """
+        from .retomar import fuid_del_libro
+
         planillas = []
         for relativa in sorted(carpetas, key=str.lower):
             fuid = fuid_del_libro(carpetas[relativa])
