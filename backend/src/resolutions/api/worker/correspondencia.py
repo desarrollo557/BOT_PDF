@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Sequence
+from pathlib import Path
 
 from ...application.progress import ProgressEvent, Stage
 from .planillas import _escribir_indice
@@ -213,7 +214,22 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     ``avisos`` son las advertencias que el despachador ya reunió sobre la ruta
     elegida -- que el papel dice ser un legajo de resoluciones, por ejemplo --
     y que van al informe además de al progreso.
+
+    El PDF unido de un origen que es una carpeta se borra al terminar, salga
+    bien o mal: se dejaba en el temporal del sistema, uno por trabajo.
     """
+    import contextlib
+
+    temporales: list[Path] = []
+    try:
+        return _segmentar(payload, task, avisos=avisos, temporales=temporales)
+    finally:
+        for ruta in temporales:
+            with contextlib.suppress(OSError):
+                ruta.unlink(missing_ok=True)
+
+
+def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: list[Path]) -> dict:
     from dataclasses import replace
 
     from ...adapters.casillas_de_la_guia import fecha_de_la_guia
@@ -301,7 +317,8 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         # Unir todos los PDFs en uno temporal
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
             tmp_path = Path(tmp.name)
-        
+        temporales.append(tmp_path)
+
         merged = fitz.open()
         for pdf_file in pdf_files:
             doc = fitz.open(pdf_file)

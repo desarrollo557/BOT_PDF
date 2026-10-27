@@ -537,7 +537,7 @@ def validate_folders(source: str, destination: str) -> tuple[Path, Path]:
     try:
         target.mkdir(parents=True, exist_ok=True)
     except OSError as error:
-        raise FolderError(f"No se pudo crear la carpeta de destino: {error}") from None
+        raise FolderError(f"No se pudo crear la carpeta de destino: {explicar_fallo(error)}") from None
     target = target.resolve()
 
     if target == origin:

@@ -16,6 +16,7 @@ from ...adapters.indice_electronico import NOMBRE_DEL_INDICE
 from ...application.task import TaskKind
 from .. import native_picker
 from ..contexto import Ctx
+from ..errores import explicar_fallo
 from ..folders import FolderError, SourceDisposition, clean_path
 from ..indices import carpeta_del_lote, libro_de_indices
 from ..rutas_del_equipo import al_operador, al_servicio, es_una_raiz, raices, red_abierta
@@ -323,7 +324,7 @@ async def browse(ctx: Ctx, path: str | None = None) -> dict[str, object]:
             status_code=403, detail="Sin permiso para leer esa carpeta"
         ) from None
     except OSError as error:
-        raise HTTPException(status_code=422, detail=f"No se pudo leer: {error}") from None
+        raise HTTPException(status_code=422, detail=f"No se pudo leer la carpeta: {explicar_fallo(error)}") from None
 
     parent = al_operador(current.parent) if current.parent != current else None
     if es_una_raiz(al_operador(current)):
@@ -399,7 +400,7 @@ def _explorar_la_red(ruta: str) -> dict[str, object]:
     except red_smb.RedNoDisponible as error:
         raise HTTPException(status_code=404, detail=str(error)) from None
     except OSError as error:
-        raise HTTPException(status_code=422, detail=f"No se pudo leer: {error}") from None
+        raise HTTPException(status_code=422, detail=f"No se pudo leer la carpeta: {explicar_fallo(error)}") from None
     padre = None
     if partes.resto:
         arriba = partes.resto.rsplit("\\", 1)[0] if "\\" in partes.resto else ""
