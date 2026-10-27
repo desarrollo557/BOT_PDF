@@ -263,7 +263,15 @@ ENTIDAD = "KINGSPAN SAS"
 #: el operador el 2026-10-27.
 ACTAS_DE_TRANSFERENCIA: tuple[str, ...] = ("012", "015", "070", "088", "092", "094", "169")
 
-#: La fecha de transferencia que va con cada acta. En el oficial cada acta
-#: lleva siempre la misma (la 092, el 11-10-2022 en sus 1.156 filas). Por
-#: ahora sólo la dictó el operador para la 169; las demás salen N/A.
-FECHAS_DE_TRANSFERENCIA: dict[str, date] = {"169": date(2026, 7, 31)}
+#: La fecha de transferencia que va con cada acta. Las seis del oficial son las
+#: que trae: cada acta lleva siempre la misma en todas sus filas (la 092, el
+#: 11-10-2022 en las 1.156). La de la 169 la dictó el operador el 2026-10-27.
+FECHAS_DE_TRANSFERENCIA: dict[str, date] = {
+    "012": date(2024, 2, 2),
+    "015": date(2024, 2, 21),
+    "070": date(2024, 8, 1),
+    "088": date(2023, 8, 9),
+    "092": date(2022, 10, 11),
+    "094": date(2026, 5, 12),
+    "169": date(2026, 7, 31),
+}

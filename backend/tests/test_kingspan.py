@@ -307,8 +307,20 @@ class TestEntidadesYActa:
         celdas = self._celdas(acta="169")
         assert (celdas[25], celdas[26]) == ("169", date(2026, 7, 31))
 
-    def test_un_acta_sin_fecha_dictada_deja_la_fecha_en_n_a(self):
-        assert self._celdas(acta="092")[26] == "N/A"
+    def test_cada_acta_lleva_la_fecha_del_oficial(self):
+        # «1. INVENTARIO DOCUMENTAL KINGSPAN.xlsx»: una sola fecha por acta.
+        assert self._celdas(acta="092")[26] == date(2022, 10, 11)
+        assert self._celdas(acta="094")[26] == date(2026, 5, 12)
+
+    def test_toda_acta_que_se_ofrece_tiene_su_fecha(self):
+        from resolutions.domain.kingspan import (
+            ACTAS_DE_TRANSFERENCIA,
+            FECHAS_DE_TRANSFERENCIA,
+        )
+
+        assert set(FECHAS_DE_TRANSFERENCIA) == set(ACTAS_DE_TRANSFERENCIA)
+
+    def test_sin_acta_la_fecha_va_n_a(self):
         assert self._celdas()[26] == "N/A"
 
     def test_la_fecha_de_transferencia_sale_como_fecha_en_el_excel(self, tmp_path):
