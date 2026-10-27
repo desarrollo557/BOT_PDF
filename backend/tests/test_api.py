@@ -32,6 +32,32 @@ def test_a_traversal_attempt_cannot_escape_the_job_directory(client):
     assert response.status_code == 404
 
 
+@pytest.mark.parametrize("trabajo", ["..", "%2E%2E", "%2e%2e"])
+def test_el_id_del_trabajo_tampoco_sale_de_la_carpeta_de_salidas(client, tmp_path, trabajo):
+    """«..» como trabajo apuntaba a la carpeta de datos: usuarios, inventario, registros.
+
+    El nombre del archivo ya se contenía en la carpeta del trabajo, pero la
+    carpeta del trabajo no se contenía en la de salidas. Bajar -- y peor,
+    borrar -- `usuarios.jsonl` era una petición de una línea.
+    """
+    from resolutions.api import main
+
+    secreto = main.contexto.settings.output_dir.parent / "usuarios.jsonl"
+    secreto.parent.mkdir(parents=True, exist_ok=True)
+    secreto.write_text('{"cedula": "1"}', encoding="utf-8")
+    main.contexto.settings.output_dir.mkdir(parents=True, exist_ok=True)
+
+    # «..» sin codificar lo resuelve el propio cliente y cae en otra ruta (404
+    # o 405); codificado llega tal cual. Ninguno puede contestar con el archivo.
+    ruta = f"/api/jobs/{trabajo}/outputs/usuarios.jsonl"
+    assert client.get(ruta).status_code in (404, 405)
+    assert client.patch(ruta, json={"code": "001 de 2020"}).status_code in (404, 405)
+    assert client.delete(ruta).status_code in (404, 405)
+    if trabajo != "..":  # sin codificar sería /api/inventory.xlsx, el general
+        assert client.get(f"/api/jobs/{trabajo}/inventory.xlsx").status_code == 404
+    assert secreto.exists()
+
+
 def test_the_job_list_starts_empty(client):
     assert client.get("/api/jobs").json() == {"jobs": []}
 

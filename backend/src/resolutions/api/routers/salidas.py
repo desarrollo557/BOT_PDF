@@ -105,14 +105,30 @@ def _relative_output(ctx: Contexto, job_id: str, target: Path) -> str:
     descarga y la que el inventario guarda, y en Windows `Path` daría barras
     invertidas que no valen para ninguna de las dos cosas.
     """
-    directory = (ctx.settings.output_dir / job_id).resolve()
+    directory = (ctx.settings.output_dir.resolve() / job_id).resolve()
     try:
         return target.relative_to(directory).as_posix()
     except ValueError:
         return target.name
 
+def _carpeta_del_trabajo(ctx: Contexto, job_id: str) -> Path | None:
+    """La carpeta de un trabajo, o None si el id sale de la carpeta de salidas.
+
+    El id llega del cliente igual que el nombre del archivo, y «..» -- también
+    escrito %2E%2E, que nadie normaliza por el camino -- apuntaba a la carpeta
+    de datos: bajar o borrar `usuarios.jsonl` era una petición de una línea.
+    Contener sólo el nombre dentro de la carpeta del trabajo no basta si la
+    carpeta del trabajo no se contiene en la de salidas.
+    """
+    salidas = ctx.settings.output_dir.resolve()
+    directory = (salidas / job_id).resolve()
+    return directory if directory.parent == salidas else None
+
+
 def _output_path(ctx: Contexto, job_id: str, name: str) -> Path:
-    directory = (ctx.settings.output_dir / job_id).resolve()
+    directory = _carpeta_del_trabajo(ctx, job_id)
+    if directory is None:
+        raise HTTPException(status_code=404, detail="El archivo no existe")
     target = (directory / name).resolve()
     # The job id and the file name both arrive from the client.
     if not target.is_file() or directory not in target.parents:
@@ -196,7 +212,9 @@ async def job_inventory(ctx: Ctx, job_id: str) -> FileResponse:
     armada aquí: lo que se descarga es exactamente el archivo que quedó en la
     carpeta de destino, así que nadie tiene que preguntarse cuál de los dos vale.
     """
-    directory = (ctx.settings.output_dir / job_id).resolve()
+    directory = _carpeta_del_trabajo(ctx, job_id)
+    if directory is None:
+        raise HTTPException(status_code=404, detail="Ese documento no tiene inventario en Excel")
     # Recursivo: la planilla viaja junto a los PDF que describe, y los de una
     # caja se entregan en una carpeta con el nombre de su origen. Buscándola
     # sólo en la raíz del trabajo, la descarga contestaba 404 justo en la ruta
@@ -225,8 +243,8 @@ async def archivos(ctx: Ctx, job_id: str) -> dict[str, object]:
     trabajo procesado antes de que el inventario anotara cada PDF -- un libro de
     actas dividido, que sólo apuntaba su Excel -- también los enseña.
     """
-    directory = (ctx.settings.output_dir / job_id).resolve()
-    if not directory.is_dir() or directory.parent != ctx.settings.output_dir.resolve():
+    directory = _carpeta_del_trabajo(ctx, job_id)
+    if directory is None or not directory.is_dir():
         raise HTTPException(status_code=404, detail="Ese documento no tiene archivos")
     pdfs = sorted(
         (ruta for ruta in directory.rglob("*.pdf") if ruta.is_file()),
@@ -262,8 +280,8 @@ async def archivos_zip(ctx: Ctx, job_id: str) -> FileResponse:
 
     from starlette.background import BackgroundTask
 
-    directory = (ctx.settings.output_dir / job_id).resolve()
-    if not directory.is_dir() or directory.parent != ctx.settings.output_dir.resolve():
+    directory = _carpeta_del_trabajo(ctx, job_id)
+    if directory is None or not directory.is_dir():
         raise HTTPException(status_code=404, detail="Ese documento no tiene archivos")
     contenido = sorted(
         (ruta for ruta in directory.rglob("*") if ruta.is_file() and ruta.suffix.lower() in (".pdf", ".xlsx")),
@@ -297,11 +315,7 @@ async def download(ctx: Ctx, job_id: str, name: str) -> FileResponse:
     # Deliberately not gated on the job still being in the ctx.registry: the
     # inventory outlives the screen, and its rows link straight at these files.
     # Containment below is what makes serving by id alone safe.
-    directory = (ctx.settings.output_dir / job_id).resolve()
-    target = (directory / name).resolve()
-    # Containment check: the job id and file name both arrive from the client.
-    if not target.is_file() or directory not in target.parents:
-        raise HTTPException(status_code=404, detail="El archivo no existe")
+    target = _output_path(ctx, job_id, name)
 
     media_type = _MEDIA_TYPES.get(target.suffix.lower(), "application/octet-stream")
     return FileResponse(target, media_type=media_type, filename=target.name)
