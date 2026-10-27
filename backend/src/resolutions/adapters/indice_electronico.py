@@ -138,13 +138,30 @@ def leer_indice(ruta: Path) -> IndiceLeido:
     libro = load_workbook(ruta, read_only=True)
     try:
         hoja = libro.active
-        filas: list[FilaDelIndice] = []
-        fila = PRIMERA_FILA
-        while True:
-            valores = [hoja[f"{c}{fila}"].value for c in COLUMNAS]
+        # De una sola pasada. En sólo lectura, cada `hoja["A9"]` vuelve a
+        # recorrer la hoja desde el principio: con treinta mil índices que el
+        # libro general relee, eso eran minutos por escritura (2026-10-27).
+        # `reset_dimensions`: sin fiarse de la dimensión que declare el archivo.
+        hoja.reset_dimensions()
+        cabecera: dict[str, object] = {}
+        renglones: list[tuple] = []
+        for numero, valores in enumerate(
+            hoja.iter_rows(min_row=1, max_col=len(COLUMNAS), values_only=True), start=1
+        ):
+            if numero < PRIMERA_FILA:
+                for celda in (CELDA_NIC, CELDA_TERRITORIAL, CELDA_NOMBRE_DEL_EXPEDIENTE):
+                    if int(celda[1:]) == numero:
+                        columna = ord(celda[0]) - ord("A")
+                        cabecera[celda] = valores[columna] if columna < len(valores) else None
+                continue
+            valores = tuple(valores) + (None,) * (len(COLUMNAS) - len(valores))
             nombre = str(valores[0] or "").strip()
             if not nombre or nombre.upper().startswith(CIERRE):
                 break
+            renglones.append(valores)
+        filas: list[FilaDelIndice] = []
+        for valores in renglones:
+            nombre = str(valores[0] or "").strip()
             filas.append(
                 FilaDelIndice(
                     nombre=nombre,
@@ -157,12 +174,11 @@ def leer_indice(ruta: Path) -> IndiceLeido:
                     responsable=str(valores[7] or ""),
                 )
             )
-            fila += 1
         return IndiceLeido(
             filas=filas,
-            nic=_dato(hoja[CELDA_NIC].value),
-            territorial=_dato(hoja[CELDA_TERRITORIAL].value),
-            nombre_del_expediente=_dato(hoja[CELDA_NOMBRE_DEL_EXPEDIENTE].value),
+            nic=_dato(cabecera.get(CELDA_NIC)),
+            territorial=_dato(cabecera.get(CELDA_TERRITORIAL)),
+            nombre_del_expediente=_dato(cabecera.get(CELDA_NOMBRE_DEL_EXPEDIENTE)),
         )
     finally:
         libro.close()

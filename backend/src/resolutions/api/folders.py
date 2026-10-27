@@ -279,6 +279,8 @@ class FolderRun:
     indices: dict[str, Path] = field(default_factory=dict, repr=False)
     #: Lo ya leído de cada FUID del destino, para no releerlos todos cada vez.
     lecturas_de_fuid: dict = field(default_factory=dict, repr=False)
+    #: Y de cada Índice Electrónico entregado, para el libro general.
+    lecturas_de_indices: dict = field(default_factory=dict, repr=False)
     #: Las filas de actas de cada subcarpeta, para escribir su Excel sin
     #: recorrer las de toda la corrida.
     filas_por_carpeta: dict[str, list[dict]] = field(default_factory=dict, repr=False)
@@ -1879,7 +1881,7 @@ class FolderRunner:
         if con_indice:
             if indices:
                 self._escribir_general(
-                    run, NOMBRE_DEL_INDICE, lambda: libro_de_indices_de(indices, run.destination)
+                    run, NOMBRE_DEL_INDICE, lambda: libro_de_indices_de(indices, run.destination, lecturas=run.lecturas_de_indices)
                 )
             self._escribir_general(
                 run,

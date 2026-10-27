@@ -91,6 +91,78 @@ class TestLectura:
         assert leido.nic is None
 
 
+    def test_leerlo_de_una_pasada_da_lo_mismo_que_celda_a_celda(self, tmp_path):
+        """En sólo lectura, cada `hoja["A9"]` vuelve a recorrer la hoja desde el principio.
+
+        Con treinta mil índices que el libro general relee cada 45 s, eso eran
+        minutos. Leerlo de una pasada tiene que dar exactamente lo mismo.
+        """
+        filas = _filas(30, "RECLAMO")
+        escribir_indice(
+            tmp_path, filas, nic="1000265", territorial="MAGANGUE", nombre_del_expediente="UPD9"
+        )
+        ruta = tmp_path / indice_electronico.NOMBRE_DEL_INDICE
+
+        libro = openpyxl.load_workbook(ruta, read_only=True)
+        try:
+            hoja = libro.active
+            celda_a_celda = []
+            fila = indice_electronico.PRIMERA_FILA
+            while True:
+                valores = [hoja[f"{c}{fila}"].value for c in indice_electronico.COLUMNAS]
+                if not str(valores[0] or "").strip() or str(valores[0]).upper().startswith(
+                    indice_electronico.CIERRE
+                ):
+                    break
+                celda_a_celda.append(valores)
+                fila += 1
+            cabecera = [hoja[c].value for c in ("B3", "B4", "B5")]
+        finally:
+            libro.close()
+
+        leido = leer_indice(ruta)
+
+        assert leido.filas == filas
+        assert len(celda_a_celda) == 30
+        assert [leido.nombre_del_expediente, leido.nic, leido.territorial] == [
+            indice_electronico._dato(valor) for valor in cabecera
+        ]
+
+
+class TestElLibroGeneralNoReleeLoQueNoCambio:
+    def test_la_segunda_escritura_no_vuelve_a_leer_los_indices(self, tmp_path, monkeypatch):
+        """El general se reescribe cada 45 s; releer treinta mil índices cada vez eran minutos."""
+        import os
+
+        from resolutions.api import indices
+
+        rutas = []
+        for caja in ("UPD1", "UPD2"):
+            escribir_indice(tmp_path / caja, _filas(2, caja), territorial="CESAR", nombre_del_expediente=caja)
+            rutas.append((caja, tmp_path / caja / indice_electronico.NOMBRE_DEL_INDICE))
+        leidas: list[Path] = []
+        leer = indices.leer_indice
+
+        def contar(ruta):
+            leidas.append(ruta)
+            return leer(ruta)
+
+        monkeypatch.setattr(indices, "leer_indice", contar)
+        lecturas: dict = {}
+
+        primero = indices.libro_de_indices_de(rutas, tmp_path / "general", lecturas=lecturas)
+        indices.libro_de_indices_de(rutas, tmp_path / "general", lecturas=lecturas)
+        assert len(leidas) == 2
+
+        # Uno que cambió se vuelve a leer, y sólo ése.
+        cambiado = rutas[0][1]
+        os.utime(cambiado, ns=(cambiado.stat().st_atime_ns, cambiado.stat().st_mtime_ns + 10**9))
+        segundo = indices.libro_de_indices_de(rutas, tmp_path / "general", lecturas=lecturas)
+        assert leidas[2:] == [cambiado]
+        assert primero == segundo
+        assert openpyxl.load_workbook(segundo).sheetnames == ["UPD1", "UPD2"]
+
+
 class TestUnaHojaPorCaja:
     def test_cada_caja_en_su_hoja_con_su_propio_orden(self, tmp_path):
         _caja(tmp_path, "a", "UPD2320047", _filas(4, "UNO"))

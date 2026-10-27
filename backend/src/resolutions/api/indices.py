@@ -62,17 +62,24 @@ def libro_de_indices_de(
     rutas: Iterable[tuple[str, Path]],
     destino: Path,
     nombre_del_archivo: str = NOMBRE_DEL_INDICE,
+    *,
+    lecturas: dict | None = None,
 ) -> Path | None:
     """El libro con estos índices: (nombre de la caja, su «00.INDICE ELECTRONICO.xlsx»).
 
     La corrida de carpeta lo arma con los índices que ya entregó al destino, y
     así cuenta también las cajas que una corrida anterior dejó entregadas.
     Sin nombre, la hoja se llama como el expediente del índice.
+
+    ``lecturas`` guarda lo ya leído de cada índice con su fecha, como el FUID
+    general: el libro se reescribe cada 45 s, y releer todos los índices cada
+    vez eran minutos con treinta mil cajas (2026-10-27). Uno que cambió en el
+    disco se vuelve a leer.
     """
     cajas = []
     for nombre, ruta in rutas:
         try:
-            indice = leer_indice(ruta)
+            indice = _filas_de(ruta, lecturas, leer_indice)
         except Exception:  # noqa: BLE001 - una caja ilegible no tumba el libro
             logger.warning("no se pudo leer el índice %s", ruta, exc_info=True)
             continue
