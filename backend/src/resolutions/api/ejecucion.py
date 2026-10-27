@@ -105,8 +105,21 @@ def _cupo(job: Job):
 async def _run(ctx: Contexto, job: Job) -> None:
     # Los archivos a la vez que eligió el operador para su lote: los demás
     # esperan su turno en cola, sin ocupar un proceso del pool.
-    async with _cupo(job):
-        await _run_con_cupo(ctx, job)
+    try:
+        async with _cupo(job):
+            await _run_con_cupo(ctx, job)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:  # noqa: BLE001 - el trabajo termina, nunca queda en cola
+        # Lo que falla antes de llegar al pool -- el canal de control caído, el
+        # payload que no se arma -- mataba la tarea de una subida sin que nadie
+        # la recogiera: el trabajo se quedaba «en cola» o «en curso» para
+        # siempre (2026-10-27). Termina como fallido, con su motivo y con la
+        # misma vuelta de reintento que cualquier otro fallo.
+        logger.exception("el trabajo %s falló fuera del pool", job.filename)
+        if job.state in (JobState.QUEUED, JobState.RUNNING, JobState.PAUSED):
+            job.reintentable = merece_otra_vuelta(error)
+            ctx.registry.mark_failed(job, explicar_fallo(error))
 
 
 async def _run_con_cupo(ctx: Contexto, job: Job) -> None:

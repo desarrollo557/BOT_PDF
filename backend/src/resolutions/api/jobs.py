@@ -605,6 +605,9 @@ class JobRegistry:
 
     def mark_resumed(self, job: Job) -> None:
         job.state = JobState.RUNNING
+        # La pausa no es silencio: sin esto, un trabajo pausado más de lo que
+        # el vigilante tolera se daba por atascado en cuanto se reanudaba.
+        job.progress.last_event_monotonic = time.monotonic()
         self._revision += 1
         job.progress.stage = "analysing" if job.progress.page_count else "queued"
         self.publish(job)

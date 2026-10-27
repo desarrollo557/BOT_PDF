@@ -412,12 +412,22 @@ async def _drain_progress(ctx: Contexto) -> None:
             event = await loop.run_in_executor(None, queue.get)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - el Manager se fue durante el apagado
-            logger.debug("la cola de progreso se cerró", exc_info=True)
+        except Exception:  # noqa: BLE001 - el Manager se fue
+            # Casi siempre es el apagado. Si no lo es, ningún trabajo vuelve a
+            # recibir noticias y el vigilante los da por atascados: tiene que
+            # verse en el registro, no quedar en DEBUG.
+            logger.warning(
+                "la cola de progreso se cerró; si el servicio no se estaba apagando, "
+                "reinícielo: los trabajos ya no reciben avances",
+                exc_info=True,
+            )
             return
         if event is None:
             return
-        ctx.registry.apply_progress(event)
+        try:
+            ctx.registry.apply_progress(event)
+        except Exception:  # noqa: BLE001 - un evento raro no deja a todos sin noticias
+            logger.exception("no se pudo aplicar un evento de progreso: %r", event)
 
 
 async def _publish_progress(ctx: Contexto) -> None:

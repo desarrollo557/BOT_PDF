@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 from ...application.control import Cancelled, RunState
 from ...application.task import TaskKind
 from ..contexto import Contexto, Ctx
+from ..errores import explicar_fallo
 from ..identidad import Quien, exigir_descarga_de_planillas
 from ..worker import FUID_SUFFIX
 from .salidas import XLSX_MEDIA
@@ -61,6 +62,21 @@ def _fuente_de(ctx: Contexto, job_id: str) -> Path | None:
         return None
     return job.source if job.source.is_file() else None
 
+#: Los FUID que se están levantando.
+_EN_MARCHA: set[asyncio.Task] = set()
+
+
+async def _levantar_fuid_sin_colgarse(ctx: Contexto, job_id: str) -> None:
+    """``_levantar_fuid``, y si algo falla antes de llegar al pool, se dice."""
+    try:
+        await _levantar_fuid(ctx, job_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:  # noqa: BLE001 - la pantalla no se queda esperando
+        logger.exception("no se pudo levantar el FUID de %s", job_id)
+        ctx.fuid_jobs[job_id] = explicar_fallo(error)
+
+
 async def _levantar_fuid(ctx: Contexto, job_id: str) -> None:
     """Leer el documento otra vez, sólo para su inventario.
 
@@ -106,7 +122,9 @@ async def _levantar_fuid(ctx: Contexto, job_id: str) -> None:
         return
     except Exception as error:  # noqa: BLE001 - se le dice al operador qué pasó
         logger.exception("no se pudo levantar el FUID de %s", job_id)
-        ctx.fuid_jobs[job_id] = f"{type(error).__name__}: {error}"
+        # En palabras del operador, como el error de cualquier trabajo: «el
+        # Excel está abierto» y no «PermissionError: [Errno 13]…».
+        ctx.fuid_jobs[job_id] = explicar_fallo(error)
         return
     finally:
         ctx.controls.pop(clave, None)
@@ -159,7 +177,12 @@ async def make_job_fuid(ctx: Ctx, job_id: str) -> dict[str, object]:
         )
 
     ctx.fuid_jobs[job_id] = None
-    asyncio.create_task(_levantar_fuid(ctx, job_id))
+    # Con la referencia guardada, como las subidas: una tarea a la que nadie
+    # apunta la puede recoger el recolector a medias, y la pantalla se quedaba
+    # diciendo «levantando…» para siempre.
+    tarea = asyncio.create_task(_levantar_fuid_sin_colgarse(ctx, job_id))
+    _EN_MARCHA.add(tarea)
+    tarea.add_done_callback(_EN_MARCHA.discard)
     return {"ready": False, "name": None, "error": None}
 
 @router.delete("/api/jobs/{job_id}/fuid")

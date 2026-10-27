@@ -97,6 +97,8 @@ EXTENSIONES_DEL_BOT = frozenset({".pdf", ".xlsx"})
 #: Cuántas veces se reanuda una corrida tras un fallo que no es de ningún
 #: documento antes de darla por fallida.
 TROPIEZOS_DE_LA_CORRIDA = 3
+#: Segundos de espera tras el primer tropiezo; el segundo espera el doble, y así.
+ESPERA_TRAS_TROPIEZO = 30.0
 
 
 class EntregaIncompleta(RuntimeError):
@@ -750,6 +752,10 @@ class FolderRunner:
                 # En paralelo y por lotes: el recorrido llena la cola lote a
                 # lote mientras los trabajadores la vacían.
                 hubo = await self._procesar_por_lotes(run)
+                # Una pasada entera sin tropezar: los tropiezos cuentan seguidos,
+                # no en toda la vida de la corrida. En una vigilancia de días,
+                # tres sueltos la dejaban en FAILED (2026-10-27).
+                run.tropiezos = 0
                 if hubo:
                     await self._otra_vuelta(run)
                 elif run.watch and run.active:
@@ -812,7 +818,7 @@ class FolderRunner:
                 # bucle, el disco del destino un momento -- no tira la corrida:
                 # se anota, se espera y se sigue. Lo ya tomado no se repite.
                 run.tropiezos += 1
-                espera = 30.0 * run.tropiezos
+                espera = ESPERA_TRAS_TROPIEZO * run.tropiezos
                 self._avisar(
                     run,
                     f"La corrida tropezó ({explicar_fallo(error)}). Se reanuda en {espera:.0f} s "
