@@ -31,6 +31,7 @@ from ..application.progress import (
     ProgressReporter,
     Stage,
 )
+from .guardar_libro import guardar_libro
 
 logger = logging.getLogger(__name__)
 
@@ -172,7 +173,7 @@ class FuidPsd001:
 
         self._anunciar(total, total, "guardando la planilla")
         destino_path.parent.mkdir(parents=True, exist_ok=True)
-        libro.save(str(destino_path))
+        guardar_libro(libro, destino_path)
         return destino_path
 
     def _anunciar(self, hechas: int, total: int, detalle: str) -> None:

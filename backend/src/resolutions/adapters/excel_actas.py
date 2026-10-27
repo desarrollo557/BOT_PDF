@@ -32,6 +32,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
 from ..domain.fechas import MESES
+from .guardar_libro import guardar_libro
 
 #: Cómo se llama la planilla que deja cada acta junto a su trabajo. Es el mismo
 #: sufijo que la planilla de un documento, para que el botón «Inventario en
@@ -192,7 +193,7 @@ def _escribir(
     _para_imprimir(hoja)
 
     destino.parent.mkdir(parents=True, exist_ok=True)
-    libro.save(destino)
+    guardar_libro(libro, destino)
     return destino
 
 

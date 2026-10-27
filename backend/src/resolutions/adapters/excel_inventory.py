@@ -11,6 +11,7 @@ from openpyxl.worksheet.properties import PageSetupProperties
 from openpyxl.worksheet.worksheet import Worksheet
 
 from ..domain.naming import sheet_filename
+from .guardar_libro import guardar_libro
 
 #: Written beside the generated PDFs, and delivered with them.
 SUFFIX = "__inventario.xlsx"
@@ -384,7 +385,7 @@ class ExcelInventory:
         target = destination / sheet_filename(
             documento, SUFFIX, directory_length=len(str(destination))
         )
-        book.save(target)
+        guardar_libro(book, target)
         return target
 
     # -- hoja 1 ---------------------------------------------------------------
@@ -629,7 +630,7 @@ class ExcelRunInventory:
         )
 
         target = destination / RUN_SHEET
-        book.save(target)
+        guardar_libro(book, target)
         return target
 
 
@@ -766,7 +767,7 @@ class ExcelInventarioDeProcesos:
         )
 
         target = destino / nombre
-        book.save(target)
+        guardar_libro(book, target)
         return target
 
 
@@ -890,5 +891,5 @@ class ExcelControlDeEntrega:
         )
 
         target = destino / nombre
-        book.save(target)
+        guardar_libro(book, target)
         return target

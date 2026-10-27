@@ -17,10 +17,11 @@ análisis de los procesados, los no procesados». Va en la raíz del destino,
 
 from __future__ import annotations
 
-import os
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+
+from .guardar_libro import guardar_libro
 
 NOMBRE_DEL_ANALISIS = "00.ANALISIS DE LA ENTREGA.xlsx"
 
@@ -162,10 +163,4 @@ def escribir_analisis(
     )
     destino.mkdir(parents=True, exist_ok=True)
     ruta = destino / NOMBRE_DEL_ANALISIS
-    temporal = ruta.with_name(f".{ruta.name}.tmp")
-    try:
-        libro.save(temporal)
-        os.replace(temporal, ruta)
-    finally:
-        temporal.unlink(missing_ok=True)
-    return ruta
+    return guardar_libro(libro, ruta)

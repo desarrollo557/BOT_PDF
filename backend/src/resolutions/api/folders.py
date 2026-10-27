@@ -18,7 +18,10 @@ from pathlib import Path
 from uuid import uuid4
 
 from ..adapters import red_smb
-from ..adapters.excel_inventory import NOMBRE_DEL_CONTROL_DE_ENTREGA, NOMBRE_DEL_INVENTARIO_DE_PROCESOS
+from ..adapters.excel_inventory import (
+    NOMBRE_DEL_CONTROL_DE_ENTREGA,
+    NOMBRE_DEL_INVENTARIO_DE_PROCESOS,
+)
 from . import constancia as constancias
 from .constancia import Constancia, EstadoDeEntrega, Vigencia
 from .errores import archivo_en_uso, explicar_fallo

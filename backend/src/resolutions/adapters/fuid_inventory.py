@@ -29,6 +29,7 @@ from ..application.progress import (
     ProgressReporter,
     Stage,
 )
+from .guardar_libro import guardar_libro
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +137,7 @@ class FuidInventory:
         # el último: si no se anuncia, el trabajo parece colgado en la fila final.
         self._anunciar(total, total, "guardando la planilla")
         destino.parent.mkdir(parents=True, exist_ok=True)
-        libro.save(destino)
+        guardar_libro(libro, destino)
         return destino
 
     def _anunciar(self, hechas: int, total: int, detalle: str) -> None:

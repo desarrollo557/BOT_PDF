@@ -12,12 +12,13 @@ Las fechas van como texto «dd/mm/aaaa», que es como las lleva la plantilla.
 
 from __future__ import annotations
 
-import os
 import re
 from copy import copy
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+
+from .guardar_libro import guardar_libro
 
 #: La plantilla del cliente.
 PLANTILLA = Path(__file__).resolve().parents[1] / "assets" / "plantillas" / "indice_electronico.xlsx"
@@ -99,10 +100,7 @@ def escribir_indice(
     # Entero o nada: a un temporal y luego en su sitio. El libro general lee
     # el índice de cada carpeta mientras otra entrega lo reescribe, y leía uno
     # a medias (EOFError, 2026-10-22, «1000265\00.INDICE ELECTRONICO.xlsx»).
-    temporal = ruta.with_name(f".{ruta.name}.tmp")
-    libro.save(temporal)
-    os.replace(temporal, ruta)
-    return ruta
+    return guardar_libro(libro, ruta)
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,9 +208,7 @@ def escribir_indices_por_hoja(
         libro.remove(base)
         libro.active = 0
     destino.mkdir(parents=True, exist_ok=True)
-    ruta = destino / nombre_del_archivo
-    libro.save(ruta)
-    return ruta
+    return guardar_libro(libro, destino / nombre_del_archivo)
 
 
 def _nombre_de_hoja(nombre: str, usados: set[str]) -> str:
