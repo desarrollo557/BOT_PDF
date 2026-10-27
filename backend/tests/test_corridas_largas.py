@@ -962,6 +962,46 @@ class TestUnExcelAbiertoEnLaRaiz:
         assert any("CONTROL DE ENTREGA" in aviso for aviso in run.avisos)
 
 
+class TestElExcelDeActasDeUnaSubcarpetaAbierto:
+    def test_se_escribe_con_otro_nombre_una_sola_vez(self, ajustes, tmp_path, monkeypatch):
+        """Abierto en Excel, cada acta nueva dejaba otro «(2)», «(3)», «(4)»… al lado (2026-10-27)."""
+        from resolutions.adapters import excel_actas
+        from resolutions.application import acta_consejo
+
+        bloqueados: set[str] = set()
+        escritos: list[str] = []
+
+        def escribir(filas, destino, **_):
+            if destino.name in bloqueados:
+                raise PermissionError(errno.EACCES, "Permission denied", str(destino))
+            destino.write_bytes(b"xlsx")
+            escritos.append(destino.name)
+
+        monkeypatch.setattr(excel_actas, "escribir_inventario_de_actas", escribir)
+        monkeypatch.setattr(acta_consejo, "inventario_de_la_carpeta", lambda filas: list(filas))
+        monkeypatch.setattr(acta_consejo, "validar_inventario", lambda filas: {})
+
+        destino = tmp_path / "destino"
+        run = FolderRun(id="r", source=tmp_path / "CAJA", destination=destino)
+        motor, _ = _motor(ajustes, JobRegistry())
+        abierto = motor._ruta_de_un_excel(destino / "CAJA" / "UPD1")
+        abierto.parent.mkdir(parents=True)
+        abierto.write_bytes(b"el que el operador tiene abierto")
+        canonico = abierto.name
+        bloqueados.add(canonico)
+
+        for acta in range(3):
+            fila = {"carpeta": "CAJA/UPD1", "tipo": acta_consejo.CONSEJO.tipo_documental, "n": acta}
+            run.inventario_filas.append(fila)
+            run.filas_por_carpeta.setdefault("CAJA/UPD1", []).append(fila)
+            motor._escribir_inventarios(run, "CAJA/UPD1")
+
+        assert run.inventario_error is None, run.inventario_error
+        de_la_subcarpeta = {n for n in escritos if "UPD1" in n}
+        assert len(de_la_subcarpeta) == 1, de_la_subcarpeta
+        assert canonico not in de_la_subcarpeta
+
+
 class TestUnFalloNoTumbaLaCarpeta:
     """Lo pidió el operador: que si algo falla, lo pare, lo anote, se acomode y lo reintente."""
 

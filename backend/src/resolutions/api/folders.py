@@ -250,6 +250,10 @@ class FolderRun:
     #: El Excel general de cada clase de acta -- consejo, grado --, para que
     #: cada una vuelva a escribir el suyo y nunca el de la otra.
     inventarios_generales: dict[str, str] = field(default_factory=dict)
+    #: Y el de cada subcarpeta, por clase y carpeta: si se escribió con otro
+    #: nombre porque el suyo estaba abierto, las actas siguientes vuelven a ése
+    #: en vez de dejar un «(3)», un «(4)»… por cada una.
+    inventarios_de_carpeta: dict[tuple[str, str], str] = field(default_factory=dict)
     #: Por qué no se pudo escribir, si falló.
     inventario_error: str | None = None
     #: El control de calidad del último inventario escrito: filas completas,
@@ -2610,7 +2614,11 @@ class FolderRunner:
                         continue
                     destino = self._ruta_de_un_excel(run.destination / carpeta, prefijo)
                     if carpeta and destino != general:
-                        self._escribir_un_excel(run, de_la_carpeta, destino, perfil)
+                        ya = run.inventarios_de_carpeta.get((clase, carpeta))
+                        escrito = self._escribir_un_excel(
+                            run, de_la_carpeta, Path(ya) if ya else destino, perfil
+                        )
+                        run.inventarios_de_carpeta[(clase, carpeta)] = str(escrito)
 
             # El que baja la pantalla: el de consejo si lo hay, si no el de grado.
             run.inventario = run.inventarios_generales.get(
