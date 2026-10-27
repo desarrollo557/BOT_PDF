@@ -198,8 +198,10 @@ class TestLasCarpetasVanEnParalelo:
         _pdfs(tmp_path / "origen", 6)
         registry = JobRegistry()
         cancelados: list[str] = []
+        empezados: list[str] = []
 
         async def lento(job):
+            empezados.append(job.filename)
             try:
                 await asyncio.sleep(10)
             except asyncio.CancelledError:
@@ -215,8 +217,11 @@ class TestLasCarpetasVanEnParalelo:
 
         async def ir():
             run = motor.start(str(tmp_path / "origen"), str(tmp_path / "destino"))
-            for _ in range(100):
-                if len(run.en_curso) == 3:
+            # Se espera a que los tres estén leyendo, no a que figuren en
+            # curso: entre una cosa y otra el PDF espera en un hilo a que el
+            # archivo se libere, y detener ahí no deja nada que cancelar.
+            for _ in range(500):
+                if len(empezados) == 3:
                     break
                 await asyncio.sleep(0.01)
             motor.stop(run.id)

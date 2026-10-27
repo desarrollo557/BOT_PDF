@@ -148,7 +148,9 @@ class TestConsuming:
 
         run = drain(second_engine, tmp_path / "origen", tmp_path / "destino")
 
-        assert first_processed == ["a.pdf", "b.pdf"]
+        # Sin orden: van a la vez, y cuál empieza antes depende de qué hilo
+        # vuelve primero de mirar si el PDF está libre.
+        assert sorted(first_processed) == ["a.pdf", "b.pdf"]
         assert second_processed == ["c.pdf"]
         assert run.processed == 1
         assert run.ya_entregados == 2
@@ -175,9 +177,13 @@ class TestConsuming:
 
     def test_files_are_taken_in_name_order(self, workspace, tmp_path):
         put(tmp_path / "origen", "c.pdf", "a.pdf", "b.pdf")
-        engine, processed = runner(workspace, JobRegistry())
-        drain(engine, tmp_path / "origen", tmp_path / "destino")
-        assert processed == ["a.pdf", "b.pdf", "c.pdf"]
+        registry = JobRegistry()
+        engine, _ = runner(workspace, registry)
+        run = drain(engine, tmp_path / "origen", tmp_path / "destino")
+        # The order they are taken in, not the one they start in: several run
+        # at once, and each first waits in a thread for its PDF to be free.
+        taken = [registry.get(job_id).filename for job_id in run.job_ids]
+        assert taken == ["a.pdf", "b.pdf", "c.pdf"]
 
     def test_anything_that_is_not_a_pdf_is_left_alone(self, workspace, tmp_path):
         put(tmp_path / "origen", "a.pdf")

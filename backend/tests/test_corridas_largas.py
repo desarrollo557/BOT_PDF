@@ -876,9 +876,14 @@ class TestElDescubrimiento:
         (tmp_path / "origen" / "b").mkdir()
         _pon(tmp_path / "origen" / "b", "1.pdf")
         _pon(tmp_path / "origen", "c.pdf", "a.pdf")
-        motor, hechos = _motor(ajustes, JobRegistry())
-        _vaciar(motor, tmp_path / "origen", tmp_path / "destino")
-        assert hechos == ["a.pdf", str(Path("b") / "1.pdf"), "c.pdf"]
+        registro = JobRegistry()
+        motor, _ = _motor(ajustes, registro)
+        run = _vaciar(motor, tmp_path / "origen", tmp_path / "destino")
+        # El orden en que se toman, no en el que empiezan a leerse: con varios
+        # a la vez, cada uno espera en un hilo a que su PDF se libere y el que
+        # vuelve primero es cuestión de suerte.
+        tomados = [registro.get(job_id).filename for job_id in run.job_ids]
+        assert tomados == ["a.pdf", str(Path("b") / "1.pdf"), "c.pdf"]
 
     def test_se_procesa_sin_esperar_a_recorrer_toda_la_carpeta(self, ajustes, tmp_path, monkeypatch):
         # «La idea no es que hasta que no termine de explorar la carpeta no
