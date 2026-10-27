@@ -7,7 +7,7 @@ describe('el inventario de Kingspan pide el acta de transferencia', () => {
 
   it('ofrece las actas del inventario oficial, las mismas que valida el servicio', () => {
     // ACTAS_DE_TRANSFERENCIA en backend/src/resolutions/domain/kingspan.py
-    expect(kingspan?.actasDeTransferencia).toEqual(['012', '015', '070', '088', '092', '094']);
+    expect(kingspan?.actasDeTransferencia).toEqual(['012', '015', '070', '088', '092', '094', '169']);
   });
 
   it('ninguna otra habilidad pide acta', () => {

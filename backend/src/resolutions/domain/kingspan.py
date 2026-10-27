@@ -259,5 +259,11 @@ def filas_de(documentos: list[Documento]) -> list[FilaKingspan]:
 ENTIDAD = "KINGSPAN SAS"
 
 #: Los números de acta de transferencia que el operador elige en el asistente
-#: antes de procesar. Son los del oficial: las únicas actas que tiene.
-ACTAS_DE_TRANSFERENCIA: tuple[str, ...] = ("012", "015", "070", "088", "092", "094")
+#: antes de procesar. Los seis primeros son los del oficial; la 169 la añadió
+#: el operador el 2026-10-27.
+ACTAS_DE_TRANSFERENCIA: tuple[str, ...] = ("012", "015", "070", "088", "092", "094", "169")
+
+#: La fecha de transferencia que va con cada acta. En el oficial cada acta
+#: lleva siempre la misma (la 092, el 11-10-2022 en sus 1.156 filas). Por
+#: ahora sólo la dictó el operador para la 169; las demás salen N/A.
+FECHAS_DE_TRANSFERENCIA: dict[str, date] = {"169": date(2026, 7, 31)}

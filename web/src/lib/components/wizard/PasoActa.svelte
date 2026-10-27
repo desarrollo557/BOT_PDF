@@ -11,7 +11,7 @@
    * lista cerrada -- las actas del inventario oficial -- porque un número mal
    * escrito sería una transferencia que no existe.
    *
-   * Tarjetas y no un desplegable: son seis, caben de un vistazo, y se eligen
+   * Tarjetas y no un desplegable: son pocas, caben de un vistazo, y se eligen
    * igual que todo lo demás del asistente.
    */
   interface Props {

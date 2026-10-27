@@ -280,7 +280,7 @@ export const HABILIDADES: Habilidad[] = [
     task: null,
     // Las actas del inventario oficial de Kingspan. Las mismas que valida el
     // servicio (ACTAS_DE_TRANSFERENCIA en domain/kingspan.py).
-    actasDeTransferencia: ['012', '015', '070', '088', '092', '094'],
+    actasDeTransferencia: ['012', '015', '070', '088', '092', '094', '169'],
     acciones: [
       {
         id: 'inventory',

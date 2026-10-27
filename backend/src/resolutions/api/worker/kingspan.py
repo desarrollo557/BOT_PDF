@@ -41,6 +41,7 @@ from ...domain.ficha import fichar
 from ...domain.kingspan import (
     ACTAS_DE_TRANSFERENCIA,
     ENTIDAD,
+    FECHAS_DE_TRANSFERENCIA,
     NO_APLICA,
     Documento,
     FilaKingspan,
@@ -288,7 +289,7 @@ def celdas_kingspan(
         ajuste("fuid_elaborado_por", NO_APLICA),                 # X  ELABORADO POR
         inventariado,                                            # Y  FECHA DE INVENTARIO
         acta or NO_APLICA,                                       # Z  No. ACTA DE TRANSFERENCIA
-        NO_APLICA,                                               # AA FECHA DE TRANSFERENCIA
+        FECHAS_DE_TRANSFERENCIA.get(acta or "", NO_APLICA),      # AA FECHA DE TRANSFERENCIA
     ]
 
 

@@ -300,7 +300,23 @@ class TestEntidadesYActa:
     def test_las_actas_son_las_del_oficial(self):
         from resolutions.domain.kingspan import ACTAS_DE_TRANSFERENCIA
 
-        assert ACTAS_DE_TRANSFERENCIA == ("012", "015", "070", "088", "092", "094")
+        assert ACTAS_DE_TRANSFERENCIA == ("012", "015", "070", "088", "092", "094", "169")
+
+    def test_la_169_lleva_su_fecha_de_transferencia(self):
+        # Dictada por el operador el 2026-10-27: «31/7/2026».
+        celdas = self._celdas(acta="169")
+        assert (celdas[25], celdas[26]) == ("169", date(2026, 7, 31))
+
+    def test_un_acta_sin_fecha_dictada_deja_la_fecha_en_n_a(self):
+        assert self._celdas(acta="092")[26] == "N/A"
+        assert self._celdas()[26] == "N/A"
+
+    def test_la_fecha_de_transferencia_sale_como_fecha_en_el_excel(self, tmp_path):
+        celdas = self._celdas(acta="169")
+        destino = escritor().write_cells([celdas], tmp_path / "inventario.xlsx")
+        celda = openpyxl.load_workbook(destino)[HOJA][f"AA{PRIMERA_FILA}"]
+        assert celda.value.date() == date(2026, 7, 31)
+        assert celda.number_format == "mm-dd-yy"
 
 
 class TestLaPlanilla:
