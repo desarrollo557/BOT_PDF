@@ -9,7 +9,7 @@ import shutil
 import threading
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime
 from enum import StrEnum
@@ -493,12 +493,20 @@ def clean_path(raw: str) -> str:
     return value
 
 
-def validate_folders(source: str, destination: str) -> tuple[Path, Path]:
+def validate_folders(
+    source: str, destination: str, *, internas: Iterable[Path] = ()
+) -> tuple[Path, Path]:
     """Resolve and check both folders before a single file is touched.
 
     The containment check is the important one. If the destination sits inside
     the source, every delivered resolution is a new PDF in the folder being
     watched, and the run feeds on its own output forever.
+
+    ``internas`` son las carpetas del propio servicio -- sus datos, subidas y
+    salidas --: ni el origen ni el destino pueden caer dentro, y el origen
+    tampoco puede contenerlas. El servicio está en la red sin contraseña, y
+    con «Borrarlo» sobre una carpeta que las contiene se borraban las subidas
+    de los demás (2026-10-27).
     """
     source = clean_path(source)
     destination = clean_path(destination)
@@ -539,6 +547,21 @@ def validate_folders(source: str, destination: str) -> tuple[Path, Path]:
             raise FolderError(f"La carpeta de origen no existe: {source}") from None
         if not origin.is_dir():
             raise FolderError(f"El origen no es una carpeta: {origin}")
+
+    propias = [Path(carpeta).resolve() for carpeta in internas]
+
+    def es_propia(ruta: Path, *, o_las_contiene: bool = False) -> bool:
+        return any(
+            ruta == propia or ruta in propia.parents or (o_las_contiene and propia in ruta.parents)
+            for propia in propias
+        )
+
+    if not red_smb.por_smb(origin) and es_propia(origin, o_las_contiene=True):
+        raise FolderError("El origen no puede ser ni contener las carpetas de trabajo del servicio")
+    if es_propia(target.resolve(), o_las_contiene=False) or any(
+        propia in target.resolve().parents or propia == target.resolve() for propia in propias
+    ):
+        raise FolderError("El destino no puede estar dentro de las carpetas de trabajo del servicio")
 
     try:
         target.mkdir(parents=True, exist_ok=True)
@@ -658,7 +681,15 @@ class FolderRunner:
             raise FolderError(
                 "En una carpeta de red el original se deja como está: elija «Dejarlo»"
             )
-        origin, target = validate_folders(source, destination)
+        origin, target = validate_folders(
+            source,
+            destination,
+            internas=(
+                self._settings.upload_dir,
+                self._settings.output_dir,
+                Path(self._settings.ledger_path).parent,
+            ),
+        )
 
         for existing in self._runs.values():
             if existing.active and existing.source == origin:
@@ -1641,7 +1672,11 @@ class FolderRunner:
         if partes is None:
             return path
         base = Path(self._settings.upload_dir) / self.CARPETA_DE_COPIAS / run.id
-        return base.joinpath(partes.servidor, partes.recurso, *partes.resto.split("\\"))
+        copia = base.joinpath(partes.servidor, partes.recurso, *partes.resto.split("\\"))
+        # Segunda llave: pase lo que pase con la ruta, la copia no sale de aquí.
+        if base.resolve() not in copia.resolve().parents:
+            raise FolderError(f"La ruta de red no es válida: {path}")
+        return copia
 
     @staticmethod
     def _borrar_la_copia(path: Path, local: Path) -> None:

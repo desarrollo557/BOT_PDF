@@ -102,6 +102,11 @@ def partes(ruta: object) -> Partes | None:
     if hallado is None:
         return None
     resto = re.sub(r"[\\/]+", "\\\\", (hallado.group(3) or "")).strip("\\")
+    # Ni «.» ni «..» en ningún trozo: la copia local de una carpeta de red se
+    # arma con ellos, y «..» la sacaba de su carpeta y podía pisar archivos
+    # del equipo con lo que contestara un servidor cualquiera (2026-10-27).
+    if any(trozo in (".", "..") for trozo in (hallado.group(1), hallado.group(2), *resto.split("\\"))):
+        return None
     return Partes(hallado.group(1), hallado.group(2), resto)
 
 

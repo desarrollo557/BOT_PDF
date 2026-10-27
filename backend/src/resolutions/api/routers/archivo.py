@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import tempfile
 import zipfile
 from pathlib import Path
@@ -176,6 +177,10 @@ def _erase_document(ctx: Contexto, job_id: str) -> dict[str, object]:
     El borrado de uno solo la deja pasar para responder con el código correcto;
     el borrado en lote la captura y la convierte en el motivo de esa fila.
     """
+    # Sólo un id de trabajo: cualquier otro nombre borraba con rmtree la
+    # carpeta de salidas que se llamara así, como la de un lote (2026-10-27).
+    if not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        raise HTTPException(status_code=404, detail="El documento no existe")
     job = ctx.registry.get(job_id)
     directory = ctx.settings.output_dir / job_id
     recorded = job_id in ctx.ledger.job_ids()

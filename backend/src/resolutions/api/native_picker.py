@@ -97,9 +97,9 @@ $reloj.Add_Tick({
 $reloj.Start()
 
 $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = $args[0]
+$dialog.Description = $env:BOTPDF_TITULO
 $dialog.ShowNewFolderButton = $true
-if ($args[1]) { $dialog.SelectedPath = $args[1] }
+if ($env:BOTPDF_INICIAL) { $dialog.SelectedPath = $env:BOTPDF_INICIAL }
 
 $elegido = ''
 try {
@@ -219,9 +219,11 @@ def ask_directory(title: str, initial: str | None = None) -> str | None:
                 "Bypass",
                 "-Command",
                 _SCRIPT,
-                title,
-                start,
             ],
+            # Por el entorno y no tras el script: en PowerShell 5.1 todo lo
+            # que va después de -Command se concatena al script y se ejecuta,
+            # y el título llega del cliente (2026-10-27).
+            env={**os.environ, "BOTPDF_TITULO": title, "BOTPDF_INICIAL": start},
             capture_output=True,
             text=True,
             timeout=TIMEOUT_SECONDS,

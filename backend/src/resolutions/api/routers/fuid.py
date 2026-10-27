@@ -15,7 +15,7 @@ from ..contexto import Contexto, Ctx
 from ..errores import explicar_fallo
 from ..identidad import Quien, exigir_descarga_de_planillas
 from ..worker import FUID_SUFFIX
-from .salidas import XLSX_MEDIA
+from .salidas import XLSX_MEDIA, _carpeta_del_trabajo
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +44,9 @@ def _clave_de_control(job_id: str) -> str:
 
 def _fuid_de(ctx: Contexto, job_id: str) -> Path | None:
     """La planilla FUID escrita para un documento, si la hay."""
-    directorio = (ctx.settings.output_dir / job_id).resolve()
-    if not directorio.is_dir():
+    # Contenido en la carpeta de salidas: «..» buscaba planillas en la de datos.
+    directorio = _carpeta_del_trabajo(ctx, job_id)
+    if directorio is None or not directorio.is_dir():
         return None
     hojas = sorted(directorio.glob(f"*{FUID_SUFFIX}"))
     return hojas[0] if hojas else None
