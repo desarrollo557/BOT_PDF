@@ -684,11 +684,7 @@ class FolderRunner:
         origin, target = validate_folders(
             source,
             destination,
-            internas=(
-                self._settings.upload_dir,
-                self._settings.output_dir,
-                Path(self._settings.ledger_path).parent,
-            ),
+            internas=(self._settings.upload_dir, self._settings.output_dir),
         )
 
         for existing in self._runs.values():
