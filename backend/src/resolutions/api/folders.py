@@ -281,6 +281,10 @@ class FolderRun:
     lecturas_de_fuid: dict = field(default_factory=dict, repr=False)
     #: Y de cada Índice Electrónico entregado, para el libro general.
     lecturas_de_indices: dict = field(default_factory=dict, repr=False)
+    #: Lo que cada PDF entregado sumó a la corrida -- sus filas de actas, sus
+    #: unidades del manifiesto, sus resoluciones --, para retirarlo si el mismo
+    #: PDF se rehace en la vuelta final: se sumaba dos veces.
+    aportes: dict[str, tuple[list, list, int]] = field(default_factory=dict, repr=False)
     #: Las filas de actas de cada subcarpeta, para escribir su Excel sin
     #: recorrer las de toda la corrida.
     filas_por_carpeta: dict[str, list[dict]] = field(default_factory=dict, repr=False)
@@ -1230,6 +1234,32 @@ class FolderRunner:
             run.filas_por_carpeta.setdefault(str(fila.get("carpeta") or ""), []).append(fila)
 
     @staticmethod
+    def _retirar_lo_que_sumo(run: FolderRun, origin: Path) -> None:
+        """Quita lo que este PDF sumó en un intento anterior de la misma corrida.
+
+        Una entrega que quedó incompleta vuelve en la vuelta final y se suma
+        otra vez: sin esto, sus actas salían dos veces en el Excel y sus
+        unidades dos veces en el manifiesto (2026-10-27). Se quita por
+        identidad, no por contenido: dos actas iguales de dos libros son dos.
+        """
+        antes = run.aportes.pop(str(origin), None)
+        if antes is None:
+            return
+        filas, unidades, resoluciones = antes
+        if filas:
+            fuera = {id(fila) for fila in filas}
+            run.inventario_filas[:] = [f for f in run.inventario_filas if id(f) not in fuera]
+            for suyas in run.filas_por_carpeta.values():
+                suyas[:] = [f for f in suyas if id(f) not in fuera]
+            # Mismo número de filas, otro contenido: que se vuelva a escribir.
+            run.inventario_escritas = -1
+        if unidades:
+            fuera = {id(unidad) for unidad in unidades}
+            run.manifest[:] = [u for u in run.manifest if id(u) not in fuera]
+            run.manifiesto_escrito = -1
+        run.resolutions -= resoluciones
+
+    @staticmethod
     def _relative(run: FolderRun, path: Path) -> Path:
         """La ruta del PDF vista desde la carpeta de origen.
 
@@ -1483,12 +1513,18 @@ class FolderRunner:
                 run.processed += 1
                 run.resolutions += len(((job.report or {}).get("groups")) or [])
                 entrega = await asyncio.to_thread(self._deliver, run, job, path, huella)
+                if entrega.fallos and len(entrega.pendientes) == len(entrega.fallos):
+                    # Sólo falló copiar -- la red, un momento --: se reintenta
+                    # la copia, no el PDF. Rehacerlo entero volvía a leer cada
+                    # página y a pagar el OCR (2026-10-27).
+                    await self._recopiar(run, entrega, path)
                 if entrega.fallos:
                     # Lo copiado a medias no es una entrega: el PDF cuenta
                     # como fallido, el original se queda donde estaba y la
                     # constancia sigue diciendo «entregando», así que la
                     # próxima corrida lo rehace entero.
                     run.processed -= 1
+                    run.resolutions -= len(((job.report or {}).get("groups")) or [])
                     run.incompletas.add(str(path))
                     run.entregas_incompletas = len(run.incompletas)
                     raise EntregaIncompleta(
@@ -1546,6 +1582,50 @@ class FolderRunner:
             # -- también si falló --, cuando le toque al escritor de fondo.
             self._pedir_generales(run)
             self._publish(run)
+
+    #: Cuántas veces se reintenta sólo la copia antes de dar la entrega por incompleta.
+    VECES_QUE_SE_RECOPIA = 2
+
+    async def _recopiar(self, run: FolderRun, entrega: Entrega, origin: Path) -> None:
+        """Reintenta las copias que fallaron, al mismo nombre, con una espera entre medias.
+
+        Fuera del cerrojo mientras se espera; dentro mientras se copia. Lo que
+        sale se apunta igual que en la entrega; si algo sigue sin salir, la
+        entrega queda incompleta como siempre y el PDF vuelve al final.
+        """
+        espera = float(getattr(self._settings, "espera_de_reintento", 15.0) or 0)
+        for _ in range(self.VECES_QUE_SE_RECOPIA):
+            if not entrega.pendientes:
+                return
+            await asyncio.sleep(espera)
+            await asyncio.to_thread(self._copiar_lo_pendiente, run, entrega, origin)
+
+    def _copiar_lo_pendiente(self, run: FolderRun, entrega: Entrega, origin: Path) -> None:
+        quedan: list[tuple[Path, Path, bool]] = []
+        fallos: list[str] = []
+        with run.cerrojo:
+            for desde, hasta, reemplaza in entrega.pendientes:
+                try:
+                    if not reemplaza and hasta.exists():
+                        # Otro tomó el nombre mientras tanto: no se pisa.
+                        raise FileExistsError(errno.EEXIST, "el nombre ya está ocupado", str(hasta))
+                    hasta.parent.mkdir(parents=True, exist_ok=True)
+                    _copiar(desde, hasta)
+                except OSError as error:
+                    quedan.append((desde, hasta, reemplaza))
+                    fallos.append(f"«{hasta.name}»: {explicar_fallo(error)}")
+                    continue
+                if entrega.archivos is not None and hasta not in entrega.archivos:
+                    entrega.archivos.append(hasta)
+                run.record(
+                    Delivery(
+                        file_name=hasta.name,
+                        source_document=str(self._relative(run, origin)),
+                        destination=str(hasta.parent),
+                    )
+                )
+        entrega.pendientes = quedan
+        entrega.fallos = fallos
 
     #: Dónde se dejan, mientras se procesan, las copias de los PDF de una carpeta de red.
     CARPETA_DE_COPIAS = "red"
@@ -2115,16 +2195,18 @@ class FolderRunner:
     def _entregar(
         self, run: FolderRun, job: Job, origin: Path, huella: tuple[int, int] = (0, 0)
     ) -> Entrega:
+        self._retirar_lo_que_sumo(run, origin)
         filas = (job.report or {}).get("inventario_actas") or []
         if filas:
             # La carpeta de cada fila es su ruta desde la raíz elegida: con
             # subcarpetas, «00C003284\UPD3859772» y no sólo «UPD3859772». Es lo
             # que agrupa el Excel de cada subcarpeta y lo que encadena sus folios.
             carpeta = self._carpeta_de(run, origin)
-            self._sumar_filas_de_actas(run, [{**fila, "carpeta": carpeta} for fila in filas])
+            suyas = [{**fila, "carpeta": carpeta} for fila in filas]
+            self._sumar_filas_de_actas(run, suyas)
             # Las actas son sus unidades: un libro cuenta tantas como trae.
             run.resolutions += len(filas)
-            self._record(run, job, origin)
+            run.aportes[str(origin)] = (suyas, self._record(run, job, origin), len(filas))
             entrega = self._entregar_actas(run, job, origin, huella)
             # El de su subcarpeta siempre; el general, cada tanto (ver
             # `INVENTARIO_GENERAL_CADA`). Al terminar se escriben todos.
@@ -2174,7 +2256,7 @@ class FolderRunner:
             entrega,
         )
 
-        self._record(run, job, origin)
+        run.aportes[str(origin)] = ([], self._record(run, job, origin), 0)
         indice = (job.report or {}).get("indice_electronico")
         if indice and prefijo:
             # La carpeta de un NIC lleva un solo Índice Electrónico para todos
@@ -2242,6 +2324,7 @@ class FolderRunner:
             elif prefijo:
                 # En la carpeta de la caja, con su UPD delante.
                 name = f"{prefijo}{name}"
+            target = None
             try:
                 target = unique_path(carpeta, name)
                 _copiar(source_file, target)
@@ -2250,6 +2333,12 @@ class FolderRunner:
             except OSError as error:
                 logger.warning("could not deliver %s: %s", source_file.name, error)
                 entrega.fallos.append(f"«{source_file.name}»: {explicar_fallo(error)}")
+                # Se puede reintentar tal cual, salvo que el FUID del libro ya
+                # se escribió sin conocer el nombre que le tocó.
+                if target is not None and (
+                    target.name == source_file.name or not (job.report or {}).get("fuid")
+                ):
+                    entrega.pendientes.append((source_file, target, False))
                 continue
             if target.name != source_file.name:
                 renombres[source_file.name] = target.name
@@ -2386,18 +2475,19 @@ class FolderRunner:
             self._write_sheet(run, job, carpeta, en=hojas[0].parent)
 
     @staticmethod
-    def _record(run: FolderRun, job: Job, origin: Path) -> None:
-        """Add this document's resolutions to the run's manifest.
+    def _record(run: FolderRun, job: Job, origin: Path) -> list[dict]:
+        """Add this document's resolutions to the run's manifest; returns what it added.
 
         Salvo las cajas de correspondencia: su inventario general es el Índice
         Electrónico del cliente, y la planilla genérica de entrega repetía lo
         mismo en otro formato (lo pidió el operador: sólo la plantilla).
         """
         if (job.report or {}).get("indice_electronico"):
-            return
+            return []
         inventory = ((job.report or {}).get("inventory")) or {}
-        for item in inventory.get("items") or []:
-            run.manifest.append({**item, "source_document": origin.name})
+        suyos = [{**item, "source_document": origin.name} for item in inventory.get("items") or []]
+        run.manifest.extend(suyos)
+        return suyos
 
     def _write_manifest(self, run: FolderRun, *, solo_si_cambio: bool = False) -> None:
         """Leave one spreadsheet in the destination covering the whole delivery.
@@ -2502,6 +2592,8 @@ class FolderRunner:
             except OSError as error:
                 logger.warning("no se pudo entregar %s: %s", hasta.name, error)
                 entrega.fallos.append(f"«{hasta.name}»: {explicar_fallo(error)}")
+                # El espejo se reemplaza al copiar: se reintenta al mismo nombre.
+                entrega.pendientes.append((desde, hasta, True))
                 continue
             run.record(
                 Delivery(
@@ -3085,6 +3177,10 @@ class Entrega:
     #: Lo copiado, o ``None`` para tomar todo lo que hay en ``base``.
     archivos: list[Path] | None = None
     fallos: list[str] = field(default_factory=list)
+    #: Las copias que fallaron y se pueden reintentar tal cual: (desde, hasta,
+    #: si puede reemplazar lo que haya en ``hasta``). Si todos los fallos son
+    #: de éstos, se reintenta sólo la copia antes de rehacer el PDF entero.
+    pendientes: list[tuple[Path, Path, bool]] = field(default_factory=list)
     #: El Índice Electrónico de este PDF, leído, para su constancia: en la
     #: carpeta de un NIC va uno solo para todos sus UPD (``_ordenar_la_caja``).
     indice: dict | None = None

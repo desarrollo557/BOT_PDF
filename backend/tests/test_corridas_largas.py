@@ -64,6 +64,7 @@ def ajustes(tmp_path):
         ledger_path=tmp_path / "inventory.jsonl",
         # Las pausas y vueltas de reintento, en centésimas y no en minutos.
         pausa_tras_fallos=0.01,
+        espera_de_reintento=0.01,
     )
     settings.ensure_directories()
     (tmp_path / "origen").mkdir()
@@ -788,6 +789,70 @@ class TestLaEntregaIncompleta:
         # Y la constancia dice «entregando»: la próxima corrida lo rehará.
         constancia = constancias.leer(tmp_path / "destino" / "a" / constancias.NOMBRE)
         assert constancia.estado == EstadoDeEntrega.ENTREGANDO
+
+    def test_una_copia_que_falla_una_vez_se_reintenta_sin_volver_a_leer_el_pdf(
+        self, ajustes, tmp_path, monkeypatch
+    ):
+        """Un corte de red al copiar hacía reprocesar el PDF entero, OCR de pago incluido."""
+        _pon(tmp_path / "origen", "a.pdf")
+        original = folders._copiar
+        fallos = {"n": 0}
+
+        def un_corte(desde, hasta):
+            if hasta.suffix == ".pdf" and fallos["n"] == 0:
+                fallos["n"] += 1
+                raise OSError(errno.EIO, "Se perdió la conexión de red", str(hasta))
+            return original(desde, hasta)
+
+        monkeypatch.setattr(folders, "_copiar", un_corte)
+        motor, hechos = _motor(ajustes, JobRegistry())
+        run = _vaciar(motor, tmp_path / "origen", tmp_path / "destino")
+
+        assert hechos == ["a.pdf"]
+        assert run.processed == 1 and run.failed == 0
+        assert run.entregas_incompletas == 0
+        carpeta = tmp_path / "destino" / "a"
+        assert (carpeta / "01_X.pdf").exists()
+        assert not (carpeta / REEMPLAZADOS_DIR).exists()
+        constancia = constancias.leer(carpeta / constancias.NOMBRE)
+        assert constancia.estado == EstadoDeEntrega.COMPLETA
+        assert "01_X.pdf" in {archivo["ruta"] for archivo in constancia.archivos}
+
+    def test_un_libro_de_actas_rehecho_no_duplica_sus_filas(self, ajustes, tmp_path, monkeypatch):
+        """La copia que no salió ni reintentando vuelve al final; sus filas no se suman dos veces."""
+        _pon(tmp_path / "origen", "libro.pdf")
+        registry = JobRegistry()
+        original = folders._copiar
+        fallos = {"n": 0}
+
+        def caida_un_rato(desde, hasta):
+            if hasta.suffix == ".pdf" and fallos["n"] < 3:
+                fallos["n"] += 1
+                raise OSError(errno.EIO, "Se perdió la conexión de red", str(hasta))
+            return original(desde, hasta)
+
+        async def run_job(job):
+            salida = ajustes.output_dir / job.id
+            salida.mkdir(parents=True, exist_ok=True)
+            (salida / "01_ACTA.pdf").write_bytes(b"%PDF-1.4 acta")
+            registry.mark_done(
+                job,
+                {
+                    "groups": [],
+                    "review_queue": [],
+                    "outputs": ["01_ACTA.pdf"],
+                    "inventario_actas": [{"acta": "001", "fecha": "2020-01-01"}],
+                },
+            )
+
+        monkeypatch.setattr(folders, "_copiar", caida_un_rato)
+        monkeypatch.setattr(FolderRunner, "_escribir_inventario_de_actas", lambda *a, **k: None)
+        motor = FolderRunner(registry, ajustes, run_job, watch_interval=0.01)
+        run = _vaciar(motor, tmp_path / "origen", tmp_path / "destino")
+
+        assert run.processed == 1 and run.failed == 0
+        assert len(run.inventario_filas) == 1
+        assert sum(len(filas) for filas in run.filas_por_carpeta.values()) == 1
 
     def test_la_copia_no_deja_archivos_a_medias(self, tmp_path, monkeypatch):
         from resolutions.api import folders
