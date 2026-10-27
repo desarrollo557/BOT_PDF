@@ -594,3 +594,69 @@ class TestNingunArchivoPisaAOtro:
         assert len(archivos) == 2
         assert any("-P2" in nombre for nombre in archivos)
         assert len(resultado.outputs) == 2
+
+
+class TestElDiscoNoEsUnaPaginaDanada:
+    """Un disco lleno o sin permiso hace fallar el documento; no lo da por escrito.
+
+    Las páginas que no se dejan copiar se contienen y van a revisión: es el
+    papel. Pero cuando lo que falla es el destino -- sin espacio, sin permiso --
+    no hay página culpable: contenerlo daba el documento por terminado, se
+    dejaba la constancia «completa» y, con «Borrarlo», se borraba el original
+    de un documento que no estaba en ninguna parte (2026-10-27).
+    """
+
+    @staticmethod
+    def _disco(monkeypatch, error):
+        original = pymupdf.Document.save
+        intentos = {"n": 0}
+
+        def sin_sitio(self, filename, **kwargs):
+            if isinstance(filename, (str, Path)) and Path(filename).name != REPAIRED_FILE:
+                intentos["n"] += 1
+                raise error
+            return original(self, filename, **kwargs)
+
+        monkeypatch.setattr(pymupdf.Document, "save", sin_sitio)
+        return intentos
+
+    def test_un_disco_lleno_hace_fallar_el_documento(self, source, tmp_path, monkeypatch):
+        sistema = pymupdf.mupdf.FzErrorSystem("cannot open file 'x.pdf': No space left on device")
+        self._disco(monkeypatch, sistema)
+
+        with pytest.raises(OSError) as fallo:
+            PyMuPDFAssembler().write(source, one_group([1, 2, 3]), tmp_path / "out")
+
+        import errno
+
+        assert fallo.value.errno == errno.ENOSPC
+        assert not list((tmp_path / "out").glob("*.pdf"))
+
+    def test_sin_permiso_en_la_carpeta_es_un_permiso_denegado(self, source, tmp_path, monkeypatch):
+        self._disco(monkeypatch, pymupdf.mupdf.FzErrorSystem("cannot remove file 'x.pdf': Permission denied"))
+
+        with pytest.raises(PermissionError):
+            PyMuPDFAssembler().write(source, one_group([1, 2]), tmp_path / "out")
+
+    def test_no_se_repara_el_origen_por_un_disco_lleno(self, source, tmp_path, monkeypatch):
+        import errno
+
+        intentos = self._disco(monkeypatch, OSError(errno.ENOSPC, "No space left on device"))
+
+        with pytest.raises(OSError):
+            PyMuPDFAssembler().write(source, one_group([1, 2]), tmp_path / "out")
+        # Un solo guardado: reparar y reconstruir página a página no arregla un disco.
+        assert intentos["n"] == 1
+
+    def test_una_pagina_danada_sigue_yendo_a_revision(self, source, tmp_path, monkeypatch):
+        break_save(monkeypatch, times=2)
+        original = pymupdf.Document.tobytes
+
+        def rota(self, *args, **kwargs):
+            raise RuntimeError(GRAFT_ERROR)
+
+        monkeypatch.setattr(pymupdf.Document, "tobytes", rota)
+        assembly = PyMuPDFAssembler().write(source, one_group([1, 2]), tmp_path / "out")
+        monkeypatch.setattr(pymupdf.Document, "tobytes", original)
+
+        assert set(assembly.unwritable_pages) == {1, 2}

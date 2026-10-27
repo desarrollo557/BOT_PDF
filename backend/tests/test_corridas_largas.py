@@ -770,6 +770,31 @@ class TestElOriginalSoloSeTocaSiEsElQueSeLeyo:
         assert (origen / "a.pdf").exists()
         assert any("a.pdf" in aviso and "no se pudo mover" in aviso for aviso in run.avisos)
 
+    def test_un_libro_que_no_se_pudo_dividir_conserva_su_original(self, ajustes, tmp_path):
+        """El Excel de actas sale aunque dividir falle; el original es lo único que tiene las páginas."""
+        origen = tmp_path / "origen"
+        _pon(origen, "libro.pdf")
+        registry = JobRegistry()
+
+        async def run_job(job):
+            salida = ajustes.output_dir / job.id
+            salida.mkdir(parents=True, exist_ok=True)
+            registry.mark_done(
+                job,
+                {
+                    "groups": [],
+                    "review_queue": [],
+                    "inventory": {"items": []},
+                    "division_error": "PermissionError: no hay permiso",
+                },
+            )
+
+        motor = FolderRunner(registry, ajustes, run_job, watch_interval=0.01)
+        run = _vaciar(motor, origen, tmp_path / "destino", disposition=folders.SourceDisposition.DELETE)
+
+        assert (origen / "libro.pdf").exists()
+        assert any("no se pudo dividir" in aviso for aviso in run.avisos)
+
     def test_un_pdf_que_se_sigue_copiando_se_espera_hasta_que_deja_de_crecer(self, tmp_path):
         ruta = tmp_path / "llegando.pdf"
         ruta.write_bytes(b"%PDF-1.4 primera mitad")

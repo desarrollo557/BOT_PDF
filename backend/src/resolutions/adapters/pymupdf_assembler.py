@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import contextlib
+import errno
 import logging
+import os
 import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -20,6 +23,37 @@ from ..domain.naming import RESOLUTION_PREFIX, output_filename
 from .mupdf_messages import drenar, explicar
 
 logger = logging.getLogger(__name__)
+
+#: Cómo dice MuPDF que el sistema de archivos rechazó algo (``code=2``): no
+#: pudo abrir, escribir o borrar el archivo de salida. Es del destino, no del
+#: papel. Con ``getattr`` porque las versiones viejas no exponen la clase.
+_DEL_SISTEMA = getattr(getattr(pymupdf, "mupdf", None), "FzErrorSystem", None)
+
+
+def fallo_del_disco(error: BaseException, target: Path) -> OSError | None:
+    """El fallo como ``OSError`` si lo rechazó el destino, o ``None`` si es del papel.
+
+    Una página con los objetos rotos se contiene y va a revisión. Un disco
+    lleno o una carpeta sin permiso, no: no hay página culpable, y contenerlo
+    daba por escrito un documento que no estaba en ninguna parte (2026-10-27).
+    El ``OSError`` lleva su ``errno`` para que ``explicar_fallo`` lo cuente en
+    palabras -- «el disco se quedó sin espacio», «no hay permiso» --.
+    """
+    if isinstance(error, OSError):
+        return error
+    texto = str(error)
+    if not ((_DEL_SISTEMA is not None and isinstance(error, _DEL_SISTEMA)) or texto.startswith("code=2:")):
+        return None
+    bajo = texto.lower()
+    if "no space" in bajo:
+        codigo = errno.ENOSPC
+    elif "permission denied" in bajo:
+        codigo = errno.EACCES
+    elif "no such file" in bajo:
+        codigo = errno.ENOENT
+    else:
+        codigo = errno.EIO
+    return OSError(codigo, os.strerror(codigo), str(target))
 
 QUARANTINE_FILE = "_quarantine.pdf"
 
@@ -422,6 +456,12 @@ class PyMuPDFAssembler:
         try:
             return self._write_pages(origin, page_numbers, target, unwritable)
         except Exception as error:  # noqa: BLE001 - contained to this file
+            del_disco = fallo_del_disco(error, target)
+            if del_disco is not None:
+                # El destino, no el papel: falla el documento entero.
+                with contextlib.suppress(OSError):
+                    target.unlink(missing_ok=True)
+                raise del_disco from error
             motivo = explicar(error)
             logger.warning("no se pudo escribir %s: %s", target.name, motivo)
             target.unlink(missing_ok=True)
@@ -462,6 +502,10 @@ class PyMuPDFAssembler:
             if self._write_in_blocks(origin.document, page_numbers, target):
                 return True
         except Exception as error:  # noqa: BLE001 - se repara y se reintenta
+            if fallo_del_disco(error, target) is not None:
+                # Reparar el origen y reconstruir página a página no arregla
+                # un disco lleno: sólo gasta minutos en un libro grande.
+                raise
             logger.info(
                 "la copia por bloques de %s no salió a la primera (%s); "
                 "se repara el origen y se reintenta",

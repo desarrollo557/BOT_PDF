@@ -14,6 +14,7 @@ anotado en un renglón, o una nota de ajuste de dos hojas repartida en doce.
 
 from __future__ import annotations
 
+import errno
 import logging
 from pathlib import Path
 
@@ -221,9 +222,14 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
         except Cancelled:
             raise
         except Exception as error:  # noqa: BLE001 - lo leído sirve igual
-            # Una ruta que Windows no deja crear, un disco lleno, un PDF dañado
-            # a mitad: lo leído no se pierde por eso. El Excel se escribe con
-            # cada acta y el motivo en su columna, y la pantalla lo avisa.
+            # Una ruta que Windows no deja crear o un PDF dañado a mitad: lo
+            # leído no se pierde por eso. El Excel se escribe con cada acta y
+            # el motivo en su columna, y la pantalla lo avisa.
+            #
+            # Un disco lleno no: tampoco cabría el Excel, y el documento tiene
+            # que fallar con su motivo en vez de terminar como si nada.
+            if isinstance(error, OSError) and error.errno == errno.ENOSPC:
+                raise
             logger.warning("no se pudo dividir %s", taller.name, exc_info=True)
             no_se_dividio = f"{type(error).__name__}: {error}"
     outcome.filas = resultado_de_cada_acta(

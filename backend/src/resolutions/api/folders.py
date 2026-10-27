@@ -1486,7 +1486,16 @@ class FolderRunner:
                     # Una vuelta posterior sí la terminó.
                     run.incompletas.discard(str(path))
                     run.entregas_incompletas = len(run.incompletas)
-                await asyncio.to_thread(self._dispose, run, path, huella)
+                no_se_dividio = (job.report or {}).get("division_error")
+                if no_se_dividio:
+                    # El Excel salió, pero las páginas siguen sólo en el
+                    # original: borrarlo o apartarlo las perdería.
+                    self._avisar(
+                        run,
+                        f"«{relativa}» no se pudo dividir ({no_se_dividio}); el original se dejó en su sitio.",
+                    )
+                else:
+                    await asyncio.to_thread(self._dispose, run, path, huella)
                 if control is not None:
                     await self._comprobar_el_destino(run, path, control, local)
             elif job.state is JobState.CANCELLED:
