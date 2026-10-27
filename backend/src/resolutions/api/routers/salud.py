@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from ...adapters.tesseract_ocr import tesseract_disponible
 from ...application.lectura import available_readers
 from ...application.oracle import available_oracles
 from ...application.tipo_pedido import tipos_declarables
@@ -117,6 +118,9 @@ async def health(ctx: Ctx) -> dict[str, object]:
         # Con qué se puede leer el papel en este servicio. Lo mismo que arriba
         # pero para el paso anterior: sin lectura no hay nada que juzgar.
         "readers": available_readers(ctx.settings.as_worker_payload()),
+        # Y si está el motor local, que es el que lee gratis. Sin él nada falla
+        # a la vista: se paga en el remoto o sale vacío (2026-10-27).
+        "tesseract": tesseract_disponible(),
         # Qué clases de documento se pueden declarar al cargar. Sale de aquí y
         # no escrito a mano en el front para que añadir una sea una línea en un
         # solo archivo.

@@ -204,6 +204,15 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_publish_progress(ctx)),
         asyncio.create_task(ctx.janitor.run()),
     ]
+    from ..adapters.tesseract_ocr import TESSERACT_CMD, tesseract_disponible
+
+    if not tesseract_disponible():
+        # Nada falla a la vista sin él: se paga en el remoto o sale vacío.
+        logger.error(
+            "no se encuentra Tesseract («%s»): con «OCR + IA» cada página se pagará en el "
+            "lector remoto y con «Solo OCR» saldrá sin texto",
+            TESSERACT_CMD,
+        )
     logger.info(
         "worker pool started with %s processes; %s documentos de carpeta a la vez; "
         "%s llamadas a la IA a la vez",

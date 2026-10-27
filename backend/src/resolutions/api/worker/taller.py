@@ -141,7 +141,9 @@ class Taller:
         from ...adapters.ocr_cascada import OcrEnCascada
 
         return OcrEnCascada(
-            local=local, remoto=MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
+            local=local,
+            remoto=MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia),
+            consumo=self.consumo,
         )
 
     def vision(self):

@@ -121,6 +121,12 @@ def _process_document_job(payload: dict) -> dict:
     report = _despachar(payload)
     if isinstance(report, dict):
         report["consumo"] = consumo.as_dict()
+        if consumo.ocr_local_fallido:
+            # Pagado por un fallo del equipo, no por el papel: que se vea.
+            report.setdefault("notices", []).append(
+                f"Tesseract falló en {consumo.ocr_local_fallido} lectura(s) y se leyeron con el OCR "
+                "de pago. Revise que Tesseract esté instalado y que el equipo no esté saturado."
+            )
         # Y cómo se eligió la ruta, cuando hubo que reconocer el documento: el
         # mismo lugar para las cuatro rutas, igual que el consumo.
         if "reconocimiento" in payload:

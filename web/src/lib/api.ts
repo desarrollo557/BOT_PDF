@@ -628,6 +628,11 @@ export interface Health {
    */
   readers?: Record<LecturaChoice, boolean>;
   /**
+   * Si el servicio encuentra Tesseract. Sin él, «OCR + IA» paga cada página en
+   * el motor remoto y «Solo OCR» sale vacío. Ausente en un servicio anterior.
+   */
+  tesseract?: boolean;
+  /**
    * Qué clases de documento se pueden declarar al cargar. Las enumera el
    * servicio para que el front no tenga que mantener la misma lista en su
    * idioma. Ausente en un servicio anterior a esta revisión, y ahí sólo se

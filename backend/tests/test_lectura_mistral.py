@@ -69,6 +69,22 @@ class TestLaCascada:
 
         assert OcrEnCascada(local, remoto).read(b"imagen").text == "200/V"
 
+    def test_si_el_local_falla_se_escala_igual_pero_se_cuenta(self, caplog):
+        """La lectura no cambia; lo que cambia es que se ve que se pagó por un fallo del equipo."""
+        local = OcrFalso(falla=True)
+        remoto = OcrFalso("RESOLUCION 00412")
+        consumo = Consumo()
+
+        with caplog.at_level("WARNING", logger="resolutions.adapters.ocr_cascada"):
+            cascada = OcrEnCascada(local, remoto, consumo=consumo)
+            assert cascada.read(b"imagen").text == "RESOLUCION 00412"
+            cascada.read(b"imagen")
+
+        assert remoto.llamadas == 2
+        assert consumo.ocr_local_fallido == 2
+        assert consumo.as_dict()["ocr_local_fallido"] == 2
+        assert sum("OCR local falló" in r.message for r in caplog.records) == 2
+
     def test_si_el_remoto_se_cae_queda_la_lectura_local(self):
         local = OcrFalso("algo poco")
         remoto = OcrFalso(falla=True)

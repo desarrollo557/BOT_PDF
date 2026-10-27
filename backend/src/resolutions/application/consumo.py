@@ -79,6 +79,10 @@ class Consumo:
     #: había comido el crédito era que el proveedor contestara "sin presupuesto"
     #: en mitad del libro siguiente.
     tope_de_paginas: int | None = None
+    #: Páginas que fueron al OCR de pago porque **el local falló** -- no
+    #: arrancó, se le acabó el tiempo --, no porque leyera poco. Es gasto por
+    #: un problema del equipo, y el operador tiene que verlo (2026-10-27).
+    ocr_local_fallido: int = 0
     _por_proveedor: dict[str, ConsumoDeProveedor] = field(default_factory=dict)
     _candado: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -129,6 +133,11 @@ class Consumo:
         with self._candado:
             self._de(proveedor).fallos += 1
 
+    def fallo_del_ocr_local(self) -> None:
+        """Una página que el OCR local no pudo leer y se escala al de pago."""
+        with self._candado:
+            self.ocr_local_fallido += 1
+
     @property
     def vacio(self) -> bool:
         with self._candado:
@@ -154,6 +163,7 @@ class Consumo:
                 total.tokens_cache += c.tokens_cache
                 total.rechazos += c.rechazos
                 total.fallos += c.fallos
+            fallido = self.ocr_local_fallido
             coste = (
                 round(total.paginas_facturadas * self.precio_por_pagina, 4)
                 if self.precio_por_pagina is not None
@@ -165,6 +175,7 @@ class Consumo:
             "tokens": total.tokens_entrada + total.tokens_salida,
             "coste_estimado": coste,
             "moneda": self.moneda,
+            "ocr_local_fallido": fallido,
         }
 
 

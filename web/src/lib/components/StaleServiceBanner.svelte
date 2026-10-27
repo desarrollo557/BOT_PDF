@@ -18,6 +18,10 @@
   const stale = $derived(
     checked && health !== null && (health.api_revision ?? 0) < REQUIRED_API_REVISION
   );
+  // `false` y no ausente: un servicio anterior no lo declara, y no saber no es no tener.
+  const sinTesseract = $derived(checked && health?.tesseract === false);
+  let sinTesseractCerrado = $state(false);
+
   const missing = $derived.by(() => {
     const has = new Set(health?.features ?? []);
     return [
@@ -48,6 +52,23 @@
     return () => clearInterval(poll);
   });
 </script>
+
+{#if sinTesseract && !sinTesseractCerrado}
+  <div class="banner" role="alert">
+    <span class="icon"><Icono nombre="aviso" /></span>
+    <div class="body">
+      <b>El servicio no encuentra Tesseract.</b>
+      <p>
+        Es el lector gratuito de este equipo. Sin él, con «OCR + IA» cada página se paga en el lector
+        remoto, y con «Solo OCR» las páginas escaneadas salen sin texto. Instálelo o revise
+        <b class="key">RESOLUTIONS_TESSERACT_CMD</b> y vuelva a levantar el servicio.
+      </p>
+    </div>
+    <button class="btn btn-icon cerrar" onclick={() => (sinTesseractCerrado = true)} aria-label="Cerrar">
+      <Icono nombre="cerrar" />
+    </button>
+  </div>
+{/if}
 
 {#if stale && !dismissed}
   <div class="banner" role="alert">

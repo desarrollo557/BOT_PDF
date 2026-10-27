@@ -58,6 +58,23 @@ def test_el_id_del_trabajo_tampoco_sale_de_la_carpeta_de_salidas(client, tmp_pat
     assert secreto.exists()
 
 
+def test_la_salud_dice_si_tesseract_esta(client, monkeypatch):
+    """Sin Tesseract, cada página con «OCR + IA» se paga en silencio y con «Solo OCR» sale vacía."""
+    from resolutions.api.routers import salud
+
+    monkeypatch.setattr(salud, "tesseract_disponible", lambda: False)
+    assert client.get("/api/health").json()["tesseract"] is False
+    monkeypatch.setattr(salud, "tesseract_disponible", lambda: True)
+    assert client.get("/api/health").json()["tesseract"] is True
+
+
+def test_tesseract_disponible_mira_el_comando_configurado(monkeypatch, tmp_path):
+    from resolutions.adapters import tesseract_ocr
+
+    monkeypatch.setattr(tesseract_ocr, "TESSERACT_CMD", str(tmp_path / "no-existe" / "tesseract.exe"))
+    assert tesseract_ocr.tesseract_disponible() is False
+
+
 def test_the_job_list_starts_empty(client):
     assert client.get("/api/jobs").json() == {"jobs": []}
 

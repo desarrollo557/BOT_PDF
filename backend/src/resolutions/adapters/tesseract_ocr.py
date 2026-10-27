@@ -34,6 +34,22 @@ from ..application.ports import OcrResult
 #: enterarse; por eso la ubicación es explícita y configurable.
 TESSERACT_CMD = os.environ.get("RESOLUTIONS_TESSERACT_CMD") or "tesseract"
 
+
+def tesseract_disponible() -> bool:
+    """Si el comando de Tesseract configurado existe en este equipo.
+
+    Sin abrirlo: una ruta que existe o un nombre que está en el PATH. Lo
+    pregunta la salud del servicio para avisar en pantalla, porque sin él cada
+    página con «OCR + IA» se paga en el motor remoto y con «Solo OCR» sale
+    vacía, y ninguna de las dos cosas se nota hasta ver la factura o el Excel.
+    """
+    import shutil
+
+    comando = TESSERACT_CMD
+    if os.path.dirname(comando):
+        return os.path.isfile(comando)
+    return shutil.which(comando) is not None
+
 #: Page segmentation modes. A header crop is a single uniform block; a full page
 #: needs the layout analyser. Using the right one is free accuracy.
 PSM_UNIFORM_BLOCK = 6

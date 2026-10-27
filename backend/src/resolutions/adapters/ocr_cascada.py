@@ -39,16 +39,31 @@ class OcrEnCascada:
     de las dos sería empeorar el resultado por haber gastado más.
     """
 
-    def __init__(self, local, remoto, minimo_util: int = MINIMO_UTIL) -> None:
+    def __init__(self, local, remoto, minimo_util: int = MINIMO_UTIL, consumo=None) -> None:
         self._local = local
         self._remoto = remoto
         self._minimo = minimo_util
+        #: Dónde contar las páginas que se pagan porque el local falló.
+        self._consumo = consumo
+        self._fallos_del_local = 0
 
     def read(self, image_png: bytes) -> OcrResult:
         try:
             local = self._local.read(image_png)
         except Exception:  # noqa: BLE001 - que falle el local no impide preguntar
-            logger.debug("el OCR local falló; se escala", exc_info=True)
+            # Se sigue escalando, como siempre: la lectura no cambia. Pero esa
+            # página se paga por un fallo del equipo -- Tesseract que no está o
+            # que no da abasto -- y no por lo que hay en el papel, así que se
+            # cuenta y se ve: en DEBUG no lo veía nadie (2026-10-27). La traza,
+            # sólo la primera vez; las demás, contadas.
+            self._fallos_del_local += 1
+            if self._consumo is not None:
+                self._consumo.fallo_del_ocr_local()
+            logger.warning(
+                "el OCR local falló (%d en este documento); la página se lee con el de pago",
+                self._fallos_del_local,
+                exc_info=self._fallos_del_local == 1,
+            )
             local = OcrResult(text="", mean_confidence=0.0)
 
         if _utiles(local.text) >= self._minimo:
