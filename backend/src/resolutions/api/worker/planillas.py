@@ -13,9 +13,23 @@ from pathlib import Path
 
 from ...application.progress import Stage
 from ...domain.naming import DOCUMENT_PREFIX
+from ..errores import explicar_fallo
 from .taller import _anunciar, _reportero
 
 logger = logging.getLogger(__name__)
+
+
+def _anotar_fallo(report: dict, clave: str, que: str, error: BaseException) -> None:
+    """El Excel que no se escribió, en el informe y en sus avisos.
+
+    En la clave de siempre -- ``fuid_error``, ``planilla_error``… -- y además
+    entre los avisos, que es lo que la tarjeta del documento enseña: el error
+    suelto en el informe no lo pintaba nadie. Con ``explicar_fallo``, para que
+    diga «ciérrelo en Excel» y no «PermissionError: [Errno 13]».
+    """
+    motivo = explicar_fallo(error)
+    report[clave] = motivo
+    report.setdefault("notices", []).append(f"No se pudo escribir {que}: {motivo}")
 
 #: Cómo se llama el Formato Único de Inventario Documental que queda escrito
 #: junto al trabajo. El endpoint de descarga lo busca por este sufijo, así que
@@ -81,7 +95,7 @@ def _escribir_fuid(
         report["fuid"] = escrito.name
     except Exception as error:  # noqa: BLE001 - la lectura sirvió igual
         logger.warning("no se pudo escribir el FUID", exc_info=True)
-        report["fuid_error"] = f"{type(error).__name__}: {error}"
+        _anotar_fallo(report, "fuid_error", "el FUID", error)
 
 
 def _escribir_fuid_de_archivo(
@@ -149,7 +163,7 @@ def _escribir_fuid_de_archivo(
         report["fuid"] = escrito.name
     except Exception as error:  # noqa: BLE001 - la lectura sirvió igual
         logger.warning("no se pudo escribir el FUID del archivo", exc_info=True)
-        report["fuid_error"] = f"{type(error).__name__}: {error}"
+        _anotar_fallo(report, "fuid_error", "el FUID", error)
 
 
 def _escribir_planilla(report: dict, destination: Path, payload: dict) -> None:
@@ -163,7 +177,8 @@ def _escribir_planilla(report: dict, destination: Path, payload: dict) -> None:
     destino cuando las otras tres empezaron a declararla.
 
     Que falle no invalida nada: los PDF ya están escritos y el informe también.
-    Se anota y se sigue, igual que con el FUID.
+    Se anota -- en ``planilla_error`` y entre los avisos -- y se sigue, igual
+    que con el FUID.
     """
     try:
         from ...adapters.excel_inventory import ExcelInventory
@@ -184,8 +199,9 @@ def _escribir_planilla(report: dict, destination: Path, payload: dict) -> None:
             operator=payload.get("operator"),
             processed_at=datetime.now(UTC).isoformat(),
         )
-    except Exception:  # noqa: BLE001 - la entrega ya está en el disco
+    except Exception as error:  # noqa: BLE001 - la entrega ya está en el disco
         logger.warning("no se pudo escribir la planilla del inventario", exc_info=True)
+        _anotar_fallo(report, "planilla_error", "la planilla del inventario", error)
 
 
 def _escribir_indice(report: dict, destination: Path, payload: dict) -> None:
@@ -268,7 +284,7 @@ def _escribir_indice(report: dict, destination: Path, payload: dict) -> None:
         report["indice_electronico"] = escrito.name
     except Exception as error:  # noqa: BLE001 - la entrega ya está en el disco
         logger.warning("no se pudo escribir el índice electrónico", exc_info=True)
-        report["indice_electronico_error"] = f"{type(error).__name__}: {error}"
+        _anotar_fallo(report, "indice_electronico_error", "el «00.INDICE ELECTRONICO.xlsx»", error)
 
 
 def _fecha_iso(valor: object) -> date | None:

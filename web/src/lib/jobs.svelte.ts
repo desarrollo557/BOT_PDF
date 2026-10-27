@@ -178,9 +178,16 @@ class JobStore {
       .catch(sinCargar);
     this.#close = streamEvents({
       job: (job) => this.#upsert(job),
-      folderRun: (run) => this.#upsertRun(run)
+      folderRun: (run) => this.#upsertRun(run),
+      // Abierto de verdad, no en cuanto se pidió: si el servicio se cae, las
+      // tarjetas dejan de moverse y la consola tiene que decir por qué.
+      conexion: (abierta) => {
+        if (this.connected && !abierta) {
+          consoleLog.push('SYS', 'se perdió el flujo de eventos; reconectando…', 'sys');
+        }
+        this.connected = abierta;
+      }
     });
-    this.connected = true;
   }
 
   #upsert(incoming: Job): void {

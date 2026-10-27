@@ -133,6 +133,24 @@ class TestLaPlanillaSeEscribeSola:
         )
         assert informe["outputs"]
         assert "el disco dijo que no" in informe["indice_electronico_error"]
+        # Y la pantalla lo enseña: el error suelto en el informe no lo pintaba nadie.
+        assert any("INDICE ELECTRONICO" in aviso for aviso in informe.get("notices") or [])
+
+    def test_un_fallo_de_la_planilla_queda_en_el_informe_y_a_la_vista(self, tmp_path, monkeypatch):
+        """Antes sólo quedaba en el registro del servicio: el informe no decía nada."""
+        from resolutions.adapters.excel_inventory import ExcelInventory
+        from resolutions.api.worker.planillas import _escribir_planilla
+
+        def abierta(self, *_a, **_k):
+            raise PermissionError(13, "Permission denied", "x__inventario.xlsx")
+
+        monkeypatch.setattr(ExcelInventory, "write", abierta)
+        informe: dict = {"groups": []}
+        _escribir_planilla(informe, tmp_path, {})
+
+        assert informe["planilla_error"]
+        assert "PermissionError" not in informe["planilla_error"]
+        assert any("planilla" in aviso for aviso in informe["notices"])
 
 
 class TestSeBajaDeUnClic:

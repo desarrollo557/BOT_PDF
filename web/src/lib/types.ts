@@ -181,6 +181,9 @@ export interface Report {
   inventario_actas?: FilaDeActa[];
   /** El Índice Electrónico que dejó una caja de correspondencia, si lo dejó. */
   indice_electronico?: string;
+  /** Por qué no se escribió el índice o la planilla; también va en `notices`. */
+  indice_electronico_error?: string;
+  planilla_error?: string;
   /** Si el libro de actas se dividió en un PDF por sesión. */
   dividido?: boolean;
   /** Las sesiones del libro, con sus páginas y las piezas que traen. */

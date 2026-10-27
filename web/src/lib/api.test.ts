@@ -6,7 +6,7 @@
  * fallo siempre se convierte en una frase, venga como venga.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, listJobs, mensajeDe, SinConexion } from './api';
+import { ApiError, listBatches, listFolderRuns, listJobs, mensajeDe, SinConexion } from './api';
 
 describe('mensajeDe', () => {
   it('usa la frase del servicio cuando la hay', () => {
@@ -69,5 +69,29 @@ describe('un servicio que no contesta', () => {
     const abortada = new DOMException('cancelada', 'AbortError');
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abortada));
     await expect(listJobs()).rejects.toBe(abortada);
+  });
+});
+
+describe('un servicio que contesta con un error', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('la cola no aparece vacía en silencio: el error se dice', async () => {
+    const quinientos = new Response(JSON.stringify({ detail: 'El servicio falló al atender /api/jobs' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(quinientos));
+    const fallo = await listJobs().catch((error) => error);
+    expect(fallo).toBeInstanceOf(ApiError);
+    expect(fallo.message).toMatch(/falló/);
+  });
+
+  it('tampoco los lotes ni las carpetas', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async () => new Response('{}', { status: 503 }))
+    );
+    await expect(listBatches()).rejects.toBeInstanceOf(ApiError);
+    await expect(listFolderRuns()).rejects.toBeInstanceOf(ApiError);
   });
 });

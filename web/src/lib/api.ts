@@ -277,15 +277,17 @@ export async function uploadDocument(
   return response.json();
 }
 
+// Las tres listas que pintan la cola. Un error se dice: devolver `[]` dejaba
+// la cola vacía y en silencio ante un 500, como si no hubiera nada.
 export async function listJobs(): Promise<Job[]> {
   const response = await pedir(`${BASE}/jobs`);
-  if (!response.ok) return [];
+  if (!response.ok) throw new ApiError(await detailOf(response));
   return (await response.json()).jobs ?? [];
 }
 
 export async function listBatches(): Promise<Batch[]> {
   const response = await pedir(`${BASE}/batches`);
-  if (!response.ok) return [];
+  if (!response.ok) throw new ApiError(await detailOf(response));
   return (await response.json()).batches ?? [];
 }
 
@@ -298,8 +300,12 @@ export async function listBatches(): Promise<Batch[]> {
 export function streamEvents(handlers: {
   job: (job: Job) => void;
   folderRun?: (run: FolderRun) => void;
+  /** Si el flujo está abierto: el navegador reconecta solo, pero la pantalla tiene que saberlo. */
+  conexion?: (abierta: boolean) => void;
 }): () => void {
   const events = new EventSource(`${BASE}/events`);
+  events.onopen = () => handlers.conexion?.(true);
+  events.onerror = () => handlers.conexion?.(false);
   events.onmessage = (event) => {
     try {
       const frame = JSON.parse(event.data);
@@ -829,7 +835,7 @@ export class PickerUnavailable extends Error {}
 
 export async function listFolderRuns(): Promise<FolderRun[]> {
   const response = await pedir(`${BASE}/folder-runs`);
-  if (!response.ok) return [];
+  if (!response.ok) throw new ApiError(await detailOf(response));
   return (await response.json()).runs ?? [];
 }
 
