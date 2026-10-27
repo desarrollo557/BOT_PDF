@@ -206,6 +206,54 @@ class TestArchivoEnUso:
         assert "se vuelve a intentar al final" in explicar_fallo(capturada.value)
 
 
+    def test_reemplazar_un_excel_abierto_espera_y_reintenta(self, monkeypatch, tmp_path):
+        """Windows no dice «en uso» al reemplazar un archivo abierto: dice «acceso denegado» (5)."""
+        monkeypatch.setattr(folders.time, "sleep", lambda _: None)
+        intentos = {"n": 0}
+
+        def guardar():
+            intentos["n"] += 1
+            if intentos["n"] == 1:
+                error = PermissionError(13, "Access is denied", "00.FUID GENERAL.xlsx")
+                error.winerror = 5
+                raise error
+
+        folders._reintentar_si_esta_en_uso(guardar)
+
+        assert intentos["n"] == 2
+
+    def test_mover_un_pdf_abierto_en_un_visor_espera(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(folders.time, "sleep", lambda _: None)
+        desde, hasta = tmp_path / "a.pdf", tmp_path / "b.pdf"
+        desde.write_bytes(b"%PDF")
+        reemplazar = folders.os.replace
+        intentos = {"n": 0}
+
+        def denegado_una_vez(a, b):
+            intentos["n"] += 1
+            if intentos["n"] == 1:
+                raise PermissionError(13, "Permission denied", str(b))
+            return reemplazar(a, b)
+
+        monkeypatch.setattr(folders.os, "replace", denegado_una_vez)
+        folders._mover(desde, hasta)
+
+        assert hasta.exists() and not desde.exists()
+
+    def test_leer_un_pdf_sin_permiso_no_se_espera(self, monkeypatch, tmp_path):
+        """Esperar sólo vale si alguien lo tiene abierto; sin permiso no se arregla esperando."""
+        esperas: list[float] = []
+        monkeypatch.setattr(folders.time, "sleep", esperas.append)
+
+        def sin_permiso(path, *args, **kwargs):
+            raise PermissionError(13, "Permission denied", str(path))
+
+        monkeypatch.setattr(Path, "open", sin_permiso)
+        folders._esperar_a_que_se_libere(tmp_path / "x.pdf")
+
+        assert esperas == []
+
+
 class _Registro:
     """Lo mínimo del registro que usa `_correr`."""
 

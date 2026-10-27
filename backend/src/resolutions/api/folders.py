@@ -3104,6 +3104,18 @@ ESPERAS_SI_ESTA_EN_USO = (1.0, 2.0, 4.0, 8.0)
 _en_uso = archivo_en_uso
 
 
+def _en_uso_al_escribir(error: BaseException) -> bool:
+    """Si vale la pena esperar antes de dar por fallida una escritura o un renombrado.
+
+    Reemplazar un archivo que Excel o un visor tiene abierto no siempre da el
+    «en uso» de Windows (32): ``os.replace`` contesta «acceso denegado» (5).
+    Al escribir se espera también por eso; si de verdad falta el permiso, se
+    pierden unos segundos y el error sale igual. Al *leer* no, que ahí un
+    permiso que falta no se arregla esperando.
+    """
+    return _en_uso(error) or isinstance(error, PermissionError)
+
+
 def _esperar_a_que_se_libere(ruta: Path) -> None:
     """Abre el PDF para leerlo, y si otro programa lo tiene tomado espera y reintenta.
 
@@ -3175,7 +3187,7 @@ def _reintentar_si_esta_en_uso(escribir: Callable[[], object]) -> None:
             escribir()
             return
         except OSError as error:
-            if espera is None or not _en_uso(error):
+            if espera is None or not _en_uso_al_escribir(error):
                 raise
         time.sleep(espera)
 
@@ -3193,7 +3205,7 @@ def _mover(desde: Path, hasta: Path) -> None:
             os.replace(desde, hasta)
             return
         except OSError as error:
-            if espera is None or not _en_uso(error):
+            if espera is None or not _en_uso_al_escribir(error):
                 raise
         time.sleep(espera)
 
@@ -3219,7 +3231,7 @@ def _copiar(desde: Path, hasta: Path) -> None:
                 pass
             # El destino abierto en otro programa -- el PDF en un visor --: se
             # espera y se reintenta antes de dar la copia por fallida.
-            if espera is None or not isinstance(error, OSError) or not _en_uso(error):
+            if espera is None or not isinstance(error, OSError) or not _en_uso_al_escribir(error):
                 raise
         time.sleep(espera)
 
