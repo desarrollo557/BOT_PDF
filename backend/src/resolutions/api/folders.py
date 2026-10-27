@@ -1454,6 +1454,12 @@ class FolderRunner:
             # por fallido («The process cannot access the file because it is
             # being used by another process», 2026-10-22).
             await asyncio.to_thread(_esperar_a_que_se_libere, local)
+            # Y el que todavía se está copiando a la carpeta se espera a que
+            # deje de crecer: leído a medias se entregaba incompleto y, con
+            # «Borrarlo», se borraba después el original ya completo. La huella
+            # que vale es la de ese momento, la del PDF que de verdad se lee.
+            if local == path:
+                huella = await asyncio.to_thread(_esperar_a_que_termine_de_copiarse, path) or huella
             await self._run_job(job)
 
             run.bytes_total += job.bytes
@@ -1480,7 +1486,7 @@ class FolderRunner:
                     # Una vuelta posterior sí la terminó.
                     run.incompletas.discard(str(path))
                     run.entregas_incompletas = len(run.incompletas)
-                await asyncio.to_thread(self._dispose, run, path)
+                await asyncio.to_thread(self._dispose, run, path, huella)
                 if control is not None:
                     await self._comprobar_el_destino(run, path, control, local)
             elif job.state is JobState.CANCELLED:
@@ -2596,12 +2602,29 @@ class FolderRunner:
             escribir_inventario_de_actas(filas, destino, **opciones)
         return destino
 
-    def _dispose(self, run: FolderRun, path: Path) -> None:
+    def _dispose(self, run: FolderRun, path: Path, huella: tuple[int, int] = (0, 0)) -> None:
         """Leave, move aside, or delete the original, as the operator chose."""
         # El original de una carpeta de red no se toca nunca (`start` ya sólo
         # admite «Dejarlo» ahí; esto es la segunda llave).
         if run.disposition is SourceDisposition.LEAVE or red_smb.por_smb(path):
             return
+        relativa = self._relative(run, path)
+        # Sólo el PDF que se leyó. Si cambió desde entonces -- una copia que
+        # seguía llegando, alguien que lo sobrescribió --, lo entregado no es
+        # lo que hay ahora y borrarlo o apartarlo perdería lo que se añadió.
+        if huella != (0, 0):
+            try:
+                cambio = constancias.huella_del_origen(path) != huella
+            except OSError:
+                cambio = False  # ya no está: no hay nada que tocar
+            if cambio:
+                self._avisar(
+                    run,
+                    f"El original «{relativa}» cambió mientras se procesaba: se dejó en su sitio. "
+                    "Vuelva a lanzar la carpeta para procesar la versión nueva.",
+                )
+                return
+        verbo = "borrar" if run.disposition is SourceDisposition.DELETE else "mover"
         try:
             if run.disposition is SourceDisposition.DELETE:
                 path.unlink(missing_ok=True)
@@ -2609,14 +2632,16 @@ class FolderRunner:
             # Bajo `_procesados`, con la misma estructura que tenían. Aplanarlo
             # mezclaría cien expedientes en una carpeta y haría irreversible lo
             # que hasta ahora sólo era moverlos de sitio.
-            relativa = self._relative(run, path)
             consumed = run.source / CONSUMED_DIR / relativa.parent
             consumed.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(path), str(unique_path(consumed, path.name)))
+            # Con la espera de quien lo tenga abierto, como al ordenar.
+            _mover(path, unique_path(consumed, path.name))
         except OSError as error:
-            # Failing to tidy up is never a reason to lose the split that
-            # already succeeded.
-            logger.warning("could not dispose of %s: %s", path.name, error)
+            # No poder recoger el original nunca deshace lo ya entregado; pero
+            # el operador eligió que no quedara ahí, y tiene que saberlo.
+            self._avisar(
+                run, f"El original «{relativa}» no se pudo {verbo}: {explicar_fallo(error)}"
+            )
 
     def _publish(self, run: FolderRun) -> None:
         """Avisa a la pantalla. Desde un hilo de entrega, a través del bucle.
@@ -3042,6 +3067,43 @@ def _esperar_a_que_se_libere(ruta: Path) -> None:
                 # y lo cuenta como un archivo abierto en otro programa.
                 raise PermissionError(errno.EACCES, "el archivo está abierto en otro programa", str(ruta)) from error
         time.sleep(espera)
+
+
+#: Cuánto tiene que llevar quieto un PDF recién llegado para darlo por copiado.
+#: Uno escaneado hace horas no espera nada: sólo se mira el que se modificó
+#: hace menos que esto.
+SEGUNDOS_DE_CALMA = 2.0
+#: Y hasta cuándo se le espera, para que una copia colgada no pare la carpeta.
+TOPE_DE_LA_COPIA = 600.0
+
+
+def _esperar_a_que_termine_de_copiarse(ruta: Path, calma: float | None = None) -> tuple[int, int] | None:
+    """La huella del PDF cuando deja de cambiar, o ``None`` si es de la red.
+
+    Explorer, robocopy o el escáner escriben el PDF poco a poco con su nombre
+    definitivo; procesarlo en medio daba un documento al que le faltaban
+    páginas -- MuPDF repara el truncado sin quejarse -- (2026-10-27). Se mira
+    sólo el que cambió hace menos de ``calma`` segundos, y se espera a que dos
+    miradas seguidas coincidan.
+    """
+    if red_smb.por_smb(ruta):
+        return None
+    calma = SEGUNDOS_DE_CALMA if calma is None else calma
+    try:
+        previa = constancias.huella_del_origen(ruta)
+    except OSError:
+        return None  # que lo diga quien lo abra
+    limite = time.monotonic() + TOPE_DE_LA_COPIA
+    while calma > 0 and time.time_ns() - previa[1] < calma * 1e9 and time.monotonic() < limite:
+        time.sleep(calma)
+        try:
+            actual = constancias.huella_del_origen(ruta)
+        except OSError:
+            return previa
+        if actual == previa:
+            break
+        previa = actual
+    return previa
 
 
 def _mover(desde: Path, hasta: Path) -> None:

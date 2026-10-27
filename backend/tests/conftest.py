@@ -3,6 +3,19 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _sin_esperar_a_que_se_copie(monkeypatch):
+    """Los PDF de las pruebas se escriben justo antes de procesarlos.
+
+    En una carpeta real eso es un PDF que se sigue copiando y la corrida lo
+    espera (`SEGUNDOS_DE_CALMA`); aquí cada prueba esperaría dos segundos por
+    PDF sin probar nada. Las que prueban la espera le pasan su propia calma.
+    """
+    from resolutions.api import folders
+
+    monkeypatch.setattr(folders, "SEGUNDOS_DE_CALMA", 0.0)
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     """A TestClient with its own registry and its own directories.

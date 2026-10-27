@@ -718,6 +718,91 @@ class TestLaEntregaIncompleta:
         assert not list(hasta.parent.iterdir())
 
 
+class TestElOriginalSoloSeTocaSiEsElQueSeLeyo:
+    """«Borrarlo» o «Moverlo» se hacen sobre el PDF que se procesó, no sobre otro.
+
+    Un PDF que alguien seguía copiando a la carpeta, o que se sobrescribió
+    mientras se leía, se entregaba con lo que había al leerlo y después se
+    borraba el original -- ya completo -- (2026-10-27).
+    """
+
+    def test_si_el_original_cambio_mientras_se_procesaba_no_se_borra(self, ajustes, tmp_path):
+        origen = tmp_path / "origen"
+        _pon(origen, "a.pdf")
+        registry = JobRegistry()
+        motor, _ = _motor(ajustes, registry)
+        procesar = motor._run_job
+
+        async def run_job(job):
+            # La copia que seguía llegando: el PDF crece a mitad del proceso.
+            with (origen / "a.pdf").open("ab") as archivo:
+                archivo.write(b" y el resto de las paginas")
+            await procesar(job)
+
+        motor._run_job = run_job
+        run = _vaciar(motor, origen, tmp_path / "destino", disposition=folders.SourceDisposition.DELETE)
+
+        assert (origen / "a.pdf").exists()
+        assert any("cambió mientras se procesaba" in aviso for aviso in run.avisos)
+
+    def test_si_el_original_sigue_igual_se_borra_como_siempre(self, ajustes, tmp_path):
+        origen = tmp_path / "origen"
+        _pon(origen, "a.pdf")
+        motor, _ = _motor(ajustes, JobRegistry())
+        run = _vaciar(motor, origen, tmp_path / "destino", disposition=folders.SourceDisposition.DELETE)
+
+        assert run.processed == 1
+        assert not (origen / "a.pdf").exists()
+
+    def test_un_original_abierto_que_no_se_puede_mover_se_avisa(self, ajustes, tmp_path, monkeypatch):
+        origen = tmp_path / "origen"
+        _pon(origen, "a.pdf")
+
+        def tomado(desde, hasta):
+            raise PermissionError(errno.EACCES, "el archivo está abierto en otro programa", str(desde))
+
+        monkeypatch.setattr(folders, "_mover", tomado)
+        motor, _ = _motor(ajustes, JobRegistry())
+        run = _vaciar(motor, origen, tmp_path / "destino", disposition=folders.SourceDisposition.MOVE)
+
+        # Lo entregado sigue entregado; sólo el original se quedó donde estaba.
+        assert run.processed == 1
+        assert (origen / "a.pdf").exists()
+        assert any("a.pdf" in aviso and "no se pudo mover" in aviso for aviso in run.avisos)
+
+    def test_un_pdf_que_se_sigue_copiando_se_espera_hasta_que_deja_de_crecer(self, tmp_path):
+        ruta = tmp_path / "llegando.pdf"
+        ruta.write_bytes(b"%PDF-1.4 primera mitad")
+
+        def el_resto():
+            with ruta.open("ab") as archivo:
+                archivo.write(b" y la segunda mitad")
+
+        temporizador = threading.Timer(0.03, el_resto)
+        temporizador.start()
+        try:
+            huella = folders._esperar_a_que_termine_de_copiarse(ruta, calma=0.15)
+        finally:
+            temporizador.join()
+
+        assert huella == constancias.huella_del_origen(ruta)
+        assert huella[0] == len(b"%PDF-1.4 primera mitad y la segunda mitad")
+
+    def test_un_pdf_viejo_no_se_espera(self, tmp_path):
+        import os
+        import time
+
+        ruta = tmp_path / "viejo.pdf"
+        ruta.write_bytes(b"%PDF-1.4")
+        hace_una_hora = time.time() - 3600
+        os.utime(ruta, (hace_una_hora, hace_una_hora))
+
+        inicio = time.monotonic()
+        huella = folders._esperar_a_que_termine_de_copiarse(ruta, calma=5.0)
+        assert time.monotonic() - inicio < 1.0
+        assert huella == constancias.huella_del_origen(ruta)
+
+
 class TestUnFalloNoTumbaLaCarpeta:
     """Lo pidió el operador: que si algo falla, lo pare, lo anote, se acomode y lo reintente."""
 
