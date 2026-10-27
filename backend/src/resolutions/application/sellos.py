@@ -957,6 +957,8 @@ def separar_los_formularios(
     anexos: dict[str, list[int]] | None = None,
     *,
     intocables: set[int] | frozenset[int] = frozenset(),
+    solos: frozenset[str] = frozenset(),
+    anexo_evidente: Callable[[int], bool] | None = None,
 ) -> tuple[GroupingResult, dict[str, list[int]], list[int]]:
     """Cada formulario de la oficina, en su documento.
 
@@ -978,6 +980,12 @@ def separar_los_formularios(
     ``intocables`` son las hojas que no abren aunque lo parezcan: las que caen
     dentro de los folios de un sello o se aportaron como prueba de un escrito,
     que son de ese escrito.
+
+    Y detrás de los formularios que van ``solos`` -- la constancia, la
+    notificación personal -- sólo sigue lo que ``anexo_evidente`` reconoce:
+    la cédula, la factura, la foto. Una hoja con texto propio que no es nada
+    de eso es otro documento (1000224: la carta de la hoja 2 «es totalmente
+    diferente a la primera», 2026-10-26).
     """
     from ..domain.asunto_del_documento import ACUERDO_DE_PAGO
 
@@ -991,12 +999,22 @@ def separar_los_formularios(
         for pagina in grupo.page_numbers:
             clave = None if pagina in intocables else formularios.get(pagina)
             continua = clave is not None and clave == actual and (clave[1] is not None or clave[0] == ACUERDO_DE_PAGO)
-            if not tramos or (clave is not None and not continua):
+            otro_documento = (
+                clave is None
+                and actual is not None
+                and actual[0] in solos
+                and pagina not in intocables
+                and anexo_evidente is not None
+                and not anexo_evidente(pagina)
+            )
+            if not tramos or (clave is not None and not continua) or otro_documento:
                 if tramos:
                     abiertas.append(pagina)
                 tramos.append([])
             if clave is not None:
                 actual = clave
+            elif otro_documento:
+                actual = None
             tramos[-1].append(pagina)
         for tramo in tramos:
             pieza = grupo if len(tramos) == 1 else replace(grupo, page_numbers=tramo)

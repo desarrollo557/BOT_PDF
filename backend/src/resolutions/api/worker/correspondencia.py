@@ -11,11 +11,17 @@ vez de descubrirse abriendo los archivos.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
 
 from ...application.progress import ProgressEvent, Stage
 from .planillas import _escribir_indice
 from .taller import Taller, _anunciar
+
+#: Cuántas palabras de cuatro letras o más hacen de una hoja un documento con
+#: texto propio y no un anexo: las cédulas leídas traen 25-35, la carta de
+#: 1000224 pág. 2 trae 107.
+PALABRAS_DE_UN_DOCUMENTO = 60
 
 logger = logging.getLogger(__name__)
 
@@ -503,6 +509,7 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     # es el caso que dictó el operador («notificación sola, respuesta
     # aparte»). En lo demás sigue con su escrito, como se validó antes en las
     # cajas de referencia.
+    from ...domain.asunto_del_documento import CONSTANCIA_DE_RECLAMACION as _CONSTANCIA
     from ...domain.asunto_del_documento import NOTIFICACION_PERSONAL as _NOTIFICACION
     from ...domain.asunto_del_documento import RESPUESTA_DE_LA_EMPRESA as _RESPUESTA
 
@@ -516,7 +523,28 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     intocables = set(por_folios) | {
         p for p in de_prueba if formularios.get(p, ("", None))[0] != _HABEAS
     }
-    grupos, anexos, _ = separar_los_formularios(grupos, formularios, anexos, intocables=intocables)
+    # Detrás de la constancia y la notificación sólo sigue el anexo evidente:
+    # la cédula, la factura, la hoja muda o la foto, que traen poco texto. Una
+    # hoja con texto propio es otro documento (1000224 pág. 2, una carta que la
+    # lectura tomaba por certificado catastral).
+    from ...application.anexos_declarados import SOPORTES as _SOPORTES
+    from ...domain.anexos_declarados import HOJA_MUDA as _MUDA
+    from ...domain.anexos_declarados import clase_de_la_hoja as _clase
+
+    def _anexo_evidente(pagina: int) -> bool:
+        texto = textos.get(pagina, "") or ""
+        if _clase(texto) in _SOPORTES or _clase(texto) == _MUDA:
+            return True
+        return len(re.findall(r"[A-Za-zÁÉÍÓÚÑáéíóúñ]{4,}", texto)) < PALABRAS_DE_UN_DOCUMENTO
+
+    grupos, anexos, _ = separar_los_formularios(
+        grupos,
+        formularios,
+        anexos,
+        intocables=intocables,
+        solos=frozenset({_CONSTANCIA, _NOTIFICACION}),
+        anexo_evidente=_anexo_evidente,
+    )
     # Los que van solos abren documento para todo lo que viene después: ni la
     # lista de anexos, ni la cédula, ni el trámite por RE los une a otro. El
     # acuerdo y la Habeas Data no: el acuerdo los busca para juntarlos.
@@ -525,6 +553,19 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
         for g in grupos.groups
         if g.page_numbers[0] in formularios and formularios[g.page_numbers[0]][0] not in (_ACUERDO, _HABEAS)
     }
+    # Y el documento que va detrás de una constancia o una notificación sin
+    # ser su anexo evidente -- lo haya separado este filtro o la continuidad
+    # --: no vuelve a unírsele por no traer título (1000224 pág. 2).
+    solos_tipos = (_CONSTANCIA, _NOTIFICACION)
+    for anterior, grupo in zip(grupos.groups, grupos.groups[1:], strict=False):
+        primera = grupo.page_numbers[0]
+        if (
+            formularios.get(anterior.page_numbers[0], ("", None))[0] in solos_tipos
+            and primera not in formularios
+            and primera not in intocables
+            and not _anexo_evidente(primera)
+        ):
+            formularios_solos.add(primera)
     # El trámite no une a su anterior un escrito del cliente, aunque cite su
     # RE: sólo la respuesta o la notificación de la empresa (lo dictó el
     # operador: «cada trámite va solo, no unido a otros trámites por código de
@@ -850,6 +891,10 @@ def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
             continue
         # La carta que abre su trámite tampoco se une: trae su asunto.
         if primera in que_abren:
+            continue
+        # Ni el formulario que va solo, ni lo que sigue a una constancia o una
+        # notificación sin ser su anexo evidente (1000224 pág. 2).
+        if primera in formularios_solos:
             continue
         if primera in del_acuerdo or primera == ultima_sola:
             continue
