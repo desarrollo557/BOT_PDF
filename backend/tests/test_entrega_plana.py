@@ -187,6 +187,55 @@ class TestLaEntregaDeAntes:
         assert (caja / "01_RECLAMO.pdf").exists()
         assert any((caja / REEMPLAZADOS_DIR).rglob("UPD1/01_RECLAMO.pdf"))
 
+    def test_una_caja_que_no_se_pudo_ordenar_se_ordena_la_vez_siguiente(self, ajustes, tmp_path, monkeypatch):
+        """Un PDF abierto en un visor cortaba el orden; las constancias volvían a decir «vigente»
+        y la corrida siguiente ya no la miraba: sin numerar y sin índice para siempre (2026-10-27).
+        """
+        from resolutions.api import folders
+
+        _caja(tmp_path / "origen", "1000265", "UPD1", "UPD2")
+        caja = tmp_path / "destino" / "1000265"
+        caja.mkdir(parents=True)
+        for upd, documento in (("UPD1", "CONSTANCIA"), ("UPD2", "RECLAMO")):
+            pdf = caja / f"{upd}_01_{documento}.pdf"
+            pdf.write_bytes(b"%PDF-1.4 " + f"{upd} {documento}".encode())
+            hoja = _indice(caja, upd, documento)
+            suelto = caja / f"00.INDICE ELECTRONICO {upd}.xlsx"
+            hoja.rename(suelto)
+            origen = tmp_path / "origen" / "1000265" / f"{upd}.pdf"
+            tamano, modificado = constancias.huella_del_origen(origen)
+            constancias.escribir(
+                caja / f".bot-entrega-{upd}.json",
+                constancias.Constancia(
+                    origen=f"1000265/{upd}.pdf",
+                    tamano=tamano,
+                    modificado_ns=modificado,
+                    estado=constancias.EstadoDeEntrega.COMPLETA,
+                    archivos=constancias.archivos_de(caja, [pdf, suelto]),
+                    habilidad="Caja de correspondencia",
+                ),
+            )
+
+        mover = folders._mover
+
+        def abierto_en_un_visor(desde, hasta):
+            if Path(desde).name.endswith("UPD2_01_RECLAMO.pdf"):
+                raise PermissionError(13, "Permission denied", str(desde))
+            return mover(desde, hasta)
+
+        monkeypatch.setattr(folders, "_mover", abierto_en_un_visor)
+        hechos: list[str] = []
+        primera = _correr(_motor(ajustes, JobRegistry(), hechos), tmp_path / "origen", tmp_path / "destino", task="segment")
+        assert any("no se pudo ordenar" in aviso for aviso in primera.avisos)
+        assert not (caja / INDICE).exists()
+
+        monkeypatch.setattr(folders, "_mover", mover)
+        _correr(_motor(ajustes, JobRegistry(), hechos), tmp_path / "origen", tmp_path / "destino", task="segment")
+
+        assert hechos == []
+        assert (caja / INDICE).exists()
+        assert {"01_CONSTANCIA.pdf", "02_RECLAMO.pdf"} <= set(_nombres(caja))
+
     def test_la_caja_con_el_upd_delante_se_ordena_sin_volver_a_procesarla(self, ajustes, tmp_path):
         """Como se entregaba el 2026-10-21: «UPD1_01_…», «00.INDICE ELECTRONICO UPD1.xlsx»."""
         _caja(tmp_path / "origen", "1000265", "UPD1", "UPD2")
