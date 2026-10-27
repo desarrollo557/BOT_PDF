@@ -18,7 +18,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from ..adapters import red_smb
-from ..adapters.excel_inventory import NOMBRE_DEL_INVENTARIO_DE_PROCESOS
+from ..adapters.excel_inventory import NOMBRE_DEL_CONTROL_DE_ENTREGA, NOMBRE_DEL_INVENTARIO_DE_PROCESOS
 from . import constancia as constancias
 from .constancia import Constancia, EstadoDeEntrega, Vigencia
 from .errores import archivo_en_uso, explicar_fallo
@@ -1792,7 +1792,7 @@ class FolderRunner:
 
         if run.retomar == Retomar.NO or not run.controles:
             return
-        try:
+        def escribir() -> None:
             with run.cerrojo:
                 ruta = escribir_control(
                     list(run.controles.values()),
@@ -1802,8 +1802,27 @@ class FolderRunner:
                 )
             if ruta is not None:
                 run.control = str(ruta)
-        except Exception:  # noqa: BLE001 - lo entregado ya está en el disco
-            logger.warning("no se pudo escribir el control de %s", run.source, exc_info=True)
+
+        self._escribir_general(run, NOMBRE_DEL_CONTROL_DE_ENTREGA, escribir)
+
+    def _escribir_general(self, run: FolderRun, nombre: str, escribir: Callable[[], object]) -> None:
+        """Escribe un Excel de la raíz; si no se deja, lo avisa en pantalla y sigue.
+
+        Cada uno por su cuenta: el primero abierto en Excel se llevaba por
+        delante a los demás, y el fallo quedaba sólo en el registro del
+        servicio, donde el operador no mira (2026-10-27). Lo entregado de cada
+        PDF ya está en el disco; el general se reescribe en la próxima pasada.
+        """
+        try:
+            escribir()
+        except Exception as error:  # noqa: BLE001 - lo entregado ya está en el disco
+            logger.warning("no se pudo escribir «%s» de %s", nombre, run.source, exc_info=True)
+            self._avisar(
+                run,
+                f"No se pudo actualizar «{nombre}» en el destino: {explicar_fallo(error)} "
+                "Se vuelve a escribir solo mientras la carpeta siga; al terminar, si sigue sin "
+                "estar al día, vuelva a lanzar la carpeta.",
+            )
 
     def _escribir_generales(self, run: FolderRun, *, con_indice: bool = True) -> None:
         """Los dos inventarios generales en la raíz del destino.
@@ -1819,7 +1838,9 @@ class FolderRunner:
         Lo que se copia bajo el cerrojo es poco; la escritura va fuera, para no
         parar las entregas mientras se escribe.
         """
+        from ..adapters.indice_electronico import NOMBRE_DEL_INDICE
         from .indices import (
+            NOMBRE_DEL_FUID_GENERAL,
             fuid_general_de,
             inventario_de_procesos_de,
             libro_de_indices_de,
@@ -1831,26 +1852,33 @@ class FolderRunner:
             fuids = self._fuids_del_destino(run)
             analisis = self._filas_del_analisis(run)
             avisos = list(run.avisos)
-        try:
-            inventario_de_procesos_de(
+        self._escribir_general(
+            run,
+            NOMBRE_DEL_INVENTARIO_DE_PROCESOS,
+            lambda: inventario_de_procesos_de(
                 filas,
                 run.destination,
                 origen=run.source.name or str(run.source),
                 clase_de_origen="Carpeta",
                 operador=run.operator,
+            ),
+        )
+        if con_indice:
+            if indices:
+                self._escribir_general(
+                    run, NOMBRE_DEL_INDICE, lambda: libro_de_indices_de(indices, run.destination)
+                )
+            self._escribir_general(
+                run,
+                NOMBRE_DEL_FUID_GENERAL,
+                lambda: fuid_general_de(fuids, run.destination, lecturas=run.lecturas_de_fuid),
             )
-            if con_indice:
-                if indices:
-                    libro_de_indices_de(indices, run.destination)
-                fuid_general_de(fuids, run.destination, lecturas=run.lecturas_de_fuid)
-            if run.tipo_documento == "kingspan":
-                # El inventario oficial de Kingspan es un solo libro para toda
-                # la entrega, no uno por UPD.
-                from .worker.kingspan import inventario_general
+        if run.tipo_documento == "kingspan":
+            # El inventario oficial de Kingspan es un solo libro para toda
+            # la entrega, no uno por UPD.
+            from .worker.kingspan import NOMBRE_DEL_GENERAL, inventario_general
 
-                inventario_general(run.destination)
-        except Exception:  # noqa: BLE001 - la entrega de cada PDF ya está hecha
-            logger.warning("no se pudieron escribir los generales de %s", run.source, exc_info=True)
+            self._escribir_general(run, NOMBRE_DEL_GENERAL, lambda: inventario_general(run.destination))
         self._escribir_el_analisis(run, analisis, avisos)
 
     def _escribir_el_analisis(self, run: FolderRun, filas: list, avisos: list[str]) -> None:
@@ -2170,7 +2198,11 @@ class FolderRunner:
                     logger.warning("no se pudo entregar el inventario de %s: %s", job.filename, error)
                     entrega.fallos.append(f"el inventario: {explicar_fallo(error)}")
         else:
-            self._write_sheet(run, job, carpeta)
+            fallo = self._write_sheet(run, job, carpeta)
+            if fallo:
+                # Sin esto la constancia quedaba «completa» y la corrida
+                # siguiente saltaba el PDF: la planilla no se corregía nunca.
+                entrega.fallos.append(f"la planilla: {fallo}")
             # Y la que quedó junto al trabajo, ahora que se sabe dónde acabaron
             # los PDF: es la que baja el botón de la pantalla.
             self._corregir_planilla_del_trabajo(run, job, carpeta)
@@ -2204,28 +2236,32 @@ class FolderRunner:
                 )
             )
 
-        self._entregar_fuid(run, job, origin, carpeta, renombres)
+        fallo = self._entregar_fuid(run, job, origin, carpeta, renombres)
+        if fallo:
+            entrega.fallos.append(f"el FUID: {fallo}")
         return entrega
 
     def _entregar_fuid(
         self, run: FolderRun, job: Job, origin: Path, carpeta: Path, renombres: dict[str, str]
-    ) -> None:
+    ) -> str | None:
         """El FUID de un libro de diplomas, junto a sus PDF.
 
         Es el inventario de su habilidad, y va en la carpeta del libro (ver
         «Dos inventarios generales»). Si el libro se retomó a medias, se suma
         a las filas que ya estaban: lo entregado es **un** FUID por libro.
+
+        Devuelve por qué no se pudo entregar, o ``None``.
         """
         from .indices import habilidad_del_proceso
         from .retomar import entregar_fuid
 
         informe = job.report or {}
         if habilidad_del_proceso(job) != "Libro de diplomas":
-            return
+            return None
         # Para el FUID general: ésta es una carpeta con un libro de diplomas.
         run.carpetas_con_fuid[self._relativa_al_destino(run, carpeta)] = carpeta
         if not informe.get("fuid"):
-            return
+            return None
         try:
             ruta = next(
                 iter(sorted((self._settings.output_dir / job.id).rglob(informe["fuid"]))), None
@@ -2233,7 +2269,7 @@ class FolderRunner:
         except OSError:
             ruta = None
         if ruta is None:
-            return
+            return None
         control = run.controles.get(str(self._relative(run, origin)))
         paginas_nuevas = {
             Path(str(item["file_name"])).name: int(item["first_page"])
@@ -2241,15 +2277,19 @@ class FolderRunner:
             if item.get("file_name") and item.get("first_page")
         }
         try:
-            entregar_fuid(
-                ruta,
-                carpeta,
-                previo=control.antes if control else None,
-                paginas_nuevas=paginas_nuevas,
-                renombres=renombres,
+            _reintentar_si_esta_en_uso(
+                lambda: entregar_fuid(
+                    ruta,
+                    carpeta,
+                    previo=control.antes if control else None,
+                    paginas_nuevas=paginas_nuevas,
+                    renombres=renombres,
+                )
             )
-        except Exception:  # noqa: BLE001 - los PDF ya están entregados
+        except Exception as error:  # noqa: BLE001 - los PDF ya están entregados
             logger.warning("no se pudo entregar el FUID de %s", job.filename, exc_info=True)
+            return explicar_fallo(error)
+        return None
 
     def _write_sheet(
         self,
@@ -2258,7 +2298,7 @@ class FolderRunner:
         carpeta: Path | None = None,
         *,
         en: Path | None = None,
-    ) -> None:
+    ) -> str | None:
         """Write this document's delivery note, saying where it was delivered.
 
         Written here rather than copied from the output directory, because the
@@ -2274,22 +2314,28 @@ class FolderRunner:
         verdad, en vez de con la que se supuso antes de empezar.
         """
         if not job.report:
-            return
+            return None
         try:
             from ..adapters.excel_inventory import ExcelInventory
         except ImportError:
-            return
+            return None
         try:
             destino = carpeta or run.destination
-            ExcelInventory().write(
-                job.report,
-                en or destino,
-                delivered_to=al_operador(destino),
-                operator=run.operator,
-                processed_at=job.finished_at,
+            # Abierta en Excel unos segundos -- alguien mirando la anterior --
+            # se espera como un PDF abierto antes de darla por fallida.
+            _reintentar_si_esta_en_uso(
+                lambda: ExcelInventory().write(
+                    job.report,
+                    en or destino,
+                    delivered_to=al_operador(destino),
+                    operator=run.operator,
+                    processed_at=job.finished_at,
+                )
             )
-        except Exception:  # noqa: BLE001 - the PDFs are already delivered
+        except Exception as error:  # noqa: BLE001 - the PDFs are already delivered
             logger.warning("could not write the sheet for %s", job.filename, exc_info=True)
+            return explicar_fallo(error)
+        return None
 
     def _corregir_planilla_del_trabajo(self, run: FolderRun, job: Job, carpeta: Path) -> None:
         """Reescribe la planilla que quedó junto al trabajo, con el destino real.
@@ -3113,6 +3159,22 @@ def _esperar_a_que_termine_de_copiarse(ruta: Path, calma: float | None = None) -
             break
         previa = actual
     return previa
+
+
+def _reintentar_si_esta_en_uso(escribir: Callable[[], object]) -> None:
+    """Escribe, y si otro programa tiene el archivo tomado espera y reintenta.
+
+    Las mismas esperas que un PDF abierto. Lo que no sea un archivo en uso
+    sube a la primera.
+    """
+    for espera in (*ESPERAS_SI_ESTA_EN_USO, None):
+        try:
+            escribir()
+            return
+        except OSError as error:
+            if espera is None or not _en_uso(error):
+                raise
+        time.sleep(espera)
 
 
 def _mover(desde: Path, hasta: Path) -> None:

@@ -828,6 +828,92 @@ class TestElOriginalSoloSeTocaSiEsElQueSeLeyo:
         assert huella == constancias.huella_del_origen(ruta)
 
 
+class TestUnExcelAbiertoEnLaRaiz:
+    """Los generales de la raíz son justo los que el operador abre mientras la carpeta corre.
+
+    Iban en un solo ``try``: el primero bloqueado -- abierto en Excel -- se
+    llevaba por delante a los demás, y todo quedaba sólo en el registro del
+    servicio, donde el operador no mira (2026-10-27).
+    """
+
+    def test_uno_abierto_no_impide_escribir_los_demas_y_se_avisa(self, ajustes, tmp_path, monkeypatch):
+        from resolutions.api import indices
+
+        def abierto(*_, **__):
+            raise PermissionError(errno.EACCES, "Permission denied", "00.INVENTARIO GENERAL DE PROCESOS.xlsx")
+
+        escritos: list[str] = []
+        monkeypatch.setattr(indices, "inventario_de_procesos_de", abierto)
+        monkeypatch.setattr(indices, "fuid_general_de", lambda *a, **k: escritos.append("fuid"))
+
+        _pon(tmp_path / "origen", "a.pdf")
+        motor, _ = _motor(ajustes, JobRegistry())
+        run = _vaciar(motor, tmp_path / "origen", tmp_path / "destino")
+
+        assert run.processed == 1
+        assert "fuid" in escritos
+        assert any("INVENTARIO GENERAL DE PROCESOS" in aviso for aviso in run.avisos)
+
+    def test_la_planilla_del_documento_abierta_no_da_la_entrega_por_completa(
+        self, ajustes, tmp_path, monkeypatch
+    ):
+        """Con la constancia «completa», la corrida siguiente saltaba el PDF y la planilla no se corregía nunca."""
+        from resolutions.adapters.excel_inventory import ExcelInventory
+
+        def abierta(self, *_, **__):
+            raise PermissionError(errno.EACCES, "Permission denied", "a__inventario.xlsx")
+
+        monkeypatch.setattr(ExcelInventory, "write", abierta)
+        monkeypatch.setattr(folders, "ESPERAS_SI_ESTA_EN_USO", (0.0,))
+        _pon(tmp_path / "origen", "a.pdf")
+        motor, _ = _motor(ajustes, JobRegistry())
+        run = _vaciar(
+            motor, tmp_path / "origen", tmp_path / "destino", disposition=folders.SourceDisposition.DELETE
+        )
+
+        assert run.entregas_incompletas == 1
+        assert (tmp_path / "origen" / "a.pdf").exists()
+        constancia = constancias.leer(tmp_path / "destino" / "a" / constancias.NOMBRE)
+        assert constancia.estado == EstadoDeEntrega.ENTREGANDO
+
+    def test_la_planilla_que_se_libera_enseguida_se_escribe(self, ajustes, tmp_path, monkeypatch):
+        from resolutions.adapters.excel_inventory import ExcelInventory
+
+        original = ExcelInventory.write
+        intentos = {"n": 0}
+
+        def un_momento(self, *args, **kwargs):
+            intentos["n"] += 1
+            if intentos["n"] == 1:
+                raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(ExcelInventory, "write", un_momento)
+        monkeypatch.setattr(folders, "ESPERAS_SI_ESTA_EN_USO", (0.0, 0.0))
+        _pon(tmp_path / "origen", "a.pdf")
+        motor, _ = _motor(ajustes, JobRegistry())
+        run = _vaciar(motor, tmp_path / "origen", tmp_path / "destino")
+
+        assert run.processed == 1
+        assert run.entregas_incompletas == 0
+
+    def test_el_control_de_entrega_abierto_se_avisa(self, ajustes, tmp_path, monkeypatch):
+        from resolutions.api import retomar
+
+        def abierto(*_, **__):
+            raise PermissionError(errno.EACCES, "Permission denied", "00.CONTROL DE ENTREGA.xlsx")
+
+        monkeypatch.setattr(retomar, "escribir_control", abierto)
+        run = FolderRun(id="r", source=tmp_path / "origen", destination=tmp_path / "destino")
+        run.retomar = Retomar.FALTANTES
+        run.controles = {"x": object()}
+        motor, _ = _motor(ajustes, JobRegistry())
+
+        motor._escribir_control(run)
+
+        assert any("CONTROL DE ENTREGA" in aviso for aviso in run.avisos)
+
+
 class TestUnFalloNoTumbaLaCarpeta:
     """Lo pidió el operador: que si algo falla, lo pare, lo anote, se acomode y lo reintente."""
 
