@@ -302,6 +302,47 @@ def _trabajo(tmp_path):
     return Job(id="j1", filename="libro.pdf", source=tmp_path / "libro.pdf", owns_source=False)
 
 
+class TestLosGeneralesDelLoteSueltanLaRanura:
+    def test_se_rehacen_cuando_el_documento_ya_no_ocupa_su_turno(self, tmp_path, monkeypatch):
+        """Rehacer los generales relee los de todo el lote: con el turno tomado, el
+        siguiente PDF esperaba y el planificador repartía los hilos como si siguiera leyendo.
+        """
+        from resolutions.api.planificador import Planificador
+
+        planificador = Planificador(documentos_de_carpeta=2, hilos_por_documento=2, procesos=2)
+        ctx = _contexto(lambda payload: {"groups": []})
+        ctx.planificador = planificador
+        en_curso: list[int] = []
+
+        async def generales(ctx_, batch_id):
+            en_curso.append(planificador.en_curso)
+
+        monkeypatch.setattr(ejecucion, "_indice_del_lote", generales)
+        job = _trabajo(tmp_path)
+        job.batch_id = "lote"
+        asyncio.run(_run(ctx, job))
+        ctx.pool.shutdown()
+
+        assert job.state is JobState.DONE
+        assert en_curso == [0]
+
+    def test_un_trabajo_cancelado_antes_de_empezar_no_los_rehace(self, tmp_path, monkeypatch):
+        ctx = _contexto(lambda payload: {"groups": []})
+        llamadas: list[str] = []
+
+        async def generales(ctx_, batch_id):
+            llamadas.append(batch_id)
+
+        monkeypatch.setattr(ejecucion, "_indice_del_lote", generales)
+        job = _trabajo(tmp_path)
+        job.batch_id = "lote"
+        ctx.controls[job.id] = "cancelled"
+        asyncio.run(_run(ctx, job))
+        ctx.pool.shutdown()
+
+        assert llamadas == []
+
+
 class TestElReintento:
     def test_un_fallo_de_red_se_reintenta_y_sale_bien(self, tmp_path):
         intentos = []

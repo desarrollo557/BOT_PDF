@@ -107,7 +107,14 @@ async def _run(ctx: Contexto, job: Job) -> None:
     # esperan su turno en cola, sin ocupar un proceso del pool.
     try:
         async with _cupo(job):
-            await _run_con_cupo(ctx, job)
+            corrio = await _run_con_cupo(ctx, job)
+        # Los inventarios generales del lote, con este PDF ya contado --
+        # también si falló: el general del bot dice qué no salió y por qué --.
+        # Fuera del cupo y del turno: rehacerlos relee los de todo el lote, y
+        # con la ranura tomada el siguiente PDF esperaba y el planificador
+        # repartía los hilos como si éste siguiera leyendo (2026-10-27).
+        if corrio and job.batch_id:
+            await _indice_del_lote(ctx, job.batch_id)
     except asyncio.CancelledError:
         raise
     except Exception as error:  # noqa: BLE001 - el trabajo termina, nunca queda en cola
@@ -122,13 +129,14 @@ async def _run(ctx: Contexto, job: Job) -> None:
             ctx.registry.mark_failed(job, explicar_fallo(error))
 
 
-async def _run_con_cupo(ctx: Contexto, job: Job) -> None:
+async def _run_con_cupo(ctx: Contexto, job: Job) -> bool:
+    """Lee el documento con su turno del planificador. ``False`` si no llegó a empezar."""
     # Un trabajo cancelado mientras esperaba en la cola no llega a empezar.
     if ctx.controls.get(job.id) == str(RunState.CANCELLED):
         ctx.registry.mark_cancelled(job)
         if job.owns_source:
             job.source.unlink(missing_ok=True)
-        return
+        return False
 
     # El planificador dice cuántos hilos de OCR le tocan con lo que ya corre:
     # uno solo usa todos los configurados; varios a la vez se los reparten.
@@ -140,6 +148,7 @@ async def _run_con_cupo(ctx: Contexto, job: Job) -> None:
     )
     with turno as hilos:
         await _correr(ctx, job, hilos)
+    return True
 
 
 async def _correr(ctx: Contexto, job: Job, hilos: int | None) -> None:
@@ -263,10 +272,6 @@ async def _correr(ctx: Contexto, job: Job, hilos: int | None) -> None:
         # documento: quitar antes la orden de cancelar lo dejaba leyendo.
         if futuro is None or futuro.done():
             _limpiar(ctx, job)
-    # Los inventarios generales del lote, con este PDF ya contado -- también si
-    # falló: el general del bot dice qué no salió y por qué --.
-    if job.batch_id:
-        await _indice_del_lote(ctx, job.batch_id)
 
 
 class TrabajoSinAvance(TimeoutError):

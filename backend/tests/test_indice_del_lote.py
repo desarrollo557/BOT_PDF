@@ -140,7 +140,7 @@ class TestElLibroGeneralNoReleeLoQueNoCambio:
         for caja in ("UPD1", "UPD2"):
             escribir_indice(tmp_path / caja, _filas(2, caja), territorial="CESAR", nombre_del_expediente=caja)
             rutas.append((caja, tmp_path / caja / indice_electronico.NOMBRE_DEL_INDICE))
-        leidas: list[Path] = []
+        leidas: list = []
         leer = indices.leer_indice
 
         def contar(ruta):
