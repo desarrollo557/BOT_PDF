@@ -551,16 +551,15 @@ def validate_folders(
     propias = [Path(carpeta).resolve() for carpeta in internas]
 
     def es_propia(ruta: Path, *, o_las_contiene: bool = False) -> bool:
+        # Dentro de una propia, o -- para el origen -- conteniéndola.
         return any(
-            ruta == propia or ruta in propia.parents or (o_las_contiene and propia in ruta.parents)
+            ruta == propia or propia in ruta.parents or (o_las_contiene and ruta in propia.parents)
             for propia in propias
         )
 
     if not red_smb.por_smb(origin) and es_propia(origin, o_las_contiene=True):
         raise FolderError("El origen no puede ser ni contener las carpetas de trabajo del servicio")
-    if es_propia(target.resolve(), o_las_contiene=False) or any(
-        propia in target.resolve().parents or propia == target.resolve() for propia in propias
-    ):
+    if any(propia == target.resolve() or propia in target.resolve().parents for propia in propias):
         raise FolderError("El destino no puede estar dentro de las carpetas de trabajo del servicio")
 
     try:

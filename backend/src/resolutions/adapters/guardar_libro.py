@@ -14,6 +14,7 @@ import contextlib
 import os
 from pathlib import Path
 from typing import Protocol
+from uuid import uuid4
 
 
 class _Libro(Protocol):
@@ -28,7 +29,9 @@ def guardar_libro(libro: _Libro, ruta: str | os.PathLike[str]) -> Path:
     que antes. El temporal no queda nunca en la carpeta.
     """
     ruta = Path(ruta)
-    temporal = ruta.with_name(f".{ruta.name}.tmp")
+    # Corto y único: «.{nombre}.tmp» sumaba cinco caracteres a un nombre que
+    # `sheet_filename` ya recortó al límite de Windows, y el guardado fallaba.
+    temporal = ruta.with_name(f".{uuid4().hex[:8]}.tmp")
     try:
         libro.save(temporal)
         os.replace(temporal, ruta)
