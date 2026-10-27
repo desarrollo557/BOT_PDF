@@ -231,6 +231,22 @@ class Verificacion:
     a_medio_ordenar: bool = False
 
 
+#: Lo que Windows y Office dejan en una carpeta mientras alguien la mira: no lo
+#: entregó el bot, y que aparezca o desaparezca no dice nada de la entrega.
+_AJENOS = frozenset({"thumbs.db", "desktop.ini", ".ds_store"})
+
+
+def es_ajeno(nombre: str) -> bool:
+    """Si un archivo de la carpeta de destino es del sistema y no del bot.
+
+    El bloqueo de un Excel abierto -- «~$planilla.xlsx» -- y las miniaturas de
+    Windows. Si entraban en la constancia, al cerrar Excel la corrida
+    siguiente daba la entrega por incompleta y volvía a pagar el OCR del PDF
+    entero (2026-10-27).
+    """
+    return nombre.startswith("~$") or nombre.lower() in _AJENOS
+
+
 #: El nombre de paso de un archivo mientras se ordena la carpeta de un NIC:
 #: «.ordenando-<puesto>-<nombre>» (ver ``FolderRunner._ordenar_la_caja``).
 PREFIJO_DE_PASO = ".ordenando-"
@@ -338,6 +354,9 @@ def verificar(
         destino = ruta_de_entrega(carpeta, ruta)
         if destino is None:
             return Verificacion(Vigencia.INCOMPLETA, "la constancia tiene una ruta de archivo inválida")
+        if es_ajeno(destino.name):
+            # Una constancia de antes que anotó el bloqueo de un Excel abierto.
+            continue
         try:
             if "/" in ruta:
                 if not destino.is_file():

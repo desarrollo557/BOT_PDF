@@ -2764,6 +2764,11 @@ class FolderRunner:
                     if ruta.is_file()
                     and not ruta.name.startswith(Path(constancias.NOMBRE).stem)
                     and not ruta.name.endswith((".part", ".tmp"))
+                    # Sólo lo que el bot entrega (PDF y Excel), sin el bloqueo
+                    # de un Excel abierto: lo demás aparece y desaparece sin
+                    # que la entrega cambie, y anotarlo hacía rehacer el PDF.
+                    and ruta.suffix.lower() in EXTENSIONES_DEL_BOT
+                    and not constancias.es_ajeno(ruta.name)
                 ]
             except OSError:
                 rutas = []
@@ -3021,6 +3026,8 @@ class FolderRunner:
                     for ruta in base.iterdir()
                     if ruta.is_file()
                     and ruta.suffix.lower() in EXTENSIONES_DEL_BOT
+                    # El bloqueo de un Excel abierto no es una entrega.
+                    and not constancias.es_ajeno(ruta.name)
                     # En la carpeta compartida de una caja, sólo lo de este PDF.
                     and (not prefijo or ruta.name.startswith(prefijo) or ruta.stem.endswith(prefijo.rstrip("_")))
                 ]
@@ -3035,6 +3042,10 @@ class FolderRunner:
         movidos = 0
         for ruta in rutas:
             if ruta.name.startswith(Path(constancias.NOMBRE).stem) or not ruta.exists():
+                continue
+            if ruta.suffix.lower() not in EXTENSIONES_DEL_BOT or constancias.es_ajeno(ruta.name):
+                # Una constancia de antes del 2026-10-27 anotaba todo lo que
+                # hubiera en la carpeta, también lo del operador: eso no se aparta.
                 continue
             try:
                 relativa = ruta.relative_to(base)

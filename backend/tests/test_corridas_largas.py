@@ -1002,6 +1002,64 @@ class TestElExcelDeActasDeUnaSubcarpetaAbierto:
         assert canonico not in de_la_subcarpeta
 
 
+class TestLaConstanciaSoloListaLoDelBot:
+    """Un «~$» de Excel, un Thumbs.db: si entraban en la constancia, al desaparecer la
+    corrida siguiente daba la entrega por incompleta y volvía a pagar el OCR del PDF entero.
+    """
+
+    def test_lo_ajeno_no_entra_en_la_constancia(self, ajustes, tmp_path, monkeypatch):
+        destino = tmp_path / "destino"
+        original = FolderRunner._dejar_constancia
+
+        def con_basura(self, run, job, origin, huella, entrega):
+            # Lo que Windows y Excel dejan mientras el operador mira la carpeta.
+            for ajeno in ("~$a__inventario.xlsx", "Thumbs.db", "desktop.ini", "MIS NOTAS.docx"):
+                (entrega.base / ajeno).write_bytes(b"x")
+            return original(self, run, job, origin, huella, entrega)
+
+        monkeypatch.setattr(FolderRunner, "_dejar_constancia", con_basura)
+        _pon(tmp_path / "origen", "a.pdf")
+        motor, _ = _motor(ajustes, JobRegistry())
+        _vaciar(motor, tmp_path / "origen", destino)
+
+        constancia = constancias.leer(destino / "a" / constancias.NOMBRE)
+        rutas = {archivo["ruta"] for archivo in constancia.archivos}
+        assert "01_X.pdf" in rutas
+        assert not rutas & {"~$a__inventario.xlsx", "Thumbs.db", "desktop.ini", "MIS NOTAS.docx"}
+
+        # Y al cerrar Excel y borrar lo demás, la siguiente corrida lo salta.
+        for ajeno in ("~$a__inventario.xlsx", "Thumbs.db", "desktop.ini", "MIS NOTAS.docx"):
+            (destino / "a" / ajeno).unlink()
+        monkeypatch.setattr(FolderRunner, "_dejar_constancia", original)
+        otra, hechos = _motor(ajustes, JobRegistry())
+        _vaciar(otra, tmp_path / "origen", destino)
+        assert hechos == []
+
+    def test_una_constancia_vieja_con_un_bloqueo_de_excel_sigue_vigente(self, tmp_path):
+        origen = tmp_path / "a.pdf"
+        origen.write_bytes(b"%PDF-1.4")
+        carpeta = tmp_path / "a"
+        carpeta.mkdir()
+        (carpeta / "01_X.pdf").write_bytes(b"%PDF-1.4 out")
+        tamano, modificado = constancias.huella_del_origen(origen)
+        constancia = Constancia(
+            origen="a.pdf",
+            tamano=tamano,
+            modificado_ns=modificado,
+            estado=EstadoDeEntrega.COMPLETA,
+            archivos=[
+                {"ruta": "01_X.pdf", "bytes": len(b"%PDF-1.4 out")},
+                # Excel estaba abierto al dejarla; ya se cerró.
+                {"ruta": "~$a__inventario.xlsx", "bytes": 165},
+                {"ruta": "Thumbs.db", "bytes": 4096},
+            ],
+        )
+
+        verificacion = constancias.verificar(constancia, origen, carpeta)
+
+        assert verificacion.vigencia is Vigencia.VIGENTE, verificacion.motivo
+
+
 class TestUnFalloNoTumbaLaCarpeta:
     """Lo pidió el operador: que si algo falla, lo pare, lo anote, se acomode y lo reintente."""
 
