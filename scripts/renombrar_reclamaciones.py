@@ -13,10 +13,11 @@ cambio va en todos los sitios de la caja, para que nada quede desparejo:
 El índice general de la raíz no se toca: lo rehace el bot en su próxima corrida con
 los índices de cada caja.
 
-El RE se lee primero del texto que ya trae el PDF -- gratis -- y, si no está, con
-Tesseract sobre la primera página. Sólo se acepta el radicado escrito con «RE» delante:
-oficina (cuatro cifras), año (2018-2029) y consecutivo: trece cifras. Lo que no se
-logra leer se deja como está y se anota.
+El RE se lee primero del texto de todas las páginas -- gratis -- y, si no está, con
+Tesseract en varias pasadas sobre las primeras páginas. Sólo se acepta el radicado:
+«RE», oficina (cuatro cifras), año (2018-2029) y consecutivo, trece cifras; aunque el
+OCR haya deformado el «RE» o lo haya perdido, junto a «N° PQR» o «Radicado». Lo que
+no se logra leer se deja como está y se anota, y se lista al final.
 
 Corre dentro del contenedor del bot, que ya trae Python, PyMuPDF, Tesseract en
 español y el lector de radicados del bot:
@@ -64,7 +65,20 @@ SALTAR = {"_reemplazados", "_procesados"}
 #: «RE2310202101996», «RE9233202202670», con los espacios que mete la lectura:
 #: oficina de cuatro cifras, año (2018-2029) y consecutivo. En MAGANGUE hay
 #: oficinas que empiezan por 9 (2026-10-28).
-RE_ESTRICTO = re.compile(r"R\s?E\W{0,2}(\d(?:\s?\d){12})(?!\s?\d)")
+#: Sin una letra delante: «SOBRE 2310…» o «NOMBRE 2310…» no son un radicado.
+RE_ESTRICTO = re.compile(r"(?<![A-Z])R\s?E\W{0,2}(\d(?:\s?\d){12})(?!\s?\d)")
+#: Lo que el OCR confunde con una cifra en un número impreso.
+_CIFRA = r"[0-9OQDIL|SB]"
+_A_CIFRA = str.maketrans("OQDIL|SB", "00011158")
+#: El mismo RE como lo deja un OCR malo: «R E», «KE», «R3», «RE:», «RE-», y
+#: letras por cifras («O» por «0», «I» por «1»).
+RE_TOLERANTE = re.compile(rf"(?<![A-Z])[RK]\s?[E3]\W{{0,3}}({_CIFRA}(?:\s?{_CIFRA}){{12}})(?![0-9])")
+#: Y si el OCR se comió el «RE»: el número de la etiqueta del radicado. En la
+#: constancia del contenido de la reclamación es «N° PQR: RE2320202101914».
+RE_DE_LA_ETIQUETA = re.compile(
+    rf"(?:PQR|RADICAD[OA]|RADICACION)\W{{0,12}}(?:N[O0]?\W{{0,4}})?(?:[RK]\s?[E3]\W{{0,3}})?"
+    rf"({_CIFRA}(?:\s?{_CIFRA}){{12}})(?![0-9])"
+)
 COLUMNAS = ["fecha", "caja", "archivo_antes", "archivo_despues", "re", "leido_de",
             "estado", "detalle", "indice_antes", "indice_despues"]
 
@@ -104,6 +118,14 @@ def radicado(texto: str) -> str | None:
         cifras = re.sub(r"\s", "", hallado.group(1))
         if _con_forma(cifras):
             return f"RE{cifras}"
+    # Lo que leyó mal el OCR: el «RE» deformado, o la etiqueta del radicado
+    # sin él. Sigue siendo el radicado -- nunca el «Consecutivo» --, y la forma
+    # (trece cifras con el año en su sitio) descarta lo que no lo es.
+    for patron in (RE_TOLERANTE, RE_DE_LA_ETIQUETA):
+        for hallado in patron.finditer(plano):
+            cifras = re.sub(r"\s", "", hallado.group(1)).translate(_A_CIFRA)
+            if _con_forma(cifras):
+                return f"RE{cifras}"
     return None
 
 
@@ -124,36 +146,68 @@ def _avisos_del_pdf() -> str:
     return ("avisos del PDF: " + "; ".join(dict.fromkeys(lineas)))[:300] if lineas else ""
 
 
+#: Páginas en las que se busca el RE con OCR, y las pasadas por página: dpi,
+#: modo de Tesseract y giro. La primera acierta casi siempre; las demás son
+#: para el escaneo torcido, el sello débil o la hoja al revés.
+PAGINAS_CON_OCR = 3
+PASADAS = ((300, "6", 0), (400, "4", 0), (400, "11", 0), (300, "6", 180))
+
+
+def _ocr(pagina, dpi: int, modo: str, giro: int) -> str:
+    import pymupdf
+
+    escala = pymupdf.Matrix(dpi / 72, dpi / 72).prerotate(giro)
+    imagen = pagina.get_pixmap(matrix=escala, colorspace=pymupdf.csGRAY)
+    with tempfile.TemporaryDirectory() as temporal:
+        ruta = Path(temporal) / "pagina.png"
+        imagen.save(ruta)
+        salida = subprocess.run(
+            ["tesseract", str(ruta), "stdout", "-l", "spa", "--psm", modo],
+            capture_output=True, text=True, timeout=180,
+            env={**os.environ, "OMP_THREAD_LIMIT": "1"},
+        )
+    return salida.stdout
+
+
 def leer_el_re(pdf: Path) -> tuple[str | None, str, str]:
-    """(RE, de dónde salió, avisos del PDF): del texto y, si no está, de Tesseract en la 1ª página."""
+    """(RE, de dónde salió, avisos del PDF).
+
+    Primero el texto de todas las páginas, que es gratis. Si no está, OCR de las
+    primeras páginas con varias pasadas: el 2026-10-28 quedaron constancias sin
+    RE porque sólo se miraban dos páginas de texto y una pasada de OCR.
+    """
     import pymupdf
 
     for apagar in ("mupdf_display_errors", "mupdf_display_warnings"):
         if hasattr(pymupdf.TOOLS, apagar):
             getattr(pymupdf.TOOLS, apagar)(False)
     _avisos_del_pdf()  # lo que quedara del PDF anterior
+    fallos: list[str] = []
     with pymupdf.open(pdf) as documento:
         if documento.page_count == 0:
             return None, "PDF sin páginas", _avisos_del_pdf()
-        for numero in range(min(2, documento.page_count)):
-            if hallado := radicado(documento[numero].get_text()):
-                return hallado, f"texto del PDF (página {numero + 1})", _avisos_del_pdf()
-        imagen = documento[0].get_pixmap(dpi=300, colorspace=pymupdf.csGRAY)
-        with tempfile.TemporaryDirectory() as temporal:
-            ruta = Path(temporal) / "pagina.png"
-            imagen.save(ruta)
+        for numero in range(documento.page_count):
             try:
-                salida = subprocess.run(
-                    ["tesseract", str(ruta), "stdout", "-l", "spa", "--psm", "6"],
-                    capture_output=True, text=True, timeout=180,
-                    env={**os.environ, "OMP_THREAD_LIMIT": "1"},
-                )
-            except (OSError, subprocess.SubprocessError) as error:
-                return None, f"no se pudo pasar el OCR: {error}", _avisos_del_pdf()
-    avisos = _avisos_del_pdf()
-    if hallado := radicado(salida.stdout):
-        return hallado, "OCR de la página 1", avisos
-    return None, "no se encontró un RE válido en el texto ni con el OCR", avisos
+                texto = documento[numero].get_text()
+            except Exception as error:  # noqa: BLE001 - una página rota no tapa las demás
+                fallos.append(f"página {numero + 1} sin texto legible: {error}")
+                continue
+            if hallado := radicado(texto):
+                return hallado, f"texto del PDF (página {numero + 1})", _avisos_del_pdf()
+        for dpi, modo, giro in PASADAS:
+            for numero in range(min(PAGINAS_CON_OCR, documento.page_count)):
+                try:
+                    leido = _ocr(documento[numero], dpi, modo, giro)
+                except Exception as error:  # noqa: BLE001 - se prueba la siguiente pasada
+                    fallos.append(f"OCR de la página {numero + 1}: {error}")
+                    continue
+                if hallado := radicado(leido):
+                    girada = ", girada" if giro else ""
+                    return hallado, f"OCR de la página {numero + 1} ({dpi} dpi{girada})", _avisos_del_pdf()
+    motivo = "no se encontró el RE en el texto ni con el OCR (todas las pasadas)"
+    if fallos:
+        motivo += "; " + "; ".join(dict.fromkeys(fallos))[:200]
+    return None, motivo, _avisos_del_pdf()
 
 
 # -- la caja ------------------------------------------------------------------------
@@ -461,6 +515,8 @@ CADA = 10
 #: Lo que cuenta como resuelto, y lo que hay que mirar.
 BIEN = {"renombrado", "se cambiaría", "deshecho", "ya tenía RE"}
 MIRAR = {"sin RE", "choque de nombre", "nombre muy largo"}
+#: Cuántos de los que quedaron sin RE se listan al final; el registro los tiene todos.
+MOSTRAR_PENDIENTES = 200
 
 
 def _cifra(numero: float) -> str:
@@ -489,6 +545,8 @@ class Tablero:
         self.origenes: dict[str, int] = {}
         self.por_tipo: dict[str, dict[str, int]] = {}
         self.motivos: dict[str, int] = {}
+        #: Los que quedaron sin RE o con error: (caja, archivo, estado).
+        self.pendientes: list[tuple[str, str, str]] = []
 
     def sumar(self, filas: list[dict]) -> None:
         self.cajas += 1
@@ -505,6 +563,7 @@ class Tablero:
             if estado in MIRAR or estado == "error":
                 motivo = fila.get("detalle") or estado
                 self.motivos[motivo] = self.motivos.get(motivo, 0) + 1
+                self.pendientes.append((fila.get("caja") or "", fila.get("archivo_antes") or "", estado))
 
     def documentos(self) -> int:
         return sum(self.estados.values())
@@ -561,6 +620,12 @@ class Tablero:
             print("\nPor qué quedaron sin RE o fallaron (los más repetidos):")
             for motivo, veces in sorted(self.motivos.items(), key=lambda par: -par[1])[:8]:
                 print(f"  {_cifra(veces):>7}  {motivo[:100]}")
+        if self.pendientes:
+            print(f"\nLos {_cifra(len(self.pendientes))} documentos que quedaron sin RE (caja\\archivo · motivo):")
+            for caja, archivo, estado in sorted(self.pendientes)[:MOSTRAR_PENDIENTES]:
+                print(f"  {caja}\\{archivo} · {estado}")
+            if len(self.pendientes) > MOSTRAR_PENDIENTES:
+                print(f"  … y {_cifra(len(self.pendientes) - MOSTRAR_PENDIENTES)} más: están todos en el registro.")
 
 
 def main() -> int:
