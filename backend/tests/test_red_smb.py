@@ -479,3 +479,23 @@ class TestUnaUnidadQueSeLeePorLaRed:
         # Antes se colaba: «Z:\SALIDA» no parecía de red y se creaba dentro del contenedor.
         with pytest.raises(FolderError, match="destino tiene que estar en este equipo"):
             asyncio.run(ir(r"Z:\SALIDA"))
+
+
+class TestRetomarNoBajaLoCompleto:
+    def test_lo_ya_completo_no_se_baja_de_la_red(self, servidor, ajustes, tmp_path):
+        # 2026-10-28: «Retomar lo que falta» bajaba entero cada libro de la red
+        # y sólo después miraba su constancia.
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        _correr(_motor(ajustes, JobRegistry(), []), CARPETA, tmp_path / "destino", tipo="diploma")
+        bajados = servidor.descargas
+
+        run = _correr(
+            _motor(ajustes, JobRegistry(), []),
+            CARPETA,
+            tmp_path / "destino",
+            tipo="diploma",
+            retomar="faltantes",
+        )
+
+        assert run.ya_entregados == 2
+        assert servidor.descargas == bajados

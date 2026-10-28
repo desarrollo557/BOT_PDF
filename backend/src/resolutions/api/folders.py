@@ -10,6 +10,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime
 from enum import StrEnum
@@ -883,6 +884,10 @@ class FolderRunner:
     #: eran minutos de recorrido y cientos de megas de memoria (lo pidió el
     #: operador el 2026-10-20: «hagámoslo por conteo por lotes»).
     LOTE_DEL_ORIGEN = 1000
+    #: El primero, más corto: el primer PDF nuevo no espera a que se verifiquen
+    #: mil ya entregados. Relanzando una caja de mil, empezaba a los 14 s
+    #: (2026-10-28).
+    PRIMER_LOTE = 50
 
     async def _descubrir_por_lotes(self, run: FolderRun):
         """Los lotes del origen, uno tras otro; si el origen no se deja, espera a que vuelva.
@@ -959,15 +964,17 @@ class FolderRunner:
         fuente = self._pdfs_en_la_red(run) if red_smb.por_smb(run.source) else self._pdfs_locales(run)
         lote: list[Path] = []
         huellas: dict[str, tuple[int, int]] = {}
+        tope = min(self.PRIMER_LOTE, self.LOTE_DEL_ORIGEN)
         for path, huella in fuente:
             if str(path) in run.seen:
                 continue
             lote.append(path)
             if huella is not None:
                 huellas[str(path)] = huella
-            if len(lote) >= self.LOTE_DEL_ORIGEN:
+            if len(lote) >= tope:
                 yield self._repartir(run, lote, huellas)
                 lote, huellas = [], {}
+                tope = self.LOTE_DEL_ORIGEN
         if lote:
             yield self._repartir(run, lote, huellas)
 
@@ -1028,24 +1035,30 @@ class FolderRunner:
     def _repartir(
         self, run: FolderRun, encontrados: list[Path], huellas: dict[str, tuple[int, int]]
     ) -> tuple[list[Path], list[tuple[Path, Constancia | None]]]:
-        """Lo pendiente y lo ya entregado, según la constancia de cada PDF."""
+        """Lo pendiente y lo ya entregado, según la constancia de cada PDF.
+
+        Las constancias se miran a la vez (``_mirar_las_constancias``); lo que
+        se decide con ellas, en orden y en este hilo.
+        """
         pending: list[Path] = []
         entregados: list[tuple[Path, Constancia | None]] = []
-        for path in encontrados:
+        por_mirar = [path for path in encontrados if str(path) not in run.seen]
+        for path in por_mirar:
+            if str(path) in huellas:
+                run.huellas_del_origen[str(path)] = huellas[str(path)]
+        miradas = self._mirar_las_constancias(run, por_mirar)
+        for path, (vigencia, constancia, con_pdf_entregado) in zip(por_mirar, miradas, strict=True):
             key = str(path)
-            if key in run.seen:
-                continue
-            if key in huellas:
-                run.huellas_del_origen[key] = huellas[key]
             relativa = str(self._relative(run, path))
             if run.retomar == Retomar.NO:
-                vigencia, constancia = self._vigencia(run, path)
                 motivo = run.motivos.pop(key, "")
                 if vigencia is Vigencia.VIGENTE:
                     self._anotar_la_verificacion(run, relativa, DECISION_YA_ENTREGADO, motivo)
                     entregados.append((path, constancia))
+                    # Su huella no hace falta: no se va a procesar.
+                    run.huellas_del_origen.pop(key, None)
                     continue
-                if vigencia is Vigencia.SIN_CONSTANCIA and self._tiene_pdf_entregado(run, path):
+                if vigencia is Vigencia.SIN_CONSTANCIA and con_pdf_entregado:
                     run.sin_constancia += 1
                     self._anotar_la_verificacion(
                         run,
@@ -1054,6 +1067,7 @@ class FolderRunner:
                         "su carpeta ya trae PDF entregados por una corrida de antes, sin constancia",
                     )
                     entregados.append((path, None))
+                    run.huellas_del_origen.pop(key, None)
                     continue
                 if vigencia in (Vigencia.INCOMPLETA, Vigencia.ORIGEN_CAMBIADO):
                     run.a_rehacer[key] = (vigencia, constancia)
@@ -1063,9 +1077,8 @@ class FolderRunner:
             elif run.retomar == Retomar.TODO:
                 # Todo otra vez, y lo entregado antes se aparta para no dejar
                 # cada archivo con su «(2)» al lado.
-                vigencia, constancia = self._vigencia(run, path)
                 motivo = run.motivos.pop(key, "")
-                if constancia is not None or self._tiene_pdf_entregado(run, path):
+                if constancia is not None or con_pdf_entregado:
                     run.a_rehacer[key] = (vigencia, constancia)
                     self._anotar_la_verificacion(
                         run, relativa, DECISION_OTRA_VEZ, f"se eligió procesar todo otra vez ({motivo})"
@@ -1081,14 +1094,52 @@ class FolderRunner:
                     if run.retomar == Retomar.REVISAR
                     else "se eligió retomar: se compara con el destino y se procesa sólo lo que falte",
                 )
-            if key not in huellas:
-                try:
-                    run.huellas_del_origen[key] = constancias.huella_del_origen(path)
-                except OSError:
-                    run.huellas_del_origen[key] = (0, 0)
             pending.append(path)
 
         return pending, entregados
+
+    def _mirar_las_constancias(
+        self, run: FolderRun, paths: list[Path]
+    ) -> list[tuple[Vigencia | None, Constancia | None, bool]]:
+        """Por cada PDF: qué dice su constancia, y si su carpeta ya trae PDF entregados.
+
+        Varios a la vez (``verificar_a_la_vez``): cada uno son unas cuantas
+        lecturas del destino -- la constancia, el listado de su carpeta, el
+        tamaño de lo entregado -- y del origen, y en el disco que Docker monta
+        cada lectura es un milisegundo de espera. Una tras otra, relanzar mil
+        PDF ya entregados eran 16 s (2026-10-28). El orden de la respuesta es
+        el de ``paths``. Cada hilo sólo escribe las entradas de su PDF.
+
+        La huella del origen se toma aquí, una vez: la verificación la usa y
+        la constancia la guarda al entregar.
+        """
+        if run.retomar not in (Retomar.NO, Retomar.TODO):
+            # Retomar o revisar: se compara con el destino al procesar cada uno.
+            for path in paths:
+                self._tomar_la_huella(run, path)
+            return [(None, None, False)] * len(paths)
+
+        def mirar(path: Path) -> tuple[Vigencia | None, Constancia | None, bool]:
+            self._tomar_la_huella(run, path)
+            vigencia, constancia = self._vigencia(run, path)
+            sin_constancia = constancia is None if run.retomar == Retomar.TODO else vigencia is Vigencia.SIN_CONSTANCIA
+            return vigencia, constancia, sin_constancia and self._tiene_pdf_entregado(run, path)
+
+        a_la_vez = max(1, int(getattr(self._settings, "verificar_a_la_vez", 1) or 1))
+        if a_la_vez == 1 or len(paths) < 2:
+            return [mirar(path) for path in paths]
+        with ThreadPoolExecutor(max_workers=min(a_la_vez, len(paths)), thread_name_prefix="verificar") as hilos:
+            return list(hilos.map(mirar, paths))
+
+    @staticmethod
+    def _tomar_la_huella(run: FolderRun, path: Path) -> None:
+        """Tamaño y fecha del origen, si el listado no los trajo (una carpeta del equipo)."""
+        if str(path) in run.huellas_del_origen:
+            return
+        try:
+            run.huellas_del_origen[str(path)] = constancias.huella_del_origen(path)
+        except OSError:
+            run.huellas_del_origen[str(path)] = (0, 0)
 
     @staticmethod
     def _anotar_la_verificacion(run: FolderRun, relativa: str, decision: str, motivo: str) -> None:
@@ -1131,6 +1182,8 @@ class FolderRunner:
                 run.motivos[str(path)] = verificacion.motivo
                 if verificacion.a_medio_ordenar:
                     run.cajas_por_ordenar.add(base)
+                if verificacion.fecha_nueva is not None:
+                    self._recordar_la_fecha(run, ruta, constancia, verificacion.fecha_nueva)
                 return verificacion.vigencia, constancia
             try:
                 if danada is None and ruta.exists():
@@ -1145,6 +1198,22 @@ class FolderRunner:
             "no tiene constancia de entrega: no se había entregado"
         )
         return Vigencia.SIN_CONSTANCIA, None
+
+    @staticmethod
+    def _recordar_la_fecha(run: FolderRun, ruta: Path, constancia: Constancia, fecha: int) -> None:
+        """El origen se copió o se movió y su SHA-256 dice que es el mismo: se guarda su fecha nueva.
+
+        Sin esto cada vuelta volvía a leer el PDF entero -- por la red, si es
+        de la red -- para llegar a la misma conclusión. Es el archivo del bot
+        en el destino; si no se deja escribir, la próxima vez se vuelve a
+        comparar, que es lo de antes.
+        """
+        constancia.modificado_ns = fecha
+        try:
+            with run.cerrojo:
+                constancias.escribir(ruta, constancia)
+        except OSError:
+            logger.warning("no se pudo guardar la fecha nueva del origen en %s", ruta, exc_info=True)
 
     def _tiene_pdf_entregado(self, run: FolderRun, path: Path) -> bool:
         carpeta = self._output_dir(run, path)
@@ -1456,7 +1525,12 @@ class FolderRunner:
         # y borrada al terminar (ver `_copia_local`).
         local = self._copia_local(run, path)
         if run.retomar in (Retomar.FALTANTES, Retomar.REVISAR):
-            if local != path:
+            # La constancia, antes de bajar nada: un libro ya completo no se
+            # baja de la red sólo para descubrir que no hacía falta.
+            mirada = None
+            if run.retomar == Retomar.FALTANTES:
+                mirada = await asyncio.to_thread(self._vigencia, run, path)
+            if local != path and not (mirada and mirada[0] is Vigencia.VIGENTE):
                 try:
                     await asyncio.to_thread(red_smb.traer, str(path), local)
                 except Exception as error:  # noqa: BLE001 - un PDF que no baja no tumba la carpeta
@@ -1465,7 +1539,7 @@ class FolderRunner:
                     run.fallidos[str(path)] = explicar_fallo(error)
                     self._publish(run)
                     return
-            control, paginas, seguir = await self._mirar_el_destino(run, path, relativa, local)
+            control, paginas, seguir = await self._mirar_el_destino(run, path, relativa, local, mirada)
             if not seguir:
                 self._borrar_la_copia(path, local)
                 self._pedir_generales(run)
@@ -1843,13 +1917,19 @@ class FolderRunner:
             run.generales_en = time.monotonic()
 
     async def _mirar_el_destino(
-        self, run: FolderRun, path: Path, relativa: str, local: Path | None = None
+        self,
+        run: FolderRun,
+        path: Path,
+        relativa: str,
+        local: Path | None = None,
+        mirada: tuple[Vigencia, Constancia | None] | None = None,
     ) -> tuple[ControlDeUnLibro, list[int] | None, bool]:
         """Qué hay de este PDF en el destino, y qué hacer: (control, páginas, seguir).
 
         ``páginas`` es ``None`` para procesarlo entero. ``seguir`` es falso
         cuando no hay nada que procesar: ya estaba completo, sólo se revisa, o
-        no se pudo mirar.
+        no se pudo mirar. ``mirada`` es lo que ya dijo su constancia, si se
+        miró antes de bajarlo de la red.
         """
         from .retomar import conciliar_libro, que_hacer
 
@@ -1860,7 +1940,7 @@ class FolderRunner:
             # Con la constancia de una entrega completa no hace falta leer el
             # libro página a página -- veinte segundos por libro desde la red --:
             # ya se sabe que está entero.
-            vigencia, constancia = await asyncio.to_thread(self._vigencia, run, path)
+            vigencia, constancia = mirada or await asyncio.to_thread(self._vigencia, run, path)
             if vigencia is Vigencia.VIGENTE:
                 relativa = str(self._relative(run, path))
                 run.verificaciones[relativa] = (

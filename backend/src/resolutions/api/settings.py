@@ -72,6 +72,13 @@ class Settings:
     #: máquina -- tres en una de doce --, que deja hilos de OCR a cada uno.
     folder_documents: int = 0
 
+    #: Cuántos PDF de una carpeta se verifican a la vez contra su constancia
+    #: al recorrerla. Cada uno son unas cuantas lecturas del destino, y en el
+    #: disco que Docker monta cada lectura tarda un milisegundo esperando, no
+    #: trabajando: una tras otra, relanzar mil PDF ya entregados eran 16 s
+    #: (2026-10-28). Uno lo deja en fila, como antes.
+    verificar_a_la_vez: int = 8
+
     #: Cuántas llamadas a la IA de pago a la vez, sumando todos los documentos.
     #: Con varios documentos en paralelo cada uno pide las suyas, y el
     #: proveedor contesta 429 si se le pisa: este tope común marca el paso.
@@ -223,6 +230,7 @@ class Settings:
             document_workers=_int("RESOLUTIONS_DOCUMENT_WORKERS", max(1, (os.cpu_count() or 4) - 1)),
             page_workers=_int("RESOLUTIONS_PAGE_WORKERS", 8),
             folder_documents=_int("RESOLUTIONS_FOLDER_DOCUMENTS", 0),
+            verificar_a_la_vez=_int("RESOLUTIONS_VERIFICAR_A_LA_VEZ", 8),
             ia_a_la_vez=_int("RESOLUTIONS_IA_A_LA_VEZ", 8),
             queue_limit=_int("RESOLUTIONS_QUEUE_LIMIT", 10_000),
             reintentos=_int("RESOLUTIONS_REINTENTOS", 2),

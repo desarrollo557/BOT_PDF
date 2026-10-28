@@ -229,6 +229,9 @@ class Verificacion:
     #: Si algún archivo está con el nombre de paso de un orden de la carpeta del
     #: NIC que se cortó: está entregado, pero hay que terminar de ordenarla.
     a_medio_ordenar: bool = False
+    #: La fecha del origen, si cambió y su SHA-256 dice que es el mismo PDF: se
+    #: guarda en la constancia para no volver a leerlo entero en cada vuelta.
+    fecha_nueva: int | None = None
 
 
 #: Lo que Windows y Office dejan en una carpeta mientras alguien la mira: no lo
@@ -326,10 +329,11 @@ def verificar(
             Vigencia.ORIGEN_CAMBIADO,
             f"el PDF de origen cambió de tamaño: {_peso(constancia.tamano)} → {_peso(tamano)}",
         )
-    if modificado != constancia.modificado_ns and not (
-        constancia.firma and _firma_o_nada(origen) == constancia.firma
-    ):
-        return Verificacion(Vigencia.ORIGEN_CAMBIADO, "el PDF de origen tiene otra fecha de modificación")
+    fecha_nueva = None
+    if modificado != constancia.modificado_ns:
+        if not (constancia.firma and _firma_o_nada(origen) == constancia.firma):
+            return Verificacion(Vigencia.ORIGEN_CAMBIADO, "el PDF de origen tiene otra fecha de modificación")
+        fecha_nueva = modificado
     try:
         en_la_carpeta = {entrada.name: entrada for entrada in os.scandir(carpeta)}
     except OSError as error:
@@ -383,7 +387,7 @@ def verificar(
     motivo = f"entregado completo el {_cuando(constancia.fecha)} ({pdfs} PDF)"
     if a_medio_ordenar:
         motivo += "; su carpeta quedó a medio ordenar y se termina de ordenar"
-    return Verificacion(Vigencia.VIGENTE, motivo, a_medio_ordenar=a_medio_ordenar)
+    return Verificacion(Vigencia.VIGENTE, motivo, a_medio_ordenar=a_medio_ordenar, fecha_nueva=fecha_nueva)
 
 
 def firma_del_origen(path: Path) -> str:

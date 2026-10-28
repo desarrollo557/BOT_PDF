@@ -1633,3 +1633,94 @@ class TestElPoolCongelado:
         este = self._job("a", 1300)
         ctx = SimpleNamespace(registry=SimpleNamespace(snapshot=lambda: [este]))
         assert not _pool_congelado(ctx, este, 1200)
+
+
+class TestRelanzarEsRapidoYExacto:
+    """2026-10-28: relanzar mil PDF ya entregados eran 16 s en el disco de Docker.
+
+    Las constancias se miran varias a la vez y el primer lote es corto. Lo que
+    se decide de cada PDF y el orden en que se toman no pueden cambiar.
+    """
+
+    def _caja_mezclada(self, ajustes, tmp_path, cuantos=120):
+        nombres = [f"{n:03d}.pdf" for n in range(cuantos)]
+        _pon(tmp_path / "origen", *nombres)
+        motor, _ = _motor(ajustes, JobRegistry())
+        _vaciar(motor, tmp_path / "origen", tmp_path / "destino")
+        destino = tmp_path / "destino"
+        # Una entrega cortada, una sin constancia pero con su PDF, una que no
+        # llegó nunca y un origen que cambió: lo demás, entregado.
+        cortada = constancias.leer(destino / "005" / constancias.NOMBRE)
+        cortada.estado = EstadoDeEntrega.ENTREGANDO
+        constancias.escribir(destino / "005" / constancias.NOMBRE, cortada)
+        (destino / "060" / constancias.NOMBRE).unlink()
+        for archivo in (destino / "090").iterdir():
+            archivo.unlink()
+        (destino / "090").rmdir()
+        (tmp_path / "origen" / "110.pdf").write_bytes(b"%PDF-1.4 otro escaneo, mas largo")
+        return nombres
+
+    @pytest.mark.parametrize("a_la_vez", [1, 8])
+    def test_decide_lo_mismo_y_en_el_mismo_orden(self, ajustes, tmp_path, a_la_vez):
+        nombres = self._caja_mezclada(ajustes, tmp_path)
+        _pon(tmp_path / "origen", "055b.pdf", "999.pdf")
+        registro = JobRegistry()
+        motor, _ = _motor(replace(ajustes, verificar_a_la_vez=a_la_vez), registro)
+
+        run = _vaciar(motor, tmp_path / "origen", tmp_path / "destino")
+
+        # El orden en que se toman, que es lo que el motor garantiza: el de
+        # empezar depende de qué hilo vuelve primero.
+        tomados = [registro.get(job_id).filename for job_id in run.job_ids]
+        assert tomados == ["005.pdf", "055b.pdf", "090.pdf", "110.pdf", "999.pdf"]
+        assert run.ya_entregados == len(nombres) - 3 and run.sin_constancia == 1
+        assert run.verificaciones["005.pdf"][0] == folders.DECISION_SE_REHACE
+        assert run.verificaciones["110.pdf"][0] == folders.DECISION_SE_REHACE
+        assert run.verificaciones["090.pdf"][0] == folders.DECISION_NUEVO
+        assert run.verificaciones["060.pdf"][0] == folders.DECISION_YA_ENTREGADO
+        # Lo saltado no se queda con su huella en memoria.
+        assert not run.huellas_del_origen
+
+    def test_el_primer_pdf_nuevo_no_espera_al_lote_entero(self, ajustes, tmp_path, monkeypatch):
+        self._caja_mezclada(ajustes, tmp_path)
+        motor, _ = _motor(ajustes, JobRegistry())
+        lotes: list[int] = []
+        repartir = motor._repartir
+
+        def contar(run, encontrados, huellas):
+            lotes.append(len(encontrados))
+            return repartir(run, encontrados, huellas)
+
+        monkeypatch.setattr(motor, "_repartir", contar)
+        _vaciar(motor, tmp_path / "origen", tmp_path / "destino")
+
+        assert lotes[0] == FolderRunner.PRIMER_LOTE
+        assert sum(lotes) == 120
+
+    def test_una_copia_identica_con_otra_fecha_se_lee_entera_una_sola_vez(self, ajustes, tmp_path, monkeypatch):
+        import os
+
+        _pon(tmp_path / "origen", "a.pdf")
+        motor, _ = _motor(ajustes, JobRegistry())
+        _vaciar(motor, tmp_path / "origen", tmp_path / "destino")
+        origen = tmp_path / "origen" / "a.pdf"
+        datos = origen.stat()
+        # Se copió o se movió: mismo contenido, otra fecha.
+        os.utime(origen, ns=(datos.st_atime_ns, datos.st_mtime_ns + 5_000_000_000))
+        lecturas: list[Path] = []
+        firmar = constancias.firma_del_origen
+
+        def contar(path):
+            lecturas.append(path)
+            return firmar(path)
+
+        monkeypatch.setattr(constancias, "firma_del_origen", contar)
+
+        for vuelta in (1, 2):
+            motor, hechos = _motor(ajustes, JobRegistry())
+            run = _vaciar(motor, tmp_path / "origen", tmp_path / "destino")
+            assert hechos == [] and run.ya_entregados == 1, vuelta
+
+        assert len(lecturas) == 1
+        guardada = constancias.leer(tmp_path / "destino" / "a" / constancias.NOMBRE)
+        assert guardada.modificado_ns == origen.stat().st_mtime_ns
