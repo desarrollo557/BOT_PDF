@@ -136,6 +136,11 @@
     const lista: Proceso[] = [];
     for (const run of liveRuns) {
       const tomados = run.processed + run.failed;
+      // Lo ya entregado también está hecho: sin contarlo, una carpeta de
+      // 37.279 con casi todo entregado decía «1 de 37279» y parecía parada
+      // (2026-10-28). Se dice lo que queda por procesar y lo que se saltó.
+      const yaEntregados = run.ya_entregados ?? 0;
+      const porProcesar = Math.max(0, run.discovered - yaEntregados);
       lista.push({
         ancla: `proceso-carpeta-${run.id}`,
         tipo: 'carpeta',
@@ -146,9 +151,12 @@
             : run.state === 'recovering'
               ? 'en pausa'
               : 'procesando',
-        avance: run.discovered ? Math.min(100, (100 * tomados) / run.discovered) : null,
+        avance: run.discovered
+          ? Math.min(100, (100 * (tomados + yaEntregados)) / run.discovered)
+          : null,
         detalle:
-          `${tomados} de ${run.discovered} documentos` +
+          `${tomados} de ${porProcesar} por procesar` +
+          (yaEntregados ? ` · ${yaEntregados} ya entregados` : '') +
           (run.en_curso && run.en_curso.length > 1 ? ` · ${run.en_curso.length} a la vez` : '') +
           (run.failed ? ` · ${run.failed} con fallo` : '')
       });
