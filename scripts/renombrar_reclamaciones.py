@@ -333,6 +333,115 @@ def cajas_de(raiz: Path):
             yield Path(actual)
 
 
+# -- el avance, en vivo ---------------------------------------------------------------
+
+#: Cada cuántos segundos se imprime el avance.
+CADA = 10
+#: Lo que cuenta como resuelto, y lo que hay que mirar.
+BIEN = {"renombrado", "se cambiaría", "deshecho", "ya tenía RE"}
+MIRAR = {"sin RE", "choque de nombre"}
+
+
+def _cifra(numero: float) -> str:
+    return f"{numero:,.0f}".replace(",", ".")
+
+
+def _duracion(segundos: float) -> str:
+    segundos = int(max(0, segundos))
+    horas, resto = divmod(segundos, 3600)
+    return f"{horas} h {resto // 60:02d} min" if horas else f"{resto // 60} min {resto % 60:02d} s"
+
+
+class Tablero:
+    """Las cifras del avance mientras corre, y el análisis al terminar.
+
+    Lo pidió el operador el 2026-10-28: «necesito ver un análisis estadístico del
+    progreso en tiempo real». Sale en la misma consola cada ``CADA`` segundos.
+    """
+
+    def __init__(self, total_de_cajas: int) -> None:
+        self.total = total_de_cajas
+        self.cajas = 0
+        self.inicio = time.monotonic()
+        self.ultimo = 0.0
+        self.estados: dict[str, int] = {}
+        self.origenes: dict[str, int] = {}
+        self.por_tipo: dict[str, dict[str, int]] = {}
+        self.motivos: dict[str, int] = {}
+
+    def sumar(self, filas: list[dict]) -> None:
+        self.cajas += 1
+        for fila in filas:
+            estado = fila["estado"]
+            self.estados[estado] = self.estados.get(estado, 0) + 1
+            if fila.get("leido_de") and fila["leido_de"] != "deshacer":
+                origen = "OCR" if "OCR" in fila["leido_de"] else "texto del PDF"
+                self.origenes[origen] = self.origenes.get(origen, 0) + 1
+            hallado = NUMERADO.match(fila.get("archivo_antes") or "")
+            tipo = CON_RE.sub("", hallado.group(2)).replace("-", " ") if hallado else "(otro)"
+            del_tipo = self.por_tipo.setdefault(tipo, {})
+            del_tipo[estado] = del_tipo.get(estado, 0) + 1
+            if estado in MIRAR or estado == "error":
+                motivo = fila.get("detalle") or estado
+                self.motivos[motivo] = self.motivos.get(motivo, 0) + 1
+
+    def documentos(self) -> int:
+        return sum(self.estados.values())
+
+    def imprimir_si_toca(self, *, siempre: bool = False) -> None:
+        ahora = time.monotonic()
+        if not siempre and ahora - self.ultimo < CADA:
+            return
+        self.ultimo = ahora
+        transcurrido = ahora - self.inicio
+        ritmo = self.cajas / transcurrido * 60 if transcurrido > 0 else 0
+        falta = (self.total - self.cajas) / (self.cajas / transcurrido) if self.cajas and transcurrido > 0 else 0
+        documentos = self.documentos()
+        bien = sum(self.estados.get(e, 0) for e in BIEN)
+        mirar = sum(self.estados.get(e, 0) for e in MIRAR)
+        errores = self.estados.get("error", 0)
+        leidos = sum(self.origenes.values())
+        texto = self.origenes.get("texto del PDF", 0)
+        porcentaje = self.cajas / self.total * 100 if self.total else 100
+        linea = (
+            f"[{datetime.now():%H:%M:%S}] {_cifra(self.cajas)}/{_cifra(self.total)} cajas ({porcentaje:.1f} %) · "
+            f"{ritmo:.0f} cajas/min · lleva {_duracion(transcurrido)} · falta ~{_duracion(falta)}\n"
+            f"           documentos {_cifra(documentos)}: con RE {_cifra(bien)}"
+            f" ({bien / documentos * 100 if documentos else 0:.1f} %) · sin RE {_cifra(mirar)}"
+            f" ({mirar / documentos * 100 if documentos else 0:.1f} %) · errores {_cifra(errores)}"
+        )
+        if leidos:
+            linea += f" · RE leído del texto {texto / leidos * 100:.0f} %, por OCR {100 - texto / leidos * 100:.0f} %"
+        print(linea, flush=True)
+
+    def resumen(self) -> None:
+        documentos = self.documentos()
+        print("\n" + "=" * 78)
+        print(f"ANÁLISIS · {_cifra(self.cajas)} cajas · {_cifra(documentos)} documentos · "
+              f"{_duracion(time.monotonic() - self.inicio)}")
+        print("=" * 78)
+        print("\nPor resultado:")
+        for estado, veces in sorted(self.estados.items(), key=lambda par: -par[1]):
+            print(f"  {estado:<20} {_cifra(veces):>8}  {veces / documentos * 100 if documentos else 0:5.1f} %")
+        if self.origenes:
+            leidos = sum(self.origenes.values())
+            print("\nDe dónde salió el RE:")
+            for origen, veces in sorted(self.origenes.items(), key=lambda par: -par[1]):
+                print(f"  {origen:<20} {_cifra(veces):>8}  {veces / leidos * 100:5.1f} %")
+        if self.por_tipo:
+            print("\nPor tipo de documento:")
+            print(f"  {'tipo':<50} {'total':>7} {'con RE':>7} {'sin RE':>7}   éxito")
+            for tipo, estados in sorted(self.por_tipo.items(), key=lambda par: -sum(par[1].values())):
+                total = sum(estados.values())
+                bien = sum(estados.get(e, 0) for e in BIEN)
+                print(f"  {tipo[:50]:<50} {_cifra(total):>7} {_cifra(bien):>7} {_cifra(total - bien):>7}"
+                      f"   {bien / total * 100:5.1f} %")
+        if self.motivos:
+            print("\nPor qué quedaron sin RE o fallaron (los más repetidos):")
+            for motivo, veces in sorted(self.motivos.items(), key=lambda par: -par[1])[:8]:
+                print(f"  {_cifra(veces):>7}  {motivo[:100]}")
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="Pone el RE en el nombre de las reclamaciones entregadas.")
@@ -374,8 +483,7 @@ def main() -> int:
 
     salida = raiz / (REGISTRO if aplicar else SIMULACION)
     nueva = not salida.exists() or not aplicar
-    cuenta: dict[str, int] = {}
-    inicio = time.monotonic()
+    tablero = Tablero(len(cajas))
     with salida.open("a" if aplicar else "w", encoding="utf-8-sig", newline="") as archivo:
         escritor = csv.DictWriter(archivo, fieldnames=COLUMNAS, delimiter=";")
         if nueva:
@@ -386,6 +494,7 @@ def main() -> int:
                 clave = str(caja.relative_to(raiz)) if caja != raiz else "."
                 futuros[pool.submit(trabajar_la_caja, str(caja), str(raiz), patron, aplicar,
                                     deshacer_por_caja.get(clave) if args.deshacer else None)] = clave
+            print(f"Avance cada {CADA} s. Se puede cortar con Ctrl+C y volver a correr: lo hecho se salta.\n", flush=True)
             for hechas, futuro in enumerate(as_completed(futuros), start=1):
                 try:
                     filas = futuro.result()
@@ -393,15 +502,11 @@ def main() -> int:
                     filas = [{**{c: "" for c in COLUMNAS}, "caja": futuros[futuro], "estado": "error", "detalle": str(error)}]
                 for fila in filas:
                     escritor.writerow(fila)
-                    cuenta[fila["estado"]] = cuenta.get(fila["estado"], 0) + 1
                 archivo.flush()
-                if hechas % 200 == 0 or hechas == len(futuros):
-                    minutos = (time.monotonic() - inicio) / 60
-                    print(f"  {hechas}/{len(futuros)} cajas · {minutos:.1f} min · "
-                          + ", ".join(f"{estado}: {veces}" for estado, veces in sorted(cuenta.items())))
-    print(f"\nListo. Registro: {salida}")
-    for estado, veces in sorted(cuenta.items()):
-        print(f"  {estado}: {veces}")
+                tablero.sumar(filas)
+                tablero.imprimir_si_toca(siempre=hechas == 1 or hechas == len(futuros))
+    tablero.resumen()
+    print(f"\nRegistro, con cada documento y su motivo: {salida}")
     if not aplicar:
         print("\nNo se cambió nada. Revise el registro y, si está bien, vuelva a correrlo con --aplicar.")
     return 0
