@@ -48,6 +48,11 @@ SIN_NOTA_ESPERADO = (
 
 ENLACE = re.compile(r"\[\[([^\]]+)\]\]")
 CAMPO_ARCHIVO = re.compile(r"^archivo:\s*(.+?)\s*$", re.MULTILINE)
+#: Una nota de un archivo borrado se conserva como historia, con
+#: «status: retirado» y un aviso arriba: no es deriva.
+RETIRADA = re.compile(r"^status:\s*retirad[oa]\s*$", re.MULTILINE)
+#: «archivo: -»: la nota no describe ningún archivo (operación, glosario).
+SIN_ARCHIVO = "-"
 
 
 def localizar_boveda() -> Path | None:
@@ -95,7 +100,9 @@ def revisar(boveda: Path) -> list[tuple[str, list[str]]]:
     enlazados: set[str] = set()
     for texto in textos.values():
         for crudo in ENLACE.findall(texto):
-            enlazados.add(destino_del_enlace(crudo))
+            # «[[#seccion]]» va a una sección de la misma nota: no es un destino.
+            if destino := destino_del_enlace(crudo):
+                enlazados.add(destino)
 
     documentados = {
         m.group(1) for texto in textos.values() for m in CAMPO_ARCHIVO.finditer(texto)
@@ -113,8 +120,9 @@ def revisar(boveda: Path) -> list[tuple[str, list[str]]]:
         "Notas que describen archivos que ya no existen",
         [f"{ruta}  (nota: {n.stem})"
          for n in notas
+         if not RETIRADA.search(textos[n])
          for ruta in CAMPO_ARCHIVO.findall(textos[n])
-         if not (RAIZ / ruta).is_file()],
+         if ruta != SIN_ARCHIVO and not (RAIZ / ruta).is_file()],
     )
 
     # 2. Código nuevo que nadie documentó.
