@@ -34,7 +34,10 @@ fi
 } > docker-compose.override.yml
 
 echo "==> Construyendo la imagen y arrancando..."
-docker compose up -d --build
+# Sin "compose up --build": Compose delega en "buildx bake", que puede perder su
+# sesion antes del primer paso ("no such job"). Ver instalar-escritorio.ps1.
+docker build -t botpdf:latest .
+docker compose up -d
 
 echo "==> Esperando a que el servicio conteste..."
 for _ in $(seq 1 60); do

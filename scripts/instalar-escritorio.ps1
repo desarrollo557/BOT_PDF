@@ -217,7 +217,13 @@ Paso "Construyendo la imagen y arrancando (la primera vez tarda unos minutos)...
 # progreso por un error y corta la instalacion. Lo que decide es el codigo de
 # salida, que se mira justo despues.
 $ErrorActionPreference = "Continue"
-docker compose up -d --build
+# La imagen se construye con "docker build" y no con "compose up --build": Compose
+# delega en "buildx bake", que en otro equipo perdio su sesion antes del primer
+# paso ("failed to receive status: ... no such job", 2026-10-28) y la instalacion
+# se cortaba. Compose arranca luego la botpdf:latest ya construida.
+docker build -t botpdf:latest .
+if ($LASTEXITCODE -ne 0) { throw "No se pudo construir la imagen. Revise el mensaje de arriba." }
+docker compose up -d
 if ($LASTEXITCODE -ne 0) {
     $locales = @($montables | Where-Object { $_.DriveType -eq 3 })
     $fuera = @($montables | Where-Object { $_.DriveType -ne 3 } | ForEach-Object { $_.DeviceID })
@@ -225,7 +231,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "   No se pudieron montar todas las unidades; se reintenta solo con los discos locales." -ForegroundColor Yellow
     Write-Host ("   Quedan fuera: " + ($fuera -join ", ") + ". Sus rutas no se veran desde el contenedor.") -ForegroundColor Yellow
     Escribir-Override $locales
-    docker compose up -d --build
+    docker compose up -d
     if ($LASTEXITCODE -ne 0) { throw "docker compose no pudo arrancar el servicio. Revise el mensaje de arriba." }
 }
 $ErrorActionPreference = "Stop"
