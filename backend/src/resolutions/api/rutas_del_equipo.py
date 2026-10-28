@@ -85,6 +85,43 @@ def al_servicio(ruta: str) -> str:
     return f"{montaje}/{resto}" if resto else montaje
 
 
+def unidad_que_no_ve(ruta: str) -> str | None:
+    """La letra de una ruta de Windows que el servicio no tiene conectada, o ``None``.
+
+    Sólo en Docker (con unidades declaradas), y sólo si el propio proceso
+    tampoco ve la raíz de esa unidad: fuera de Docker la resuelve Windows.
+    """
+    montadas = unidades()
+    coincide = _RUTA_DE_WINDOWS.match(ruta.strip()) if montadas else None
+    if not coincide:
+        return None
+    letra = coincide.group(1).upper()
+    if letra in montadas or os.path.isdir(f"{letra}:\\"):
+        return None
+    return letra
+
+
+def por_que_no_se_ve(ruta: str) -> str | None:
+    """Por qué el servicio no ve ``ruta``, si es por su unidad, en palabras del operador.
+
+    «Z:\\Shared with Me\\REPOSITORIO UDC\\…» contestaba «La carpeta no existe»
+    (2026-10-28) con la carpeta abierta en el Explorador: la unidad no estaba
+    conectada al contenedor. Y de destino era peor: la carpeta se creaba
+    dentro del contenedor, con «Z:\\…» como nombre, y lo entregado no salía.
+    """
+    letra = unidad_que_no_ve(ruta)
+    if letra is None:
+        return None
+    conectadas = ", ".join(f"{otra}:" for otra in sorted(unidades()))
+    return (
+        f"El servicio no ve la unidad {letra}: (corre en Docker y sólo tiene conectadas {conectadas}); "
+        "la carpeta puede existir, pero desde aquí no se alcanza. Vuelva a ejecutar instalar-docker.cmd: "
+        f"si {letra}: es una unidad de red la conecta sola, y si es WorkDrive u otro disco virtual dice "
+        "el comando para compartirla una vez como administrador. Mientras tanto puede escribir la "
+        "ruta de red de esa carpeta (\\\\servidor\\recurso\\…)."
+    )
+
+
 def _bajo(ruta: str, montaje: str) -> bool:
     """Si ``ruta`` es ``montaje`` o está dentro. En la red, sin distinguir mayúsculas, como Windows."""
     if montaje.startswith("//"):

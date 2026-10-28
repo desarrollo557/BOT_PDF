@@ -22,7 +22,7 @@ from ...application.sugerencia import sugerir
 from ...domain.doctype import DocumentType
 from ..contexto import Ctx
 from ..folders import CONSUMED_DIR, clean_path, en_orden_de_ruta
-from ..rutas_del_equipo import al_operador, al_servicio
+from ..rutas_del_equipo import al_operador, al_servicio, por_que_no_se_ve
 from .trabajos import _stream_to_disk
 
 router = APIRouter()
@@ -85,6 +85,8 @@ def _sin_abrir(relativa: str, error: Exception) -> dict[str, object]:
 async def reconocer_carpeta(payload: dict) -> dict[str, object]:
     """Qué hay en una carpeta local o de red y sus subcarpetas, PDF por PDF."""
     escrita = clean_path(str((payload or {}).get("ruta") or ""))
+    if motivo := por_que_no_se_ve(escrita):
+        raise HTTPException(status_code=404, detail=motivo)
     # Dentro de Docker «C:\Users\…» es «/equipo/c/Users/…», como en la corrida,
     # y «Z:\…» puede ser una unidad que se lee por la red.
     ruta_del_servicio = al_servicio(escrita)

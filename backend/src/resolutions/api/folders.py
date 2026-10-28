@@ -30,7 +30,7 @@ from .jobs import Job, JobRegistry, JobState
 from .planificador import Planificador
 from .reintentos import merece_otra_vuelta
 from .retomar import ControlDeUnLibro, HuellasDelOrigen, Retomar
-from .rutas_del_equipo import al_operador, al_servicio
+from .rutas_del_equipo import al_operador, al_servicio, por_que_no_se_ve
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -525,6 +525,11 @@ def validate_folders(
     # `rutas_del_equipo.py`). Fuera de Docker no cambia nada. Se traduce antes
     # de nada: lo de abajo pregunta si cada carpeta es de red.
     escrito = destination
+    # Una unidad que el contenedor no tiene: el origen «no existía» y el
+    # destino se creaba dentro del contenedor, donde nadie lo ve.
+    for ruta in (source, destination):
+        if motivo := por_que_no_se_ve(ruta):
+            raise FolderError(motivo)
     source = al_servicio(source)
     destination = al_servicio(destination)
     # Una carpeta de red se comprueba antes de nada: si el servidor pide usuario

@@ -166,6 +166,70 @@ class TestUnaCorridaConRutasDeWindows:
         assert respuesta["total"] == 0
 
 
+class TestUnaUnidadQueElServicioNoVe:
+    r"""«Z:\Shared with Me\REPOSITORIO UDC\…» contestaba «La carpeta no existe»
+    con la carpeta abierta en el Explorador (2026-10-28): la unidad no estaba
+    conectada al contenedor. Se dice eso, en las tres puertas por las que entra
+    una ruta escrita, y el destino nunca se crea dentro del contenedor."""
+
+    @pytest.fixture(autouse=True)
+    def sin_la_unidad(self):
+        # En Windows, una letra que el propio equipo tiene sí se ve.
+        if Path("Q:/").is_dir():
+            pytest.skip("este equipo tiene una unidad Q:")
+
+    RUTA = r"Q:\Shared with Me\REPOSITORIO UDC\9. ACTA 10 RESOLUCIONES DE RECTORIA 3220 - 3259"
+
+    def test_fuera_de_docker_no_hay_nada_que_explicar(self, monkeypatch):
+        monkeypatch.delenv(rutas.VARIABLE, raising=False)
+        assert rutas.por_que_no_se_ve(self.RUTA) is None
+
+    def test_dice_que_unidad_falta_y_cuales_tiene(self, en_docker):
+        assert rutas.por_que_no_se_ve(r"C:\ENTRADA") is None
+        assert rutas.por_que_no_se_ve("/equipo/c/ENTRADA") is None
+        motivo = rutas.por_que_no_se_ve(self.RUTA)
+        assert "no ve la unidad Q:" in motivo
+        assert "C:, Z:" in motivo
+        assert "instalar-docker" in motivo
+
+    def test_reconocer_la_carpeta_lo_explica(self, en_docker):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        from resolutions.api.routers.reconocer import reconocer_carpeta
+
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(reconocer_carpeta({"ruta": f'"{self.RUTA}"'}))
+        assert error.value.status_code == 404
+        assert "no ve la unidad Q:" in error.value.detail
+
+    def test_el_explorador_lo_explica(self, en_docker):
+        import asyncio
+        from types import SimpleNamespace
+
+        from fastapi import HTTPException
+
+        from resolutions.api.routers import carpetas
+
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(carpetas.browse(SimpleNamespace(), self.RUTA))
+        assert "no ve la unidad Q:" in error.value.detail
+
+    def test_la_corrida_no_empieza_ni_crea_el_destino_en_el_contenedor(self, en_docker, monkeypatch, tmp_path):
+        from resolutions.api.folders import FolderError, validate_folders
+
+        (Path(en_docker["C"]) / "ENTRADA").mkdir()
+        trabajo = tmp_path / "trabajo"
+        trabajo.mkdir()
+        monkeypatch.chdir(trabajo)
+        with pytest.raises(FolderError, match="no ve la unidad Q:"):
+            validate_folders(self.RUTA, r"C:\DESTINO")
+        with pytest.raises(FolderError, match="no ve la unidad Q:"):
+            validate_folders(r"C:\ENTRADA", r"Q:\SALIDA")
+        assert list(trabajo.iterdir()) == []
+
+
 class TestLaPaginaUnica:
     def test_recargar_una_ruta_del_front_sirve_la_pagina(self, tmp_path):
         from fastapi import FastAPI

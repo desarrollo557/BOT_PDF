@@ -19,7 +19,14 @@ from ..contexto import Ctx
 from ..errores import explicar_fallo
 from ..folders import FolderError, SourceDisposition, clean_path
 from ..indices import carpeta_del_lote, libro_de_indices
-from ..rutas_del_equipo import al_operador, al_servicio, es_una_raiz, raices, red_abierta
+from ..rutas_del_equipo import (
+    al_operador,
+    al_servicio,
+    es_una_raiz,
+    por_que_no_se_ve,
+    raices,
+    red_abierta,
+)
 from .salidas import XLSX_MEDIA
 from .trabajos import (
     _agrupar_choice,
@@ -302,6 +309,8 @@ async def browse(ctx: Ctx, path: str | None = None) -> dict[str, object]:
     if not path:
         return {"path": None, "parent": None, "drives": _drives(), "folders": []}
 
+    if motivo := por_que_no_se_ve(clean_path(path)):
+        raise HTTPException(status_code=404, detail=motivo)
     # Traducida antes de nada: «Z:\…» puede ser una unidad que se lee por la red.
     ruta = al_servicio(clean_path(path))
     if red_smb.es_de_red(ruta):
