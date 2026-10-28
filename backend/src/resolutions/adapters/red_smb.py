@@ -127,11 +127,26 @@ _cerrojo = threading.Lock()
 
 
 _turnos: dict[str, threading.BoundedSemaphore] = {}
+_descargas: dict[str, threading.BoundedSemaphore] = {}
 
 
 def _turno_del_servidor(servidor: str) -> threading.BoundedSemaphore:
     with _cerrojo:
         return _turnos.setdefault(servidor.lower(), threading.BoundedSemaphore(A_LA_VEZ_POR_SERVIDOR))
+
+
+def _turno_de_descarga(servidor: str) -> threading.BoundedSemaphore:
+    """Las descargas, una menos que los turnos del servidor.
+
+    Una descarga tiene su turno mientras dura la copia entera. Con tantas
+    descargas como turnos, el recorrido no podía listar ni una carpeta más hasta
+    que terminara alguna, y en una unidad lenta eso eran minutos sin descubrir
+    nada (2026-10-28). Así siempre queda uno para listar.
+    """
+    with _cerrojo:
+        return _descargas.setdefault(
+            servidor.lower(), threading.BoundedSemaphore(max(1, A_LA_VEZ_POR_SERVIDOR - 1))
+        )
 
 
 def _sin_creditos(error: BaseException) -> bool:
@@ -560,8 +575,10 @@ def traer(ruta: str, destino: Path) -> Path:
             shutil.copyfileobj(origen, copia, BLOQUE)
         return int(smbclient.stat(p.unc, **cuenta).st_size)
 
+    p = partes(ruta)
     try:
-        tamano = _llamar(ruta, copiar)
+        with _turno_de_descarga(p.servidor if p else ""):
+            tamano = _llamar(ruta, copiar)
         if parcial.stat().st_size != tamano:
             raise RedNoDisponible(f"La copia de {ruta} quedó incompleta; la red se cortó")
         os.replace(parcial, destino)

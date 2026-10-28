@@ -87,9 +87,12 @@ _CLASES: tuple[tuple[str, re.Pattern[str], re.Pattern[str] | None], ...] = (
             r"|PAGUE\s+HASTA|CAPITULO\s+11\s+DEL\s+ANEXO\s+GENERAL"
             # El reverso, el estado de cuenta: «Estado de cuenta / No. Facturas
             # Vencidas / No. Financiaciones pendientes / Fecha Último Pago».
-            r"|^\W*(?:\S+\W+){0,2}ESTADO\s+DE\s+CUE|FINANCIACIONES\s+PENDIENTES"
+            # Sin vuelta atrás, como el contrato: «\S+\W+» se pisaba consigo
+            # mismo y una hoja de UPD2465647 dejaba el documento al 100 % de
+            # CPU sin terminar, con la caja entera parada detrás (2026-10-28).
+            r"|^\W*+(?:\S++\s++){0,2}ESTADO\s+DE\s+CUE|FINANCIACIONES\s+PENDIENTES"
             # Y la que se titula así: «FACTURA DE VENTA», «FACTURA ELECTRÓNICA».
-            r"|^\W*(?:\S+\W+){0,2}FACTURA\s+(?:DE\s+VENTA|ELECTRONICA|DE\s+SERVICIOS?|No\b|N\W)"
+            r"|^\W*+(?:\S++\s++){0,2}FACTURA\s+(?:DE\s+VENTA|ELECTRONICA|DE\s+SERVICIOS?|No\b|N\W)"
             r"|NO\.?\s+FACTURAS\s+VENCIDAS|FECHA\s+\S{0,2}LTIMO\s+PA[GQ]O|\bNIU\s*:"
         ),
     ),

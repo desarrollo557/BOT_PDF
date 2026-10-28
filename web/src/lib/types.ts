@@ -546,6 +546,10 @@ export interface FolderRun {
   retomar?: RetomarChoice;
   /** Los PDF que ya estaban completos en el destino y no se volvieron a leer. */
   ya_entregados?: number;
+  /** A cuántos minutos sin avance se da un documento por atascado. Ausente en un servicio anterior. */
+  minutos_sin_avance?: number;
+  /** Hasta cuántos archivos a la vez se pueden elegir en marcha. Ausente en un servicio anterior. */
+  paralelo_maximo?: number;
   /** «00.CONTROL DE ENTREGA.xlsx», cuando ya se escribió. */
   control?: string | null;
   control_ruta?: string | null;

@@ -424,6 +424,13 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 done=hechas,
                 total=total,
             ),
+            avance_del_numero=lambda hechas, total: _anunciar(
+                payload,
+                Stage.GROUPING,
+                detail="leyendo el número de cada sello con el OCR de pago",
+                done=hechas,
+                total=total,
+            ),
         )
         # L3. La fecha de entrega que el mensajero marcó en cada guía de
         # LECTA: el día y el mes con una X, el año de la fecha impresa.

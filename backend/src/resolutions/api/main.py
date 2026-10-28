@@ -13,7 +13,7 @@ import logging
 import multiprocessing
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -75,6 +75,8 @@ PUBLISH_INTERVAL = 0.25
 #: vivo.
 HEARTBEAT_PUBLISH_SECONDS = 2.0
 PROGRESS_QUEUE_SIZE = 20_000
+#: Hilos para lo que espera -- red, disco, cerrojos -- sin ocupar la CPU.
+HILOS_DEL_SERVICIO = 64
 
 
 def _open_inventory(settings: Settings):
@@ -200,6 +202,13 @@ async def lifespan(app: FastAPI):
     ctx.controls = ctx.manager.dict()
     ctx.turnos_de_ia = ctx.manager.BoundedSemaphore(ctx.settings.ia_a_la_vez)
     ctx.fuid_jobs = {}
+    # Los hilos de `asyncio.to_thread` casi siempre esperan -- la red, un turno
+    # del servidor, el cerrojo de la entrega -- y no gastan CPU. El tamaño por
+    # omisión (núcleos + 4) se llenaba con una carpeta de red en paralelo y lo
+    # demás -- el recorrido, las entregas -- esperaba turno sin motivo.
+    asyncio.get_running_loop().set_default_executor(
+        ThreadPoolExecutor(max_workers=HILOS_DEL_SERVICIO, thread_name_prefix="servicio")
+    )
     app.state.tasks = [
         asyncio.create_task(_drain_progress(ctx)),
         asyncio.create_task(_publish_progress(ctx)),
@@ -418,12 +427,26 @@ async def _drain_progress(ctx: Contexto) -> None:
 
     The queue read is blocking, so it runs on a thread; folding the event into
     registry state is cheap and stays on the loop.
+
+    En un hilo propio y no en el pool común: ese pool lo llenan las descargas
+    de la red que esperan turno y las entregas que esperan el cerrojo, y con él
+    lleno las noticias no se leían. Todos los documentos salían «Sin novedades»
+    y a los veinte minutos el vigilante mataba documentos sanos y los mandaba a
+    reprocesar, OCR de pago incluido (2026-10-28).
     """
     loop = asyncio.get_running_loop()
     queue = ctx.progress_queue
+    hilo = ThreadPoolExecutor(max_workers=1, thread_name_prefix="noticias")
+    try:
+        await _vaciar_las_noticias(ctx, loop, queue, hilo)
+    finally:
+        hilo.shutdown(wait=False, cancel_futures=True)
+
+
+async def _vaciar_las_noticias(ctx: Contexto, loop, queue, hilo: ThreadPoolExecutor) -> None:
     while True:
         try:
-            event = await loop.run_in_executor(None, queue.get)
+            event = await loop.run_in_executor(hilo, queue.get)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - el Manager se fue

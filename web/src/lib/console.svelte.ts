@@ -38,6 +38,12 @@ interface Snapshot {
   state: string;
   /** Lo último que se registró de esta etapa, para no repetir la misma línea. */
   reported: number;
+  /**
+   * El paso dentro de la etapa, por su total. Agrupar lee primero las
+   * páginas (19) y luego los sellos (15); sin esto el segundo seguía contando
+   * desde el primero y salía «20–15 de 15» (2026-10-28).
+   */
+  paso: string;
 }
 
 /**
@@ -97,11 +103,17 @@ class ConsoleLog {
     const scope = shorten(job.filename);
     const previous = this.#snapshots.get(job.id);
     const stageChanged = previous !== undefined && previous.stage !== job.progress.stage;
+    const paso = `${job.progress.stage}|${job.progress.stage_total ?? 0}`;
+    // Otro paso: cambió el total, o la cuenta volvió atrás con el mismo total.
+    const pasoChanged =
+      previous !== undefined &&
+      (previous.paso !== paso || (job.progress.stage_done ?? 0) < previous.reported);
     this.#snapshots.set(job.id, {
       ribbon: job.progress.ribbon,
       stage: job.progress.stage,
       state: job.state,
-      reported: stageChanged ? 0 : (previous?.reported ?? 0)
+      reported: stageChanged || pasoChanged ? 0 : (previous?.reported ?? 0),
+      paso
     });
     if (job.state !== previous?.state) this.#recount();
 

@@ -189,6 +189,11 @@ class FolderRun:
     #: Cuántos PDF de esta carpeta a la vez, si el operador lo eligió. ``None``
     #: es el automático del planificador.
     paralelo: int | None = None
+    #: A cuántos minutos sin avance el vigilante da un documento por atascado.
+    #: La pantalla lo dice tal cual: «si sigue así» no decía cuándo.
+    minutos_sin_avance: float = 0.0
+    #: Hasta cuántos archivos a la vez se pueden elegir en marcha: los procesos del equipo.
+    paralelo_maximo: int = 0
     #: Lo que había de cada PDF de origen en el destino, qué se hizo y cómo
     #: quedó, en el orden en que se tomaron. Con esto se escribe el control.
     controles: dict[str, ControlDeUnLibro] = field(default_factory=dict)
@@ -383,6 +388,8 @@ class FolderRun:
             "tipo_documento": self.tipo_documento,
             "retomar": self.retomar,
             "paralelo": self.paralelo,
+            "paralelo_maximo": self.paralelo_maximo,
+            "minutos_sin_avance": self.minutos_sin_avance,
             "ya_entregados": self.ya_entregados,
             "sin_constancia": self.sin_constancia,
             "rehechos": self.rehechos,
@@ -643,6 +650,10 @@ class FolderRunner:
         )
         self._runs: dict[str, FolderRun] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        #: Los hilos del recorrido, aparte del pool común: con una carpeta de
+        #: red ese pool se llena de descargas, y el recorrido esperaba detrás
+        #: de ellas sin descubrir nada nuevo (2026-10-28).
+        self._hilos_del_recorrido = ThreadPoolExecutor(max_workers=4, thread_name_prefix="recorrido")
         #: El bucle de la aplicación, para publicar desde los hilos de entrega.
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -712,6 +723,8 @@ class FolderRunner:
             tipo_documento=tipo_documento,
             retomar=str(modo),
             paralelo=paralelo,
+            minutos_sin_avance=float(getattr(self._settings, "minutos_sin_avance", 0) or 0),
+            paralelo_maximo=self._paralelo_maximo(),
         )
         if paralelo:
             # Si pide más que las ranuras del servicio, se abren más: si no,
@@ -888,6 +901,11 @@ class FolderRunner:
     #: mil ya entregados. Relanzando una caja de mil, empezaba a los 14 s
     #: (2026-10-28).
     PRIMER_LOTE = 50
+    #: Y ninguno espera más que esto a llenarse: en una carpeta de red cada
+    #: listado es una ida y vuelta, y un PDF nuevo hallado tras el primer lote
+    #: esperaba a que se listaran otros mil antes de empezar (2026-10-28).
+    #: Cortado antes, el contador de la pantalla avanza a la vez que el recorrido.
+    SEGUNDOS_POR_LOTE = 1.0
 
     async def _descubrir_por_lotes(self, run: FolderRun):
         """Los lotes del origen, uno tras otro; si el origen no se deja, espera a que vuelva.
@@ -914,7 +932,9 @@ class FolderRunner:
             try:
                 if lotes is None:
                     lotes = self._lotes_del_origen(run)
-                lote = await asyncio.to_thread(next, lotes, None)
+                lote = await asyncio.get_running_loop().run_in_executor(
+                    self._hilos_del_recorrido, next, lotes, None
+                )
             except (FolderError, OSError) as error:
                 lotes = None
                 if not run.active or time.monotonic() + espera > limite:
@@ -965,16 +985,18 @@ class FolderRunner:
         lote: list[Path] = []
         huellas: dict[str, tuple[int, int]] = {}
         tope = min(self.PRIMER_LOTE, self.LOTE_DEL_ORIGEN)
+        desde = time.monotonic()
         for path, huella in fuente:
             if str(path) in run.seen:
                 continue
             lote.append(path)
             if huella is not None:
                 huellas[str(path)] = huella
-            if len(lote) >= tope:
+            if len(lote) >= tope or time.monotonic() - desde >= self.SEGUNDOS_POR_LOTE:
                 yield self._repartir(run, lote, huellas)
                 lote, huellas = [], {}
                 tope = self.LOTE_DEL_ORIGEN
+                desde = time.monotonic()
         if lote:
             yield self._repartir(run, lote, huellas)
 
@@ -1440,7 +1462,10 @@ class FolderRunner:
 
         recorrido = asyncio.create_task(recorrer())
         try:
-            cuantos = run.paralelo or self._planificador.por_omision
+            # Tantos trabajadores como el tope del equipo; toman PDF sólo los
+            # que caben en la cifra de ahora (`_en_paralelo`), que el operador
+            # puede cambiar en marcha.
+            cuantos = self._trabajadores(run)
             await asyncio.gather(*(trabajador(indice) for indice in range(cuantos)))
         finally:
             if not recorrido.done():
@@ -1473,7 +1498,7 @@ class FolderRunner:
                         return
                     await self._consume(run, path)
 
-        cuantos = min(len(cola), run.paralelo or self._planificador.por_omision)
+        cuantos = min(len(cola), self._trabajadores(run))
         await asyncio.gather(*(trabajador(indice) for indice in range(cuantos)))
 
     async def _esperar_turno(self, run: FolderRun, indice: int, cola: deque) -> None:
@@ -1495,10 +1520,41 @@ class FolderRunner:
             if run.state is RunState.RECOVERING:
                 run.state = RunState.PROCESSING
                 self._publish(run)
-            if run.a_la_vez is not None and indice >= run.a_la_vez:
+            if indice >= self._en_paralelo(run):
                 await asyncio.sleep(0.2)
                 continue
             return
+
+    def _en_paralelo(self, run: FolderRun) -> int:
+        """Cuántos PDF de la carpeta pueden leerse ahora: la cifra elegida, o uno tras una racha de fallos."""
+        cuantos = run.paralelo or self._planificador.por_omision
+        if run.a_la_vez is not None:
+            cuantos = min(cuantos, run.a_la_vez)
+        return max(1, cuantos)
+
+    def _trabajadores(self, run: FolderRun) -> int:
+        """Los trabajadores que se arrancan: los del tope del equipo, para poder subir en marcha."""
+        return max(run.paralelo or 0, self._planificador.por_omision, self._paralelo_maximo())
+
+    def _paralelo_maximo(self) -> int:
+        return max(1, int(getattr(self._settings, "document_workers", 1) or 1))
+
+    def cambiar_paralelo(self, run_id: str, paralelo: int | None) -> FolderRun | None:
+        """Cuántos archivos a la vez, con la carpeta en marcha (lo pidió el operador el 2026-10-28).
+
+        Subir despierta a los trabajadores que esperaban; bajar deja terminar a
+        los que están leyendo y no les da otro PDF. ``None`` vuelve al
+        automático. Devuelve ``None`` si la corrida no existe o ya terminó.
+        """
+        run = self._runs.get(run_id)
+        if run is None or not run.active:
+            return None
+        if paralelo:
+            self._planificador.ampliar(paralelo)
+        run.paralelo = paralelo
+        logger.info("%s: %s archivos a la vez", run.source, paralelo or "automático,")
+        self._publish(run)
+        return run
 
     async def _consume(self, run: FolderRun, path: Path) -> None:
         """Un PDF de la carpeta: procesarlo, entregarlo y contarlo.
@@ -1596,7 +1652,13 @@ class FolderRunner:
                 # Dentro del `try`: una red que se corta a mitad de la copia es
                 # un fallo pasajero de este PDF, que vuelve en la vuelta de
                 # reintento, y no de la carpeta.
+                # La tarjeta lo dice: sin esto enseñaba «En cola 0/?» mientras
+                # bajaba, como si no tuviera relación con la corrida.
+                job.progress.detail = "Bajando el PDF de la red"
+                self._registry.publish(job)
                 await asyncio.to_thread(red_smb.traer, str(path), local)
+                job.progress.detail = ""
+                self._registry.publish(job)
             # El PDF que tiene abierto otro programa -- el visor de alguien, el
             # antivirus, otra corrida del bot -- se espera un poco antes de darlo
             # por fallido («The process cannot access the file because it is

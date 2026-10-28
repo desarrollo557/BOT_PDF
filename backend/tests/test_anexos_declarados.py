@@ -358,3 +358,19 @@ class TestUnDocumentoNoSeLlamaComoSuAnexo:
         )
         [grupo] = nombrar_sin_soporte(grupos, {1: CEDULA}).groups
         assert grupo.kind == "DOCUMENTO DE IDENTIDAD"
+
+
+def test_la_basura_de_la_ocr_no_cuelga_el_reconocer_la_factura():
+    """«\S+\W+» se pisaba consigo mismo: una hoja de UPD2465647 dejó el documento
+    más de cincuenta minutos al 100 % de CPU y la caja parada detrás (2026-10-28)."""
+    import time
+
+    from resolutions.domain.anexos_declarados import clase_de_la_hoja
+
+    basura = "." + "a." * 400 + "\n" + "-;-" * 200
+    inicio = time.monotonic()
+    clase_de_la_hoja(basura)
+    assert time.monotonic() - inicio < 1.0
+    # Y lo que reconocía sigue reconociéndose.
+    assert clase_de_la_hoja("1. ESTADO DE CUENTA DEL SUSCRIPTOR\nNo. Facturas vencidas 2") == "factura"
+    assert clase_de_la_hoja("FACTURA DE VENTA No 1234\nElectricaribe") == "factura"

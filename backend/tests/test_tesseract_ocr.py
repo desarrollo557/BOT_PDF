@@ -91,6 +91,15 @@ class TestLaLlamadaAlBinario:
         assert llamada["input"][:8] == b"\x89PNG\r\n\x1a\n", "va como PNG"
         assert llamada["capture_output"] is True
 
+    def test_cada_llamada_usa_un_solo_hilo(self, monkeypatch):
+        """Con OpenMP cada llamada abría un hilo por núcleo y varias a la vez se
+        ahogaban: cuatro PDF a la vez, 41 s; con un hilo, 20 s (2026-10-28)."""
+        llamadas = self._con_respuesta(monkeypatch)
+        TesseractOcr().read(_png())
+
+        [llamada] = llamadas
+        assert llamada["env"]["OMP_THREAD_LIMIT"] == "1"
+
     def test_lo_leido_conserva_los_renglones(self, monkeypatch):
         self._con_respuesta(monkeypatch)
         resultado = TesseractOcr().read(_png())

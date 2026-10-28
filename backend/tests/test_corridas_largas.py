@@ -1697,6 +1697,30 @@ class TestRelanzarEsRapidoYExacto:
         assert lotes[0] == FolderRunner.PRIMER_LOTE
         assert sum(lotes) == 120
 
+    def test_un_recorrido_lento_no_retiene_lo_hallado_hasta_llenar_el_lote(self, ajustes, tmp_path, monkeypatch):
+        """En la red cada listado es una ida y vuelta: un PDF nuevo hallado tras el
+        primer lote esperaba a que se listaran otros mil antes de empezar (2026-10-28)."""
+        import time as reloj
+
+        motor, _ = _motor(ajustes, JobRegistry())
+        monkeypatch.setattr(motor, "SEGUNDOS_POR_LOTE", 0.05)
+        rutas = [tmp_path / "origen" / f"{indice:03}.pdf" for indice in range(6)]
+
+        def lento(run):
+            for ruta in rutas:
+                reloj.sleep(0.03)
+                yield ruta, None
+
+        monkeypatch.setattr(motor, "_pdfs_locales", lento)
+        monkeypatch.setattr(motor, "_repartir", lambda run, encontrados, huellas: (list(encontrados), []))
+        run = SimpleNamespace(source=tmp_path / "origen", seen=set())
+
+        lotes = [pendientes for pendientes, _ in motor._lotes_del_origen(run)]
+
+        # Ninguno espera al tope de cincuenta: salen de dos en dos, por tiempo.
+        assert len(lotes) > 1 and all(len(lote) < FolderRunner.PRIMER_LOTE for lote in lotes)
+        assert [ruta for lote in lotes for ruta in lote] == rutas
+
     def test_una_copia_identica_con_otra_fecha_se_lee_entera_una_sola_vez(self, ajustes, tmp_path, monkeypatch):
         import os
 
@@ -1724,3 +1748,56 @@ class TestRelanzarEsRapidoYExacto:
         assert len(lecturas) == 1
         guardada = constancias.leer(tmp_path / "destino" / "a" / constancias.NOMBRE)
         assert guardada.modificado_ns == origen.stat().st_mtime_ns
+
+
+class TestCambiarElParaleloEnMarcha:
+    """El operador sube o baja los archivos a la vez sin parar la carpeta (2026-10-28)."""
+
+    def _corrida(self, ajustes, tmp_path, cambios):
+        from resolutions.api.folders import FolderRunner
+
+        _pon(tmp_path / "origen", *(f"{n:02}.pdf" for n in range(12)))
+        registro = JobRegistry()
+        ajustes = replace(ajustes, document_workers=4, folder_documents=4)
+        dentro, maximos = [0], []
+
+        async def run_job(job):
+            dentro[0] += 1
+            maximos.append(dentro[0])
+            await asyncio.sleep(0.05)
+            dentro[0] -= 1
+            registro.mark_cancelled(job)
+
+        motor = FolderRunner(registro, ajustes, run_job, watch_interval=0.0)
+
+        async def ir():
+            run = motor.start(str(tmp_path / "origen"), str(tmp_path / "destino"), paralelo=1)
+            for cuando, paralelo in cambios:
+                while len(maximos) < cuando and run.active:
+                    await asyncio.sleep(0.005)
+                motor.cambiar_paralelo(run.id, paralelo)
+            while run.active:
+                await asyncio.sleep(0.01)
+            return run
+
+        return asyncio.run(ir()), maximos
+
+    def test_subir_empieza_mas_en_el_acto(self, ajustes, tmp_path):
+        run, maximos = self._corrida(ajustes, tmp_path, [(2, 3)])
+
+        assert maximos[:2] == [1, 1], "con 1 a la vez, de uno en uno"
+        assert max(maximos) == 3
+        assert run.paralelo == 3
+
+    def test_bajar_deja_terminar_y_no_da_mas(self, ajustes, tmp_path):
+        run, maximos = self._corrida(ajustes, tmp_path, [(1, 4), (6, 1)])
+
+        assert max(maximos[:6]) > 1
+        # Tras bajar a 1, cuando terminan los que leían, de uno en uno.
+        assert maximos[-3:] == [1, 1, 1]
+
+    def test_una_corrida_terminada_no_se_cambia(self, ajustes, tmp_path):
+        from resolutions.api.folders import FolderRunner
+
+        motor = FolderRunner(JobRegistry(), ajustes, lambda job: None)
+        assert motor.cambiar_paralelo("no-existe", 2) is None

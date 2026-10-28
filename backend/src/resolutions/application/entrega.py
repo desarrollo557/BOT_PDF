@@ -31,6 +31,7 @@ from ..domain.grouping import GroupingResult
 from .clasificacion import describir
 from .inventory import Inventory, build_inventory
 from .ports import AssemblyResult, DocumentAssembler
+from .segment_split import ES_PROCEDENCIA, procedencia
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +72,7 @@ class Entregado:
         return [
             {
                 "code": grupo.code.value,
-                "title": grupo.title,
+                "title": _titulo(grupo),
                 # Qué clase de papel resultó ser y de cuándo es. Van al informe
                 # además de al nombre del archivo porque son lo que alimenta el
                 # inventario, y porque un tipo discutible se corrige en la
@@ -162,3 +163,16 @@ def entregar(
         inventario=inventario,
         anexos={code: list(pages) for code, pages in (anexos or {}).items()},
     )
+
+
+def _titulo(grupo) -> str | None:
+    """El título del grupo; si sólo dice de qué páginas salió, con las de ahora.
+
+    Ese texto se pone al primer corte, y las reglas del sello -- «Folios: 19» --
+    alargan después el documento: el informe decía «15 pág. · páginas 5-6»
+    (UPD2465646, 2026-10-28). El archivo salía bien; lo que mentía era el texto.
+    """
+    titulo = grupo.title
+    if titulo and grupo.page_numbers and ES_PROCEDENCIA.fullmatch(titulo):
+        return procedencia(grupo.page_numbers)
+    return titulo

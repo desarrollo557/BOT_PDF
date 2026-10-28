@@ -268,6 +268,18 @@ class TestLeerLosSellos:
 
         assert sellos == {1: Sello("impreso", "RE3110202145459", date(2021, 10, 21), 2)}
 
+    def test_cada_numero_leido_con_el_de_pago_se_anuncia(self):
+        """Catorce sellos de Magangué fueron casi nueve minutos sin una noticia (2026-10-28)."""
+        from resolutions.application.sellos import leer_sellos
+
+        casa = "AT CONTESTAR CITF. ESTF NUMFRORE3 110202145449 Asunto: 03 KICLAMO Trolios: 2"
+        avisos: list[tuple[int, int]] = []
+        leer_sellos(
+            _Fuente({1: casa, 2: casa}), _Ocr(), [1, 2], de_pago=_Ocr(), avance_del_numero=lambda h, t: avisos.append((h, t))
+        )
+
+        assert sorted(avisos) == [(1, 2), (2, 2)]
+
     def test_sin_el_de_pago_queda_la_lectura_de_casa(self):
         from resolutions.application.sellos import leer_sellos
 

@@ -18,6 +18,7 @@ llega después, sobre documentos que ya tienen bordes.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
@@ -52,7 +53,16 @@ def _subject(segment: Segment) -> str:
     procedencia, que es lo que permite volver al PDF original a comprobar un
     corte sin abrir los cien archivos de al lado.
     """
-    first, last = segment.page_numbers[0], segment.page_numbers[-1]
+    return procedencia(segment.page_numbers)
+
+
+#: Un título que sólo dice de qué páginas salió: «página 4», «páginas 5-6».
+ES_PROCEDENCIA = re.compile(r"páginas? \d+(?:-\d+)?")
+
+
+def procedencia(paginas: Sequence[int]) -> str:
+    """«página 4» o «páginas 5-19»: de qué páginas del origen salió un archivo."""
+    first, last = paginas[0], paginas[-1]
     if first == last:
         return f"página {first}"
     return f"páginas {first}-{last}"

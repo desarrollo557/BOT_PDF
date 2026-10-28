@@ -198,6 +198,13 @@ class TestLasCredenciales:
         assert red_smb.es_carpeta(CARPETA)
 
 
+def _sin_error(hacer, *argumentos):
+    try:
+        hacer(*argumentos)
+    except OSError:
+        pass
+
+
 class TestLeer:
     def test_recorre_las_cajas_sin_apartados_y_avisa_lo_que_no_se_deja(self, servidor):
         red_smb.conectar(CARPETA, USUARIO, CLAVE)
@@ -215,6 +222,44 @@ class TestLeer:
         copia = red_smb.traer(rf"{CARPETA}\210847\UPD2998726.pdf", tmp_path / "a" / "UPD.pdf")
         assert copia.read_bytes() == b"%PDF-1.4 caja 210847"
         assert not list(tmp_path.rglob("*.part"))
+
+    def test_las_descargas_siempre_dejan_un_turno_para_listar(self, monkeypatch, tmp_path):
+        """Con tantas descargas como turnos, el recorrido no listaba ni una carpeta
+        hasta que terminara alguna: minutos sin descubrir nada (2026-10-28)."""
+        import threading
+
+        monkeypatch.setattr(red_smb, "A_LA_VEZ_POR_SERVIDOR", 2)
+        monkeypatch.setattr(red_smb, "_turnos", {})
+        monkeypatch.setattr(red_smb, "_descargas", {})
+        soltar, dentro, a_la_vez = threading.Event(), [], []
+
+        def bajar(ruta, copiar):
+            def copiando():
+                dentro.append(1)
+                a_la_vez.append(len(dentro))
+                soltar.wait(5)
+                dentro.pop()
+                raise OSError("se corta aquí: sólo importa cuántas bajaban a la vez")
+
+            return red_smb._con_turno(red_smb.partes(ruta), copiando)
+
+        monkeypatch.setattr(red_smb, "_llamar", bajar)
+        hilos = [
+            threading.Thread(target=lambda n=n: _sin_error(red_smb.traer, rf"\\srv\recurso\{n}.pdf", tmp_path / f"{n}.pdf"))
+            for n in range(2)
+        ]
+        for hilo in hilos:
+            hilo.start()
+        while not dentro:
+            soltar.wait(0.01)
+        try:
+            # Con dos descargas pedidas, el listado entra sin esperar a ninguna.
+            assert red_smb._con_turno(red_smb.partes(r"\\srv\recurso"), lambda: "listado") == "listado"
+        finally:
+            soltar.set()
+            for hilo in hilos:
+                hilo.join()
+        assert max(a_la_vez) == 1
 
     def test_lista_subcarpetas_y_sabe_si_existe(self, servidor):
         red_smb.conectar(CARPETA, USUARIO, CLAVE)

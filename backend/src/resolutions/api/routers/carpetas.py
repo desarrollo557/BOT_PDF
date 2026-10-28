@@ -245,6 +245,23 @@ async def stop_folder_run(ctx: Ctx, run_id: str) -> dict[str, object]:
         raise HTTPException(status_code=409, detail="Ese proceso ya habia terminado")
     return run.as_dict()
 
+@router.post("/api/folder-runs/{run_id}/paralelo")
+async def cambiar_paralelo(ctx: Ctx, run_id: str, payload: dict | None = None) -> dict[str, object]:
+    """Cuántos archivos a la vez, con la carpeta en marcha.
+
+    Con el mismo tope que al lanzarla. Subir empieza más en el acto; bajar deja
+    terminar a los que se están leyendo y no les da otro.
+    """
+    from .trabajos import _paralelo
+
+    if ctx.folders.get(run_id) is None:
+        raise HTTPException(status_code=404, detail="El proceso de carpeta no existe")
+    run = ctx.folders.cambiar_paralelo(run_id, _paralelo(ctx, (payload or {}).get("paralelo")))
+    if run is None:
+        raise HTTPException(status_code=409, detail="Ese proceso ya había terminado")
+    return run.as_dict()
+
+
 @router.delete("/api/folder-runs")
 async def clear_folder_runs(ctx: Ctx) -> dict[str, object]:
     """Vaciar la pantalla de carpetas ya terminadas.

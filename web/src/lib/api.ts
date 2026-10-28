@@ -783,6 +783,11 @@ export function stopFolderRun(runId: string): Promise<FolderRun> {
   return send(`${BASE}/folder-runs/${runId}/stop`, 'POST');
 }
 
+/** Cuántos archivos a la vez, con la carpeta en marcha; 0 vuelve al automático. */
+export function cambiarParalelo(runId: string, paralelo: number): Promise<FolderRun> {
+  return send(`${BASE}/folder-runs/${runId}/paralelo`, 'POST', { paralelo });
+}
+
 /**
  * Quitar de la pantalla una carpeta que ya terminó.
  *

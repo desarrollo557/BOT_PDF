@@ -33,6 +33,13 @@ from ..application.ports import OcrResult
 #: un proceso worker que heredó un entorno viejo es una forma confusa de
 #: enterarse; por eso la ubicación es explícita y configurable.
 TESSERACT_CMD = os.environ.get("RESOLUTIONS_TESSERACT_CMD") or "tesseract"
+#: Un hilo por llamada. El binario usa OpenMP y abre tantos hilos como núcleos
+#: tiene la máquina; el bot ya lanza varias llamadas a la vez (varios
+#: documentos, varias páginas), y juntas se ahogaban: cuatro PDF de Magangué a
+#: la vez tardaban 41 s y con un hilo cada llamada 20 s, mismo resultado. En un
+#: equipo con menos núcleos la tanda de sellos pasaba de su tope de 225 s y
+#: caía al OCR de pago (2026-10-28). Quien lo fije a mano, manda.
+_ENTORNO = {**os.environ, "OMP_THREAD_LIMIT": os.environ.get("OMP_THREAD_LIMIT") or "1"}
 
 
 def tesseract_disponible() -> bool:
@@ -246,7 +253,7 @@ class TesseractOcr:
         ]
         if self._config.whitelist:
             args[-1:-1] = ["-c", f"tessedit_char_whitelist={self._config.whitelist}"]
-        extra: dict[str, object] = {}
+        extra: dict[str, object] = {"env": _ENTORNO}
         if sys.platform == "win32":
             # Sin esto, un servicio sin consola abre y cierra una ventana negra
             # por cada página que lee.

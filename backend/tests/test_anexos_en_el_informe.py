@@ -114,3 +114,17 @@ class TestLaCajaRevueltaUsaElCaminoComun:
         assert '"code": group.code.value' not in fuente, (
             "los grupos del informe se arman en entrega.py, no aquí"
         )
+
+
+def test_el_titulo_de_procedencia_dice_las_paginas_finales():
+    """Las reglas del sello alargan el documento después del primer corte: el
+    informe decía «15 pág. · páginas 5-6» (UPD2465646, 2026-10-28)."""
+    from types import SimpleNamespace
+
+    from resolutions.application.entrega import _titulo
+
+    alargado = SimpleNamespace(title="páginas 5-6", page_numbers=list(range(5, 20)))
+    nombrado = SimpleNamespace(title="SOLICITUD DE SERVICIO", page_numbers=[1, 2])
+
+    assert _titulo(alargado) == "páginas 5-19"
+    assert _titulo(nombrado) == "SOLICITUD DE SERVICIO"

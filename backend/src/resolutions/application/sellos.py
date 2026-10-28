@@ -301,6 +301,7 @@ def leer_sellos(
     control: RunControl | None = None,
     avance: Callable[[int, int], None] | None = None,
     lectores_del_renglon: Sequence[OcrEngine] = (),
+    avance_del_numero: Callable[[int, int], None] | None = None,
 ) -> dict[int, Sello]:
     """El sello de cada hoja que lo trae, en dos pasos.
 
@@ -318,6 +319,11 @@ def leer_sellos(
 
     ``conocidos`` son esos radicados bien escritos: la cifra que el de casa
     leyó mal se corrige contra ellos.
+
+    ``avance_del_numero`` cuenta las etiquetas leídas con el de pago, una a
+    una. Sin él, catorce sellos de Magangué fueron casi nueve minutos sin una
+    noticia: la tarjeta decía «Sin novedades» y el vigilante podía darlo por
+    atascado (2026-10-28).
     """
     control = control or NullRunControl()
     conocidos = set(conocidos)
@@ -382,12 +388,21 @@ def leer_sellos(
             relecturas.update(zip(lote, leer_tanda(imagenes), strict=True))
     pagados: dict[int, str] = {}
     if de_pago is not None and detectados:
+        import threading
+
+        leidas = [0]
+        cerrojo = threading.Lock()
 
         def leer_de_pago(imagen: bytes) -> str:
             try:
                 return de_pago.read(imagen).text
             except Exception:  # noqa: BLE001 - se queda la lectura de casa
                 return ""
+            finally:
+                if avance_del_numero:
+                    with cerrojo:
+                        leidas[0] += 1
+                        avance_del_numero(leidas[0], len(detectados))
 
         orden = list(detectados)
         # Donde está el sello, no la esquina de arriba: el de tinta va al pie

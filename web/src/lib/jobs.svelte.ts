@@ -8,6 +8,7 @@ import {
   clearFolderRuns,
   forgetFolderRun,
   stopFolderRun,
+  cambiarParalelo,
   streamEvents
 } from './api';
 import { avisos } from './avisos.svelte';
@@ -254,6 +255,12 @@ class JobStore {
   async stopFolder(runId: string): Promise<void> {
     this.#upsertRun(await stopFolderRun(runId));
     consoleLog.push('DIR', 'proceso de carpeta detenido', 'sys');
+  }
+
+  /** Cuántos archivos a la vez, con la carpeta en marcha; 0 vuelve al automático. */
+  async cambiarParalelo(runId: string, paralelo: number): Promise<void> {
+    this.#upsertRun(await cambiarParalelo(runId, paralelo));
+    consoleLog.push('DIR', paralelo ? `${paralelo} archivos a la vez` : 'archivos a la vez: automático', 'sys');
   }
 
   /**

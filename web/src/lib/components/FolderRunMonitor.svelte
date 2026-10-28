@@ -122,6 +122,24 @@
     return new Date(parsed).toLocaleTimeString('es', { hour12: false });
   }
 
+  /** Las cifras que se pueden elegir en marcha: de uno al tope del equipo. */
+  const cifrasEnParalelo = $derived(
+    Array.from({ length: Math.max(0, run.paralelo_maximo ?? 0) }, (_, i) => i + 1)
+  );
+  let cambiandoParalelo = $state(false);
+
+  async function cambiarParalelo(valor: string) {
+    cambiandoParalelo = true;
+    error = null;
+    try {
+      await jobStore.cambiarParalelo(run.id, Number(valor));
+    } catch (problem) {
+      error = (problem as Error).message;
+    } finally {
+      cambiandoParalelo = false;
+    }
+  }
+
   async function stop() {
     const seguro = await confirmar({
       titulo: '¿Detener el procesamiento de esta carpeta?',
@@ -461,9 +479,28 @@
        desaparece en vez de anunciar "ningún archivo abierto" para siempre. -->
   {#if active}
     <div class="column">
-      <span class="caps section-label">
-        Consumiendo ahora{abiertos.length > 1 ? ` (${abiertos.length} a la vez)` : ''}
-      </span>
+      <div class="consumiendo">
+        <span class="caps section-label">
+          Consumiendo ahora{abiertos.length > 1 ? ` (${abiertos.length} a la vez)` : ''}
+        </span>
+        {#if cifrasEnParalelo.length > 1}
+          <!-- Cambiarlo no espera a que termine nada: subir empieza más en el
+               acto; bajar deja terminar a los que se están leyendo. -->
+          <label class="en-paralelo">
+            <span>Archivos en paralelo</span>
+            <select
+              value={String(run.paralelo ?? 0)}
+              disabled={cambiandoParalelo}
+              onchange={(evento) => cambiarParalelo(evento.currentTarget.value)}
+            >
+              <option value="0">Automático</option>
+              {#each cifrasEnParalelo as cifra (cifra)}
+                <option value={String(cifra)}>{cifra}</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
+      </div>
       {#if abiertos.length}
         {#each abiertos as item (item.job_id)}
           <article class="current">
@@ -490,9 +527,14 @@
             {/if}
             {#if (item.job?.progress.silent_seconds ?? 0) >= 120}
               <small class="sin-novedad" role="status">
-                Sin novedades desde hace {Math.floor((item.job?.progress.silent_seconds ?? 0) / 60)} min. Si
-                sigue así, se da por atascado solo y se reintenta al final de la carpeta; los demás
-                documentos siguen.
+                Sin novedades desde hace {Math.floor((item.job?.progress.silent_seconds ?? 0) / 60)} min.
+                {#if run.minutos_sin_avance}
+                  A los {run.minutos_sin_avance} min sin avance se da por atascado y se reintenta al
+                  final de la carpeta;
+                {:else}
+                  Si sigue así, se da por atascado solo y se reintenta al final de la carpeta;
+                {/if}
+                los demás documentos siguen.
               </small>
             {/if}
             {#if item.job?.progress.page_count}
@@ -623,6 +665,22 @@
   .run > .inline-error,
   .inventario .inline-error {
     margin: 0;
+  }
+
+  .consumiendo {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+
+  .en-paralelo {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--muted);
   }
 
   .section-label {

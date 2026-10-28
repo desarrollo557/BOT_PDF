@@ -148,3 +148,38 @@ def test_tropiezos_sueltos_en_una_corrida_larga_no_la_tumban(tmp_path, monkeypat
 
     assert llamadas["n"] >= 10
     assert run.state is RunState.DONE, run.error
+
+
+def test_las_noticias_llegan_aunque_los_hilos_del_servicio_esten_ocupados():
+    """Con el pool de hilos lleno -- descargas de la red esperando turno, entregas
+    esperando el cerrojo --, la cola de progreso compartía ese pool y no se leía:
+    todos los documentos salían «Sin novedades» y a los veinte minutos el
+    vigilante mataba documentos sanos y los mandaba a reprocesar (2026-10-28)."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    evento = object()
+    cola: queue.Queue = queue.Queue()
+    registro = _Registro(None)
+    soltar = threading.Event()
+
+    async def ir():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=2))
+        # Los dos hilos del pool, ocupados como los tendría una descarga lenta.
+        ocupados = [loop.run_in_executor(None, soltar.wait) for _ in range(2)]
+        drenaje = asyncio.create_task(_drain_progress(SimpleNamespace(progress_queue=cola, registry=registro)))
+        cola.put(evento)
+        try:
+            for _ in range(100):
+                if registro.aplicados:
+                    break
+                await asyncio.sleep(0.01)
+            return list(registro.aplicados)
+        finally:
+            soltar.set()
+            cola.put(None)
+            await drenaje
+            await asyncio.gather(*ocupados)
+
+    assert asyncio.run(ir()) == [evento]
