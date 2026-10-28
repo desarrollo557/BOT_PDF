@@ -107,16 +107,37 @@ def radicado(texto: str) -> str | None:
     return None
 
 
-def leer_el_re(pdf: Path) -> tuple[str | None, str]:
-    """(RE, de dónde salió): del texto del PDF y, si no está, de Tesseract en la 1ª página."""
+def _avisos_del_pdf() -> str:
+    """Lo que la librería avisó del último PDF abierto, en una línea.
+
+    Un PDF con daños leves -- «object is not a stream», «invalid ICC colorspace»
+    en MAGANGUE (2026-10-28) -- se lee igual: el aviso va a su fila del registro y
+    no ensucia la pantalla.
+    """
     import pymupdf
 
+    try:
+        avisos = pymupdf.TOOLS.mupdf_warnings(reset=True)
+    except Exception:  # noqa: BLE001 - sin avisos, nada que anotar
+        return ""
+    lineas = [linea.strip() for linea in str(avisos or "").splitlines() if linea.strip()]
+    return ("avisos del PDF: " + "; ".join(dict.fromkeys(lineas)))[:300] if lineas else ""
+
+
+def leer_el_re(pdf: Path) -> tuple[str | None, str, str]:
+    """(RE, de dónde salió, avisos del PDF): del texto y, si no está, de Tesseract en la 1ª página."""
+    import pymupdf
+
+    for apagar in ("mupdf_display_errors", "mupdf_display_warnings"):
+        if hasattr(pymupdf.TOOLS, apagar):
+            getattr(pymupdf.TOOLS, apagar)(False)
+    _avisos_del_pdf()  # lo que quedara del PDF anterior
     with pymupdf.open(pdf) as documento:
         if documento.page_count == 0:
-            return None, "PDF sin páginas"
+            return None, "PDF sin páginas", _avisos_del_pdf()
         for numero in range(min(2, documento.page_count)):
             if hallado := radicado(documento[numero].get_text()):
-                return hallado, f"texto del PDF (página {numero + 1})"
+                return hallado, f"texto del PDF (página {numero + 1})", _avisos_del_pdf()
         imagen = documento[0].get_pixmap(dpi=300, colorspace=pymupdf.csGRAY)
         with tempfile.TemporaryDirectory() as temporal:
             ruta = Path(temporal) / "pagina.png"
@@ -128,13 +149,46 @@ def leer_el_re(pdf: Path) -> tuple[str | None, str]:
                     env={**os.environ, "OMP_THREAD_LIMIT": "1"},
                 )
             except (OSError, subprocess.SubprocessError) as error:
-                return None, f"no se pudo pasar el OCR: {error}"
+                return None, f"no se pudo pasar el OCR: {error}", _avisos_del_pdf()
+    avisos = _avisos_del_pdf()
     if hallado := radicado(salida.stdout):
-        return hallado, "OCR de la página 1"
-    return None, "no se encontró un RE válido en el texto ni con el OCR"
+        return hallado, "OCR de la página 1", avisos
+    return None, "no se encontró un RE válido en el texto ni con el OCR", avisos
 
 
 # -- la caja ------------------------------------------------------------------------
+
+#: Las esperas entre intentos cuando otro programa tiene un archivo abierto un
+#: momento: un visor, el antivirus, la sincronización de la nube.
+ESPERAS = (0.5, 1.0, 2.0, 4.0)
+#: El largo máximo de una ruta en Windows.
+LARGO_MAXIMO = 255
+
+
+def _con_reintentos(hacer):
+    for espera in (*ESPERAS, None):
+        try:
+            return hacer()
+        except PermissionError:
+            if espera is None:
+                raise
+            time.sleep(espera)
+    return None
+
+
+def _bloqueado(ruta: Path) -> str | None:
+    """Por qué no se puede escribir ``ruta`` (abierta en Excel, de sólo lectura), o ``None``."""
+    for espera in (*ESPERAS, None):
+        try:
+            with ruta.open("r+b"):
+                return None
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            if espera is None:
+                return error.strerror or str(error)
+            time.sleep(espera)
+    return None
 
 
 def _plano(texto: str) -> str:
@@ -163,7 +217,7 @@ def _leer_constancias(carpeta: Path) -> list[tuple[Path, dict]]:
 def _guardar_json(ruta: Path, datos: dict) -> None:
     temporal = ruta.with_name(ruta.name + ".tmp")
     temporal.write_text(json.dumps(datos, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporal.replace(ruta)
+    _con_reintentos(lambda: temporal.replace(ruta))
 
 
 def _filas_del_indice(hoja) -> dict[int, int]:
@@ -176,8 +230,16 @@ def _filas_del_indice(hoja) -> dict[int, int]:
     return filas
 
 
-def trabajar_la_caja(carpeta: str, raiz: str, patron: str, aplicar: bool, deshacer: list[dict] | None) -> list[dict]:
-    """Lee el RE de las reclamaciones de una caja y, si se pide, lo pone en todos sus sitios."""
+def trabajar_la_caja(
+    carpeta: str, raiz: str, raiz_en_windows: str, patron: str, aplicar: bool, deshacer: list[dict] | None
+) -> list[dict]:
+    """Lee el RE de las reclamaciones de una caja y, si se pide, lo pone en todos sus sitios.
+
+    Un PDF que ya trae su RE en el nombre -- de una corrida que se cortó a mitad
+    de la caja -- también se mira: si su constancia o su índice siguen con el
+    nombre viejo, se completan. Si no, el bot vería la entrega incompleta y la
+    volvería a procesar.
+    """
     carpeta_p, raiz_p = Path(carpeta), Path(raiz)
     caja = str(carpeta_p.relative_to(raiz_p)) if carpeta_p != raiz_p else "."
     ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -186,39 +248,59 @@ def trabajar_la_caja(carpeta: str, raiz: str, patron: str, aplicar: bool, deshac
     def anotar(**datos) -> None:
         filas.append({**{c: "" for c in COLUMNAS}, "fecha": ahora, "caja": caja, **datos})
 
-    # 1. Qué cambiar: (nombre de antes, nombre nuevo, RE, de dónde salió).
-    cambios: list[tuple[str, str, str, str]] = []
+    # 1. Qué cambiar. «renombrar» falso: el PDF ya tiene su RE y sólo se
+    # completan su constancia y su índice si se quedaron atrás.
+    cambios: list[dict] = []
     if deshacer is not None:
         for fila in deshacer:
-            cambios.append((fila["archivo_despues"], fila["archivo_antes"], fila["re"], "deshacer"))
+            cambios.append({"antes": fila["archivo_despues"], "despues": fila["archivo_antes"],
+                            "re": fila["re"], "origen": "deshacer", "renombrar": True, "avisos": ""})
     else:
         for pdf in sorted(carpeta_p.glob("*.pdf"), key=lambda p: (_numero(p.name), p.name)):
             hallado = NUMERADO.match(pdf.name)
             if not hallado or patron not in _plano(hallado.group(2)):
                 continue
             titulo = hallado.group(2)
-            if CON_RE.search(titulo):
-                anotar(archivo_antes=pdf.name, estado="ya tenía RE")
+            if ya := CON_RE.search(titulo):
+                cambios.append({"antes": f"{hallado.group(1)}_{titulo[: ya.start()]}.pdf", "despues": pdf.name,
+                                "re": ya.group(0)[1:].upper(), "origen": "", "renombrar": False, "avisos": ""})
                 continue
             try:
-                numero_re, origen = leer_el_re(pdf)
+                numero_re, origen, avisos = leer_el_re(pdf)
             except Exception as error:  # noqa: BLE001 - un PDF ilegible no para el resto
                 anotar(archivo_antes=pdf.name, estado="error", detalle=f"no se pudo abrir: {error}")
                 continue
             if not numero_re:
-                anotar(archivo_antes=pdf.name, estado="sin RE", detalle=origen)
+                anotar(archivo_antes=pdf.name, estado="sin RE", detalle="; ".join(x for x in (origen, avisos) if x))
                 continue
             nuevo = f"{hallado.group(1)}_{titulo}-{numero_re}.pdf".upper().replace(".PDF", ".pdf")
+            largo = len(raiz_en_windows.rstrip("\\/")) + len(str(carpeta_p / nuevo)) - len(str(raiz_p))
+            if largo > LARGO_MAXIMO:
+                anotar(archivo_antes=pdf.name, archivo_despues=nuevo, re=numero_re, leido_de=origen,
+                       estado="nombre muy largo",
+                       detalle=f"la ruta quedaría de {largo} caracteres y Windows admite {LARGO_MAXIMO}")
+                continue
             if (carpeta_p / nuevo).exists():
                 anotar(archivo_antes=pdf.name, archivo_despues=nuevo, re=numero_re, leido_de=origen,
                        estado="choque de nombre", detalle="ya hay un archivo con ese nombre")
                 continue
-            cambios.append((pdf.name, nuevo, numero_re, origen))
+            cambios.append({"antes": pdf.name, "despues": nuevo, "re": numero_re, "origen": origen,
+                            "renombrar": True, "avisos": avisos})
     if not cambios:
         return filas
 
-    # 2. Dónde está cada PDF en las constancias y en el índice de la caja.
+    # 2. Antes de tocar nada: que el índice y las constancias se dejen escribir.
+    # Un índice abierto en Excel dejaba los PDF renombrados y el índice sin RE.
     constancias = _leer_constancias(carpeta_p)
+    if aplicar:
+        for ruta in [carpeta_p / INDICE, *(ruta for ruta, _ in constancias)]:
+            if motivo := _bloqueado(ruta):
+                for cambio in cambios:
+                    anotar(archivo_antes=cambio["antes"] if cambio["renombrar"] else cambio["despues"],
+                           re=cambio["re"], estado="error",
+                           detalle=f"no se tocó la caja: «{ruta.name}» está abierto o bloqueado ({motivo}); "
+                                   "ciérrelo y vuelva a correr")
+                return filas
     libro = hoja = None
     filas_de_la_hoja: dict[int, int] = {}
     if (carpeta_p / INDICE).exists():
@@ -229,10 +311,13 @@ def trabajar_la_caja(carpeta: str, raiz: str, patron: str, aplicar: bool, deshac
         filas_de_la_hoja = _filas_del_indice(hoja)
     cambio_el_indice = False
 
-    for antes, despues, numero_re, origen in cambios:
+    for cambio in cambios:
+        antes, despues, numero_re, origen = cambio["antes"], cambio["despues"], cambio["re"], cambio["origen"]
+        renombrar = cambio["renombrar"]
         sufijo = f"-{numero_re}"
         titulo_antes = NUMERADO.match(antes).group(2) if NUMERADO.match(antes) else antes
-        if not (carpeta_p / antes).exists():
+        en_disco = antes if renombrar else despues
+        if not (carpeta_p / en_disco).exists():
             anotar(archivo_antes=antes, archivo_despues=despues, re=numero_re, estado="error",
                    detalle="el PDF ya no está en la caja")
             continue
@@ -250,7 +335,8 @@ def trabajar_la_caja(carpeta: str, raiz: str, patron: str, aplicar: bool, deshac
             else:
                 fila_de_la_hoja = None
 
-        # En la constancia: el archivo, y su fila en la copia del índice.
+        # En la constancia: el archivo con su nombre de antes, y su fila en la
+        # copia del índice.
         suya = None
         for ruta, datos in constancias:
             pdfs = sorted(
@@ -264,25 +350,37 @@ def trabajar_la_caja(carpeta: str, raiz: str, patron: str, aplicar: bool, deshac
             if suya:
                 break
 
+        if not renombrar and suya is None and fila_de_la_hoja is None:
+            anotar(archivo_antes=despues, re=numero_re, estado="ya tenía RE")
+            continue
+        completar = [que for que, falta in (("su constancia", suya), ("su índice", fila_de_la_hoja)) if falta is not None]
+        detalle = [cambio["avisos"]] if cambio["avisos"] else []
+        if not renombrar:
+            detalle.append(("se completaría " if not aplicar else "se completó ") + " y ".join(completar)
+                           + ": quedaron con el nombre viejo")
+
         if not aplicar:
-            anotar(archivo_antes=antes, archivo_despues=despues, re=numero_re, leido_de=origen,
-                   estado="se cambiaría", indice_antes=indice_antes, indice_despues=indice_despues,
-                   detalle="" if suya else "sin constancia que lo nombre")
+            if renombrar and suya is None:
+                detalle.append("sin constancia que lo nombre")
+            anotar(archivo_antes=antes if renombrar else despues, archivo_despues=despues, re=numero_re,
+                   leido_de=origen, estado="se cambiaría" if renombrar else "ya tenía RE",
+                   indice_antes=indice_antes, indice_despues=indice_despues, detalle="; ".join(detalle))
             continue
 
         # 3. Aplicar: el PDF y, en seguida, su constancia; si la constancia no
         # se deja escribir, el PDF vuelve a su nombre (que nunca queden desparejos).
-        try:
-            (carpeta_p / antes).rename(carpeta_p / despues)
-        except OSError as error:
-            anotar(archivo_antes=antes, archivo_despues=despues, re=numero_re, leido_de=origen,
-                   estado="error", detalle=f"no se pudo renombrar: {error}")
-            continue
-        detalle = []
+        if renombrar:
+            try:
+                _con_reintentos(lambda a=antes, d=despues: (carpeta_p / a).rename(carpeta_p / d))
+            except OSError as error:
+                anotar(archivo_antes=antes, archivo_despues=despues, re=numero_re, leido_de=origen,
+                       estado="error", detalle=f"no se pudo renombrar: {error}")
+                continue
         if suya:
             ruta, datos, archivo, puesto, cuantos = suya
             ruta_vieja = str(archivo["ruta"])
-            archivo["ruta"] = str(Path(ruta_vieja).with_name(despues)).replace("\\", "/") if "/" in ruta_vieja.replace("\\", "/") else despues
+            con_barras = ruta_vieja.replace("\\", "/")
+            archivo["ruta"] = str(Path(con_barras).with_name(despues)).replace("\\", "/") if "/" in con_barras else despues
             filas_suyas = ((datos.get("indice") or {}).get("filas")) or []
             if len(filas_suyas) == cuantos:
                 nombre = str(filas_suyas[puesto].get("nombre") or "")
@@ -294,31 +392,35 @@ def trabajar_la_caja(carpeta: str, raiz: str, patron: str, aplicar: bool, deshac
                 _guardar_json(ruta, datos)
             except OSError as error:
                 archivo["ruta"] = ruta_vieja
-                (carpeta_p / despues).rename(carpeta_p / antes)
+                if renombrar:
+                    _con_reintentos(lambda a=antes, d=despues: (carpeta_p / d).rename(carpeta_p / a))
                 anotar(archivo_antes=antes, archivo_despues=despues, re=numero_re, leido_de=origen,
                        estado="error", detalle=f"no se pudo actualizar la constancia: {error}")
                 continue
-        else:
+        elif renombrar:
             detalle.append("sin constancia que lo nombre")
         if fila_de_la_hoja is not None:
             hoja.cell(fila_de_la_hoja, 1).value = indice_despues
             cambio_el_indice = True
-        else:
+        elif renombrar:
             detalle.append("su fila del índice no coincide: no se cambió")
             indice_antes = indice_despues = ""
-        anotar(archivo_antes=antes, archivo_despues=despues, re=numero_re, leido_de=origen,
-               estado="deshecho" if deshacer is not None else "renombrado",
+        anotar(archivo_antes=antes if renombrar else despues, archivo_despues=despues, re=numero_re,
+               leido_de=origen,
+               estado="deshecho" if deshacer is not None else "renombrado" if renombrar else "ya tenía RE",
                indice_antes=indice_antes, indice_despues=indice_despues, detalle="; ".join(detalle))
 
     if cambio_el_indice and libro is not None:
         temporal = carpeta_p / f".{INDICE}.tmp"
         try:
             libro.save(temporal)
-            temporal.replace(carpeta_p / INDICE)
+            _con_reintentos(lambda: temporal.replace(carpeta_p / INDICE))
         except OSError as error:
             for fila in filas:
                 if fila["indice_despues"]:
-                    fila["detalle"] = f"no se pudo guardar el índice ({error})"
+                    fila["estado"] = "error"
+                    fila["detalle"] = (f"el PDF y su constancia quedaron con el RE pero no se pudo guardar el "
+                                       f"índice ({error}); vuelva a correr para completarlo")
     return filas
 
 
@@ -333,13 +435,32 @@ def cajas_de(raiz: Path):
             yield Path(actual)
 
 
+def corridas_del_bot_sobre(carpeta_en_windows: str) -> list[str] | None:
+    """Los orígenes de las corridas del bot que entregan ahora en esa carpeta; ``None`` si no contesta."""
+    import urllib.request
+
+    try:
+        pedido = urllib.request.Request("http://127.0.0.1:8000/api/folder-runs", headers={"x-operator": "siar"})
+        with urllib.request.urlopen(pedido, timeout=10) as respuesta:
+            corridas = json.loads(respuesta.read()).get("runs") or []
+    except Exception:  # noqa: BLE001 - sin respuesta, se avisa y se sigue
+        return None
+    activas = {"scanning", "processing", "watching", "recovering"}
+    objetivo = _plano(carpeta_en_windows)
+    return [
+        str(corrida.get("source") or "")
+        for corrida in corridas
+        if corrida.get("state") in activas and _plano(str(corrida.get("destination") or "")) == objetivo
+    ]
+
+
 # -- el avance, en vivo ---------------------------------------------------------------
 
 #: Cada cuántos segundos se imprime el avance.
 CADA = 10
 #: Lo que cuenta como resuelto, y lo que hay que mirar.
 BIEN = {"renombrado", "se cambiaría", "deshecho", "ya tenía RE"}
-MIRAR = {"sin RE", "choque de nombre"}
+MIRAR = {"sin RE", "choque de nombre", "nombre muy largo"}
 
 
 def _cifra(numero: float) -> str:
@@ -430,11 +551,11 @@ class Tablero:
                 print(f"  {origen:<20} {_cifra(veces):>8}  {veces / leidos * 100:5.1f} %")
         if self.por_tipo:
             print("\nPor tipo de documento:")
-            print(f"  {'tipo':<50} {'total':>7} {'con RE':>7} {'sin RE':>7}   éxito")
+            print(f"  {'tipo':<50} {'total':>7} {'con RE':>7} {'sin cambio':>10}   éxito")
             for tipo, estados in sorted(self.por_tipo.items(), key=lambda par: -sum(par[1].values())):
                 total = sum(estados.values())
                 bien = sum(estados.get(e, 0) for e in BIEN)
-                print(f"  {tipo[:50]:<50} {_cifra(total):>7} {_cifra(bien):>7} {_cifra(total - bien):>7}"
+                print(f"  {tipo[:50]:<50} {_cifra(total):>7} {_cifra(bien):>7} {_cifra(total - bien):>10}"
                       f"   {bien / total * 100:5.1f} %")
         if self.motivos:
             print("\nPor qué quedaron sin RE o fallaron (los más repetidos):")
@@ -463,6 +584,15 @@ def main() -> int:
         return 2
     patron = _plano(args.patron)
     aplicar = args.aplicar or args.deshacer
+    if aplicar:
+        en_marcha = corridas_del_bot_sobre(args.carpeta)
+        if en_marcha is None:
+            print("Aviso: no se pudo preguntar al bot si está trabajando en esta carpeta. "
+                  "Asegúrese de que no la esté procesando.")
+        elif en_marcha:
+            print("El bot está procesando esta carpeta ahora mismo (origen: " + ", ".join(en_marcha) + "). "
+                  "Deténgalo en la pantalla o espere a que termine, y vuelva a correr el script.")
+            return 3
 
     deshacer_por_caja: dict[str, list[dict]] = {}
     if args.deshacer:
@@ -492,7 +622,7 @@ def main() -> int:
             futuros = {}
             for caja in cajas:
                 clave = str(caja.relative_to(raiz)) if caja != raiz else "."
-                futuros[pool.submit(trabajar_la_caja, str(caja), str(raiz), patron, aplicar,
+                futuros[pool.submit(trabajar_la_caja, str(caja), str(raiz), args.carpeta, patron, aplicar,
                                     deshacer_por_caja.get(clave) if args.deshacer else None)] = clave
             print(f"Avance cada {CADA} s. Se puede cortar con Ctrl+C y volver a correr: lo hecho se salta.\n", flush=True)
             for hechas, futuro in enumerate(as_completed(futuros), start=1):
