@@ -167,6 +167,17 @@ function Escribir-Override($discos) {
     if ($equipo -and $equipo.PartOfDomain -and $env:USERDOMAIN) {
         $lineas += "      BOTPDF_DOMINIO: `"$($env:USERDOMAIN)`""
     }
+    # Y su dominio DNS ("siar.local"): Windows completa "\\SIARNAS" con el y el
+    # contenedor no, asi que Y: daba "el servidor no contesta" (2026-10-28).
+    # Docker pone "ndots:0", que pregunta primero el nombre a secas; el DNS lo
+    # contesta "sin direccion" y el dominio nunca se probaba: ndots:1 lo prueba
+    # primero para los nombres sin punto, como Windows.
+    if ($equipo -and $equipo.PartOfDomain -and $equipo.Domain) {
+        $lineas += "    dns_search:"
+        $lineas += "      - `"$($equipo.Domain)`""
+        $lineas += "    dns_opt:"
+        $lineas += "      - `"ndots:1`""
+    }
     $lineas += "    volumes:"
     foreach ($d in $discos) {
         $letra = $d.DeviceID.Substring(0, 1)

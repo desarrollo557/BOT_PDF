@@ -152,13 +152,27 @@ Write-Host "4. Equipo" -ForegroundColor Cyan
 $unidades = (EnContenedor printenv BOTPDF_UNIDADES).Trim()
 Comprobar "Equipo" "Discos montados" {
     if (-not $unidades -or $unidades -match "Error") { return (Falla "sin BOTPDF_UNIDADES: ejecute .\instalar-docker.cmd para montar los discos") }
+    # Las unidades de red y los discos virtuales ("X:=//servidor/recurso/...") no
+    # se montan: el servicio las lee con su cliente SMB. De esas se comprueba que
+    # el contenedor encuentra el servidor y llega a su puerto 445; el usuario y la
+    # clave los pide la pantalla la primera vez.
     $faltan = @()
+    $montadas = @()
+    $porRed = @()
     foreach ($par in $unidades.Split(";")) {
-        $montaje = ($par -split "=", 2)[1]
-        $hay = EnContenedor sh -c "test -d '$montaje' && echo si"
-        if ($hay -notmatch "si") { $faltan += $par }
+        $letra, $montaje = $par -split "=", 2
+        if ($montaje -like "//*") {
+            $servidor = ($montaje.Substring(2) -split "/", 2)[0]
+            $llega = EnContenedor python -c "import socket; socket.create_connection(('$servidor', 445), 5).close(); print('si')"
+            if ($llega -match "^si") { $porRed += "$letra (red: $servidor)" } else { $faltan += "$letra (no se llega a $servidor)" }
+        } else {
+            $hay = EnContenedor sh -c "test -d '$montaje' && echo si"
+            if ($hay -match "^si") { $montadas += $letra } else { $faltan += $par }
+        }
     }
-    if ($faltan.Count -eq 0) { Ok $unidades } else { Falla ("no se ven: " + ($faltan -join ", ")) }
+    $detalle = "montadas: " + ($montadas -join " ")
+    if ($porRed.Count) { $detalle += "; por la red: " + ($porRed -join ", ") }
+    if ($faltan.Count -eq 0) { Ok $detalle } else { Falla ("no se ven: " + ($faltan -join ", ")) }
 }
 Comprobar "Equipo" "Carpetas de red" {
     # El cliente SMB en la imagen y la cadena entera -- API, cliente, traduccion
@@ -215,7 +229,7 @@ if ($Rapida) {
         $letra = $base.Substring(0, 1).ToUpper()
         $montaje = $null
         foreach ($par in $unidades.Split(";")) { if ($par -match "^${letra}:=(.+)$") { $montaje = $Matches[1] } }
-        if (-not $montaje) { throw "la unidad ${letra}: no esta montada en el contenedor; no se puede probar una corrida de carpeta" }
+        if (-not $montaje -or $montaje -like "//*") { throw "la unidad ${letra}: no esta montada en el contenedor; no se puede probar una corrida de carpeta" }
         $enContenedor = $montaje + "/" + ($base.Substring(3) -replace "\\", "/")
 
         # Los PDF de prueba los hace el propio contenedor: el equipo no necesita Python.
