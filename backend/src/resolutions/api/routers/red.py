@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException
 
 from ...adapters import red_smb
 from ..folders import clean_path
+from ..rutas_del_equipo import al_servicio
 
 router = APIRouter()
 
@@ -23,7 +24,8 @@ router = APIRouter()
 async def conectar(payload: dict | None = None) -> dict[str, object]:
     """Entra al recurso de ``ruta`` con ``usuario`` (puede llevar «DOMINIO\\») y ``clave``."""
     datos = payload or {}
-    ruta = clean_path(str(datos.get("ruta") or ""))
+    # «Z:\» si esa unidad se lee por la red: el 401 se la nombra así al operador.
+    ruta = al_servicio(clean_path(str(datos.get("ruta") or "")))
     if not red_smb.es_de_red(ruta):
         raise HTTPException(status_code=422, detail="Indique una ruta de red: \\\\servidor\\recurso\\…")
     usuario = str(datos.get("usuario") or "").strip()
@@ -45,7 +47,7 @@ async def abiertas() -> dict[str, object]:
 @router.post("/api/red/olvidar")
 async def olvidar(payload: dict | None = None) -> dict[str, object]:
     """Borra de la memoria las credenciales de un servidor, o de todos."""
-    ruta = clean_path(str((payload or {}).get("ruta") or ""))
+    ruta = al_servicio(clean_path(str((payload or {}).get("ruta") or "")))
     partes = red_smb.partes(ruta)
     await asyncio.to_thread(red_smb.olvidar, partes.servidor if partes else None)
     return {"recursos": red_smb.conectados()}

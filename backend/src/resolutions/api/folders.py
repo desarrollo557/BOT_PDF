@@ -512,6 +512,13 @@ def validate_folders(
     destination = clean_path(destination)
     if not source or not destination:
         raise FolderError("Indique la carpeta de origen y la de destino")
+    # En Docker, «C:\…» del operador está montada en otra ruta del contenedor,
+    # y «Y:\…» o «Z:\…» pueden ser unidades que se leen por la red (ver
+    # `rutas_del_equipo.py`). Fuera de Docker no cambia nada. Se traduce antes
+    # de nada: lo de abajo pregunta si cada carpeta es de red.
+    escrito = destination
+    source = al_servicio(source)
+    destination = al_servicio(destination)
     # Una carpeta de red se comprueba antes de nada: si el servidor pide usuario
     # y clave, `CredencialesDeRed` sube y la pantalla los pide.
     if red_smb.es_de_red(source):
@@ -520,13 +527,9 @@ def validate_folders(
         # Se lee de la red; no se escribe en ella: lo entregado va a una
         # carpeta de este equipo, que es la que el bot puede vigilar y retomar.
         raise FolderError(
-            "La carpeta de destino tiene que estar en este equipo (C:\\…); "
-            "el origen sí puede ser una carpeta de red"
+            f"La carpeta de destino tiene que estar en este equipo (C:\\…), y {escrito} "
+            "es de red; el origen sí puede ser una carpeta de red"
         )
-    # En Docker, «C:\…» del operador está montada en otra ruta del contenedor
-    # (ver `rutas_del_equipo.py`). Fuera de Docker no cambia nada.
-    source = al_servicio(source)
-    destination = al_servicio(destination)
 
     target = Path(destination).expanduser()
     if red_smb.por_smb(source):
@@ -675,7 +678,7 @@ class FolderRunner:
             raise FolderError("Retomar una entrega sólo está disponible para libros de diplomas")
         if modo in (Retomar.FALTANTES, Retomar.REVISAR) and watch:
             raise FolderError("Una carpeta que se retoma no se puede vigilar a la vez")
-        if red_smb.es_de_red(clean_path(source)) and disposition is not SourceDisposition.LEAVE:
+        if red_smb.es_de_red(al_servicio(clean_path(source))) and disposition is not SourceDisposition.LEAVE:
             # El original de una carpeta de red no se toca: es el repositorio.
             raise FolderError(
                 "En una carpeta de red el original se deja como está: elija «Dejarlo»"

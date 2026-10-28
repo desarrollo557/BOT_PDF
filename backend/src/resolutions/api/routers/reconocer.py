@@ -85,11 +85,12 @@ def _sin_abrir(relativa: str, error: Exception) -> dict[str, object]:
 async def reconocer_carpeta(payload: dict) -> dict[str, object]:
     """Qué hay en una carpeta local o de red y sus subcarpetas, PDF por PDF."""
     escrita = clean_path(str((payload or {}).get("ruta") or ""))
-    if red_smb.es_de_red(escrita):
-        # Si el servidor pide usuario y clave, 401 y la pantalla los pide.
-        await asyncio.to_thread(red_smb.asegurar, escrita)
-    # Dentro de Docker «C:\Users\…» es «/equipo/c/Users/…», como en la corrida.
+    # Dentro de Docker «C:\Users\…» es «/equipo/c/Users/…», como en la corrida,
+    # y «Z:\…» puede ser una unidad que se lee por la red.
     ruta_del_servicio = al_servicio(escrita)
+    if red_smb.es_de_red(ruta_del_servicio):
+        # Si el servidor pide usuario y clave, 401 y la pantalla los pide.
+        await asyncio.to_thread(red_smb.asegurar, ruta_del_servicio)
     if red_smb.por_smb(ruta_del_servicio):
         return await asyncio.to_thread(_reconocer_en_la_red, ruta_del_servicio)
     raiz = Path(ruta_del_servicio)
@@ -172,6 +173,9 @@ def _resumen(
     cuenta = Counter(archivo["tipo"] for archivo in archivos)
     return {
         "ruta": ruta,
+        # Si se lee por la red -- también «Z:\…» si esa unidad es de red --:
+        # la pantalla sólo deja «Dejarlo», como hace la corrida.
+        "de_red": red_smb.es_de_red(al_servicio(ruta)),
         "total": total,
         # Falso si el conteo se paró en su tope: hay al menos `total`.
         "total_exacto": exacto,

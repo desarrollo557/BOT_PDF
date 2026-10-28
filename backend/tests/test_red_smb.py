@@ -393,3 +393,89 @@ class TestSinCreditos:
         with pytest.raises(RuntimeError):
             red_smb._con_turno(red_smb.partes(r"\\srv\recurso\a.pdf"), hacer)
         assert len(intentos) == 1
+
+
+class TestUnaUnidadQueSeLeePorLaRed:
+    r"""2026-10-28: «Z:\Shared with Me\KINGSPAN» daba cero PDF dentro de Docker.
+
+    Docker monta vacías las unidades de red mapeadas («Y:») y los discos
+    virtuales como WorkDrive («Z:»). El instalador las declara con su ruta de
+    red y el bot las lee por el cliente SMB, sin que el operador deje de
+    escribir «Z:\…». Aquí «Z:» es el recurso entero, como el que comparte
+    WorkDrive, e «Y:» una carpeta honda, como la de SIARNAS.
+    """
+
+    @pytest.fixture
+    def unidades(self, monkeypatch):
+        from resolutions.api import rutas_del_equipo
+
+        monkeypatch.setenv(
+            rutas_del_equipo.VARIABLE,
+            rf"Z:=//{SERVIDOR}/afinia;Y:=\\{SERVIDOR}\afinia\REPOSITORIO\AFINIA",
+        )
+
+    def test_la_letra_va_por_la_red_y_vuelve_con_su_letra(self, servidor, unidades):
+        from resolutions.api.rutas_del_equipo import al_operador, al_servicio, raices
+
+        assert al_servicio(r"Y:\BOLIVAR SUR\COMERCIAL") == (
+            f"//{SERVIDOR}/afinia/REPOSITORIO/AFINIA/BOLIVAR SUR/COMERCIAL"
+        )
+        # El servidor no distingue mayúsculas, y la vuelta tampoco.
+        assert al_operador(rf"\\{SERVIDOR}\AFINIA\repositorio\afinia\X") == r"Y:\X"
+        assert al_operador(CARPETA) == r"Y:\BOLIVAR SUR\COMERCIAL\MAGANGUE"
+        assert al_operador(f"//{SERVIDOR}/afinia") == "Z:\\"
+        assert {"name": "Disco Z:", "path": "Z:\\"} in raices()
+
+    def test_el_explorador_la_recorre_con_su_letra(self, servidor, unidades):
+        from types import SimpleNamespace
+
+        from resolutions.api.routers.carpetas import browse
+
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        raiz = asyncio.run(browse(SimpleNamespace(), "Y:\\"))
+        assert raiz["path"] == "Y:\\" and raiz["parent"] is None
+        assert {"name": "BOLIVAR SUR", "path": r"Y:\BOLIVAR SUR"} in raiz["folders"]
+        caja = asyncio.run(browse(SimpleNamespace(), r"Y:\BOLIVAR SUR\COMERCIAL\MAGANGUE"))
+        assert caja["parent"] == r"Y:\BOLIVAR SUR\COMERCIAL"
+        assert {"name": "210847", "path": r"Y:\BOLIVAR SUR\COMERCIAL\MAGANGUE\210847"} in caja["folders"]
+        # El recurso ya es «Disco Z:»: no se repite como «Red \\servidor\recurso».
+        assert not any(d["name"].startswith("Red ") for d in raiz["drives"])
+
+    def test_una_corrida_desde_la_letra(self, servidor, unidades, ajustes, tmp_path):
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        leidos: list = []
+        origen = r"Z:\REPOSITORIO\AFINIA\BOLIVAR SUR\COMERCIAL\MAGANGUE"
+        run = _correr(_motor(ajustes, JobRegistry(), leidos), origen, tmp_path / "destino")
+
+        assert run.state == "done" and run.processed == 2
+        assert (tmp_path / "destino" / "210847" / "UPD2998726" / "01_DOCUMENTO.pdf").exists()
+        # Esa carpeta también está bajo «Y:», que es más honda: se nombra con ella.
+        assert run.as_dict()["source"] == r"Y:\BOLIVAR SUR\COMERCIAL\MAGANGUE"
+
+    def test_sin_credenciales_se_preguntan_por_la_letra(self, servidor, unidades):
+        import json
+
+        from resolutions.api.main import _credenciales_de_red
+
+        with pytest.raises(red_smb.CredencialesDeRed) as pregunta:
+            red_smb.asegurar(f"//{SERVIDOR}/afinia/REPOSITORIO")
+        respuesta = asyncio.run(_credenciales_de_red(None, pregunta.value))
+        assert json.loads(respuesta.body)["detail"]["recurso"] == "Z:\\"
+        # Y la pantalla conecta con lo que se le dio.
+        from resolutions.api.routers import red
+
+        conectado = asyncio.run(red.conectar({"ruta": "Z:\\", "usuario": USUARIO, "clave": CLAVE}))
+        assert conectado["conectado"] is True
+
+    def test_el_original_se_deja_y_el_destino_va_en_el_equipo(self, servidor, unidades, ajustes, tmp_path):
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        motor = _motor(ajustes, JobRegistry(), [])
+
+        async def ir(destino, disposicion=SourceDisposition.LEAVE):
+            motor.start(r"Y:\BOLIVAR SUR\COMERCIAL\MAGANGUE", destino, disposition=disposicion)
+
+        with pytest.raises(FolderError, match="Dejarlo"):
+            asyncio.run(ir(str(tmp_path / "destino"), SourceDisposition.MOVE))
+        # Antes se colaba: «Z:\SALIDA» no parecía de red y se creaba dentro del contenedor.
+        with pytest.raises(FolderError, match="destino tiene que estar en este equipo"):
+            asyncio.run(ir(r"Z:\SALIDA"))

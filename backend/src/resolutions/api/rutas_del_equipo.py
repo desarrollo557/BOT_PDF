@@ -14,6 +14,13 @@ Las carpetas de red no se montan (lo pidió el operador el 2026-10-20 con
 «\\\\200.100.20.97\\afinia\\…»): en el contenedor se leen con el cliente SMB de
 ``adapters/red_smb.py``, y su ruta viaja con barras -- «//200.100.20.97/afinia/…»
 --. El operador sigue pegando la ruta de red tal como la copia del Explorador.
+
+Una unidad también puede declararse con una ruta de red: «Y:=//SIARNAS/Digitalización/…».
+Docker monta vacías las unidades de red mapeadas («Y:», «X:») y los discos
+virtuales como WorkDrive («Z:»), sin avisar: el bot veía cero PDF donde el
+Explorador enseña la caja entera (2026-10-28, «Z:\\Shared with Me\\KINGSPAN»).
+Declaradas así, «Y:\\caja» se lee por el cliente de red como «//SIARNAS/…/caja»
+y se le enseña al operador otra vez como «Y:\\caja».
 """
 
 from __future__ import annotations
@@ -37,7 +44,7 @@ def _barras(ruta: str) -> str:
 
 
 def unidades() -> dict[str, str]:
-    """Las unidades montadas: letra en mayúscula -> carpeta en el contenedor."""
+    """Las unidades montadas: letra en mayúscula -> carpeta en el contenedor o ruta de red («//…»)."""
     valor = os.environ.get(VARIABLE, "")
     montadas: dict[str, str] = {}
     for par in valor.split(";"):
@@ -78,18 +85,36 @@ def al_servicio(ruta: str) -> str:
     return f"{montaje}/{resto}" if resto else montaje
 
 
+def _bajo(ruta: str, montaje: str) -> bool:
+    """Si ``ruta`` es ``montaje`` o está dentro. En la red, sin distinguir mayúsculas, como Windows."""
+    if montaje.startswith("//"):
+        ruta, montaje = ruta.casefold(), montaje.casefold()
+    return ruta == montaje or ruta.startswith(montaje + "/")
+
+
 def al_operador(ruta: object) -> str:
     """La ruta del contenedor como la reconoce el operador: «C:\\Users\\ana\\ENTRADA»."""
     texto = str(ruta)
+    comparable = _barras(texto)
+    if red_smb.por_smb(texto):
+        # Una ruta de red con barras repetidas o al revés: la forma de `partes`.
+        comparable = red_smb.partes(texto).del_servicio  # type: ignore[union-attr]
+    # Primero las unidades: una de red se le enseña con su letra, «Z:\\…». Si
+    # una cubre el recurso entero y otra una carpeta dentro, gana la más honda.
+    for letra, montaje in sorted(unidades().items(), key=lambda par: -len(par[1])):
+        if _bajo(comparable, montaje):
+            resto = comparable[len(montaje) :].strip("/")
+            return f"{letra}:\\" + resto.replace("/", "\\")
     if red_smb.por_smb(texto):
         partes = red_smb.partes(texto)
         return partes.unc if partes.resto else f"{partes.raiz}\\"  # type: ignore[union-attr]
-    comparable = _barras(texto)
-    for letra, montaje in unidades().items():
-        if comparable == montaje or comparable.startswith(montaje + "/"):
-            resto = comparable[len(montaje) :].strip("/")
-            return f"{letra}:\\" + resto.replace("/", "\\")
     return texto
+
+
+def con_letra(ruta: object) -> str | None:
+    """La ruta con la letra de su unidad («Z:\\…»), o ``None`` si ninguna unidad la cubre."""
+    mostrada = al_operador(ruta)
+    return mostrada if _RUTA_DE_WINDOWS.match(mostrada) and mostrada != str(ruta) else None
 
 
 def raices() -> list[dict[str, str]]:
@@ -99,5 +124,12 @@ def raices() -> list[dict[str, str]]:
 
 
 def red_abierta() -> list[dict[str, str]]:
-    """Los recursos de red a los que ya se entró en esta sesión del servicio."""
-    return [{"name": f"Red {raiz}", "path": f"{raiz}\\"} for raiz in red_smb.conectados()]
+    """Los recursos de red a los que ya se entró en esta sesión del servicio.
+
+    Sin los que ya son una unidad: ésos salen como «Disco Z:».
+    """
+    return [
+        {"name": f"Red {raiz}", "path": f"{raiz}\\"}
+        for raiz in red_smb.conectados()
+        if con_letra(raiz) is None
+    ]

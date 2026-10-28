@@ -285,7 +285,8 @@ async def browse(ctx: Ctx, path: str | None = None) -> dict[str, object]:
     if not path:
         return {"path": None, "parent": None, "drives": _drives(), "folders": []}
 
-    ruta = clean_path(path)
+    # Traducida antes de nada: «Z:\…» puede ser una unidad que se lee por la red.
+    ruta = al_servicio(clean_path(path))
     if red_smb.es_de_red(ruta):
         # Si el servidor pide usuario y clave, `CredencialesDeRed` sube hasta el
         # manejador de la aplicación, que contesta 401 y la pantalla los pide.
@@ -294,7 +295,7 @@ async def browse(ctx: Ctx, path: str | None = None) -> dict[str, object]:
             return await asyncio.to_thread(_explorar_la_red, ruta)
 
     try:
-        current = Path(al_servicio(ruta)).expanduser().resolve(strict=True)
+        current = Path(ruta).expanduser().resolve(strict=True)
     except (OSError, ValueError):
         raise HTTPException(status_code=404, detail=f"La carpeta no existe: {path}") from None
     if not current.is_dir():
@@ -401,17 +402,19 @@ def _explorar_la_red(ruta: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail=str(error)) from None
     except OSError as error:
         raise HTTPException(status_code=422, detail=f"No se pudo leer la carpeta: {explicar_fallo(error)}") from None
+    # Lo que se enseña, con la letra si es una unidad: «Z:\Shared with Me».
+    actual = partes.del_servicio
+    mostrada = al_operador(actual)
     padre = None
-    if partes.resto:
-        arriba = partes.resto.rsplit("\\", 1)[0] if "\\" in partes.resto else ""
-        padre = f"{partes.raiz}\\{arriba}" if arriba else f"{partes.raiz}\\"
+    if partes.resto and not es_una_raiz(mostrada):
+        padre = al_operador(actual.rsplit("/", 1)[0])
     return {
-        "path": partes.unc if partes.resto else f"{partes.raiz}\\",
+        "path": mostrada,
         "parent": padre,
         "drives": _drives(),
         **_por_lotes(
             [nombre for nombre in nombres if not nombre.startswith((".", "$"))],
-            lambda nombre: f"{partes.unc}\\{nombre}",
+            lambda nombre: al_operador(f"{actual}/{nombre}"),
         ),
     }
 

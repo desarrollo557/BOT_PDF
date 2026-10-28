@@ -238,10 +238,13 @@
   ];
 
   /**
-   * Una carpeta de red -- «\\servidor\recurso\…» --. Su original no se toca: es
-   * el repositorio de donde se lee, así que sólo cabe «Dejarlo».
+   * Una carpeta de red -- «\\servidor\recurso\…», o una unidad que el servicio
+   * lee por la red, como «Z:\…»: eso lo dice el reconocimiento --. Su original
+   * no se toca: es el repositorio de donde se lee, así que sólo cabe «Dejarlo».
    */
-  const origenDeRed = $derived(/^(\\\\|\/\/)[^\\/]+[\\/]+[^\\/]+/.test(cleanPath(source)));
+  const origenDeRed = $derived(
+    /^(\\\\|\/\/)[^\\/]+[\\/]+[^\\/]+/.test(cleanPath(source)) || analisis?.de_red === true
+  );
   const disposicion = $derived<SourceDisposition>(origenDeRed ? 'leave' : disposition);
 
   const ready = $derived(cleanPath(source).length > 0 && cleanPath(destination).length > 0);

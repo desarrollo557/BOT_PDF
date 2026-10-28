@@ -333,6 +333,8 @@ export interface Sugerencia {
 /** Lo que hay en una carpeta local, PDF por PDF y contado por tipo. */
 export interface SugerenciaDeCarpeta {
   ruta: string;
+  /** Si se lee por la red: también «Z:\…» cuando esa unidad es de red. */
+  de_red?: boolean;
   total: number;
   /** Falso si el conteo se paró en su tope: hay al menos `total`. */
   total_exacto?: boolean;

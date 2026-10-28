@@ -56,6 +56,7 @@ from .routers import (
     trabajos,
     usuarios,
 )
+from .rutas_del_equipo import con_letra
 from .settings import Settings
 from .worker import process_document_job
 
@@ -282,14 +283,18 @@ async def _credenciales_de_red(request: Request, error: red_smb.CredencialesDeRe
 
     Con un código que la pantalla reconoce, para que abra el cuadro de usuario
     y clave, conecte y repita lo que estaba haciendo.
+
+    Si el recurso es una unidad del equipo, se nombra con su letra («Z:\\»):
+    el operador no reconoce «\\\\host.docker.internal\\BOTPDF-Z».
     """
+    recurso = con_letra(error.recurso) or error.recurso
     return JSONResponse(
         status_code=401,
         content={
             "detail": {
                 "codigo": "credenciales_de_red",
-                "recurso": error.recurso,
-                "mensaje": f"{error.motivo}: {error.recurso}",
+                "recurso": recurso,
+                "mensaje": f"{error.motivo}: {recurso}",
             }
         },
     )

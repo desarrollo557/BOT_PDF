@@ -87,22 +87,78 @@ if ($escucha) {
 Paso "Puerto: $Puerto"
 
 # -- 3. Los discos del equipo, montados dentro del contenedor ----------------------
-# DriveType: 2 extraible, 3 disco local, 4 unidad de red. Los de red y extraibles
-# (WorkDrive, OneDrive, USB) a veces no se dejan montar: si fallan, se reintenta
-# solo con los discos locales y se avisa.
+# DriveType: 2 extraible, 3 disco local, 4 unidad de red. Los extraibles (USB) a
+# veces no se dejan montar: si fallan, se reintenta solo con los discos locales y
+# se avisa.
+#
+# Docker monta VACIAS, sin avisar, las unidades de red mapeadas ("Y:" ->
+# \\SIARNAS\...) y los discos virtuales como WorkDrive ("Z:"): el bot veia cero
+# PDF donde el Explorador ensena la caja entera (2026-10-28). Esas no se montan:
+# se declaran con su ruta de red y el servicio las lee con su cliente SMB, igual
+# que una ruta \\servidor\recurso pegada a mano. El operador sigue escribiendo
+# "Z:\...".
 $unidades = @(Get-CimInstance Win32_LogicalDisk |
     Where-Object { $_.DriveType -in 2, 3, 4 -and (Test-Path "$($_.DeviceID)\") } |
     Sort-Object DeviceID)
 
+# Un disco virtual no aparece como volumen de Windows (Get-Volume): WorkDrive se
+# presenta como "FAT32" pero lo sirve un programa, y Docker no lo ve.
+function Es-Virtual($unidad) {
+    $letra = $unidad.DeviceID.Substring(0, 1)
+    return ($unidad.DriveType -eq 3 -and -not (Get-Volume -DriveLetter $letra -ErrorAction SilentlyContinue))
+}
+
+# El contenedor entra a un disco virtual por SMB, desde el propio equipo
+# (host.docker.internal). El recurso Z$ de Windows solo deja entrar a
+# administradores, asi que hace falta uno propio: de SOLO LECTURA (el bot no
+# escribe en el origen) y solo para la cuenta de quien instala.
+function Recurso-De($letra) {
+    $ya = Get-SmbShare -ErrorAction SilentlyContinue |
+        Where-Object { -not $_.Special -and $_.Path -eq "${letra}:\" } | Select-Object -First 1
+    if ($ya) { return $ya.Name }
+    $nombre = "BOTPDF-$letra"
+    $cuenta = "$env:USERDOMAIN\$env:USERNAME"
+    $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($admin) {
+        New-SmbShare -Name $nombre -Path "${letra}:\" -ReadAccess $cuenta `
+            -Description "BOT_PDF: la unidad ${letra}: para el contenedor (solo lectura)" | Out-Null
+        Paso "Compartida ${letra}:\ como \\$env:COMPUTERNAME\$nombre (solo lectura, solo $cuenta)"
+        return $nombre
+    }
+    Write-Host "   La unidad ${letra}: no se vera desde el contenedor hasta compartirla. En un PowerShell" -ForegroundColor Yellow
+    Write-Host "   abierto como administrador, una sola vez, y despues vuelva a ejecutar instalar-docker:" -ForegroundColor Yellow
+    Write-Host "     New-SmbShare -Name $nombre -Path ${letra}:\ -ReadAccess '$cuenta'" -ForegroundColor Yellow
+    return $null
+}
+
+$deRed = @()
+$montables = @()
+foreach ($u in $unidades) {
+    $letra = $u.DeviceID.Substring(0, 1)
+    if ($u.DriveType -eq 4 -and $u.ProviderName) {
+        $deRed += [pscustomobject]@{ Letra = $letra; Ruta = $u.ProviderName }
+    } elseif (Es-Virtual $u) {
+        $recurso = Recurso-De $letra
+        if ($recurso) { $deRed += [pscustomobject]@{ Letra = $letra; Ruta = "\\host.docker.internal\$recurso" } }
+    } else {
+        $montables += $u
+    }
+}
+
 function Escribir-Override($discos) {
     $lineas = @(
         "# Generado por scripts/instalar-escritorio.ps1 para este equipo: no se versiona.",
-        "# Monta cada disco en /equipo/<letra> y le dice al servicio como traducir las rutas.",
+        "# Monta cada disco en /equipo/<letra> y le dice al servicio como traducir las rutas;",
+        "# las unidades de red y los discos virtuales se leen por la red, sin montarlos.",
         "services:",
         "  botpdf:",
         "    environment:"
     )
-    $mapa = ($discos | ForEach-Object { "$($_.DeviceID)=/equipo/$($_.DeviceID.Substring(0,1).ToLower())" }) -join ";"
+    $pares = @($discos | ForEach-Object { "$($_.DeviceID)=/equipo/$($_.DeviceID.Substring(0,1).ToLower())" })
+    # Con barras: en YAML la "\" escapa. Y "$$": compose lee "$" como una variable.
+    $pares += @($deRed | ForEach-Object { "$($_.Letra):=" + ($_.Ruta -replace '\\', '/' -replace '\$', '$$$$') })
+    $mapa = $pares -join ";"
     $lineas += "      BOTPDF_UNIDADES: `"$mapa`""
     # El dominio de este equipo ("SIAR"), para las carpetas de red: quien escribe
     # su usuario sin dominio entra igual que en Windows. No es un secreto, y solo
@@ -121,8 +177,11 @@ function Escribir-Override($discos) {
     [System.IO.File]::WriteAllText((Join-Path $raiz "docker-compose.override.yml"), $texto, (New-Object System.Text.UTF8Encoding($false)))
 }
 
-Paso ("Discos del equipo: " + (($unidades | ForEach-Object { $_.DeviceID }) -join ", "))
-Escribir-Override $unidades
+Paso ("Discos del equipo: " + (($montables | ForEach-Object { $_.DeviceID }) -join ", "))
+if ($deRed.Count) {
+    Paso ("Leidas por la red: " + (($deRed | ForEach-Object { "$($_.Letra): -> $($_.Ruta)" }) -join ", "))
+}
+Escribir-Override $montables
 
 # -- 3b. Un contenedor de una instalacion anterior --------------------------------
 # Un "botpdf" creado por otra version del compose (otro proyecto) choca por el
@@ -149,8 +208,8 @@ Paso "Construyendo la imagen y arrancando (la primera vez tarda unos minutos)...
 $ErrorActionPreference = "Continue"
 docker compose up -d --build
 if ($LASTEXITCODE -ne 0) {
-    $locales = @($unidades | Where-Object { $_.DriveType -eq 3 })
-    $fuera = @($unidades | Where-Object { $_.DriveType -ne 3 } | ForEach-Object { $_.DeviceID })
+    $locales = @($montables | Where-Object { $_.DriveType -eq 3 })
+    $fuera = @($montables | Where-Object { $_.DriveType -ne 3 } | ForEach-Object { $_.DeviceID })
     if ($fuera.Count -eq 0) { throw "docker compose no pudo arrancar el servicio. Revise el mensaje de arriba." }
     Write-Host "   No se pudieron montar todas las unidades; se reintenta solo con los discos locales." -ForegroundColor Yellow
     Write-Host ("   Quedan fuera: " + ($fuera -join ", ") + ". Sus rutas no se veran desde el contenedor.") -ForegroundColor Yellow
