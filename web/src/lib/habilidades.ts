@@ -216,8 +216,11 @@ export const HABILIDADES: Habilidad[] = [
     nombra: 'Por el número: RESOLUCION_00412.pdf',
     aportaIa:
       'Los números de encabezado que el escaneo dejó ilegibles. Con el texto impreso limpio no hace falta.',
-    tipo: 'auto',
-    task: null
+    // Declarado: con «auto» el reconocedor mandó resoluciones que traían un
+    // acta de soporte a «Actas de consejo» (2026-10-29).
+    tipo: 'resolucion',
+    task: null,
+    requiereTipo: 'resolucion'
   },
   {
     id: 'correspondencia',

@@ -2748,7 +2748,10 @@ class FolderRunner:
         if salidas:
             copias = [(producido / salida, espejo / salida) for salida in salidas]
         elif run.task in (str(TaskKind.SPLIT), str(TaskKind.BOTH)):
-            copias = [(origin, espejo / origin.name)]
+            # Desde la copia que se procesó: un origen de la red no es una ruta
+            # de este equipo, y copiarlo por su nombre daba «No se encontró…
+            # se movió, se renombró o se borró» (Z:, 2026-10-29).
+            copias = [(self._copia_local(run, origin), espejo / origin.name)]
         else:
             copias = []
         ruta_de_la_constancia = self._ruta_de_la_constancia(run, origin, actas=True)

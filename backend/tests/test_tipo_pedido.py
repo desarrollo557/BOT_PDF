@@ -70,6 +70,24 @@ class TestAQuienLlama:
 
         assert llamadas == ["registros"]
 
+    def test_declarar_un_legajo_de_resoluciones_va_derecho_a_partirlo_por_numero(self, monkeypatch):
+        """2026-10-29: sin declararlo, resoluciones que traían un acta de soporte
+        acabaron en «Actas de consejo», inventariadas enteras y con la IA pagada."""
+        import resolutions.api.worker as worker
+
+        llamadas = []
+        monkeypatch.setattr(worker, "_split_job", lambda p, t: llamadas.append(("resoluciones", str(t))))
+        monkeypatch.setattr(worker, "_recognise", lambda p: pytest.fail("no debía reconocer nada"))
+        monkeypatch.setattr(
+            worker, "_acta_consejo_job", lambda p: pytest.fail("no debía ir a actas de consejo")
+        )
+        monkeypatch.setattr(worker, "_anunciar", lambda *a, **k: None)
+
+        worker.process_document_job(self.payload(tipo="resolucion", task="both"))
+
+        assert llamadas == [("resoluciones", "both")]
+        assert {"id": "resolucion", "label": "Legajo de resoluciones"} in tipos_declarables()
+
     def test_sin_declarar_se_reconoce_como_siempre(self, monkeypatch):
         import resolutions.api.worker as worker
 

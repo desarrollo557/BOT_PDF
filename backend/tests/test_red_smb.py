@@ -364,6 +364,23 @@ def _correr(motor, origen, destino, **opciones):
 
 
 class TestUnaCorridaDesdeLaRed:
+    def test_un_acta_tal_cual_se_entrega_desde_la_copia_local(self, servidor, ajustes, tmp_path):
+        """2026-10-29, Z:: «No se encontró «1RESOLUCIONES DE RECTORIA 03272-03275.pdf»:
+        se movió, se renombró o se borró». Un PDF que ya era un acta se entrega
+        tal cual, y se copiaba por su ruta de la red, que no es de este equipo."""
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        registro = JobRegistry()
+
+        async def un_acta(job):
+            registro.mark_done(job, {"inventario_actas": [{"acta": "001", "folios": "1-2"}]})
+
+        motor = FolderRunner(registro, ajustes, un_acta, watch_interval=0.01)
+        run = _correr(motor, rf"{CARPETA}\210847", tmp_path / "destino", task="both")
+
+        assert run.state == "done" and run.processed == 1 and run.failed == 0
+        entregado = tmp_path / "destino" / "210847" / "UPD2998726.PDF"
+        assert entregado.read_bytes() == b"%PDF-1.4 caja 210847"
+
     def test_procesa_cada_caja_de_la_red_y_no_deja_copias(self, servidor, ajustes, tmp_path):
         red_smb.conectar(CARPETA, USUARIO, CLAVE)
         leidos: list = []

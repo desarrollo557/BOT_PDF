@@ -267,6 +267,19 @@ def _despachar(payload: dict) -> dict:
         )
         return _record_split_job(payload, task, tipo=declarado)
 
+    # Un legajo de resoluciones declarado se parte por su número, sin muestra:
+    # reconocido, una resolución que traía un acta de soporte acababa en
+    # «Actas de consejo», inventariada entera y con la IA pagada (2026-10-29).
+    if declarado is DocumentType.RESOLUCION:
+        _anunciar(
+            payload,
+            Stage.IDENTIFYING,
+            detail="legajo de resoluciones, declarado por el operador",
+            done=SAMPLE_PAGES,
+            total=SAMPLE_PAGES,
+        )
+        return _split_job(payload, task)
+
     _anunciar(
         payload,
         Stage.IDENTIFYING,

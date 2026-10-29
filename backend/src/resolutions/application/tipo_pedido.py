@@ -49,6 +49,13 @@ class TipoPedido(StrEnum):
     #: declarar, el reconocedor la distingue por la citación y el orden del día.
     ACTA_CONSEJO = "acta-consejo"
 
+    #: Un legajo de resoluciones: cada una con su número impreso en el
+    #: encabezado. Declarado, va derecho a partir por ese número. Sin declararlo
+    #: (era el automático) el reconocedor mandó resoluciones de rectoría a
+    #: «Actas de consejo» porque traían un acta de soporte, y salieron enteras,
+    #: inventariadas como un acta y con 26 páginas pagadas a la IA (2026-10-29).
+    RESOLUCION = "resolucion"
+
     @property
     def label(self) -> str:
         return _LABELS[self]
@@ -88,10 +95,12 @@ _LABELS = {
     TipoPedido.DIPLOMA: "Diplomas",
     TipoPedido.ACTA: "Actas de grado",
     TipoPedido.ACTA_CONSEJO: "Actas de consejo",
+    TipoPedido.RESOLUCION: "Legajo de resoluciones",
 }
 
 _DOCUMENT_TYPES = {
     TipoPedido.DIPLOMA: DocumentType.DIPLOMA,
     TipoPedido.ACTA: DocumentType.ACTA,
     TipoPedido.ACTA_CONSEJO: DocumentType.ACTA_CONSEJO,
+    TipoPedido.RESOLUCION: DocumentType.RESOLUCION,
 }
