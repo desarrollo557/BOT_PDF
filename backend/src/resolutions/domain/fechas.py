@@ -447,10 +447,26 @@ def fecha_del_encabezado(texto: str, *, hoy: date | None = None) -> date | None:
 #: la más reciente que lleve: detrás vienen sus soportes -- el listado del
 #: sistema presupuestal, la resolución del decano, el oficio --, cada uno con
 #: sus fechas, y la más reciente de todas fechaba la resolución por un anexo.
+#: «Dada» o «Dado»: la 00384 dice «Dado en Cartagena» (2026-10-29), y sin
+#: reconocerlo se fechaba por el soporte del decano que lleva detrás.
+#:
+#: Y tal como la deja el OCR, medido en la carpeta 3220 - 3259 el mismo día:
+#: «a 19 días de diciembre» (sin «los» ni «del mes»), «a ios dipcinueve (19)
+#: días del mes de diciemb^ de 2.025», «de IndiasjJ^/Cftpcinueve (19) días…».
+#: Por eso el día es lo que hay entre el lugar y «días» -- la cifra entre
+#: paréntesis, si la hay --, y el mes se reconoce por su raíz (``_mes``).
+#: «Días» va con sus bordes de palabra: «Indias» lo lleva dentro.
 _DADA = re.compile(
-    r"\b(?:DADA|EXPEDIDA)\s+EN\b.{0,90}?\bA\s+LOS\s+(?P<dia>.{1,45}?)\s+D[I1]AS?\s+DEL?\s+MES\s+DE\s+"
-    r"(?P<mes>[A-Z]+)(?P<cola>.{0,40})"
+    r"\b(?:DAD[AO]|EXPEDID[AO])\s+EN\b(?P<dia>.{1,90}?)\bD[I1]AS?\b\W{0,3}(?:DEL?\s+MES\s+)?DE\s*"
+    r"(?P<mes>[A-Z]{3,})(?P<cola>.{0,40})"
 )
+#: «2.025»: el año con punto de miles, como lo escribe la fórmula.
+_ANIO_CON_PUNTO_DE_MILES = re.compile(r"\b2[.,]0(\d{2})\b")
+#: El número que declara el encabezado de una página, para saber si ya es otra
+#: resolución: la del decano o la copia que viene detrás.
+_NUMERO_DEL_ENCABEZADO = re.compile(r"\bRESOLUCI[O0]N\s*N\W{0,3}[O0]?\W{0,3}\s*(\d[\d ]{0,7}\d|\d)")
+#: Cuánto del principio de una página es su encabezado.
+_CABEZA = 400
 _DIA_EN_CIFRAS = re.compile(r"\(\s*(\d{1,2})\s*\)|\b(\d{1,2})\b")
 _ANIO = re.compile(r"\b((?:19|20)\d{2})\b")
 #: El año del encabezado: «RESOLUCIÓN No. 00004 de 2025». Va impreso, así que
@@ -490,7 +506,26 @@ def _dia(trozo: str) -> int | None:
     return None
 
 
-def fecha_de_expedicion(paginas: list[str], *, hoy: date | None = None) -> date | None:
+def _mes(palabra: str) -> int | None:
+    """El mes por su raíz: «DICIEMTMP», «DICIEMB^» o «DICIEMBRPYDE» son diciembre."""
+    palabra = palabra.lower()
+    for nombre, numero in MESES.items():
+        if palabra.startswith(nombre[:5]):
+            return numero
+    return None
+
+
+def _es_otra_resolucion(plano: str, numero: str) -> bool:
+    """Si el encabezado de la página declara una resolución distinta de ``numero``."""
+    hallado = _NUMERO_DEL_ENCABEZADO.search(plano[:_CABEZA])
+    if hallado is None or not numero.isdigit():
+        return False
+    return int(hallado.group(1).replace(" ", "")) != int(numero)
+
+
+def fecha_de_expedicion(
+    paginas: list[str], *, numero: str | None = None, hoy: date | None = None
+) -> date | None:
     """La fecha en que se expidió la resolución, de su fórmula de cierre.
 
     La primera que aparece, que es la suya: lo que viene detrás son sus
@@ -498,20 +533,27 @@ def fecha_de_expedicion(paginas: list[str], *, hoy: date | None = None) -> date 
     lo rompió, del encabezado de la propia resolución, que lo lleva impreso.
     Sin la fórmula no hay fecha de expedición, y quien llama decide qué otra
     usar.
+
+    Con ``numero`` se deja de buscar en la primera página -- después de la
+    primera, que es la suya -- que encabeza otra resolución: si la fórmula
+    propia no se dejó leer, la del decano o la de una copia que viene detrás
+    no es la suya (la 00390 se fechaba por la del decano, 2026-10-29).
     """
     anio_del_encabezado: int | None = None
-    for pagina in paginas:
+    for indice, pagina in enumerate(paginas):
         plano = _plegada(pagina)
+        if numero and indice and _es_otra_resolucion(plano, numero):
+            break
         if anio_del_encabezado is None:
             encabezado = _ANIO_DEL_ENCABEZADO.search(plano)
             if encabezado:
                 anio_del_encabezado = int(encabezado.group(1))
         for hallazgo in _DADA.finditer(plano):
-            mes = MESES.get(hallazgo.group("mes").lower())
+            mes = _mes(hallazgo.group("mes"))
             dia = _dia(hallazgo.group("dia"))
             if mes is None or dia is None:
                 continue
-            anio = _ANIO.search(hallazgo.group("cola"))
+            anio = _ANIO.search(_ANIO_CON_PUNTO_DE_MILES.sub(r"20\1", hallazgo.group("cola")))
             for candidato in ([int(anio.group(1))] if anio else []) + (
                 [anio_del_encabezado] if anio_del_encabezado else []
             ):

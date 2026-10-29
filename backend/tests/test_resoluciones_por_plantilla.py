@@ -251,6 +251,54 @@ class TestLaFechaDeExpedicion:
         ]
         assert fecha_de_expedicion(paginas) == date(2025, 3, 3)
 
+    def test_dado_en_masculino_tambien_es_la_formula(self):
+        """2026-10-29: la 00384 dice «Dado en Cartagena», y sin reconocerlo se
+        fechaba con el «28 de Marzo» de la resolución del decano que lleva detrás."""
+        paginas = [
+            "RESOLUCIÓN No. 00384 DE 2025 COMUNÍQUESE Y CÚMPLASE. "
+            "Dado en Cartagena, a los 28 días del mes de febrero del año 2025",
+            "ceremonia colectiva de graduación el día Viernes 28 de Marzo de 2025",
+        ]
+        assert fecha_de_expedicion(paginas) == date(2025, 2, 28)
+        assert fecha_de_expedicion(["Expedido en Cartagena, a los 3 días del mes de marzo de 2025"]) == date(2025, 3, 3)
+
+    def test_las_formulas_que_deja_el_ocr(self):
+        """Las de la carpeta 3220 - 3259 (2026-10-29), tal como las dejó el OCR."""
+        casos = {
+            # 03524: el mes destrozado y el año con punto de miles.
+            "Dada en Cartagena de Indias a los diecinueve (19) días del mes de diciemtMp de 2.025": date(2025, 12, 19),
+            # 03526: el «a los» destrozado y el mes pegado a su «de».
+            "Dada en Cartagena de IndiasjJ^/Cftpcinueve (19) días del mes de diciembrpyde 2.025": date(2025, 12, 19),
+            # 03527: «ios» por «los» y «diciemb^».
+            "Dada en Cartagena de Indias a ios dipcinueve (19) días del mes de diciemb^ de 2.025": date(2025, 12, 19),
+            # 03529: sin «los» y sin «del mes».
+            "Dada en Cartagena de Iridias, a 19 días de diciembre de 2025": date(2025, 12, 19),
+        }
+        for texto, esperada in casos.items():
+            assert fecha_de_expedicion([texto]) == esperada, texto
+
+    def test_el_anio_roto_lo_pone_el_encabezado(self):
+        # 02991: «de 20^.»
+        paginas = ["RESOLUCIÓN No. 02991 de 2025 Dada en Cartagena de Indias ^dT)s seis (06) días del mes de Noviembre de 20^."]
+        assert fecha_de_expedicion(paginas, numero="02991") == date(2025, 11, 6)
+
+    def test_no_se_fecha_con_la_formula_de_otra_resolucion(self):
+        """00390: la suya es ilegible («a Ij i;») y la del decano, detrás, decía 24 de febrero."""
+        paginas = [
+            "RESOLUCIÓN No. 00390 DE 2025 COMUNÍQUESE Y CÚMPLASE. Dado en Cartagena, a Ij i; KATIA JOLY",
+            "UNIVERSIDAD DE CARTAGENA RESOLUCIÓN No. 15 EL DECANO Dado en Cartagena, a los 24 días del mes de Febrero de 2025",
+        ]
+        assert fecha_de_expedicion(paginas, numero="00390") is None
+        # Sin decir de qué resolución es, se comporta como antes.
+        assert fecha_de_expedicion(paginas) == date(2025, 2, 24)
+
+    def test_la_misma_resolucion_en_sus_hojas_siguientes_sigue_contando(self):
+        paginas = [
+            "RESOLUCIÓN No 03523 de 2025 “Por medio de la cual se modifica la Resolución de Rectoría No. 02591”",
+            "RESOLUCIÓN No 03523 de 2025 Dada en Cartagena de Indias a los diecinueve (19) días del mes de diciembre de 2025",
+        ]
+        assert fecha_de_expedicion(paginas, numero="03523") == date(2025, 12, 19)
+
     def test_fechar_la_prefiere_a_la_mas_reciente(self):
         """La 00005 se fechaba por el listado del sistema que lleva detrás."""
         grupo = PageGroup(code=ResolutionCode(value="00005", raw="00005"), page_numbers=[1, 2])

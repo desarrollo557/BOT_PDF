@@ -17,6 +17,7 @@ from ..domain.page import PageClassification, Provenance
 from ..domain.plantilla_de_pagina import Evidencia, plantilla_de
 from ..domain.resolution_code import ResolutionCode
 from ..domain.scoring import Selection, select_best
+from ..domain.serie_del_legajo import copias_fuera_de_la_serie
 from ..domain.title import extract_title
 from .control import Cancelled, NullRunControl, RunControl, hilos, mapear
 from .diagnostico import explicar
@@ -343,7 +344,31 @@ class ClassificationPipeline:
             )
         if unresolved:
             classifications = self._escalate(source, classifications, unresolved, stats)
-        return classifications, stats
+        return self._copias_dentro(classifications, stats), stats
+
+    @staticmethod
+    def _copias_dentro(
+        classifications: list[PageClassification], stats: PipelineStats
+    ) -> list[PageClassification]:
+        """La copia de otra resolución de rectoría va dentro de la que la trae.
+
+        Al final, después de la IA, para que valga también para lo que ella
+        decidió. Ver ``serie_del_legajo``.
+        """
+        copias = copias_fuera_de_la_serie(
+            [c.code.value if c.code is not None else None for c in classifications]
+        )
+        if not copias:
+            return classifications
+        dentro = []
+        for clasificacion in classifications:
+            if clasificacion.code is not None and clasificacion.code.value in copias:
+                stats.soportes[clasificacion.page_number] = f"copia de la resolución {clasificacion.code.value}"
+                clasificacion = replace(
+                    clasificacion, code=None, ambiguous=False, title=None, plantilla="copia de otra resolución"
+                )
+            dentro.append(clasificacion)
+        return dentro
 
     def _identify(self, analyses: list[PageAnalysis]) -> TypeVerdict:
         """De qué documento se trata, según lo que se leyó de él.

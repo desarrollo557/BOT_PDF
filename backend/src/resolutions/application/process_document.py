@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from ..domain.fechas import fecha_de_expedicion
 from ..domain.grouping import GroupingEngine, GroupingResult
 from ..domain.page import PageClassification
+from ..domain.serie_del_legajo import completar_por_la_serie
 from ..domain.validation import summarise, validate_resolutions
 from .control import NullRunControl, RunControl
 from .diagnostico import explicar
@@ -16,6 +18,9 @@ from .ports import DocumentAssembler, DocumentStore, InventoryStore
 from .progress import NullProgressReporter, ProgressEvent, ProgressReporter, Stage
 
 logger = logging.getLogger(__name__)
+
+#: El tipo documental de cada unidad de un legajo de resoluciones.
+TIPO_RESOLUCION = "RESOLUCION"
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +149,7 @@ class ProcessDocument:
 
             self._report(ProgressEvent(stage=Stage.GROUPING, page_count=source.page_count))
             result = self._grouping.group(classifications)
+            result = self._describir_el_legajo(result, source)
 
             # Última oportunidad de parar antes de escribir: a partir de aquí
             # empiezan a aparecer archivos en la carpeta de destino.
@@ -224,6 +230,31 @@ class ProcessDocument:
             # Se traga, pero deja rastro: un aviso que falla en silencio deja la
             # pantalla quieta y hace que un trabajo sano parezca colgado.
             logger.debug("el reportero de progreso falló, se sigue", exc_info=True)
+
+    @staticmethod
+    def _describir_el_legajo(result: GroupingResult, source) -> GroupingResult:
+        """Tipo y fecha de cada resolución del legajo, antes de que la entrega los ponga por sus páginas.
+
+        Medido contra el inventario documental de la carpeta 3220 - 3259
+        (2026-10-29): tipificadas por sus páginas, las resoluciones salían como
+        la cédula o la declaración juramentada que llevan de soporte; y fechadas
+        por la más reciente de sus páginas, con la fecha de un anexo -- 17 de
+        50 bien --. Cada unidad es una resolución, se fecha por su fórmula de
+        cierre en sus propias páginas y, si no se deja leer, por la serie.
+        """
+        fechas = []
+        for grupo in result.groups:
+            try:
+                paginas = [source.text_of(numero) for numero in grupo.page_numbers]
+            except Exception:  # noqa: BLE001 - la fecha es un dato más, no un requisito
+                logger.debug("no se pudo leer %s para fecharlo", grupo.code.value, exc_info=True)
+                paginas = []
+            fechas.append(fecha_de_expedicion(paginas, numero=grupo.code.value))
+        grupos = [
+            replace(grupo, kind=TIPO_RESOLUCION, fecha=fecha.isoformat() if fecha else None)
+            for grupo, fecha in zip(result.groups, completar_por_la_serie(fechas), strict=True)
+        ]
+        return replace(result, groups=grupos)
 
     @staticmethod
     def _build_review_queue(
