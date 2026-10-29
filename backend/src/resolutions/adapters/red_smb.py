@@ -53,6 +53,13 @@ A_LA_VEZ_POR_SERVIDOR = max(1, int(os.environ.get("BOTPDF_RED_A_LA_VEZ") or 4))
 #: Y si aun así el servidor se queda sin créditos, cuánto se espera antes de
 #: cada reintento: los devuelve en cuanto termina lo que estaba atendiendo.
 ESPERAS_SIN_CREDITOS = (0.5, 1.0, 2.0, 4.0, 8.0)
+#: Cómo se abre un archivo de la red para leerlo: compartiendo lectura, escritura
+#: y borrado con los demás programas, como el Explorador. Sin esto se abría en
+#: exclusiva y bastaba WorkDrive sincronizándolo, un visor o el propio bot
+#: sugiriendo el tipo de la carpeta para «está abierto en otro programa»; y
+#: mientras se copiaba, nadie más podía abrirlo (2026-10-29). El bot sólo lee,
+#: y la copia se comprueba por tamaño al terminar.
+COMPARTIDO = "rwd"
 
 
 class CredencialesDeRed(Exception):
@@ -150,9 +157,17 @@ def _turno_de_descarga(servidor: str) -> threading.BoundedSemaphore:
 
 
 def _sin_creditos(error: BaseException) -> bool:
-    """Si el servidor se quedó sin turnos para atender: «… credits are available»."""
+    """Si el servidor se quedó sin turnos para atender: «… credits are available».
+
+    O sin recursos: «STATUS_INSUFFICIENT_RESOURCES» (0xC000009A), que da el
+    Windows que comparte «Z:» -- WorkDrive -- cuando le piden varios PDF de
+    200 MB a la vez y aún los está bajando de la nube (2026-10-29). También
+    pasa en cuanto termina lo que estaba atendiendo.
+    """
     texto = str(error).lower()
-    return "credits" in texto and "available" in texto
+    if "credits" in texto and "available" in texto:
+        return True
+    return "insufficient_resources" in texto or "insufficient system resources" in texto
 
 
 def _con_turno(p: Partes, hacer: Callable[[], object]) -> object:
@@ -586,7 +601,7 @@ def firma(ruta: str) -> str:
 
     def resumir(p: Partes, cuenta: dict) -> str:
         resumen = hashlib.sha256()
-        with smbclient.open_file(p.unc, mode="rb", **cuenta) as archivo:
+        with smbclient.open_file(p.unc, mode="rb", share_access=COMPARTIDO, **cuenta) as archivo:
             while bloque := archivo.read(1024 * 1024):
                 resumen.update(bloque)
         return resumen.hexdigest()
@@ -607,7 +622,7 @@ def traer(ruta: str, destino: Path) -> Path:
     parcial = destino.with_name(destino.name + ".part")
 
     def copiar(p: Partes, cuenta: dict) -> int:
-        with smbclient.open_file(p.unc, mode="rb", **cuenta) as origen, parcial.open("wb") as copia:
+        with smbclient.open_file(p.unc, mode="rb", share_access=COMPARTIDO, **cuenta) as origen, parcial.open("wb") as copia:
             shutil.copyfileobj(origen, copia, BLOQUE)
         return int(smbclient.stat(p.unc, **cuenta).st_size)
 

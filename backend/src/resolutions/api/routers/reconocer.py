@@ -68,6 +68,11 @@ async def reconocer_archivo(ctx: Ctx, file: UploadFile) -> dict[str, object]:
 #: En una carpeta de red, cuántos PDF se bajan para sugerir el tipo. Cada uno
 #: viaja entero por la red; el total se sabe igual por el listado.
 MUESTRA_DE_LA_RED = 12
+#: Y hasta qué tamaño: «RESOLUCIONES DE RECTORIA 3220 - 3259», en WorkDrive,
+#: tardó 24 minutos en sugerir el tipo bajando PDF de 100 a 300 MB, a la vez
+#: que la corrida pedía los suyos al mismo servidor (2026-10-29). Uno más
+#: grande no se baja sólo para sugerir: el tipo se sabe al procesarlo.
+TOPE_DE_LA_MUESTRA_EN_RED = 25 * 1024 * 1024
 
 
 def _sin_abrir(relativa: str, error: Exception) -> dict[str, object]:
@@ -159,6 +164,9 @@ def _reconocer_en_la_red(ruta: str) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="reconocer-red-") as temporal:
         for indice, pdf in enumerate(muestra):
             relativa = pdf.ruta[len(ruta.rstrip("/")) + 1 :]
+            if pdf.tamano > TOPE_DE_LA_MUESTRA_EN_RED:
+                archivos.append(_muy_grande(relativa, pdf.tamano))
+                continue
             try:
                 copia = red_smb.traer(pdf.ruta, Path(temporal) / f"{indice}.pdf")
                 archivos.append({"ruta": relativa, **_sugerencia(copia, relativa)})
@@ -167,6 +175,14 @@ def _reconocer_en_la_red(ruta: str) -> dict[str, object]:
             except Exception as error:  # noqa: BLE001 - uno roto no tapa a los demás
                 archivos.append(_sin_abrir(relativa, error))
     return _resumen(al_operador(ruta), total, archivos, exacto=exacto)
+
+
+def _muy_grande(relativa: str, tamano: int) -> dict[str, object]:
+    """Un PDF de la red que no se baja sólo para sugerir el tipo."""
+    return {
+        **_sin_abrir(relativa, Exception()),
+        "motivo": f"no se bajó para sugerir el tipo: pesa {tamano // (1024 * 1024)} MB",
+    }
 
 
 def _resumen(

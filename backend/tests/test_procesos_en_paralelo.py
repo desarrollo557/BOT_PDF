@@ -235,6 +235,48 @@ class TestLasCarpetasVanEnParalelo:
         # Ninguno de los que esperaban turno llegó a empezar.
         assert len(run.job_ids) == 3
 
+    def test_detener_no_deja_en_cola_a_los_que_esperaban_turno(self, ajustes, tmp_path):
+        """2026-10-29: detenida la corrida, cuatro documentos siguieron «En cola ·
+        esperando turno» para siempre: la cancelación les llegaba esperando su
+        turno y nadie les cambiaba el estado."""
+        from resolutions.api.jobs import IN_FLIGHT, JobState
+
+        _pdfs(tmp_path / "origen", 4)
+        registry = JobRegistry()
+        un_turno = asyncio.Semaphore(1)
+        leyendo: list[str] = []
+
+        async def con_turno(job):
+            # Como `ejecucion._run`: el trabajo espera su cupo antes de leer.
+            async with un_turno:
+                registry.mark_running(job)
+                leyendo.append(job.filename)
+                await asyncio.sleep(10)
+
+        motor = FolderRunner(
+            registry,
+            ajustes,
+            con_turno,
+            planificador=Planificador(documentos_de_carpeta=3, hilos_por_documento=8, procesos=11),
+        )
+
+        async def ir():
+            run = motor.start(str(tmp_path / "origen"), str(tmp_path / "destino"))
+            for _ in range(500):
+                if leyendo and len(run.job_ids) == 3:
+                    break
+                await asyncio.sleep(0.01)
+            motor.stop(run.id)
+            await asyncio.sleep(0.05)
+            return run
+
+        run = asyncio.run(ir())
+
+        trabajos = [registry.get(job_id) for job_id in run.job_ids]
+        assert len(trabajos) == 3
+        assert [t.state for t in trabajos if t.state in IN_FLIGHT] == []
+        assert {t.state for t in trabajos} == {JobState.CANCELLED}
+
     def test_la_pantalla_recibe_todos_los_que_estan_en_curso(self, ajustes, tmp_path):
         _pdfs(tmp_path / "origen", 3)
         registry = JobRegistry()

@@ -26,7 +26,7 @@ from ..adapters.excel_inventory import (
 from . import constancia as constancias
 from .constancia import Constancia, EstadoDeEntrega, Vigencia
 from .errores import archivo_en_uso, explicar_fallo
-from .jobs import Job, JobRegistry, JobState
+from .jobs import IN_FLIGHT, Job, JobRegistry, JobState
 from .planificador import Planificador
 from .reintentos import merece_otra_vuelta
 from .retomar import ControlDeUnLibro, HuellasDelOrigen, Retomar
@@ -1729,6 +1729,14 @@ class FolderRunner:
                     control.accion = "falló"
                     control.error = job.error or "el procesamiento no terminó"
         except asyncio.CancelledError:
+            # Detener la corrida le llega a cada documento, también al que
+            # esperaba turno: sin esto se quedaba «En cola · esperando turno»
+            # para siempre en la pantalla, aunque ya nunca fuera a correr
+            # (2026-10-29).
+            if job.state in IN_FLIGHT:
+                self._registry.mark_cancelled(job)
+                if control is not None:
+                    control.accion = "cancelado"
             raise
         except Exception as error:  # noqa: BLE001 - un documento no tumba la carpeta
             if not isinstance(error, EntregaIncompleta):

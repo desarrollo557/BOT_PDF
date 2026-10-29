@@ -18,8 +18,10 @@ taller les da éste cuando el operador lo activó.
 from __future__ import annotations
 
 import logging
+import time
 
 from ..application.ports import OcrResult
+from .tesseract_ocr import TesseractError
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,8 @@ logger = logging.getLogger(__name__)
 #: buena. Por debajo de esto no hay nada que un extractor pueda usar: no es una
 #: lectura pobre, es una lectura vacía con adornos.
 MINIMO_UTIL = 12
+#: Cuánto se espera antes de volver a pasarle a Tesseract una página que se pasó de tiempo.
+ESPERA_ANTES_DE_REINTENTAR = 1.0
 
 
 class OcrEnCascada:
@@ -49,7 +53,7 @@ class OcrEnCascada:
 
     def read(self, image_png: bytes) -> OcrResult:
         try:
-            local = self._local.read(image_png)
+            local = self._leer_en_casa(image_png)
         except Exception:  # noqa: BLE001 - que falle el local no impide preguntar
             # Se sigue escalando, como siempre: la lectura no cambia. Pero esa
             # página se paga por un fallo del equipo -- Tesseract que no está o
@@ -78,6 +82,22 @@ class OcrEnCascada:
         if _utiles(remoto.text) > _utiles(local.text):
             return remoto
         return local
+
+    def _leer_en_casa(self, image_png: bytes) -> OcrResult:
+        """Tesseract, y otra vez si sólo se pasó de tiempo.
+
+        Con el equipo ahogado -- diez PDF de 200 MB a la vez, 2026-10-29 --
+        Tesseract superaba sus 15 s y cada una de esas páginas se pagaba al
+        OCR de fuera sin que el papel tuviera nada difícil. Un segundo intento
+        es gratis y casi siempre llega: la carga sube y baja.
+        """
+        try:
+            return self._local.read(image_png)
+        except TesseractError as error:
+            if "superó" not in str(error):
+                raise
+            time.sleep(ESPERA_ANTES_DE_REINTENTAR)
+            return self._local.read(image_png)
 
 
     def read_local(self, image_png: bytes) -> OcrResult:

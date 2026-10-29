@@ -94,9 +94,11 @@ class ServidorDeMentira:
                 stat=lambda d=datos: types.SimpleNamespace(st_size=len(d), st_mtime_ns=7),
             )
 
-    def open_file(self, ruta, mode="r", **cuenta):
+    def open_file(self, ruta, mode="r", share_access=None, **cuenta):
         self._sesion(ruta, **cuenta)
         self.descargas += 1
+        #: Cómo se abrió: «rwd» deja a los demás programas usarlo a la vez.
+        self.compartido = share_access
         return io.BytesIO(self.archivos[self._clave(ruta)])
 
 
@@ -266,6 +268,18 @@ class TestLeer:
         copia = red_smb.traer(rf"{CARPETA}\210847\UPD2998726.pdf", tmp_path / "a" / "UPD.pdf")
         assert copia.read_bytes() == b"%PDF-1.4 caja 210847"
         assert not list(tmp_path.rglob("*.part"))
+
+    def test_se_lee_compartiendo_con_los_demas_programas(self, servidor, tmp_path):
+        """2026-10-29: «está abierto en otro programa» en Z:. Se abría en
+        exclusiva (permiso compartido 0): WorkDrive sincronizándolo, un visor o
+        el propio bot sugiriendo el tipo bastaban para que fallara, y mientras
+        se copiaba nadie más podía abrirlo."""
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        red_smb.traer(rf"{CARPETA}\210847\UPD2998726.pdf", tmp_path / "UPD.pdf")
+        assert servidor.compartido == "rwd"
+        servidor.compartido = None
+        assert len(red_smb.firma(rf"{CARPETA}\210847\UPD2998726.pdf")) == 64
+        assert servidor.compartido == "rwd"
 
     def test_las_descargas_siempre_dejan_un_turno_para_listar(self, monkeypatch, tmp_path):
         """Con tantas descargas como turnos, el recorrido no listaba ni una carpeta
@@ -467,6 +481,20 @@ class TestUnaCuentaQueSambaNoConoce:
             red_smb.conectar(CARPETA, "otra", "clave")
 
 
+class TestSugerirElTipoSinBajarLoGrande:
+    def test_un_pdf_grande_no_se_baja_solo_para_sugerir(self, servidor, monkeypatch):
+        """2026-10-29: sugerir el tipo en WorkDrive tardó 24 min bajando PDF de 200 MB."""
+        from resolutions.api.routers import reconocer
+
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        ruta = red_smb.partes(rf"{CARPETA}\210847").del_servicio
+        monkeypatch.setattr(reconocer, "TOPE_DE_LA_MUESTRA_EN_RED", 5)
+        respuesta = reconocer._reconocer_en_la_red(ruta)
+        assert respuesta["total"] == 1
+        assert servidor.descargas == 0
+        assert "no se bajó para sugerir el tipo" in respuesta["archivos"][0]["motivo"]
+
+
 class TestSinCreditos:
     """\\\\200.100.20.97, 2026-10-22: «Request requires 1 credits but only 0 credits are available»."""
 
@@ -484,6 +512,28 @@ class TestSinCreditos:
 
         assert red_smb._con_turno(red_smb.partes(r"\\srv\recurso\a.pdf"), hacer) == "ok"
         assert len(intentos) == 3
+
+    def test_sin_recursos_en_el_servidor_tambien_se_espera(self, monkeypatch):
+        """2026-10-29: el Windows que comparte Z: (WorkDrive) con diez PDF de 200 MB a la vez."""
+        from resolutions.adapters import red_smb
+
+        monkeypatch.setattr(red_smb, "ESPERAS_SIN_CREDITOS", (0.0, 0.0))
+        intentos = []
+
+        def hacer():
+            intentos.append(1)
+            if len(intentos) < 3:
+                raise RuntimeError(
+                    "[Error 0] [NtStatus 0xc000009a] Unknown NtStatus error returned "
+                    "'STATUS_INSUFFICIENT_RESOURCES': '\\\\host.docker.internal\\BOTPDF-Z\\a.pdf'"
+                )
+            return "ok"
+
+        assert red_smb._con_turno(red_smb.partes(r"\\srv\recurso\a.pdf"), hacer) == "ok"
+        assert len(intentos) == 3
+        assert red_smb._sin_creditos(
+            RuntimeError("Insufficient system resources exist to complete the API. (3221225626)")
+        )
 
     def test_otro_error_no_se_reintenta(self, monkeypatch):
         import pytest

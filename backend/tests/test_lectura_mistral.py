@@ -85,6 +85,34 @@ class TestLaCascada:
         assert consumo.as_dict()["ocr_local_fallido"] == 2
         assert sum("OCR local falló" in r.message for r in caplog.records) == 2
 
+    def test_si_tesseract_solo_se_paso_de_tiempo_se_reintenta_gratis(self, monkeypatch):
+        """2026-10-29: con el equipo ahogado, cada página que superaba los 15 s se pagaba."""
+        from resolutions.adapters import ocr_cascada
+        from resolutions.adapters.tesseract_ocr import TesseractError
+
+        monkeypatch.setattr(ocr_cascada, "ESPERA_ANTES_DE_REINTENTAR", 0)
+
+        class Lento(OcrFalso):
+            def read(self, image_png: bytes) -> OcrResult:
+                self.llamadas += 1
+                if self.llamadas == 1:
+                    raise TesseractError("Tesseract superó 15 s")
+                return OcrResult(text="RESOLUCION NUMERO 00412 DE 2024", mean_confidence=0.0)
+
+        local, remoto = Lento(), OcrFalso("no debería pagarse")
+        assert OcrEnCascada(local, remoto).read(b"imagen").text == "RESOLUCION NUMERO 00412 DE 2024"
+        assert (local.llamadas, remoto.llamadas) == (2, 0)
+
+        # Si se pasa de tiempo dos veces, se escala como siempre.
+        class SiempreLento(OcrFalso):
+            def read(self, image_png: bytes) -> OcrResult:
+                self.llamadas += 1
+                raise TesseractError("Tesseract superó 15 s")
+
+        local, remoto = SiempreLento(), OcrFalso("RESOLUCION 00412")
+        assert OcrEnCascada(local, remoto).read(b"imagen").text == "RESOLUCION 00412"
+        assert (local.llamadas, remoto.llamadas) == (2, 1)
+
     def test_si_el_remoto_se_cae_queda_la_lectura_local(self):
         local = OcrFalso("algo poco")
         remoto = OcrFalso(falla=True)
