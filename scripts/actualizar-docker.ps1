@@ -30,6 +30,22 @@ if (Test-Path (Join-Path $raiz ".git")) {
         if ($LASTEXITCODE -ne 0) { throw "No se pudieron apartar los cambios locales. Revise con: git status" }
     }
     Write-Host "==> Trayendo la ultima version del repositorio..." -ForegroundColor Cyan
+    git fetch --quiet
+    if ($LASTEXITCODE -ne 0) { throw "No se pudo traer la version nueva (git fetch). Revise la conexion a internet." }
+    # Un archivo suelto (sin seguimiento) que la version nueva trae con el mismo
+    # nombre frena el pull: "untracked working tree files would be overwritten"
+    # (2026-10-29, una copia a mano de scripts\renombrar_reclamaciones.py). Se
+    # aparta a .actualizar-respaldo\<fecha>\ -- no se borra -- y se sigue.
+    $sueltos = @(git ls-files --others --exclude-standard)
+    $respaldo = Join-Path $raiz (".actualizar-respaldo\" + (Get-Date -Format "yyyy-MM-dd_HHmmss"))
+    foreach ($suelto in $sueltos) {
+        git cat-file -e "@{u}:$suelto" 2>$null
+        if ($LASTEXITCODE -ne 0) { continue }
+        $destino = Join-Path $respaldo $suelto
+        New-Item -ItemType Directory -Force (Split-Path $destino) | Out-Null
+        Move-Item -LiteralPath (Join-Path $raiz $suelto) -Destination $destino
+        Write-Host "   La version nueva trae $suelto; la copia suelta se aparto en $destino" -ForegroundColor Yellow
+    }
     git pull --ff-only
     if ($LASTEXITCODE -ne 0) {
         throw "git pull no pudo avanzar (hay cambios locales o la rama diverge). Revise con: git status"

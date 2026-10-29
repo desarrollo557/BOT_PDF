@@ -30,3 +30,4 @@ docker-compose.override.yml
 *.pyd
 *.log
 .DS_Store
+.actualizar-respaldo

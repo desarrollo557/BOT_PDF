@@ -40,3 +40,6 @@ diagnostico-docker.txt
 
 # El informe que deja probar-instalacion: es de cada equipo.
 prueba-instalacion.txt
+
+# Las copias sueltas que actualizar-docker aparta para poder traer la version nueva.
+.actualizar-respaldo/
