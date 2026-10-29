@@ -70,6 +70,27 @@ describe('la carpeta de red que pide usuario y clave', () => {
     expect(preguntas[1]).toContain('no son correctos');
   });
 
+  it('dos peticiones a la vez preguntan y conectan una sola vez', async () => {
+    // 2026-10-28: al escribir la ruta, reconocer y el explorador pedían a la
+    // vez; cada una conectaba por su lado y el cuadro salía otra vez.
+    const fetch = vi.fn(async (url: string) => {
+      if (url === '/api/red/conectar') return json(200, { recurso: RECURSO, conectado: true });
+      return fetch.mock.calls.some(([otra]) => otra === '/api/red/conectar') ? json(200, LISTADO) : PIDE();
+    });
+    vi.stubGlobal('fetch', fetch);
+    let preguntas = 0;
+    alPedirCredenciales(async () => {
+      preguntas += 1;
+      return { usuario: 'SIAR\\desarrollo', clave: 'secreta' };
+    });
+
+    const [una, otra] = await Promise.all([browseFolders(RECURSO), browseFolders(RECURSO)]);
+    expect(una).toEqual(LISTADO);
+    expect(otra).toEqual(LISTADO);
+    expect(preguntas).toBe(1);
+    expect(fetch.mock.calls.filter(([url]) => url === '/api/red/conectar')).toHaveLength(1);
+  });
+
   it('si cancela, el error dice qué pidió el servidor', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(PIDE()));
     alPedirCredenciales(async () => null);

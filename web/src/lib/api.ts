@@ -94,21 +94,52 @@ export function alPedirCredenciales(preguntador: Preguntador | null): void {
 async function pedir(input: string, init?: RequestInit): Promise<Response> {
   const respuesta = await alServicio(input, init);
   if (respuesta.status !== 401 || !preguntar) return respuesta;
-  let pedido = credencialesPedidas(await respuesta.clone().json().catch(() => null));
-  while (pedido) {
+  const pedido = credencialesPedidas(await respuesta.clone().json().catch(() => null));
+  if (!pedido) return respuesta;
+  const entrada = await entrarUnaVez(pedido);
+  if (entrada.conectado) return alServicio(input, init);
+  return entrada.fallo ? entrada.fallo.clone() : respuesta;
+}
+
+type Entrada = { conectado: true } | { conectado: false; fallo: Response | null };
+
+/**
+ * Las entradas en curso, por recurso. Al escribir una ruta de red la pantalla
+ * pide varias cosas a la vez -- reconocer la carpeta, el explorador -- y cada
+ * una recibía su 401: compartían el cuadro, pero cada una mandaba su propio
+ * `conectar`, que en el servicio cerraba la sesión de la otra, y el cuadro
+ * volvía a salir (2026-10-28, «el inicio de sesión me sale más de una vez»).
+ * Ahora la primera pregunta y conecta; las demás esperan esa misma entrada.
+ */
+const entrando = new Map<string, Promise<Entrada>>();
+
+function entrarUnaVez(pedido: PedidoDeCredenciales): Promise<Entrada> {
+  const llave = pedido.recurso.toLowerCase();
+  let entrada = entrando.get(llave);
+  if (!entrada) {
+    entrada = entrarAlRecurso(pedido).finally(() => entrando.delete(llave));
+    entrando.set(llave, entrada);
+  }
+  return entrada;
+}
+
+/** Pregunta hasta que se entra, se cancela o el servicio contesta otra cosa. */
+async function entrarAlRecurso(primero: PedidoDeCredenciales): Promise<Entrada> {
+  let pedido: PedidoDeCredenciales | null = primero;
+  while (pedido && preguntar) {
     const cuenta = await preguntar(pedido);
-    if (!cuenta) return respuesta;
+    if (!cuenta) return { conectado: false, fallo: null };
     const conexion = await alServicio(`${BASE}/red/conectar`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ ruta: pedido.recurso, usuario: cuenta.usuario, clave: cuenta.clave })
     });
-    if (conexion.ok) return alServicio(input, init);
-    if (conexion.status !== 401) return conexion;
+    if (conexion.ok) return { conectado: true };
+    if (conexion.status !== 401) return { conectado: false, fallo: conexion };
     pedido = credencialesPedidas(await conexion.clone().json().catch(() => null));
-    if (!pedido) return conexion;
+    if (!pedido) return { conectado: false, fallo: conexion };
   }
-  return respuesta;
+  return { conectado: false, fallo: null };
 }
 
 /**

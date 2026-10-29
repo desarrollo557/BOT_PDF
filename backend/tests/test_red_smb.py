@@ -40,6 +40,9 @@ class ServidorDeMentira:
         self.prohibidas = {self._clave(ruta) for ruta in prohibidas}
         self.sesiones: set[str] = set()
         self.descargas = 0
+        #: Las cuentas que el servidor acepta: (usuario, clave).
+        self.cuentas = {(USUARIO, CLAVE)}
+        self.reinicios = 0
 
     @staticmethod
     def _clave(ruta: str) -> str:
@@ -49,17 +52,18 @@ class ServidorDeMentira:
         return any(nombre.startswith(clave + "\\") for nombre in self.archivos)
 
     def _sesion(self, ruta: str, username=None, password=None) -> None:
-        if (username, password) != (USUARIO, CLAVE) or SERVIDOR not in self.sesiones:
+        if (username, password) not in self.cuentas or SERVIDOR not in self.sesiones:
             raise SMBAuthenticationError("Failed to authenticate with server")
 
     # -- la API de smbclient ----------------------------------------------------------
 
     def register_session(self, server, username=None, password=None, **_):
-        if (username, password) != (USUARIO, CLAVE):
+        if (username, password) not in self.cuentas:
             raise SMBAuthenticationError("Failed to authenticate with server")
         self.sesiones.add(server)
 
     def reset_connection_cache(self, **_):
+        self.reinicios += 1
         self.sesiones.clear()
 
     def stat(self, ruta, **cuenta):
@@ -168,6 +172,46 @@ class TestLasCredenciales:
         assert red_smb.con_dominio(r"OTRO\ana") == r"OTRO\ana"
         monkeypatch.delenv(red_smb.VARIABLE_DE_DOMINIO)
         assert red_smb.con_dominio("ana") == "ana"
+
+    def test_sin_dominio_tambien_vale_una_cuenta_del_propio_servidor(self, servidor, monkeypatch):
+        # 2026-10-28: «server2», cuenta del equipo que comparte Z: con el
+        # contenedor, iba como «SIAR\server2» y el cuadro volvía una y otra vez.
+        servidor.cuentas = {("server2", "clave")}
+        monkeypatch.setenv(red_smb.VARIABLE_DE_DOMINIO, "SIAR")
+        assert red_smb.conectar(CARPETA, "server2", "clave") == RAIZ
+        red_smb.asegurar(CARPETA)  # y queda recordada así, sin dominio
+        with pytest.raises(red_smb.CredencialesDeRed, match="no el PIN"):
+            red_smb.conectar(CARPETA, "server2", "mala")
+
+    def test_entrar_otra_vez_con_la_misma_cuenta_no_cierra_la_sesion(self, servidor):
+        # Dos peticiones que llegan a la vez con la misma respuesta: la
+        # segunda no puede cerrarle la conexión a la primera.
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        antes = servidor.reinicios
+        assert red_smb.conectar(CARPETA, USUARIO, CLAVE) == RAIZ
+        assert servidor.reinicios == antes
+        assert red_smb.es_carpeta(CARPETA)
+
+    def test_dos_entradas_a_la_vez_entran_las_dos(self, servidor):
+        import threading
+
+        resultados: list = []
+
+        def entrar():
+            try:
+                resultados.append(red_smb.conectar(CARPETA, USUARIO, CLAVE))
+            except Exception as error:  # noqa: BLE001 - la prueba lo cuenta
+                resultados.append(error)
+
+        antes = servidor.reinicios
+        hilos = [threading.Thread(target=entrar) for _ in range(8)]
+        for hilo in hilos:
+            hilo.start()
+        for hilo in hilos:
+            hilo.join()
+        assert resultados == [RAIZ] * 8
+        # Una sola entrada de verdad: las otras siete encontraron la sesión hecha.
+        assert servidor.reinicios == antes + 1
 
     def test_si_el_servidor_lo_trata_como_invitado_se_pregunta_otra_vez(self, servidor, monkeypatch):
         from smbprotocol.exceptions import SMBException

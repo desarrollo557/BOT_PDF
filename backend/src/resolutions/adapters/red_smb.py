@@ -209,6 +209,11 @@ _CLAVE_MALA = {0xC000006D, 0xC000006A, 0xC0000064, 0xC000015B, 0xC0000072, 0xC00
 _RECURSO_INEXISTENTE = {0xC00000CC, 0xC00000BE}
 
 
+#: Con Windows Hello se entra con un PIN, que no sirve en la red: se pide la
+#: clave de la cuenta.
+_CLAVE_INCORRECTA = "El usuario o la clave no son correctos (es la clave de Windows, no el PIN)"
+
+
 def _traducir(error: Exception, p: Partes, *, con_usuario: bool) -> Exception:
     """El error del cliente SMB como lo entiende quien lo atiende."""
     from smbprotocol.exceptions import (
@@ -229,7 +234,7 @@ def _traducir(error: Exception, p: Partes, *, con_usuario: bool) -> Exception:
             "dominio, como entra a Windows: DOMINIO\\usuario",
         )
     if isinstance(error, (SMBAuthenticationError, LogonFailure)) or estado in _CLAVE_MALA:
-        motivo = "El usuario o la clave no son correctos" if con_usuario else "El servidor pide usuario y clave"
+        motivo = _CLAVE_INCORRECTA if con_usuario else "El servidor pide usuario y clave"
         return CredencialesDeRed(p.raiz, motivo)
     if isinstance(error, AccessDenied) or estado == _ACCESO_DENEGADO:
         motivo = (
@@ -298,16 +303,44 @@ def conectar(ruta: str, usuario: str | None = None, clave: str | None = None) ->
     p = partes(ruta)
     if p is None:
         raise ValueError(f"No es una ruta de red: {ruta}")
-    usuario = con_dominio(usuario or "")
-    if NATIVA:
-        _conectar_en_windows(p, usuario, clave or "")
-    else:
-        _conectar_por_smb(p, usuario, clave or "")
-    with _cerrojo:
-        if usuario:
-            _cuentas[p.servidor.lower()] = (usuario, clave or "")
-        _conectados[f"{p.servidor.lower()}/{p.recurso.lower()}"] = p.raiz
+    escrito = (usuario or "").strip()
+    usuario, clave = con_dominio(escrito), clave or ""
+    llave = f"{p.servidor.lower()}/{p.recurso.lower()}"
+    # De a una por servidor: al escribir la ruta la pantalla pide varias cosas
+    # a la vez, y cada entrada con usuario reinicia las conexiones; dos a la
+    # vez se cerraban la sesión una a la otra y el cuadro volvía (2026-10-28).
+    with _entrada_al_servidor(p.servidor):
+        with _cerrojo:
+            # La misma cuenta ya entró mientras ésta esperaba: no se repite.
+            if usuario and llave in _conectados and _cuentas.get(p.servidor.lower()) in (
+                (usuario, clave),
+                (escrito, clave),
+            ):
+                return p.raiz
+        entrar = _conectar_en_windows if NATIVA else _conectar_por_smb
+        try:
+            entrar(p, usuario, clave)
+        except CredencialesDeRed:
+            if usuario == escrito:
+                raise
+            # Sin dominio puede ser una cuenta del propio servidor -- la del
+            # equipo que comparte su unidad con el contenedor --, que con el
+            # dominio delante no existe.
+            entrar(p, escrito, clave)
+            usuario = escrito
+        with _cerrojo:
+            if usuario:
+                _cuentas[p.servidor.lower()] = (usuario, clave)
+            _conectados[llave] = p.raiz
     return p.raiz
+
+
+_entradas: dict[str, threading.RLock] = {}
+
+
+def _entrada_al_servidor(servidor: str) -> threading.RLock:
+    with _cerrojo:
+        return _entradas.setdefault(servidor.lower(), threading.RLock())
 
 
 def _conectar_por_smb(p: Partes, usuario: str, clave: str) -> None:
@@ -355,7 +388,7 @@ def _conectar_en_windows(p: Partes, usuario: str, clave: str) -> None:
         recurso.lpRemoteName = p.raiz
         codigo = ctypes.windll.mpr.WNetAddConnection2W(ctypes.byref(recurso), clave, usuario, 0)
         if codigo in _SIN_CREDENCIALES:
-            raise CredencialesDeRed(p.raiz, "El usuario o la clave no son correctos")
+            raise CredencialesDeRed(p.raiz, _CLAVE_INCORRECTA)
         if codigo == 1219:
             raise CredencialesDeRed(
                 p.raiz,
