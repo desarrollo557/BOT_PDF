@@ -112,10 +112,25 @@ function Es-Virtual($unidad) {
 # (host.docker.internal). El recurso Z$ de Windows solo deja entrar a
 # administradores, asi que hace falta uno propio: de SOLO LECTURA (el bot no
 # escribe en el origen) y solo para la cuenta de quien instala.
+#
+# Devuelve el nombre del recurso y las cuentas que pueden entrar: la pantalla
+# las propone al pedir usuario y clave. Se escribia otra ("server2" donde la
+# cuenta era "SIAR1") y el cuadro volvia sin decir cual era la buena (2026-10-29).
 function Recurso-De($letra) {
     $ya = Get-SmbShare -ErrorAction SilentlyContinue |
         Where-Object { -not $_.Special -and $_.Path -eq "${letra}:\" } | Select-Object -First 1
-    if ($ya) { return $ya.Name }
+    if ($ya) {
+        $cuentas = @()
+        try {
+            $cuentas = @(Get-SmbShareAccess -Name $ya.Name -ErrorAction Stop |
+                Where-Object { "$($_.AccessControlType)" -eq "Allow" } |
+                ForEach-Object { $_.AccountName } |
+                Where-Object { $_ -notmatch '^(BUILTIN|NT AUTHORITY|NT AUTHORITY)\\|^(Everyone|Todos)$' })
+        } catch {
+            # Sin permiso para leer a quien se comparte: la pantalla pregunta sin proponer.
+        }
+        return [pscustomobject]@{ Nombre = $ya.Name; Cuentas = $cuentas }
+    }
     $nombre = "BOTPDF-$letra"
     $cuenta = "$env:USERDOMAIN\$env:USERNAME"
     $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -124,7 +139,7 @@ function Recurso-De($letra) {
         New-SmbShare -Name $nombre -Path "${letra}:\" -ReadAccess $cuenta `
             -Description "BOT_PDF: la unidad ${letra}: para el contenedor (solo lectura)" | Out-Null
         Paso "Compartida ${letra}:\ como \\$env:COMPUTERNAME\$nombre (solo lectura, solo $cuenta)"
-        return $nombre
+        return [pscustomobject]@{ Nombre = $nombre; Cuentas = @($cuenta) }
     }
     Write-Host "   La unidad ${letra}: no se vera desde el contenedor hasta compartirla. En un PowerShell" -ForegroundColor Yellow
     Write-Host "   abierto como administrador, una sola vez, y despues vuelva a ejecutar instalar-docker:" -ForegroundColor Yellow
@@ -133,6 +148,7 @@ function Recurso-De($letra) {
 }
 
 $deRed = @()
+$cuentasDeRed = @()
 $montables = @()
 foreach ($u in $unidades) {
     $letra = $u.DeviceID.Substring(0, 1)
@@ -140,7 +156,10 @@ foreach ($u in $unidades) {
         $deRed += [pscustomobject]@{ Letra = $letra; Ruta = $u.ProviderName }
     } elseif (Es-Virtual $u) {
         $recurso = Recurso-De $letra
-        if ($recurso) { $deRed += [pscustomobject]@{ Letra = $letra; Ruta = "\\host.docker.internal\$recurso" } }
+        if ($recurso) {
+            $deRed += [pscustomobject]@{ Letra = $letra; Ruta = "\\host.docker.internal\$($recurso.Nombre)" }
+            if ($recurso.Cuentas.Count) { $cuentasDeRed += "${letra}:=" + ($recurso.Cuentas -join ",") }
+        }
     } else {
         $montables += $u
     }
@@ -160,6 +179,13 @@ function Escribir-Override($discos) {
     $pares += @($deRed | ForEach-Object { "$($_.Letra):=" + ($_.Ruta -replace '\\', '/' -replace '\$', '$$$$') })
     $mapa = $pares -join ";"
     $lineas += "      BOTPDF_UNIDADES: `"$mapa`""
+    # Quien puede entrar a cada unidad compartida con el contenedor, para
+    # proponerlo al pedir usuario y clave. Entre comillas simples: la "\" de
+    # "EQUIPO\cuenta" va tal cual ('' es una comilla; "$$", un "$" para compose).
+    if ($cuentasDeRed.Count) {
+        $cuentas = ($cuentasDeRed -join ";") -replace "'", "''" -replace '\$', '$$$$'
+        $lineas += "      BOTPDF_CUENTAS_DE_RED: '$cuentas'"
+    }
     # El dominio de este equipo ("SIAR"), para las carpetas de red: quien escribe
     # su usuario sin dominio entra igual que en Windows. No es un secreto, y solo
     # se pasa si el equipo esta en un dominio.

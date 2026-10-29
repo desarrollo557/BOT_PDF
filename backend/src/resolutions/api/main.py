@@ -56,7 +56,7 @@ from .routers import (
     trabajos,
     usuarios,
 )
-from .rutas_del_equipo import con_letra
+from .rutas_del_equipo import con_letra, cuentas_de
 from .settings import Settings
 from .worker import process_document_job
 
@@ -297,16 +297,14 @@ async def _credenciales_de_red(request: Request, error: red_smb.CredencialesDeRe
     el operador no reconoce «\\\\host.docker.internal\\BOTPDF-Z».
     """
     recurso = con_letra(error.recurso) or error.recurso
-    return JSONResponse(
-        status_code=401,
-        content={
-            "detail": {
-                "codigo": "credenciales_de_red",
-                "recurso": recurso,
-                "mensaje": f"{error.motivo}: {recurso}",
-            }
-        },
-    )
+    mensaje = f"{error.motivo}: {recurso}"
+    # Si el instalador anotó quién puede entrar, se dice y se propone: escribir
+    # otra cuenta sólo hacía volver el cuadro (2026-10-29).
+    detalle = {"codigo": "credenciales_de_red", "recurso": recurso, "mensaje": mensaje}
+    if cuentas := cuentas_de(error.recurso):
+        detalle["mensaje"] += f". Esta unidad está compartida sólo para {', '.join(cuentas)}"
+        detalle["usuario"] = cuentas[0]
+    return JSONResponse(status_code=401, content={"detail": detalle})
 
 
 @app.exception_handler(red_smb.RedNoDisponible)

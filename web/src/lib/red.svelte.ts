@@ -15,6 +15,8 @@ export interface CuentaDeRed {
 interface Pregunta {
   recurso: string;
   mensaje: string;
+  /** La cuenta con permiso en el recurso, si el servicio la sabe: se propone. */
+  usuario?: string;
   responder: (cuenta: CuentaDeRed | null) => void;
 }
 
@@ -27,15 +29,16 @@ class PreguntaDeRed {
    * ya hay uno abierto -- dos peticiones a la vez contra el mismo servidor --,
    * las dos esperan la misma respuesta.
    */
-  pedir(recurso: string, mensaje: string): Promise<CuentaDeRed | null> {
+  pedir(recurso: string, mensaje: string, usuario?: string): Promise<CuentaDeRed | null> {
     if (this.actual && this.#espera) {
-      this.actual = { ...this.actual, mensaje };
+      this.actual = { ...this.actual, mensaje, usuario: usuario ?? this.actual.usuario };
       return this.#espera;
     }
     this.#espera = new Promise((resolver) => {
       this.actual = {
         recurso,
         mensaje,
+        usuario,
         responder: (cuenta) => {
           this.actual = null;
           this.#espera = null;

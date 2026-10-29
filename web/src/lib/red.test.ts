@@ -30,6 +30,12 @@ describe('la carpeta de red que pide usuario y clave', () => {
     expect(credencialesPedidas({ detail: 'La carpeta no existe' })).toBeNull();
   });
 
+  it('trae la cuenta con permiso cuando el servicio la sabe', () => {
+    // 2026-10-29: se escribía «server2» y el recurso de Z: era sólo de «SIAR1».
+    const detail = { codigo: 'credenciales_de_red', recurso: 'Z:\\', mensaje: 'x', usuario: 'SERVER2\\SIAR1' };
+    expect(credencialesPedidas({ detail })?.usuario).toBe('SERVER2\\SIAR1');
+  });
+
   it('pregunta, conecta y repite la petición', async () => {
     const fetch = vi
       .fn()

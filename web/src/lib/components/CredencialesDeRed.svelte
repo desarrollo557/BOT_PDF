@@ -18,6 +18,12 @@
     if (pregunta) campoUsuario?.focus();
   });
 
+  // La cuenta con permiso, si el servicio la sabe: con otra el cuadro sólo
+  // volvía (2026-10-29, «server2» donde la cuenta era «SIAR1»).
+  $effect(() => {
+    if (pregunta?.usuario) usuario = pregunta.usuario;
+  });
+
   function cerrar(cuenta: { usuario: string; clave: string } | null) {
     preguntaDeRed.responder(cuenta);
     clave = '';

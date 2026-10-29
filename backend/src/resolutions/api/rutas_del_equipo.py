@@ -56,6 +56,29 @@ def unidades() -> dict[str, str]:
     return montadas
 
 
+#: Las cuentas con permiso en el recurso que comparte cada unidad de este
+#: equipo con el contenedor: «Z:=SERVER2\\SIAR1,SIAR\\otra». Las anota el
+#: instalador, que es quien crea el recurso.
+VARIABLE_DE_CUENTAS = "BOTPDF_CUENTAS_DE_RED"
+
+
+def cuentas_de(ruta: object) -> list[str]:
+    """Quién puede entrar al recurso de la unidad de ``ruta``; vacío si no se sabe.
+
+    El recurso de «Z:» sólo deja entrar a la cuenta que instaló (2026-10-29):
+    en el otro equipo se escribía «server2», la cuenta era «SIAR1», y el cuadro
+    de usuario y clave volvía sin decir cuál era la buena.
+    """
+    letra = (con_letra(ruta) or "")[:1].upper()
+    if not letra:
+        return []
+    for par in os.environ.get(VARIABLE_DE_CUENTAS, "").split(";"):
+        suya, _, cuentas = par.partition("=")
+        if suya.strip().rstrip(":").upper() == letra:
+            return [cuenta.strip() for cuenta in cuentas.split(",") if cuenta.strip()]
+    return []
+
+
 def es_una_raiz(ruta: str) -> bool:
     """Si es la raíz de una unidad («C:\\») o de un recurso de red («\\\\servidor\\recurso\\»)."""
     if re.fullmatch(r"[A-Za-z]:\\?", ruta):

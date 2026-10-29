@@ -449,6 +449,24 @@ class TestLaPantallaRecibeUnaPregunta:
         assert raiz["parent"] is None
 
 
+class TestUnaCuentaQueSambaNoConoce:
+    def test_se_pregunta_otra_vez_y_no_es_un_fallo_de_red(self, servidor, monkeypatch):
+        # Samba la deja entrar como invitado y le borra la sesión:
+        # «STATUS_USER_SESSION_DELETED», que salía como un 503 de red.
+        class SesionBorrada(Exception):
+            status = 0xC0000203
+
+            def __init__(self):
+                super().__init__("The remote user session has been deleted")
+
+        def borrada(*_, **__):
+            raise SesionBorrada()
+
+        monkeypatch.setattr(sys.modules["smbclient"], "register_session", borrada)
+        with pytest.raises(red_smb.CredencialesDeRed, match="no son correctos"):
+            red_smb.conectar(CARPETA, "otra", "clave")
+
+
 class TestSinCreditos:
     """\\\\200.100.20.97, 2026-10-22: «Request requires 1 credits but only 0 credits are available»."""
 
@@ -555,6 +573,25 @@ class TestUnaUnidadQueSeLeePorLaRed:
 
         conectado = asyncio.run(red.conectar({"ruta": "Z:\\", "usuario": USUARIO, "clave": CLAVE}))
         assert conectado["conectado"] is True
+
+    def test_la_pregunta_dice_que_cuenta_tiene_permiso(self, servidor, unidades, monkeypatch):
+        r"""2026-10-29: en el otro equipo se escribía «server2» y el recurso de
+        «Z:» sólo dejaba entrar a «SIAR1», la cuenta que instaló: el cuadro
+        volvía una y otra vez sin decir cuál era la buena."""
+        import json
+
+        from resolutions.api import rutas_del_equipo
+        from resolutions.api.main import _credenciales_de_red
+
+        monkeypatch.setenv(rutas_del_equipo.VARIABLE_DE_CUENTAS, r"Z:=SERVER2\SIAR1,SIAR\otra;Y:=")
+        with pytest.raises(red_smb.CredencialesDeRed) as pregunta:
+            red_smb.conectar(f"//{SERVIDOR}/afinia", "server2", "mala")
+        detalle = json.loads(asyncio.run(_credenciales_de_red(None, pregunta.value)).body)["detail"]
+        assert detalle["usuario"] == r"SERVER2\SIAR1"
+        assert r"sólo para SERVER2\SIAR1, SIAR\otra" in detalle["mensaje"]
+        assert detalle["mensaje"].startswith("El usuario o la clave no son correctos")
+        # Una unidad sin cuentas anotadas pregunta como siempre.
+        assert rutas_del_equipo.cuentas_de(f"//{SERVIDOR}/afinia/REPOSITORIO/AFINIA") == []
 
     def test_el_original_se_deja_y_el_destino_va_en_el_equipo(self, servidor, unidades, ajustes, tmp_path):
         red_smb.conectar(CARPETA, USUARIO, CLAVE)

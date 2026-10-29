@@ -205,7 +205,10 @@ def olvidar(servidor: str | None = None) -> None:
 
 #: Los estados NT que importan, tal como los devuelve el servidor.
 _ACCESO_DENEGADO = 0xC0000022
-_CLAVE_MALA = {0xC000006D, 0xC000006A, 0xC0000064, 0xC000015B, 0xC0000072, 0xC0000071}
+#: Con 0xC0000203 (STATUS_USER_SESSION_DELETED): Samba deja entrar como
+#: invitado a una cuenta que no conoce y le borra la sesión; salía como un
+#: fallo de red y no como la cuenta equivocada que es.
+_CLAVE_MALA = {0xC000006D, 0xC000006A, 0xC0000064, 0xC000015B, 0xC0000072, 0xC0000071, 0xC0000203}
 _RECURSO_INEXISTENTE = {0xC00000CC, 0xC00000BE}
 
 

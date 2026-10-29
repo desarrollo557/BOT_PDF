@@ -34,7 +34,7 @@
     // Antes que nada: si conectar o arrancar la sesión fallan, eso también se ve.
     const soltar = atraparErroresSueltos();
     // Una carpeta de red que pide usuario y clave: se le preguntan al operador.
-    alPedirCredenciales(({ recurso, mensaje }) => preguntaDeRed.pedir(recurso, mensaje));
+    alPedirCredenciales(({ recurso, mensaje, usuario }) => preguntaDeRed.pedir(recurso, mensaje, usuario));
     const release = jobStore.connect();
     const stop = session.start();
     return () => {

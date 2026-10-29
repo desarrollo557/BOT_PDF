@@ -59,15 +59,22 @@ async function alServicio(input: string, init?: RequestInit): Promise<Response> 
 export interface PedidoDeCredenciales {
   recurso: string;
   mensaje: string;
+  /** La cuenta con permiso en ese recurso, cuando el servicio la sabe. */
+  usuario?: string;
 }
 
 /** Si la respuesta es la pregunta de usuario y clave de una carpeta de red. */
 export function credencialesPedidas(payload: unknown): PedidoDeCredenciales | null {
   const detail = (payload as { detail?: unknown } | null)?.detail as
-    | { codigo?: unknown; recurso?: unknown; mensaje?: unknown }
+    | { codigo?: unknown; recurso?: unknown; mensaje?: unknown; usuario?: unknown }
     | undefined;
   if (!detail || typeof detail !== 'object' || detail.codigo !== 'credenciales_de_red') return null;
-  return { recurso: String(detail.recurso ?? ''), mensaje: String(detail.mensaje ?? '') };
+  const pedido: PedidoDeCredenciales = {
+    recurso: String(detail.recurso ?? ''),
+    mensaje: String(detail.mensaje ?? '')
+  };
+  if (typeof detail.usuario === 'string' && detail.usuario) pedido.usuario = detail.usuario;
+  return pedido;
 }
 
 type Preguntador = (
