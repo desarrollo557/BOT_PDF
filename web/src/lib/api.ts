@@ -683,6 +683,40 @@ export interface Health {
   queue_limit: number;
 }
 
+/**
+ * El rendimiento del equipo y del bot, en vivo (`GET /api/rendimiento`).
+ *
+ * En Docker «equipo» es lo que ve el contenedor: la máquina de Docker Desktop.
+ * Lo que el servicio no puede medir llega como `null`.
+ */
+export interface Rendimiento {
+  equipo: {
+    cpu: number | null;
+    nucleos: number | null;
+    carga: number | null;
+    memoria_usada: number | null;
+    memoria_total: number | null;
+  };
+  bot: {
+    memoria: number | null;
+    procesos: number;
+    documentos_en_curso: number;
+    en_cola: number;
+    paginas_por_minuto: number | null;
+    documentos_por_minuto: number | null;
+  };
+}
+
+/** `null` si el servicio no contesta o es anterior a la medición. */
+export async function fetchRendimiento(): Promise<Rendimiento | null> {
+  try {
+    const response = await pedir(`${BASE}/rendimiento`);
+    return response.ok ? await response.json() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** One cheap call. Used by the status rail, which polls it slowly on purpose. */
 export async function fetchHealth(): Promise<Health | null> {
   try {

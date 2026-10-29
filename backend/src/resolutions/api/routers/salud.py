@@ -20,7 +20,7 @@ router = APIRouter()
 #: running across an update answers 404 to every new route and 405 to every new
 #: method -- which reads as a broken request rather than as a stale service.
 #: The screen compares this against what it was built for and says so plainly.
-API_REVISION = 24
+API_REVISION = 25
 
 #: What this revision can do, so the screen can name what is missing rather than
 #: only that something is.
@@ -96,6 +96,8 @@ API_FEATURES = (
     "reconocer",
     # Elegir cuántos archivos a la vez, al subir y al lanzar una carpeta.
     "paralelo",
+    # El rendimiento del equipo y del bot, en vivo (GET /api/rendimiento).
+    "rendimiento",
 )
 
 @router.get("/api/health")

@@ -7,6 +7,7 @@
   import FolderRunMonitor from '$lib/components/FolderRunMonitor.svelte';
   import Icono from '$lib/components/Icono.svelte';
   import JobCard from '$lib/components/JobCard.svelte';
+  import RendimientoEnVivo from '$lib/components/RendimientoEnVivo.svelte';
   import SingleDocumentMonitor from '$lib/components/SingleDocumentMonitor.svelte';
   import UploadPanel from '$lib/components/UploadPanel.svelte';
   import { consoleLog } from '$lib/console.svelte';
@@ -190,6 +191,27 @@
       });
     }
     return lista;
+  });
+
+  /** Cuánto hay por procesar entre todo lo que corre, y cuánto se cerró ya. */
+  const resumen = $derived.by(() => {
+    let total = 0;
+    let hechos = 0;
+    let fallidos = 0;
+    for (const run of liveRuns) {
+      total += Math.max(0, run.discovered - (run.ya_entregados ?? 0));
+      hechos += run.processed + run.failed;
+      fallidos += run.failed;
+    }
+    for (const [, jobs] of activeBatches) {
+      total += jobs.length;
+      for (const job of jobs) {
+        if (job.state === 'done' || job.state === 'failed' || job.state === 'cancelled') hechos += 1;
+        if (job.state === 'failed') fallidos += 1;
+      }
+    }
+    total += looseInFlight.length;
+    return { total, hechos, fallidos };
   });
 
   // Lo agregado aparece en la cola y el asistente se pliega solo: el operador
@@ -395,7 +417,7 @@
 
   <section class="intake">
     {#if busy && !agregando}
-      <ColaDeProcesos {procesos} onagregar={() => (agregando = true)} subiendo={uploading} />
+      <ColaDeProcesos {procesos} {resumen} onagregar={() => (agregando = true)} subiendo={uploading} />
     {:else}
       <div class="intake-head">
         {#if busy}
@@ -442,6 +464,12 @@
         {inFlight.length} documento{inFlight.length === 1 ? '' : 's'} en curso ·
         {formatBytes(inFlightBytes)} en proceso
       </p>
+    {/if}
+
+    <!-- Debajo de la cola, donde quedaba un hueco: cómo va el equipo y el bot
+         mientras trabaja (2026-10-29). -->
+    {#if busy && !agregando}
+      <RendimientoEnVivo />
     {/if}
   </section>
 

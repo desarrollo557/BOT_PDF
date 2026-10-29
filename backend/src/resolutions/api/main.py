@@ -51,6 +51,7 @@ from .routers import (
     mantenimiento,
     reconocer,
     red,
+    rendimiento,
     salidas,
     salud,
     trabajos,
@@ -355,6 +356,7 @@ for router in (
     usuarios.router,
     reconocer.router,
     red.router,
+    rendimiento.router,
 ):
     app.include_router(router)
 

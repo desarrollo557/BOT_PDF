@@ -19,9 +19,16 @@
     onagregar: () => void;
     /** Mientras se suben archivos no se ofrece otra carga: la que va no terminó. */
     subiendo?: boolean;
+    /** Cuántos documentos hay por procesar entre todos, y cuántos ya se cerraron. */
+    resumen?: { total: number; hechos: number; fallidos: number } | null;
   }
 
-  let { procesos, onagregar, subiendo = false }: Props = $props();
+  let { procesos, onagregar, subiendo = false, resumen = null }: Props = $props();
+
+  /* Lo que queda se descuenta de lo que hay: el operador pidió ver, de un
+     vistazo, cuánto falta y no sólo cuánto lleva (2026-10-29). */
+  const quedan = $derived(resumen ? Math.max(0, resumen.total - resumen.hechos) : 0);
+  const hecho = $derived(resumen && resumen.total ? (100 * resumen.hechos) / resumen.total : 0);
 
   const TIPOS = { carpeta: 'Carpeta', lote: 'Lote', documento: 'Documento' };
   /* El estado viaja en minúscula porque también se compone en frases; como
@@ -52,6 +59,35 @@
     <h2>Procesos en curso</h2>
     <span class="pill cuenta tabular">{procesos.length}</span>
   </header>
+
+  {#if resumen && resumen.total}
+    <div class="resumen" aria-label="Lo que queda por procesar">
+      <div class="cifras">
+        <span class="quedan tabular">{quedan.toLocaleString('es-CO')}</span>
+        <span class="de">
+          {quedan === 1 ? 'documento queda' : 'documentos quedan'} de
+          <b class="tabular">{resumen.total.toLocaleString('es-CO')}</b>
+        </span>
+      </div>
+      <div
+        class="progress"
+        role="progressbar"
+        aria-valuenow={Math.round(hecho)}
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-label="Procesado"
+      >
+        <div class="progress-fill" style:width={`${hecho}%`}></div>
+      </div>
+      <span class="pie tabular">
+        {resumen.hechos.toLocaleString('es-CO')} {resumen.hechos === 1 ? 'procesado' : 'procesados'} ·
+        {Math.round(hecho)} %
+        {#if resumen.fallidos}
+          · <span class="fallos">{resumen.fallidos.toLocaleString('es-CO')} con fallo</span>
+        {/if}
+      </span>
+    </div>
+  {/if}
 
   <ol>
     {#each procesos as proceso, i (proceso.ancla)}
@@ -106,6 +142,44 @@
   }
   .cuenta {
     font-family: var(--font-mono);
+  }
+
+  .resumen {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    background: var(--surface-1);
+    padding: var(--space-3);
+  }
+  .cifras {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+  .quedan {
+    font-size: var(--text-stat);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    transition: color var(--duration) var(--ease-out);
+  }
+  .de {
+    font-size: var(--text-sm);
+    color: var(--muted);
+  }
+  .de b {
+    font-weight: 600;
+    color: var(--ink-2);
+  }
+  .pie {
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+  .fallos {
+    color: var(--warning-ink);
   }
 
   ol {
