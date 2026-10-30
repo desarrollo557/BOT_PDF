@@ -112,7 +112,10 @@ class TestElTrabajoLlevaSuOrigen:
         origen = vistos[0].origen
         assert vistos[0].filename == "1N°22-17 DE DICIEMBRE DE 2012.pdf"
         assert (origen["id"], origen["nombre"], origen["tipo"]) == ("r1", "UPD3859771", "carpeta")
-        assert origen["inventario"] == str(destino / "UPD3859771" / "ACTAS UPD3859771__inventario.xlsx")
+        # El inventario general es el FUID de toda la corrida, en la raíz del
+        # destino, con las filas de todas las habilidades (2026-10-29); antes
+        # era el Excel de las actas de consejo de la carpeta raíz.
+        assert origen["inventario"] == str(destino / "UPD3859771" / "00.FUID GENERAL.xlsx")
 
 
 class TestElInventarioGeneralDesdeElArchivo:

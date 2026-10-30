@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from pathlib import Path
 
 from ..application.fuid import FuidRow
@@ -41,8 +41,12 @@ NO_LEIDO = "N/A"
 CEREMONIA = "CEREMONIA DE GRADO"
 ACTA_DE_GRADO = "ACTA DE GRADO"
 
-_CAJA = re.compile(r"\b\d{2}C\d{6}\b")
-_UPD = re.compile(r"\bUPD\d{7}\b")
+#: «00C003284», también con el rótulo pegado: Medicina nombra sus cajas
+#: «CAJA00C003268», sin espacio, y con ``\b`` delante no se encontraba ninguna.
+_CAJA = re.compile(r"(?<!\d)(\d{2}C\d{6})(?!\d)")
+#: «UPD3859771», también con un espacio en medio: Medicina escribe «UPD
+#: 3859597 HISTORIAS ACADEMICAS 1948-1960.pdf». Se devuelve siempre junta.
+_UPD = re.compile(r"\bUPD\s?(\d{7})(?!\d)")
 
 
 def ubicacion(carpeta: str, archivo: str) -> tuple[str, str]:
@@ -56,7 +60,7 @@ def ubicacion(carpeta: str, archivo: str) -> tuple[str, str]:
     texto = f"{carpeta} {archivo}"
     caja = _CAJA.search(texto)
     upd = _UPD.search(f"{archivo} {carpeta}")
-    return (caja.group(0) if caja else "", upd.group(0) if upd else "")
+    return (caja.group(1) if caja else "", f"UPD{upd.group(1)}" if upd else "")
 
 
 def _como_dict(fila: object) -> Mapping[str, object]:
@@ -82,47 +86,57 @@ def _folio(inicial: object, final: object) -> int | str:
     return inicial
 
 
+def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
+    """La fila del FUID de un graduado, o ``None`` para las hojas de su ceremonia.
+
+    El número de orden lo pone quien junta las filas (``fuid_de_la_entrega``).
+    """
+    if fila.get("tipo") == CEREMONIA:
+        return None
+    caja, upd = ubicacion(str(fila.get("carpeta") or ""), str(fila.get("archivo") or ""))
+    acta = str(fila.get("acta") or NO_LEIDO)
+    if acta == NO_LEIDO:
+        # Sin el número, el asunto conserva su forma: «ACTA DE GRADO No. N/A
+        # - NOMBRE - TÍTULO», que es por donde se lee y se filtra.
+        acta = f"{ACTA_DE_GRADO} No. {NO_LEIDO}"
+    nombre = str(fila.get("nombre") or "") or NO_LEIDO
+    titulo = str(fila.get("titulo") or "") or NO_LEIDO
+    cedula = str(fila.get("cedula") or "") or NO_LEIDO
+    fecha = _fecha_del_fuid(fila.get("fecha"))
+    # El folio manuscrito de la esquina de su hoja: «140». Sin la IA no
+    # se lee, y queda N/A.
+    folios = _folio(fila.get("folio_inicial"), fila.get("folio_final"))
+    return FuidRow(
+        orden=0,
+        asunto=f"{acta} - {nombre} - {titulo}",
+        codigo_trd="",
+        # Un acta de grado no trae código: el consecutivo es la cédula en las
+        # dos columnas, como en el modelo del operador.
+        consecutivo_inicial=cedula,
+        consecutivo_final=cedula,
+        fecha_inicial=fecha,
+        fecha_final=fecha,
+        caja=caja,
+        carpeta=upd,
+        tomo="",
+        otro="",
+        folios=folios,  # type: ignore[arg-type] - el número o N/A
+        # El operador pidió el mismo número en las dos columnas.
+        folios_siar=folios,  # type: ignore[arg-type]
+        soporte="",
+        frecuencia="",
+        notas=str(fila.get("observaciones") or ""),
+        pagina_inicial=fila.get("pagina_inicial"),  # type: ignore[arg-type]
+    )
+
+
 def filas_del_fuid(filas: Sequence[object]) -> list[FuidRow]:
     """Las filas del FUID, una por graduado y en el orden en que llegan."""
     resultado: list[FuidRow] = []
     for fila in map(_como_dict, filas):
-        if fila.get("tipo") == CEREMONIA:
-            continue
-        caja, upd = ubicacion(str(fila.get("carpeta") or ""), str(fila.get("archivo") or ""))
-        acta = str(fila.get("acta") or NO_LEIDO)
-        if acta == NO_LEIDO:
-            # Sin el número, el asunto conserva su forma: «ACTA DE GRADO No. N/A
-            # - NOMBRE - TÍTULO», que es por donde se lee y se filtra.
-            acta = f"{ACTA_DE_GRADO} No. {NO_LEIDO}"
-        nombre = str(fila.get("nombre") or "") or NO_LEIDO
-        titulo = str(fila.get("titulo") or "") or NO_LEIDO
-        cedula = str(fila.get("cedula") or "") or NO_LEIDO
-        fecha = _fecha_del_fuid(fila.get("fecha"))
-        # El folio manuscrito de la esquina de su hoja: «140». Sin la IA no
-        # se lee, y queda N/A.
-        folios = _folio(fila.get("folio_inicial"), fila.get("folio_final"))
-        resultado.append(
-            FuidRow(
-                orden=len(resultado) + 1,
-                asunto=f"{acta} - {nombre} - {titulo}",
-                codigo_trd="",
-                consecutivo_inicial=cedula,
-                consecutivo_final=cedula,
-                fecha_inicial=fecha,
-                fecha_final=fecha,
-                caja=caja,
-                carpeta=upd,
-                tomo="",
-                otro="",
-                folios=folios,  # type: ignore[arg-type] - el número o N/A
-                # El operador pidió el mismo número en las dos columnas.
-                folios_siar=folios,  # type: ignore[arg-type]
-                soporte="",
-                frecuencia="",
-                notas=str(fila.get("observaciones") or ""),
-                pagina_inicial=fila.get("pagina_inicial"),  # type: ignore[arg-type]
-            )
-        )
+        convertida = fila_del_fuid(fila)
+        if convertida is not None:
+            resultado.append(replace(convertida, orden=len(resultado) + 1))
     return resultado
 
 

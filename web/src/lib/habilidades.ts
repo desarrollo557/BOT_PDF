@@ -141,6 +141,13 @@ export interface Habilidad {
    * se han gastado treinta minutos de proceso.
    */
   pideLectura?: { id: LecturaChoice; porque: string };
+  /**
+   * Si su inventario es el FUID FO-GD-008 de la Universidad, cuya cabecera
+   * lleva la oficina productora de la carpeta. Lo pidió el operador el
+   * 2026-10-29 para el REPOSITORIO UDC: el mismo FUID en todas las carpetas,
+   * cada uno con su facultad. La pantalla deja ver y corregir esa oficina.
+   */
+  escribeFuid?: boolean;
 }
 
 export const HABILIDADES: Habilidad[] = [
@@ -210,6 +217,7 @@ export const HABILIDADES: Habilidad[] = [
   },
   {
     id: 'resoluciones',
+    escribeFuid: true,
     titulo: 'Legajo de resoluciones',
     papel: 'Actos administrativos, cada uno con su número impreso en el encabezado.',
     corta: 'Por ese número, que manda hasta que aparece otro.',
@@ -304,6 +312,7 @@ export const HABILIDADES: Habilidad[] = [
   },
   {
     id: 'actas',
+    escribeFuid: true,
     titulo: 'Actas de consejo',
     papel:
       'Actas de sesión de un consejo de facultad, académico o superior. Cada PDF es un acta con su citación y sus anexos.',
@@ -337,6 +346,7 @@ export const HABILIDADES: Habilidad[] = [
   },
   {
     id: 'actas-grado',
+    escribeFuid: true,
     titulo: 'Actas de grado',
     papel:
       'Libros de actas de grado: una hoja por graduado, con el número del acta, su nombre, su título y su cédula.',
@@ -369,7 +379,44 @@ export const HABILIDADES: Habilidad[] = [
     }
   },
   {
+    // 2026-10-29, «14. ENFERMERIA 3277-3283 P»: con «No estoy seguro» se tomaban
+    // por matrículas de los años 50 y salían 9 PDF donde había 60 estudiantes.
+    id: 'historias',
+    escribeFuid: true,
+    titulo: 'Historias académicas',
+    papel:
+      'Expedientes de estudiantes: la ficha de cada uno (nombre, cédula, código) seguida de sus notas y de lo que se le archivó detrás.',
+    corta:
+      'Si lo pides, un PDF por estudiante: cada ficha abre su expediente —también la «Ficha historia académica»— hasta la ficha siguiente; su certificado de matrícula y sus recibos van con ella. Lo de antes de la primera ficha sale aparte. Un PDF sin ninguna ficha reconocible se entrega entero, con su fila.',
+    nombra:
+      'El inventario es el FUID oficial (FO-GD-008), como las actas de grado: una fila por estudiante con «HISTORIA ACADEMICA - NOMBRE», la cédula, el primer y el último año de sus notas, la caja, la carpeta y sus folios. Lo que no se pudo leer va en NOTAS.',
+    nombraConIa: 'Y el nombre y la cédula, que en la ficha van escritos a mano, leídos por la IA.',
+    aportaIa:
+      'Lee con la IA sólo la ficha de cada estudiante: una página facturada por estudiante. Las notas se leen gratis.',
+    tipo: 'historia-academica',
+    task: null,
+    acciones: [
+      {
+        id: 'inventory_file',
+        label: 'Solo inventariar',
+        hint: 'Una fila por estudiante en el FUID. El PDF queda entero.'
+      },
+      {
+        id: 'both',
+        label: 'Dividir e inventariar',
+        hint: 'Un PDF por estudiante y el FUID.'
+      }
+    ],
+    requiereTipo: 'historia-academica',
+    pideLectura: {
+      id: 'mistral',
+      porque:
+        'El nombre y la cédula de la ficha van escritos a mano y el OCR de casa no los lee: con «OCR + IA» se lee sólo la ficha de cada estudiante. Con «Solo OCR» el corte sale igual y la fila dice en NOTAS qué no se pudo leer.'
+    }
+  },
+  {
     id: 'archivo',
+    escribeFuid: true,
     titulo: 'Archivos ya separados',
     papel: 'PDF que ya son un documento cada uno y sólo hay que anotar.',
     corta: 'No se corta nada. El original queda intacto.',
@@ -380,6 +427,7 @@ export const HABILIDADES: Habilidad[] = [
   },
   {
     id: 'auto',
+    escribeFuid: true,
     titulo: 'No estoy seguro',
     papel: 'Cuando la caja trae de todo o no se sabe qué hay dentro.',
     corta: 'Lo decide el sistema leyendo una muestra de doce páginas.',
@@ -448,7 +496,11 @@ const HABILIDAD_DEL_TIPO: Record<string, string> = {
   resolucion: 'resoluciones',
   'acta-consejo': 'actas',
   acta: 'actas-grado',
-  matricula: 'auto'
+  'historia-academica': 'historias',
+  // El reconocedor cuenta las historias académicas como matrículas: la
+  // habilidad que las parte por estudiante es «Historias académicas»
+  // (2026-10-30). Con «No estoy seguro» salían 9 PDF donde había 60 estudiantes.
+  matricula: 'historias'
 };
 
 export function habilidadDelTipo(tipo: string): Habilidad | null {

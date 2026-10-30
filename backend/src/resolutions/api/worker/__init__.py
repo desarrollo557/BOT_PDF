@@ -174,6 +174,13 @@ def _despachar(payload: dict) -> dict:
     if TipoPedido.parse(payload.get("tipo")) is TipoPedido.ACTA:
         return _actas_de_grado(payload)
 
+    # Historias académicas declaradas: un PDF por estudiante y su fila en el
+    # FUID, sin pasar por el reconocedor, que las toma por matrículas.
+    if TipoPedido.parse(payload.get("tipo")) is TipoPedido.HISTORIA:
+        from .historias import historias_academicas_job
+
+        return historias_academicas_job(payload)
+
     # Inventariar el archivo entero no necesita reconocer nada antes: la unidad
     # documental es el PDF, y qué es se lee de su propio encabezado al pasar por
     # él. Va delante de todo lo demás porque preguntarle a esta ruta de qué tipo

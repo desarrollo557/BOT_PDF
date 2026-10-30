@@ -91,8 +91,10 @@ _ENCABEZADO = re.compile(
     r"(?:(?:LA\s+)?(?:SESION|REUNION)\s+)?"
     r"(?:CONSEJO\s+DE\s+[A-Z]{5,10}\s+)?"
     r"(?:(?P<sesion>ORDINARI[AO]|EXTRA?ORDINARI[AO])\s*[-–.]?\s*)?"
-    # El «°» del número lo lee el OCR como comillas: «ACTA N” 019», «N» 023».
-    r"(?P<rotulo>N(?:RO|UM|O|º|°|[”“»\"'])?\s*[.:°º,”“»\"']?|NUMERO|#)?\s*"
+    # El «°» del número lo lee el OCR como comillas: «ACTA N” 019», «N» 023»;
+    # y como asterisco o como «®»: «ACTA N* 22», «N** 01», «N® 09» (Odontología,
+    # cuatro actas que no existían en el inventario, 2026-10-30).
+    r"(?P<rotulo>N(?:RO|UM|O|º|°|[”“»\"'*®]{1,2})?\s*[.:°º,”“»\"'*®]?|NUMERO|#)?\s*"
     # Las letras que el OCR confunde con cifras: O/I/l, y en mayúscula S, B, G
     # y Z («ACTA No. OS» era el 08). Un número con letras se confirma después
     # con el membrete corrido de la hoja siguiente.
@@ -326,8 +328,25 @@ def _confirmado_por_el_corrido(paginas: Sequence[str], pagina: int, cifras: str)
     return cifras
 
 
+#: Lo que dice el «Lugar:» de la tabla del acta sobre quién sesiona, cuando el
+#: encabezado no nombra ningún órgano: «OFICINA DE LA DECANATURA DE LA
+#: FACULTAD» es el consejo; «Oficina Departamento …» y «Salón de profesores de
+#: la Clínica» son reuniones que el consejo recibe como anexo (Odontología,
+#: UPD3859793, UPD3859796 y UPD3859798, 2026-10-30).
+_ORGANOS_POR_EL_LUGAR = (
+    ("OFICINA DEPARTAMENTO", "reunion"),
+    ("SALON DE PROFESORES", "reunion"),
+    ("DECANATURA", "consejo de facultad"),
+)
+
+
 def _organo(texto: str, inicio: int, fin: int) -> str | None:
-    """El órgano que se nombra en el encabezado o justo detrás, o justo delante."""
+    """El órgano que se nombra en el encabezado o justo detrás, o justo delante.
+
+    Si no se nombra ninguno, lo dice el lugar de la sesión. Sólo entonces: con
+    el lugar primero, «PROCESO DE REACREDITACIÓN ACTA No 01 … LUGAR: Decanatura»
+    pasaba de comité a consejo (UPD3859775, pág. 185).
+    """
     for ventana in (
         texto[inicio : fin + VENTANA_DEL_ORGANO],
         texto[max(0, inicio - VENTANA_DEL_ORGANO // 2) : inicio],
@@ -337,7 +356,9 @@ def _organo(texto: str, inicio: int, fin: int) -> str | None:
         ]
         if posiciones:
             return min(posiciones)[1]
-    return None
+    ventana = texto[inicio : fin + VENTANA_DEL_ORGANO]
+    posiciones = [(ventana.find(frase), organo) for frase, organo in _ORGANOS_POR_EL_LUGAR if frase in ventana]
+    return min(posiciones)[1] if posiciones else None
 
 
 def organo_dominante(encabezados: Sequence[EncabezadoDeActa]) -> str | None:
@@ -352,7 +373,10 @@ def organo_dominante(encabezados: Sequence[EncabezadoDeActa]) -> str | None:
     # «reunion» por mayoría, y la sesión del consejo quedaba como anexo.
     consejos = Counter({organo: n for organo, n in cuenta.items() if organo.startswith("consejo")})
     elegidos = consejos or cuenta
-    return elegidos.most_common(1)[0][0] if elegidos else None
+    # Y si ningún encabezado que abre sesión nombra su órgano, el libro es del
+    # consejo de facultad: sin esto, un acta cuyo único encabezado lo nombra por
+    # el lugar se tomaba por anexo de nadie (UPD3859799, 2026-10-30).
+    return elegidos.most_common(1)[0][0] if elegidos else "consejo de facultad"
 
 
 def encabezados_del_libro(encabezados: Sequence[EncabezadoDeActa]) -> list[EncabezadoDeActa]:
@@ -659,6 +683,16 @@ _DECLARADA = re.compile(
 NUMERO_DE_ACTA_MAXIMO = 60
 
 
+def _nombre_plano(nombre: str) -> str:
+    """El nombre del archivo en mayúsculas, sin extensión y sin el número de orden pegado.
+
+    «1ACTAS DE CONSEJO N°22 Y 23 2016»: con el «1» pegado, «ACTAS» no tenía
+    frontera de palabra, el nombre no decía nada y un acta de una reunión de
+    departamento pasaba por sesión del libro (UPD3859793, 2026-10-30).
+    """
+    return re.sub(r"^\d{1,3}(?=[A-Z])", "", _plano(nombre.rsplit(".", 1)[0]).upper())
+
+
 def numeros_del_nombre(nombre: str) -> set[int] | None:
     """Las actas que el nombre de un libro dice traer, o ``None`` si no lo dice.
 
@@ -666,7 +700,7 @@ def numeros_del_nombre(nombre: str) -> set[int] | None:
     2-3-4-10-11-13 20…». Un rango que pasa de las sesiones de un año -- «N°1
     AL 449» -- son folios, y no dice nada de las actas.
     """
-    plano = _plano(nombre.rsplit(".", 1)[0]).upper()
+    plano = _nombre_plano(nombre)
     rango = re.search(r"\b(\d{1,3})\s+AL\s+(\d{1,3})\b", plano)
     if rango:
         desde, hasta = int(rango.group(1)), int(rango.group(2))
@@ -717,7 +751,7 @@ def acta_del_nombre(nombre: str) -> tuple[int, date] | None:
     Un nombre en plural -- «ACTAS DE CONSEJO N°1 AL 449» -- no declara un acta,
     y uno sin fecha completa tampoco.
     """
-    plano = _plano(nombre.rsplit(".", 1)[0]).upper()
+    plano = _nombre_plano(nombre)
     if re.search(r"\bACTAS\b", plano):
         return None
     encontrado = _DECLARADA.search(plano)

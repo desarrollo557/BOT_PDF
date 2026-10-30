@@ -517,15 +517,25 @@ export interface FolderRun {
   resolutions: number;
   deliveries: Delivery[];
   /**
-   * El Excel con las actas de consejo de la carpeta, por su nombre, cuando ya
-   * está escrito: una fila por PDF. Ausente en un servicio anterior a la
-   * revisión 20.
+   * El inventario general de la carpeta, por su nombre, cuando ya está
+   * escrito: el FUID FO-GD-008 «00.FUID GENERAL.xlsx» con las filas de todas
+   * las habilidades (actas, graduados, estudiantes, resoluciones…) desde el
+   * 2026-10-29; antes, el Excel de las actas de consejo.
    */
   inventario?: string | null;
   /** Dónde quedó, en el disco del servicio. */
   inventario_ruta?: string | null;
-  /** Cuántas actas lleva. */
+  /** Cuántas filas lleva. */
   inventario_filas?: number;
+  /**
+   * La oficina productora que lleva la cabecera de sus FUID: la que escribió
+   * el operador o la que el servicio averiguó de la carpeta. Nula, la de la
+   * plantilla.
+   */
+  oficina?: string | null;
+  /** El Excel de las actas de consejo con su resumen, que acompaña al FUID. */
+  actas?: string | null;
+  actas_ruta?: string | null;
   /** Por qué no se pudo escribir, si falló. */
   inventario_error?: string | null;
   /**

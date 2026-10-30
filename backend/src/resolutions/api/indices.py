@@ -10,7 +10,7 @@ quedó en cada caja no pueden discrepar.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from ..adapters.indice_electronico import (
@@ -106,8 +106,15 @@ def habilidad_del_proceso(job) -> str:
     tipo = str((informe.get("stats") or {}).get("document_type") or "")
     if informe.get("indice_electronico") or informe.get("agrupar") or job.task == "segment":
         return "Caja de correspondencia"
-    if informe.get("inventario_actas"):
-        return "Actas de grado" if job.tipo == "acta" else "Actas de consejo"
+    if informe.get("tipo") == "historia-academica":
+        return "Historias académicas"
+    if filas := informe.get("inventario_actas"):
+        # Por sus filas y no sólo por lo que se pidió: un acta de grado que el
+        # patrón desvió desde «Actas de consejo» (Odontología) es de grado.
+        de_grado = job.tipo == "acta" or any(
+            str(fila.get("tipo") or "") in ("ACTA DE GRADO", "CEREMONIA DE GRADO") for fila in filas
+        )
+        return "Actas de grado" if de_grado else "Actas de consejo"
     if tipo == "diploma" or job.tipo == "diploma":
         return "Libro de diplomas"
     if job.task == "inventory":
@@ -242,12 +249,23 @@ def fuid_general(
 
 
 def fuid_general_de(
-    planillas: Iterable[tuple[Path, str]], destino: Path, *, lecturas: dict | None = None
+    planillas: Iterable[tuple[Path, str]],
+    destino: Path,
+    *,
+    lecturas: dict | None = None,
+    otras: Sequence = (),
+    oficina: str | None = None,
 ) -> Path | None:
     """El FUID general con estas planillas, en este orden: (FUID de un libro, su carpeta).
 
     Lo usa también la carpeta retomada, que lo arma con los FUID que hay en
     el destino: ahí están también los libros que se saltaron por completos.
+
+    ``otras`` son filas del FUID ya hechas -- las de las actas, los
+    graduados, los estudiantes de la corrida (ver
+    ``adapters/fuid_de_la_entrega.py``) --, que van delante. Con ellas el
+    general es el FO-GD-008 de todas las habilidades con ``oficina`` en la
+    cabecera; sólo con libros de diplomas, su plantilla y su oficina.
 
     ``lecturas`` guarda lo ya leído de cada FUID por su ruta y su fecha: la
     corrida reescribe el general cada poco, y releer quinientos FUID cada vez
@@ -261,15 +279,15 @@ def fuid_general_de(
     from ..application.inventory_document import template_for
     from ..domain.doctype import DocumentType
 
-    filas: list[FuidRow] = []
-    oficina = ""
+    filas: list[FuidRow] = [replace(fila, orden=numero) for numero, fila in enumerate(otras, start=1)]
+    de_los_libros = ""
     for ruta, carpeta in planillas:
         try:
             del_libro, suya = _filas_de(ruta, lecturas, filas_de_fuid)
         except Exception:  # noqa: BLE001 - un libro ilegible no tumba el general
             logger.warning("no se pudo leer el FUID %s", ruta, exc_info=True)
             continue
-        oficina = oficina or suya
+        de_los_libros = de_los_libros or suya
         for fila in del_libro:
             notas = fila.notas
             if carpeta and notas.startswith("Archivo: "):
@@ -277,10 +295,11 @@ def fuid_general_de(
             filas.append(replace(fila, orden=len(filas) + 1, notas=notas))
     if not filas:
         return None
-    return FuidInventory(template_for(DocumentType.DIPLOMA)).write(
+    plantilla = template_for(DocumentType.ACTA if otras else DocumentType.DIPLOMA)
+    return FuidInventory(plantilla).write(
         filas,
         Path(destino) / NOMBRE_DEL_FUID_GENERAL,
-        cabecera=Cabecera(oficina_productora=oficina or None),
+        cabecera=Cabecera(oficina_productora=oficina or de_los_libros or None),
     )
 
 

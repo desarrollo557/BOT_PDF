@@ -175,6 +175,8 @@ async def _correr(ctx: Contexto, job: Job, hilos: int | None) -> None:
         # Y el acta de transferencia del inventario de Kingspan, que tampoco
         # está en el papel.
         "acta": job.acta,
+        # Y la oficina productora de la cabecera del FUID, la de su carpeta.
+        "oficina": job.oficina,
         # Y de qué carpeta salió, cuando viene de una corrida: el inventario de
         # Kingspan toma la caja del nombre de la carpeta donde está el PDF, y
         # si el PDF está suelto en la carpeta elegida, ésa es la carpeta.

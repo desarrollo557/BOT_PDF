@@ -348,6 +348,9 @@ class Job:
     #: inventario de Kingspan («092»). No está en el papel; va a su columna del
     #: FUID. Vacío en las demás rutas.
     acta: str | None = None
+    #: La oficina productora de la cabecera del FUID («FACULTAD DE MEDICINA»),
+    #: la de la carpeta de la que sale el PDF. Vacía, la de la plantilla.
+    oficina: str | None = None
     #: Qué clase de documento declaró el operador estar cargando, o "auto" para
     #: que lo averigüe el sistema. Se guarda con el trabajo porque cambia a qué
     #: habilidad fue, y el informe tiene que poder decir por qué se cortó como
@@ -410,6 +413,7 @@ class Job:
             "agrupar": self.agrupar,
             "territorial": self.territorial,
             "acta": self.acta,
+            "oficina": self.oficina,
             "tipo": self.tipo,
             "tipo_documento": self.tipo_documento,
             "origen": self.origen,
@@ -528,6 +532,7 @@ class JobRegistry:
         paginas: list[int] | None = None,
         paralelo: int | None = None,
         acta: str | None = None,
+        oficina: str | None = None,
     ) -> Job:
         job = Job(
             id=uuid4().hex,
@@ -544,6 +549,7 @@ class JobRegistry:
             agrupar=agrupar,
             territorial=territorial,
             acta=acta,
+            oficina=oficina,
             tipo=tipo,
             tipo_documento=tipo_documento,
             destination=destination,

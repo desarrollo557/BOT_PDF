@@ -802,32 +802,37 @@ class TestElExcelDeLaCarpeta:
         from resolutions.adapters.excel_actas import FILA_DE_ENCABEZADOS
 
         # El destino es un espejo de la fuente: la carpeta elegida delante.
-        assert Path(run.inventario) == run.destination / "2012" / "ACTAS 2012__inventario.xlsx"
-        hoja = load_workbook(run.inventario).active
+        assert Path(run.actas_general) == run.destination / "2012" / "ACTAS 2012__inventario.xlsx"
+        hoja = load_workbook(run.actas_general).active
         primera = _fila_de(hoja, FILA_DE_ENCABEZADOS + 1)
         segunda = _fila_de(hoja, FILA_DE_ENCABEZADOS + 2)
         assert (primera["N°"], primera["Acta"]) == (1, "ACTA ORDINARIA No. 022")
         assert (segunda["N°"], segunda["Acta"]) == (2, "ACTA ORDINARIA No. 023")
         # La carpeta de cada fila es su ruta desde la raíz elegida.
         assert primera["Carpeta"] == "2012"
-        # Sólo inventariar: el Excel en su carpeta espejo, sin ningún PDF.
+        # Sólo inventariar: el Excel de actas y el FUID en su carpeta espejo,
+        # sin ningún PDF.
         assert sorted(p.relative_to(run.destination).as_posix() for p in run.destination.rglob("*.*") if ".bot-" not in p.as_posix()) == [
-            "2012/ACTAS 2012__inventario.xlsx"
+            "2012/2012__FUID.xlsx",
+            "2012/ACTAS 2012__inventario.xlsx",
         ]
-        assert run.as_dict()["inventario"] == "ACTAS 2012__inventario.xlsx"
+        fuid = load_workbook(run.destination / "2012" / "2012__FUID.xlsx").active
+        assert (fuid["A14"].value, fuid["C14"].value) == (1, "ACTA DE CONSEJO DE FACULTAD No. N/A - ORDINARIA")
+        assert run.as_dict()["actas"] == "ACTAS 2012__inventario.xlsx"
         assert run.as_dict()["inventario_filas"] == 2
 
     def test_se_reescribe_en_el_mismo_archivo(self, corrida):
         runner, run = corrida
         run.inventario_filas = [{**_fila("A"), "carpeta": "2012"}]
         runner._escribir_inventario_de_actas(run)
-        primero = run.inventario
+        primero = run.actas_general
 
         run.inventario_filas.append({**_fila("B"), "carpeta": "2012"})
         runner._escribir_inventario_de_actas(run)
 
-        assert run.inventario == primero
-        assert len(list(run.destination.rglob("*.xlsx"))) == 1
+        assert run.actas_general == primero
+        # El Excel de actas y el FUID, cada uno una sola vez.
+        assert len(list(run.destination.rglob("*.xlsx"))) == 2
 
     def test_reprocesar_la_carpeta_actualiza_su_excel_y_no_deja_un_dos(self, corrida):
         runner, run = corrida
@@ -838,9 +843,12 @@ class TestElExcelDeLaCarpeta:
 
         runner._escribir_inventario_de_actas(run)
 
-        assert Path(run.inventario) == viejo
+        assert Path(run.actas_general) == viejo
         assert viejo.read_bytes() != b"de una corrida anterior"
-        assert [p.name for p in run.destination.rglob("*.xlsx")] == ["ACTAS 2012__inventario.xlsx"]
+        assert sorted(p.name for p in run.destination.rglob("*.xlsx")) == [
+            "2012__FUID.xlsx",
+            "ACTAS 2012__inventario.xlsx",
+        ]
 
     def test_cada_subcarpeta_lleva_su_excel_y_la_raiz_el_general(self, corrida):
         from openpyxl import load_workbook
@@ -858,13 +866,15 @@ class TestElExcelDeLaCarpeta:
         assert sorted(p.relative_to(run.destination).as_posix() for p in run.destination.rglob("*.xlsx")) == [
             "2012/ACTAS 2012__inventario.xlsx",
             "2012/UPD1/ACTAS UPD1__inventario.xlsx",
+            "2012/UPD1/UPD1__FUID.xlsx",
             "2012/UPD2/ACTAS UPD2__inventario.xlsx",
+            "2012/UPD2/UPD2__FUID.xlsx",
         ]
         suya = load_workbook(run.destination / "2012" / "UPD2" / "ACTAS UPD2__inventario.xlsx").active
         assert _fila_de(suya, FILA_DE_ENCABEZADOS + 1)["Acta"] == "ACTA B"
 
     def test_las_de_grado_y_las_de_consejo_no_se_pisan(self, corrida):
-        """Aunque la primera acta de la caja sea de grado, cada clase tiene su Excel."""
+        """Las dos clases van en el mismo FUID; el Excel de actas, sólo con las de consejo."""
         from openpyxl import load_workbook
 
         runner, run = corrida
@@ -873,16 +883,22 @@ class TestElExcelDeLaCarpeta:
         run.inventario_filas.append({**_fila("ACTA ORDINARIA No. 002"), "carpeta": "2012"})
         runner._escribir_inventario_de_actas(run)
 
-        grado = run.destination / "2012" / "ACTAS DE GRADO 2012__inventario.xlsx"
+        del_fuid = run.destination / "2012" / "2012__FUID.xlsx"
         consejo = run.destination / "2012" / "ACTAS 2012__inventario.xlsx"
-        assert sorted(p.name for p in run.destination.rglob("*.xlsx")) == sorted([grado.name, consejo.name])
-        # El de grado es el FUID oficial, una fila por graduado.
-        fuid = load_workbook(grado).active
+        assert sorted(p.name for p in run.destination.rglob("*.xlsx")) == sorted([del_fuid.name, consejo.name])
+        # El FUID oficial, una fila por graduado y una por acta de consejo.
+        fuid = load_workbook(del_fuid).active
         assert fuid["P1"].value == "CÓDIGO: FO-GD-008"
         assert fuid["C14"].value.startswith("ACTA DE GRADO No. 1")
-        assert load_workbook(consejo).active["A1"].value == "INVENTARIO DE ACTAS DE CONSEJO"
-        # La pantalla baja el de consejo cuando lo hay.
-        assert Path(run.inventario) == consejo
+        assert fuid["C15"].value == "ACTA DE CONSEJO DE FACULTAD No. N/A - ORDINARIA"
+        # El Excel de actas, sólo con las de consejo.
+        from resolutions.adapters.excel_actas import FILA_DE_ENCABEZADOS
+
+        hoja = load_workbook(consejo).active
+        assert hoja["A1"].value == "INVENTARIO DE ACTAS DE CONSEJO"
+        assert _fila_de(hoja, FILA_DE_ENCABEZADOS + 1)["Acta"] == "ACTA ORDINARIA No. 002"
+        assert not _fila_de(hoja, FILA_DE_ENCABEZADOS + 2)["Acta"]
+        assert Path(run.actas_general) == consejo
 
     def test_sin_actas_no_hay_excel(self, corrida):
         runner, run = corrida

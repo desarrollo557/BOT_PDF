@@ -18,6 +18,7 @@ from ...application.oracle import OracleChoice
 from ...application.task import TaskKind
 from ...application.tipo_pedido import TipoPedido
 from ...domain.diploma import CriterioDeCorte
+from ...domain.oficina_productora import oficina_escrita
 from ..contexto import Contexto, Ctx
 from ..ejecucion import _run
 from ..jobs import IN_FLIGHT, Job, JobState
@@ -47,6 +48,7 @@ async def enqueue(
     territorial: str | None = None,
     paralelo: str | None = None,
     acta: str | None = None,
+    oficina: str | None = None,
     x_operator: str | None = Header(default=None),
 ) -> dict[str, object]:
     if not (file.filename or "").lower().endswith(".pdf"):
@@ -98,6 +100,8 @@ async def enqueue(
         agrupar=str(agrupar_choice),
         territorial=_territorial(territorial),
         acta=acta_choice,
+        # La oficina productora de la cabecera del FUID; sin ella, la de la plantilla.
+        oficina=oficina_escrita(oficina),
         # El lote con su nombre, para que el Archivo lo muestre como una sola
         # tarjeta con sus documentos dentro.
         origen={"id": lote.id, "nombre": lote.name, "tipo": "lote"} if lote else None,
@@ -122,6 +126,7 @@ async def enqueue(
         "agrupar": job.agrupar,
         "territorial": job.territorial,
         "acta": job.acta,
+        "oficina": job.oficina,
         "bytes": written,
     }
 

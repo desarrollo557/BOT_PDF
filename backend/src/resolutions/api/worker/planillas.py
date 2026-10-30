@@ -37,6 +37,22 @@ def _anotar_fallo(report: dict, clave: str, que: str, error: BaseException) -> N
 FUID_SUFFIX = "__FUID.xlsx"
 
 
+def _guardar_las_filas(report: dict, filas: list) -> None:
+    """Las filas del FUID también en el informe, aunque la planilla no se deje escribir.
+
+    Una corrida de carpeta junta en un solo FO-GD-008 las filas de todos sus
+    PDF, el de cada subcarpeta y el general (``adapters/fuid_de_la_entrega.py``).
+    Sin ellas, las de un legajo de resoluciones o las de un archivo entero se
+    quedaban en su planilla suelta, fuera del inventario de la carpeta
+    (2026-10-29, REPOSITORIO UDC).
+    """
+    from dataclasses import asdict, is_dataclass
+
+    report["filas_del_fuid"] = [
+        asdict(fila) for fila in filas if is_dataclass(fila) and not isinstance(fila, type)
+    ]
+
+
 def _escribir_fuid(
     report: dict,
     filas: list,
@@ -86,11 +102,20 @@ def _escribir_fuid(
     destino = destination / sheet_filename(
         name, FUID_SUFFIX, directory_length=len(str(destination))
     )
+    _guardar_las_filas(report, filas)
+    from ...domain.doctype import DocumentType
+
+    # La oficina de su carpeta, como en todos los FUID de la Universidad
+    # (2026-10-29). Un libro de diplomas conserva la de su plantilla, la
+    # Secretaría General, que es quien registra los diplomas.
+    oficina = settings.get("fuid_oficina")
+    if document_type is not DocumentType.DIPLOMA:
+        oficina = (payload or {}).get("oficina") or oficina
     try:
         escrito = FuidInventory(plantilla, progress=_reportero(payload or {})).write(
             filas,
             destino,
-            cabecera=Cabecera(oficina_productora=settings.get("fuid_oficina")),
+            cabecera=Cabecera(oficina_productora=oficina),
         )
         report["fuid"] = escrito.name
     except Exception as error:  # noqa: BLE001 - la lectura sirvió igual
@@ -145,12 +170,13 @@ def _escribir_fuid_de_archivo(
     destino = destination / sheet_filename(
         name, FUID_SUFFIX, directory_length=len(str(destination))
     )
+    _guardar_las_filas(report, filas)
     try:
         escrito = FuidPsd001(plantilla, progress=_reportero(payload or {})).write(
             filas,
             destino,
             cabecera=Cabecera(
-                oficina_productora=settings.get("fuid_oficina"),
+                oficina_productora=(payload or {}).get("oficina") or settings.get("fuid_oficina"),
                 entidad_productora=settings.get("fuid_entidad_productora"),
                 entidad_remitente=settings.get("fuid_entidad_remitente"),
                 unidad_administrativa=settings.get("fuid_unidad_administrativa"),

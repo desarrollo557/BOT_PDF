@@ -56,6 +56,13 @@ class TipoPedido(StrEnum):
     #: inventariadas como un acta y con 26 páginas pagadas a la IA (2026-10-29).
     RESOLUCION = "resolucion"
 
+    #: Historias académicas de una facultad: un expediente por estudiante --
+    #: su ficha y sus notas --, inventariado en el FUID FO-GD-008 como las
+    #: actas de grado. Lo pidió el operador el 2026-10-29 para Enfermería; sin
+    #: declararlo, «No estoy seguro» las tomaba por matrículas de los 50 y
+    #: entregaba 9 PDF donde había 60 estudiantes.
+    HISTORIA = "historia-academica"
+
     @property
     def label(self) -> str:
         return _LABELS[self]
@@ -96,6 +103,7 @@ _LABELS = {
     TipoPedido.ACTA: "Actas de grado",
     TipoPedido.ACTA_CONSEJO: "Actas de consejo",
     TipoPedido.RESOLUCION: "Legajo de resoluciones",
+    TipoPedido.HISTORIA: "Historias académicas",
 }
 
 _DOCUMENT_TYPES = {
@@ -103,4 +111,5 @@ _DOCUMENT_TYPES = {
     TipoPedido.ACTA: DocumentType.ACTA,
     TipoPedido.ACTA_CONSEJO: DocumentType.ACTA_CONSEJO,
     TipoPedido.RESOLUCION: DocumentType.RESOLUCION,
+    TipoPedido.HISTORIA: DocumentType.MATRICULA,
 }

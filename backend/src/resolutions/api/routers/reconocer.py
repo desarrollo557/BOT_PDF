@@ -21,7 +21,12 @@ from ...adapters import red_smb
 from ...application.sugerencia import sugerir
 from ...domain.doctype import DocumentType
 from ..contexto import Ctx
-from ..folders import CONSUMED_DIR, clean_path, en_orden_de_ruta
+from ..folders import (
+    CONSUMED_DIR,
+    clean_path,
+    en_orden_de_ruta,
+    oficina_de_la_carpeta_de_origen,
+)
 from ..rutas_del_equipo import al_operador, al_servicio, por_que_no_se_ve
 from .trabajos import _stream_to_disk
 
@@ -113,7 +118,13 @@ async def reconocer_carpeta(payload: dict) -> dict[str, object]:
                 archivos.append({"ruta": relativa, **_sugerencia(ruta, relativa)})
             except Exception as error:  # noqa: BLE001 - uno roto no tapa a los demás
                 archivos.append(_sin_abrir(relativa, error))
-        return _resumen(al_operador(raiz), total, archivos, exacto=exacto)
+        return _resumen(
+            al_operador(raiz),
+            total,
+            archivos,
+            exacto=exacto,
+            oficina=oficina_de_la_carpeta_de_origen(str(raiz)),
+        )
 
     return await asyncio.to_thread(recorrer)
 
@@ -174,7 +185,13 @@ def _reconocer_en_la_red(ruta: str) -> dict[str, object]:
                 raise
             except Exception as error:  # noqa: BLE001 - uno roto no tapa a los demás
                 archivos.append(_sin_abrir(relativa, error))
-    return _resumen(al_operador(ruta), total, archivos, exacto=exacto)
+    return _resumen(
+        al_operador(ruta),
+        total,
+        archivos,
+        exacto=exacto,
+        oficina=oficina_de_la_carpeta_de_origen(ruta),
+    )
 
 
 def _muy_grande(relativa: str, tamano: int) -> dict[str, object]:
@@ -186,7 +203,12 @@ def _muy_grande(relativa: str, tamano: int) -> dict[str, object]:
 
 
 def _resumen(
-    ruta: str, total: int, archivos: list[dict[str, object]], *, exacto: bool = True
+    ruta: str,
+    total: int,
+    archivos: list[dict[str, object]],
+    *,
+    exacto: bool = True,
+    oficina: str | None = None,
 ) -> dict[str, object]:
     cuenta = Counter(archivo["tipo"] for archivo in archivos)
     return {
@@ -203,4 +225,7 @@ def _resumen(
             for tipo, cantidad in cuenta.most_common()
         ],
         "archivos": archivos,
+        # La oficina productora que llevará la cabecera de sus FUID si el
+        # operador no escribe otra: la misma que averigua la corrida al empezar.
+        "oficina": oficina,
     }

@@ -379,6 +379,12 @@ export interface SugerenciaDeCarpeta {
   mirados: number;
   por_tipo: { tipo: string; etiqueta: string; cantidad: number }[];
   archivos: (Sugerencia & { ruta: string })[];
+  /**
+   * La oficina productora que llevará la cabecera del FUID si el operador no
+   * escribe otra: la del inventario del cliente que traiga la carpeta o la que
+   * nombra la carpeta. Nula, la de la plantilla. Ausente en un servicio anterior.
+   */
+  oficina?: string | null;
 }
 
 /** Qué parece un PDF recién soltado. Sólo su capa de texto: no gasta nada. */
@@ -841,6 +847,8 @@ export function startFolderRun(options: {
   tipoDocumento?: string;
   /** Y el acta de transferencia del inventario de Kingspan. */
   acta?: string;
+  /** Y la oficina productora de la cabecera del FUID. Ausente, la averigua el servicio. */
+  oficina?: string;
   /** Y qué clase de documento trae, cuando el operador lo sabe. */
   tipo?: TipoPedido;
   /** Y si retoma una entrega anterior (sólo libros de diplomas). */

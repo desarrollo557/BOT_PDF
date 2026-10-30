@@ -279,9 +279,10 @@ class TestLaEntregaEnCarpeta:
 
         entregados = sorted(p.relative_to(run.destination).as_posix() for p in run.destination.rglob("*.*") if ".bot-" not in p.as_posix())
         # Espejo de la fuente: la carpeta elegida delante, el libro dividido
-        # dentro y el Excel de la carpeta junto a él.
+        # dentro y junto a él el Excel de actas de la carpeta y su FUID.
         assert entregados == [
             "UPD/ACTAS UPD__inventario.xlsx",
+            "UPD/UPD__FUID.xlsx",
             "UPD/libro/01_ACTA-ORDINARIA-NO-002.pdf",
             "UPD/libro/02_ACTA-EXTRAORDINARIA-NO-017.pdf",
         ]
@@ -309,6 +310,7 @@ class TestLaEntregaEnCarpeta:
         assert entregados == [
             "UPD/ACTAS UPD__inventario.xlsx",
             "UPD/UPD2/ACTAS UPD2__inventario.xlsx",
+            "UPD/UPD2/UPD2__FUID.xlsx",
             "UPD/UPD2/acta.pdf",
         ]
 

@@ -498,6 +498,23 @@ def carpetas(ruta: str) -> list[str]:
     return _llamar(ruta, listar)  # type: ignore[return-value]
 
 
+def archivos(ruta: str, extension: str) -> list[str]:
+    """Los archivos de ``ruta`` con esa extensión, sin entrar en subcarpetas, como rutas del servicio."""
+    import smbclient
+
+    def listar(p: Partes, cuenta: dict) -> list[str]:
+        return sorted(
+            (
+                f"{p.unc}\\{e.name}"
+                for e in smbclient.scandir(p.unc, **cuenta)
+                if e.is_file() and e.name.lower().endswith(extension)
+            ),
+            key=str.lower,
+        )
+
+    return [partes(unc).del_servicio for unc in _llamar(ruta, listar)]  # type: ignore[union-attr, attr-defined]
+
+
 @dataclass(frozen=True, slots=True)
 class ArchivoDeRed:
     #: La ruta con barras, como la maneja el servicio: «//servidor/recurso/…/UPD1.pdf».

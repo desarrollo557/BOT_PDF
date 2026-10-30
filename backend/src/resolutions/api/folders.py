@@ -173,6 +173,20 @@ class FolderRun:
     #: El acta de transferencia del inventario de Kingspan, que el operador
     #: eligió para la carpeta. Se copia a cada archivo que entre.
     acta: str | None = None
+    #: La oficina productora de la cabecera del FUID («FACULTAD DE MEDICINA»).
+    #: La escribe el operador o se averigua al empezar (ver
+    #: ``oficina_de_la_carpeta_de_origen``); se copia a cada archivo que entre.
+    oficina: str | None = None
+    #: Si ya se averiguó: una corrida que se reanuda no la vuelve a buscar.
+    oficina_mirada: bool = False
+    #: Si la escribió el operador: entonces manda en todos los FUID; si no, la
+    #: de cada subcarpeta que nombre su facultad pasa por delante.
+    oficina_del_operador: bool = False
+    #: Los folios -- las hojas de papel -- que el inventario del cliente anota
+    #: de cada UPD, para la fila de un PDF inventariado entero (opción B del
+    #: operador, 2026-10-30), y si ya se miraron.
+    folios_del_cliente: dict[str, int] = field(default_factory=dict, repr=False)
+    folios_mirados: bool = False
     #: Y qué clase de documento trae esta carpeta, cuando el operador lo sabe.
     #: Una carpeta suele ser homogénea -- una estantería de libros de diplomas
     #: --, así que declararlo una vez vale para todos sus archivos.
@@ -248,20 +262,32 @@ class FolderRun:
     #: the destination folder. Kept whole -- unlike `deliveries`, which is a
     #: window for the live view -- because the sheet has to list every file.
     manifest: list[dict] = field(default_factory=list)
-    #: La fila de cada acta de consejo inventariada, en el orden en que se
-    #: tomaron. Con ellas se escribe **un** Excel para la carpeta entera, que
-    #: es lo que se entrega: una carpeta de cien actas son cien filas de una
-    #: planilla, no cien planillas de una fila.
+    #: Las filas del inventario de cada PDF -- un acta, un graduado, un
+    #: estudiante --, en el orden en que se tomaron. Con ellas se escribe el
+    #: FUID de cada subcarpeta y el general de la corrida: una carpeta de cien
+    #: actas son cien filas de una planilla, no cien planillas de una fila.
     inventario_filas: list[dict] = field(default_factory=list)
-    #: Dónde quedó ese Excel, cuando ya se escribió.
+    #: Dónde quedó el FUID general, cuando ya se escribió.
     inventario: str | None = None
-    #: El Excel general de cada clase de acta -- consejo, grado --, para que
-    #: cada una vuelva a escribir el suyo y nunca el de la otra.
-    inventarios_generales: dict[str, str] = field(default_factory=dict)
-    #: Y el de cada subcarpeta, por clase y carpeta: si se escribió con otro
-    #: nombre porque el suyo estaba abierto, las actas siguientes vuelven a ése
-    #: en vez de dejar un «(3)», un «(4)»… por cada una.
-    inventarios_de_carpeta: dict[tuple[str, str], str] = field(default_factory=dict)
+    #: El FUID de cada subcarpeta: si se escribió con otro nombre porque el
+    #: suyo estaba abierto, los PDF siguientes vuelven a ése en vez de dejar un
+    #: «(3)», un «(4)»… por cada uno.
+    inventarios_de_carpeta: dict[str, str] = field(default_factory=dict)
+    #: Las subcarpetas cuyo FUID hay que reescribir. La entrega sólo las apunta,
+    #: bajo el cerrojo, y se escriben fuera de él: escribir un FUID tarda de uno
+    #: a cuatro segundos, y dentro del cerrojo las entregas en paralelo hacían
+    #: cola detrás (diez actas: 22 s en vez de 3, medido el 2026-10-30).
+    fuid_pendientes: set[str] = field(default_factory=set, repr=False)
+    #: Cuántas veces cambiaron las filas de cada subcarpeta, y en qué versión se
+    #: escribió su FUID: al terminar se reescriben sólo las que cambiaron.
+    version_de_carpeta: dict[str, int] = field(default_factory=dict, repr=False)
+    version_escrita: dict[str, tuple[int, int]] = field(default_factory=dict, repr=False)
+    #: Uno solo escribe los FUID y el Excel de actas de la corrida a la vez.
+    cerrojo_de_escritura: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    #: Las actas de consejo llevan además su Excel de siempre, con el resumen
+    #: de cada acta: el general de la corrida y el de cada subcarpeta.
+    actas_general: str | None = None
+    actas_de_carpeta: dict[str, str] = field(default_factory=dict)
     #: Por qué no se pudo escribir, si falló.
     inventario_error: str | None = None
     #: El control de calidad del último inventario escrito: filas completas,
@@ -384,6 +410,7 @@ class FolderRun:
             "agrupar": self.agrupar,
             "territorial": self.territorial,
             "acta": self.acta,
+            "oficina": self.oficina,
             "tipo": self.tipo,
             "tipo_documento": self.tipo_documento,
             "retomar": self.retomar,
@@ -434,6 +461,9 @@ class FolderRun:
             "inventario": Path(self.inventario).name if self.inventario else None,
             "inventario_ruta": al_operador(self.inventario) if self.inventario else None,
             "inventario_filas": len(self.inventario_filas),
+            # El Excel de las actas de consejo, con su resumen, cuando las hay.
+            "actas": Path(self.actas_general).name if self.actas_general else None,
+            "actas_ruta": al_operador(self.actas_general) if self.actas_general else None,
             "inventario_error": self.inventario_error,
             "inventario_validacion": self.inventario_validacion,
             # Newest first: the live view reads from the top.
@@ -620,6 +650,106 @@ def unique_path(directory: Path, name: str) -> Path:
     return directory / f"{stem} ({uuid4().hex[:8]}){suffix}"
 
 
+#: Cuántos Excel sueltos de una carpeta de red se bajan buscando la oficina.
+EXCELS_DE_LA_RED = 5
+
+
+def _leer_del_cliente(carpeta: str, leer: Callable[[Path], object]) -> object:
+    """Lo que ``leer`` saca del primer Excel del cliente suelto en la carpeta que lo diga; ``None`` si ninguno.
+
+    Por la red se bajan como mucho ``EXCELS_DE_LA_RED``. Nunca falla: uno que
+    no se abre o no baja se salta.
+    """
+    import tempfile
+
+    from ..adapters.inventario_del_cliente import es_del_bot
+
+    try:
+        if red_smb.por_smb(carpeta):
+            remotos = [r for r in red_smb.archivos(carpeta, ".xlsx") if not es_del_bot(Path(r).name)]
+            with tempfile.TemporaryDirectory(prefix="cliente-") as temporal:
+                for indice, remoto in enumerate(remotos[:EXCELS_DE_LA_RED]):
+                    try:
+                        copia = red_smb.traer(remoto, Path(temporal) / f"{indice}.xlsx")
+                    except Exception:  # noqa: BLE001 - uno que no baja no tapa a los demás
+                        logger.debug("no se pudo bajar %s", remoto, exc_info=True)
+                        continue
+                    if hallado := leer(copia):
+                        return hallado
+            return None
+        excels = sorted(
+            (r for r in Path(carpeta).glob("*.xlsx") if r.is_file() and not es_del_bot(r.name)),
+            key=lambda r: r.name.lower(),
+        )
+        for excel in excels:
+            if hallado := leer(excel):
+                return hallado
+    except Exception:  # noqa: BLE001 - sin el Excel del cliente se sigue sin él
+        logger.debug("no se pudo mirar el Excel del cliente en %s", carpeta, exc_info=True)
+    return None
+
+
+def _padre_de(ruta: str) -> str:
+    """La carpeta de arriba de una ruta del servicio o de red; vacío si no tiene."""
+    limpia = ruta.rstrip("/\\")
+    separador = "/" if "/" in limpia else "\\"
+    return limpia.rsplit(separador, 1)[0] if separador in limpia else ""
+
+
+def folios_de_la_carpeta_de_origen(ruta: str) -> dict[str, int]:
+    """Los folios que el inventario del cliente anota de cada UPD: el de la carpeta o el de la de arriba."""
+    from ..adapters.inventario_del_cliente import folios_por_upd
+
+    padre = _padre_de(ruta)
+    hallados = _leer_del_cliente(ruta, folios_por_upd) or (
+        _leer_del_cliente(padre, folios_por_upd) if padre and padre != ruta else None
+    )
+    return dict(hallados) if isinstance(hallados, dict) else {}
+
+
+def oficina_de_la_carpeta_de_origen(ruta: str) -> str | None:
+    """La oficina productora de una carpeta: su inventario del cliente o, si no, su nombre.
+
+    La cabecera de su FUID (ver ``domain/oficina_productora.py``). Nunca
+    falla: una carpeta que no se deja mirar se queda con la de la plantilla.
+    """
+    import tempfile
+
+    from ..adapters.inventario_del_cliente import (
+        es_del_bot,
+        oficina_de_la_carpeta,
+        oficina_del_excel,
+    )
+    from ..domain.oficina_productora import oficina_de_la_ruta
+
+    def del_excel(carpeta: str) -> str | None:
+        try:
+            if red_smb.por_smb(carpeta):
+                remotos = [r for r in red_smb.archivos(carpeta, ".xlsx") if not es_del_bot(Path(r).name)]
+                with tempfile.TemporaryDirectory(prefix="oficina-") as temporal:
+                    for indice, remoto in enumerate(remotos[:EXCELS_DE_LA_RED]):
+                        try:
+                            copia = red_smb.traer(remoto, Path(temporal) / f"{indice}.xlsx")
+                        except Exception:  # noqa: BLE001 - uno que no baja no tapa a los demás
+                            logger.debug("no se pudo bajar %s", remoto, exc_info=True)
+                            continue
+                        if hallada := oficina_del_excel(copia):
+                            return hallada
+                return None
+            return oficina_de_la_carpeta(Path(carpeta))
+        except Exception:  # noqa: BLE001 - sin el Excel del cliente queda el nombre de la carpeta
+            logger.debug("no se pudo mirar la oficina de %s", carpeta, exc_info=True)
+            return None
+
+    # La carpeta elegida y, si no lo trae, la de arriba: una caja lanzada
+    # suelta -- «18-RESOLUCIONES INTERNAS Y ACTAS 3303\00C003303» -- tiene el
+    # Excel del cliente un nivel más arriba (2026-10-30).
+    separador = "/" if "/" in ruta else "\\"
+    padre = ruta.rstrip("/\\").rsplit(separador, 1)[0] if separador in ruta.rstrip("/\\") else ""
+    oficina = del_excel(ruta) or (del_excel(padre) if padre and padre != ruta else None)
+    return oficina or oficina_de_la_ruta(al_operador(ruta)) or oficina_de_la_ruta(ruta)
+
+
 class FolderRunner:
     """Drains a local folder, several documents at a time.
 
@@ -683,6 +813,7 @@ class FolderRunner:
         retomar: str = "no",
         paralelo: int | None = None,
         acta: str | None = None,
+        oficina: str | None = None,
     ) -> FolderRun:
         try:
             modo = Retomar.parse(retomar)
@@ -724,6 +855,9 @@ class FolderRunner:
             agrupar=agrupar,
             territorial=territorial,
             acta=acta,
+            oficina=oficina,
+            oficina_mirada=bool(oficina),
+            oficina_del_operador=bool(oficina),
             tipo=tipo,
             tipo_documento=tipo_documento,
             retomar=str(modo),
@@ -802,6 +936,17 @@ class FolderRunner:
 
     async def _drain(self, run: FolderRun) -> None:
         try:
+            if not run.folios_mirados:
+                # Los folios del inventario del cliente, para las filas de los
+                # PDF inventariados enteros (opción B, 2026-10-30).
+                run.folios_del_cliente = await asyncio.to_thread(folios_de_la_carpeta_de_origen, str(run.source))
+                run.folios_mirados = True
+            if not run.oficina_mirada:
+                # Antes del primer PDF: cada trabajo la lleva a la cabecera de
+                # su FUID. Puede ir por la red, así que en un hilo.
+                run.oficina = await asyncio.to_thread(oficina_de_la_carpeta_de_origen, str(run.source))
+                run.oficina_mirada = True
+                self._publish(run)
             while True:
                 # En paralelo y por lotes: el recorrido llena la cola lote a
                 # lote mientras los trabajadores la vacían.
@@ -1353,10 +1498,25 @@ class FolderRunner:
         return origin.stem if FolderRunner._plana(run) else carpeta.name
 
     @staticmethod
+    def _con_los_folios_del_cliente(run: FolderRun, fila: dict, origin: Path) -> dict:
+        """Le pone a la fila de un PDF inventariado entero las hojas que el cliente anota de su UPD."""
+        from ..adapters.fuid_actas_de_grado import ubicacion
+        from ..adapters.fuid_de_la_entrega import PDF_ENTERO
+
+        if not run.folios_del_cliente or not (fila.get("entero") or fila.get("tipo") == PDF_ENTERO):
+            return fila
+        _caja, upd = ubicacion(str(fila.get("carpeta") or ""), origin.name)
+        if upd in run.folios_del_cliente:
+            fila["folios_del_cliente"] = run.folios_del_cliente[upd]
+        return fila
+
+    @staticmethod
     def _sumar_filas_de_actas(run: FolderRun, filas: list[dict]) -> None:
         run.inventario_filas.extend(filas)
         for fila in filas:
-            run.filas_por_carpeta.setdefault(str(fila.get("carpeta") or ""), []).append(fila)
+            carpeta = str(fila.get("carpeta") or "")
+            run.filas_por_carpeta.setdefault(carpeta, []).append(fila)
+            run.version_de_carpeta[carpeta] = run.version_de_carpeta.get(carpeta, 0) + 1
 
     @staticmethod
     def _retirar_lo_que_sumo(run: FolderRun, origin: Path) -> None:
@@ -1376,6 +1536,9 @@ class FolderRunner:
             run.inventario_filas[:] = [f for f in run.inventario_filas if id(f) not in fuera]
             for suyas in run.filas_por_carpeta.values():
                 suyas[:] = [f for f in suyas if id(f) not in fuera]
+            for fila in filas:
+                carpeta = str(fila.get("carpeta") or "")
+                run.version_de_carpeta[carpeta] = run.version_de_carpeta.get(carpeta, 0) + 1
             # Mismo número de filas, otro contenido: que se vuelva a escribir.
             run.inventario_escritas = -1
         if unidades:
@@ -1626,6 +1789,7 @@ class FolderRunner:
             agrupar=run.agrupar,
             territorial=run.territorial,
             acta=run.acta,
+            oficina=run.oficina,
             tipo=run.tipo,
             tipo_documento=run.tipo_documento,
             # Adónde irá lo que produzca. Se calcula antes de procesarlo, con
@@ -2121,10 +2285,10 @@ class FolderRunner:
         Lo que se copia bajo el cerrojo es poco; la escritura va fuera, para no
         parar las entregas mientras se escribe.
         """
+        from ..adapters.fuid_de_la_entrega import ruta_del_fuid
         from ..adapters.indice_electronico import NOMBRE_DEL_INDICE
         from .indices import (
             NOMBRE_DEL_FUID_GENERAL,
-            fuid_general_de,
             inventario_de_procesos_de,
             libro_de_indices_de,
         )
@@ -2135,9 +2299,16 @@ class FolderRunner:
             carpetas_con_fuid = self._carpetas_con_fuid(run)
             analisis = self._filas_del_analisis(run)
             avisos = list(run.avisos)
+            del_inventario = list(run.inventario_filas)
+            # También el de una corrida anterior que ésta todavía no reescribió.
+            de_las_subcarpetas = {Path(ruta) for ruta in run.inventarios_de_carpeta.values()} | {
+                ruta_del_fuid(run.destination / carpeta) for carpeta in run.filas_por_carpeta if carpeta
+            }
         # Buscar cada FUID en el disco va fuera del cerrojo: con cientos de
-        # libros, recorrer el destino cada 45 s paraba todas las entregas.
-        fuids = self._fuids_en(carpetas_con_fuid)
+        # libros, recorrer el destino cada 45 s paraba todas las entregas. Sin
+        # el FUID de cada subcarpeta, que ya va en el general por sus filas:
+        # leerlo además del disco las contaría dos veces.
+        fuids = [(ruta, carpeta) for ruta, carpeta in self._fuids_en(carpetas_con_fuid) if ruta not in de_las_subcarpetas]
         self._escribir_general(
             run,
             NOMBRE_DEL_INVENTARIO_DE_PROCESOS,
@@ -2155,9 +2326,7 @@ class FolderRunner:
                     run, NOMBRE_DEL_INDICE, lambda: libro_de_indices_de(indices, run.destination, lecturas=run.lecturas_de_indices)
                 )
             self._escribir_general(
-                run,
-                NOMBRE_DEL_FUID_GENERAL,
-                lambda: fuid_general_de(fuids, run.destination, lecturas=run.lecturas_de_fuid),
+                run, NOMBRE_DEL_FUID_GENERAL, lambda: self._escribir_el_fuid_general(run, fuids, del_inventario)
             )
         if run.tipo_documento == "kingspan":
             # El inventario oficial de Kingspan es un solo libro para toda
@@ -2166,6 +2335,38 @@ class FolderRunner:
 
             self._escribir_general(run, NOMBRE_DEL_GENERAL, lambda: inventario_general(run.destination))
         self._escribir_el_analisis(run, analisis, avisos)
+
+    @staticmethod
+    def _escribir_el_fuid_general(run: FolderRun, fuids: list[tuple[Path, str]], filas: list[dict]) -> None:
+        """«00.FUID GENERAL.xlsx»: todas las filas de la corrida en un solo FUID.
+
+        Las de cada habilidad -- actas, graduados, estudiantes, matrículas --
+        en el orden de la carpeta, y detrás las de los libros de diplomas, que
+        se leen de su FUID en el destino. Con la oficina de la carpeta en la
+        cabecera. Es el inventario general que pidió el operador el 2026-10-29:
+        el mismo FUID para cada carpeta.
+
+        Va en la carpeta espejo de la elegida, uno por carpeta (ver
+        ``_ruta_del_inventario``). Un estante de sólo libros de diplomas lo
+        sigue dejando en la raíz del destino, donde lo dejaba siempre.
+        """
+        from ..adapters.fuid_de_la_entrega import filas_del_fuid
+        from ..application.acta_consejo import inventario_de_la_carpeta
+        from .indices import fuid_general_de
+
+        ordenadas = inventario_de_la_carpeta(filas) if filas else []
+        ruta = fuid_general_de(
+            fuids,
+            run.destination / FolderRunner._raiz(run) if ordenadas else run.destination,
+            lecturas=run.lecturas_de_fuid,
+            otras=filas_del_fuid(ordenadas),
+            # Sólo con filas de las demás habilidades: un estante de libros de
+            # diplomas conserva la cabecera de sus FUID (Secretaría General),
+            # aunque el nombre de la carpeta nombre una facultad.
+            oficina=run.oficina if ordenadas else None,
+        )
+        if ruta is not None and ordenadas:
+            run.inventario = str(ruta)
 
     def _escribir_el_analisis(self, run: FolderRun, filas: list, avisos: list[str]) -> None:
         """«00.ANALISIS DE LA ENTREGA.xlsx» en la raíz del destino. Que falle no deshace nada."""
@@ -2378,7 +2579,19 @@ class FolderRunner:
         # acta, que cuesta milisegundos, para que el Excel esté siempre al día
         # aunque la corrida se corte.
         with run.cerrojo:
-            return self._entregar(run, job, origin, huella)
+            entrega = self._entregar(run, job, origin, huella)
+        # Los FUID de las subcarpetas que cambiaron, fuera del cerrojo: las
+        # demás entregas siguen mientras se escriben.
+        self._escribir_los_pendientes(run)
+        return entrega
+
+    def _escribir_los_pendientes(self, run: FolderRun) -> None:
+        """Escribe el FUID de las subcarpetas que apuntaron las entregas. Sin el cerrojo tomado."""
+        with run.cerrojo:
+            pendientes = sorted(run.fuid_pendientes)
+            run.fuid_pendientes.clear()
+        for carpeta in pendientes:
+            self._escribir_inventario_de_actas(run, solo_carpeta=carpeta)
 
     def _entregar(
         self, run: FolderRun, job: Job, origin: Path, huella: tuple[int, int] = (0, 0)
@@ -2391,14 +2604,19 @@ class FolderRunner:
             # que agrupa el Excel de cada subcarpeta y lo que encadena sus folios.
             carpeta = self._carpeta_de(run, origin)
             suyas = [{**fila, "carpeta": carpeta} for fila in filas]
+            for fila in suyas:
+                self._con_los_folios_del_cliente(run, fila, origin)
             self._sumar_filas_de_actas(run, suyas)
-            # Las actas son sus unidades: un libro cuenta tantas como trae.
-            run.resolutions += len(filas)
-            run.aportes[str(origin)] = (suyas, self._record(run, job, origin), len(filas))
+            # Las actas son sus unidades: un libro cuenta tantas como trae. Las
+            # historias académicas ya las contó su informe («groups»): sumarlas
+            # aquí otra vez daba el doble de estudiantes en la pantalla.
+            unidades = 0 if (job.report or {}).get("groups") else len(filas)
+            run.resolutions += unidades
+            run.aportes[str(origin)] = (suyas, self._record(run, job, origin), unidades)
             entrega = self._entregar_actas(run, job, origin, huella)
-            # El de su subcarpeta siempre; el general, cada tanto (ver
-            # `INVENTARIO_GENERAL_CADA`). Al terminar se escriben todos.
-            self._escribir_inventario_de_actas(run, solo_carpeta=carpeta)
+            # El de su subcarpeta, en cuanto se suelte el cerrojo; el general,
+            # cada tanto (ver `INVENTARIO_GENERAL_CADA`). Al terminar, todos.
+            run.fuid_pendientes.add(carpeta)
             return entrega
 
         produced = self._settings.output_dir / job.id
@@ -2541,7 +2759,66 @@ class FolderRunner:
         fallo = self._entregar_fuid(run, job, origin, carpeta, renombres)
         if fallo:
             entrega.fallos.append(f"el FUID: {fallo}")
+        self._sumar_las_filas_hechas(run, job, origin, renombres)
         return entrega
+
+    def _sumar_las_filas_hechas(
+        self, run: FolderRun, job: Job, origin: Path, renombres: dict[str, str]
+    ) -> None:
+        """Las filas del FUID que escribió la habilidad del PDF, al FUID de su carpeta y al general.
+
+        Las de un legajo de resoluciones, un legajo de matrículas o un archivo
+        inventariado entero: cada una ya trae su asunto, su número y sus
+        fechas, y aquí se les pone la caja y la UPD de su ruta. Así una carpeta
+        que trae resoluciones y actas -- «18-RESOLUCIONES INTERNAS Y ACTAS
+        3303» -- deja un solo FUID con todas (2026-10-29).
+
+        Los libros de diplomas no: su FUID va junto al libro y el general lo
+        lee del destino, que es lo que deja retomar un libro a medias.
+        """
+        from ..adapters.fuid_de_la_entrega import FILA_HECHA
+        from .indices import habilidad_del_proceso
+
+        informe = job.report or {}
+        hechas = informe.get("filas_del_fuid") or []
+        if not hechas or habilidad_del_proceso(job) == "Libro de diplomas":
+            return
+        # Su FUID va con sus PDF: éstos se entregan en ``_output_dir``, sin la
+        # carpeta elegida delante, y agruparlos por el espejo de las actas los
+        # dejaba en un árbol aparte que sólo tenía el FUID (2026-10-30).
+        try:
+            carpeta = str(self._output_dir(run, origin, job).parent.relative_to(run.destination))
+        except ValueError:
+            carpeta = self._carpeta_de(run, origin)
+        # Por lo que hizo el trabajo y no sólo por lo que se pidió: «Solo el
+        # inventario» de un PDF sin registros acaba inventariándolo entero.
+        entero = job.task == "inventory_file" or informe.get("task") == "inventory_file"
+        suyas = []
+        for hecha in hechas:
+            notas = str(hecha.get("notas") or "")
+            # El archivo con el nombre con que quedó en el destino, si se
+            # entregó con otro porque el suyo ya estaba.
+            for antes, despues in renombres.items():
+                notas = notas.replace(f"Archivo: {antes}", f"Archivo: {despues}")
+            suyas.append(
+                self._con_los_folios_del_cliente(
+                    run,
+                    {
+                        "tipo": FILA_HECHA,
+                        "fuid": {**hecha, "notas": notas},
+                        "carpeta": carpeta,
+                        "archivo": origin.name,
+                        "pagina_inicial": hecha.get("pagina_inicial"),
+                        "entero": entero,
+                    },
+                    origin,
+                )
+            )
+        with run.cerrojo:
+            self._sumar_filas_de_actas(run, suyas)
+            filas, unidades, resoluciones = run.aportes.get(str(origin), ([], [], 0))
+            run.aportes[str(origin)] = (list(filas) + suyas, unidades, resoluciones)
+            run.fuid_pendientes.add(carpeta)
 
     def _entregar_fuid(
         self, run: FolderRun, job: Job, origin: Path, carpeta: Path, renombres: dict[str, str]
@@ -2797,21 +3074,220 @@ class FolderRunner:
 
     @classmethod
     def _ruta_del_inventario(cls, run: FolderRun) -> Path:
-        """Dónde queda el Excel general: en la carpeta raíz del espejo.
+        """Dónde queda el inventario general: «00.FUID GENERAL.xlsx» en la carpeta espejo de la elegida.
+
+        Uno por carpeta elegida, dentro de la suya en el destino --
+        ``DESTINO\\14. ENFERMERIA 3277-3283 P\\00.FUID GENERAL.xlsx`` --: en la
+        raíz del destino, dos carpetas lanzadas al mismo destino se pisaban el
+        general y la primera bajaba el de la segunda (2026-10-30).
 
         Se calcula antes de leer nada porque cada trabajo la apunta en el
         inventario al crearse: es lo que deja descargarlo desde el Archivo
         cuando la corrida ya no está en memoria.
         """
-        return cls._ruta_de_un_excel(run.destination / cls._raiz(run))
+        from .indices import NOMBRE_DEL_FUID_GENERAL
+
+        return run.destination / cls._raiz(run) / NOMBRE_DEL_FUID_GENERAL
+
+    def _escribir_inventario_de_actas(
+        self, run: FolderRun, solo_carpeta: str | None = None
+    ) -> None:
+        """Deja en el espejo del destino el FUID de cada subcarpeta.
+
+        Cada subcarpeta que tenga PDF lleva el suyo, sólo con sus filas --
+        ``DESTINO\\…\\UPD3859772\\UPD3859772__FUID.xlsx`` --: quien abre
+        ``UPD3859772`` en el destino encuentra ahí su inventario, como encontraría
+        los papeles en la caja. El general, con todas las filas de la corrida,
+        lo escribe ``_escribir_generales`` en la carpeta espejo de la elegida
+        («00.FUID GENERAL.xlsx»). Las filas van en el orden de la carpeta y
+        numeradas desde 1, y los folios de las actas se encadenan dentro de cada
+        subcarpeta.
+
+        Es el mismo FUID para todas las habilidades -- actas de consejo, de
+        grado, historias académicas, matrículas -- desde el 2026-10-29 (ver
+        ``adapters/fuid_de_la_entrega.py``).
+
+        Volver a procesar la misma carpeta al mismo destino **actualiza** esos
+        archivos en vez de dejar al lado un «(2)». Sólo si uno está abierto en
+        Excel -- que lo bloquea -- se escribe con otro nombre, y la pantalla
+        enseña cuál.
+
+        Que falle no deshace nada: las filas siguen en la corrida y cada PDF
+        conserva su propio FUID junto a su trabajo.
+
+        ``solo_carpeta`` es la escritura de en medio de la corrida: el FUID de
+        esa subcarpeta. Sin ella se escriben los de todas las que cambiaron
+        desde su última escritura, que es lo que se hace al terminar.
+
+        En dos tiempos (2026-10-30): bajo ``run.cerrojo`` sólo se copian las
+        filas y se decide qué escribir; los Excel se escriben fuera de él, de
+        uno en uno, para que las entregas en paralelo no esperen detrás. Se
+        llama sin el cerrojo de la corrida tomado.
+        """
+        with run.cerrojo_de_escritura:
+            # Que falle -- una fila con un dato que no se esperaba, un Excel
+            # abierto -- no tumba la entrega: se anota y la corrida sigue, como
+            # antes de partir la escritura en dos tiempos.
+            try:
+                with run.cerrojo:
+                    plan = self._plan_de_inventarios(run, solo_carpeta)
+                if plan is None:
+                    return
+                escritos = self._escribir_el_plan(run, plan)
+                with run.cerrojo:
+                    self._aplicar_lo_escrito(run, plan, escritos)
+            except Exception as error:  # noqa: BLE001 - lo leído sigue en la corrida
+                logger.warning("no se pudo escribir el FUID de la carpeta", exc_info=True)
+                with run.cerrojo:
+                    run.inventario_error = explicar_fallo(error)
+
+    def _plan_de_inventarios(self, run: FolderRun, solo_carpeta: str | None) -> dict | None:
+        """Qué hay que escribir, con las filas ya copiadas. Bajo ``run.cerrojo``."""
+        if not run.inventario_filas:
+            return None
+        # De la lista de todas las filas, que es la de verdad, agrupadas por
+        # su subcarpeta.
+        de_todas: dict[str, list[dict]] = {}
+        for fila in run.inventario_filas:
+            de_todas.setdefault(str(fila.get("carpeta") or ""), []).append(fila)
+        if solo_carpeta is None and len(run.inventario_filas) == run.inventario_escritas and not any(
+            self._cambio(run, carpeta, len(filas)) for carpeta, filas in de_todas.items()
+        ):
+            return None
+        from ..adapters.fuid_de_la_entrega import filas_del_fuid, ruta_del_fuid
+        from ..application.acta_consejo import (
+            es_de_consejo,
+            inventario_de_la_carpeta,
+            validar_inventario,
+        )
+
+        raiz = self._raiz(run)
+        con_general = (
+            solo_carpeta is None
+            or time.monotonic() - run.inventario_general_en >= INVENTARIO_GENERAL_CADA
+        )
+        if solo_carpeta is None:
+            # Al terminar o al detener: las subcarpetas que cambiaron desde su
+            # última escritura. Reescribirlas todas costaba minutos en una
+            # carpeta de cientos de UPD que ya estaban al día.
+            carpetas = [carpeta for carpeta, filas in de_todas.items() if self._cambio(run, carpeta, len(filas))]
+        else:
+            # Sólo la subcarpeta del PDF que llegó: sus folios se deducen
+            # dentro de ella y nunca de una a otra, así que bastan sus filas.
+            carpetas = [solo_carpeta]
+            de_todas = {solo_carpeta: run.filas_por_carpeta.get(solo_carpeta, [])}
+        fuids: list[tuple[str, list, Path, tuple[int, int]]] = []
+        actas: list[tuple[str, list[dict], Path]] = []
+        for carpeta in carpetas:
+            suyas = [dict(fila) for fila in de_todas.get(carpeta, [])]
+            ordenadas = inventario_de_la_carpeta(suyas)
+            filas = filas_del_fuid(ordenadas)
+            version = (run.version_de_carpeta.get(carpeta, 0), len(suyas))
+            if carpeta and filas:
+                # El que ya se escribió, por si se escribió con otro nombre
+                # porque el suyo estaba abierto; si no, el de la subcarpeta.
+                # Sin filas -- sólo hojas de una ceremonia, o lo de antes de la
+                # primera ficha -- no hay FUID que escribir.
+                ya = run.inventarios_de_carpeta.get(carpeta)
+                fuids.append((carpeta, filas, Path(ya) if ya else ruta_del_fuid(run.destination / carpeta), version))
+            else:
+                run.version_escrita[carpeta] = version
+            # Y las actas de consejo, su Excel de siempre con el resumen. La
+            # raíz no: allí va el general, con todas.
+            de_consejo = [fila for fila in ordenadas if es_de_consejo(fila)]
+            if carpeta and de_consejo and carpeta != raiz:
+                ya = run.actas_de_carpeta.get(carpeta)
+                actas.append((carpeta, de_consejo, Path(ya) if ya else self._ruta_de_un_excel(run.destination / carpeta)))
+        # El general de las actas de consejo en la carpeta raíz del espejo,
+        # cada ``INVENTARIO_GENERAL_CADA`` y al terminar; y siempre que el PDF
+        # que llegó está en la raíz, porque ése es también el suyo. El FUID
+        # general lo escribe ``_escribir_generales``, con todas las habilidades.
+        general_de_actas = None
+        validacion = None
+        if con_general or solo_carpeta == raiz:
+            todas = inventario_de_la_carpeta([dict(fila) for fila in run.inventario_filas])
+            validacion = validar_inventario(todas)
+            de_consejo = [fila for fila in todas if es_de_consejo(fila)]
+            if de_consejo:
+                ya = run.actas_general
+                general_de_actas = (de_consejo, Path(ya) if ya else self._ruta_de_un_excel(run.destination / raiz))
+        return {
+            "fuids": fuids,
+            "actas": actas,
+            "general_de_actas": general_de_actas,
+            "validacion": validacion,
+            "con_general": con_general,
+            "completa": solo_carpeta is None,
+            "filas": len(run.inventario_filas),
+        }
+
+    @staticmethod
+    def _cambio(run: FolderRun, carpeta: str, filas: int) -> bool:
+        """Si las filas de la subcarpeta cambiaron desde que se escribió su FUID; una que no se escribió nunca, sí."""
+        return run.version_escrita.get(carpeta) != (run.version_de_carpeta.get(carpeta, 0), filas)
+
+    def _escribir_el_plan(self, run: FolderRun, plan: dict) -> dict:
+        """Escribe los Excel del plan, sin el cerrojo de la corrida. Devuelve dónde quedó cada uno."""
+        escritos: dict = {"fuids": {}, "actas": {}, "general_de_actas": None}
+        for carpeta, filas, destino, _version in plan["fuids"]:
+            escritos["fuids"][carpeta] = str(self._escribir_un_fuid(run, filas, destino, carpeta=carpeta))
+        for carpeta, de_consejo, destino in plan["actas"]:
+            escritos["actas"][carpeta] = str(self._escribir_el_de_actas(run, de_consejo, destino))
+        if plan["general_de_actas"] is not None:
+            de_consejo, destino = plan["general_de_actas"]
+            escritos["general_de_actas"] = str(self._escribir_el_de_actas(run, de_consejo, destino))
+        return escritos
+
+    @staticmethod
+    def _aplicar_lo_escrito(run: FolderRun, plan: dict, escritos: dict) -> None:
+        """Apunta en la corrida lo que se escribió. Bajo ``run.cerrojo``."""
+        for carpeta, _filas, _destino, version in plan["fuids"]:
+            run.inventarios_de_carpeta[carpeta] = escritos["fuids"][carpeta]
+            run.version_escrita[carpeta] = version
+        run.actas_de_carpeta.update(escritos["actas"])
+        if escritos["general_de_actas"] is not None:
+            run.actas_general = escritos["general_de_actas"]
+        if plan["validacion"] is not None:
+            run.inventario_validacion = plan["validacion"]
+        if plan["con_general"]:
+            # Desde que terminó de escribirse: medido desde antes, una escritura
+            # más larga que el intervalo se encadenaba sin pausa.
+            run.inventario_general_en = time.monotonic()
+        run.inventario_error = None
+        if plan["completa"]:
+            run.inventario_escritas = plan["filas"]
+
+    @staticmethod
+    def _oficina_de(run: FolderRun, carpeta: str | None) -> str | None:
+        """La oficina productora del FUID de una subcarpeta.
+
+        La que escribió el operador, si escribió una; si no, la que nombra la
+        subcarpeta, de dentro afuera; y si no nombra ninguna, la de la corrida
+        (el Excel del cliente o el nombre de la carpeta elegida). Lanzada la
+        raíz del repositorio entero, cada facultad lleva la suya en vez de la
+        «FACULTAD DE INGENIERIA» de la plantilla (2026-10-30).
+        """
+        from ..domain.oficina_productora import oficina_de_la_ruta
+
+        if run.oficina_del_operador or not carpeta:
+            return run.oficina
+        return oficina_de_la_ruta(carpeta) or run.oficina
+
+    @staticmethod
+    def _escribir_un_fuid(run: FolderRun, filas: list, destino: Path, *, carpeta: str | None = None) -> Path:
+        """Escribe un FUID con la oficina de su carpeta; con otro nombre sólo si el suyo está abierto."""
+        from ..adapters.fuid_de_la_entrega import escribir_fuid
+
+        oficina = FolderRunner._oficina_de(run, carpeta)
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            return escribir_fuid(filas, destino, oficina=oficina)
+        except PermissionError:
+            return escribir_fuid(filas, unique_path(destino.parent, destino.name), oficina=oficina)
 
     @staticmethod
     def _ruta_de_un_excel(carpeta: Path, prefijo: str = "ACTAS") -> Path:
-        """«ACTAS UPD3859772__inventario.xlsx» dentro de la carpeta que inventaría.
-
-        Con ``prefijo`` «ACTAS DE GRADO» para las actas de grado: una carpeta
-        que trae de las dos clases deja un Excel de cada una.
-        """
+        """«ACTAS UPD3859772__inventario.xlsx»: el Excel de actas de consejo de una carpeta."""
         from ..adapters.excel_actas import SUFIJO
         from ..domain.naming import sheet_filename
 
@@ -2821,145 +3297,17 @@ class FolderRunner:
             directory_length=len(str(carpeta)),
         )
 
-    def _escribir_inventario_de_actas(
-        self, run: FolderRun, solo_carpeta: str | None = None
-    ) -> None:
-        """Deja en el espejo del destino el Excel general y el de cada subcarpeta.
-
-        El general va en la carpeta raíz -- ``DESTINO\\00C003284\\ACTAS
-        00C003284__inventario.xlsx`` -- con todas las actas; y cada subcarpeta
-        que tenga PDF lleva el suyo, sólo con sus actas: quien abre
-        ``UPD3859772`` en el destino encuentra ahí su inventario, como encontraría
-        los papeles en la caja. Las filas van en el orden de la carpeta y
-        numeradas desde 1, y los folios se encadenan dentro de cada subcarpeta.
-
-        Volver a procesar la misma carpeta al mismo destino **actualiza** esos
-        archivos en vez de dejar al lado un «(2)». Sólo si uno está abierto en
-        Excel -- que lo bloquea -- se escribe con otro nombre, y la pantalla
-        enseña cuál.
-
-        Que falle no deshace nada: las filas siguen en la corrida y cada acta
-        conserva su propio Excel junto a su trabajo.
-
-        ``solo_carpeta`` es la escritura de en medio de la corrida: el Excel de
-        esa subcarpeta, y el general sólo si hace ``INVENTARIO_GENERAL_CADA``
-        que no se escribe. Sin ella se escriben todos, que es lo que se hace al
-        terminar y lo que deja los folios deducidos con todas las filas.
-        """
-        with run.cerrojo:
-            self._escribir_inventarios(run, solo_carpeta)
-
-    def _escribir_inventarios(self, run: FolderRun, solo_carpeta: str | None) -> None:
-        if not run.inventario_filas:
-            return
-        if solo_carpeta is None and len(run.inventario_filas) == run.inventario_escritas:
-            return
-        con_general = (
-            solo_carpeta is None
-            or time.monotonic() - run.inventario_general_en >= INVENTARIO_GENERAL_CADA
-        )
-        try:
-            # En el orden de la carpeta y con los folios que la continuidad de
-            # la foliación permite deducir de las actas vecinas.
-            from ..application.acta_consejo import (
-                CONSEJO,
-                GRADO,
-                TIPO_DE_GRADO,
-                inventario_de_la_carpeta,
-                validar_inventario,
-            )
-            from ..domain.acta_grado import ROTULO_DE_CEREMONIA
-
-            if con_general or solo_carpeta == self._raiz(run):
-                filas = inventario_de_la_carpeta(run.inventario_filas)
-                run.inventario_validacion = validar_inventario(filas)
-            else:
-                # Sólo la subcarpeta del acta que llegó: sus folios se deducen
-                # dentro de ella y nunca de una a otra, así que basta con sus
-                # filas. Con todas, cada acta reordenaba la corrida entera.
-                filas = inventario_de_la_carpeta(run.filas_por_carpeta.get(solo_carpeta, []))
-            # Un Excel por clase de acta: las de consejo con su resumen, las de
-            # grado sin él. El de consejo conserva el nombre de siempre.
-            por_clase: dict[str, list[dict]] = {}
-            for fila in filas:
-                clase = str(fila.get("tipo") or CONSEJO.tipo_documental)
-                # Las hojas de una ceremonia de grado van con las actas de
-                # grado: el FUID no les da fila, pero son de esa entrega.
-                if clase == ROTULO_DE_CEREMONIA:
-                    clase = TIPO_DE_GRADO
-                por_clase.setdefault(clase, []).append(fila)
-            for clase, suyas in por_clase.items():
-                grado = clase == TIPO_DE_GRADO
-                perfil = GRADO if grado else CONSEJO
-                prefijo = "ACTAS DE GRADO" if grado else "ACTAS"
-                # El que ya se escribió, por si se escribió con otro nombre
-                # porque el suyo estaba abierto; si no, el de su clase.
-                ya = run.inventarios_generales.get(clase)
-                general = Path(ya) if ya else self._ruta_de_un_excel(
-                    run.destination / self._raiz(run), prefijo
-                )
-                # Una carpeta sin subcarpetas tiene un solo Excel, que es a la
-                # vez el general y el suyo: ése va al día siempre.
-                es_el_suyo = solo_carpeta is not None and (
-                    self._ruta_de_un_excel(run.destination / solo_carpeta, prefijo) == general
-                )
-                if con_general or es_el_suyo:
-                    general = self._escribir_un_excel(run, suyas, general, perfil)
-                    run.inventarios_generales[clase] = str(general)
-
-                por_carpeta: dict[str, list[dict]] = {}
-                for fila in suyas:
-                    por_carpeta.setdefault(str(fila.get("carpeta") or ""), []).append(fila)
-                for carpeta, de_la_carpeta in por_carpeta.items():
-                    if solo_carpeta is not None and carpeta != solo_carpeta:
-                        continue
-                    destino = self._ruta_de_un_excel(run.destination / carpeta, prefijo)
-                    if carpeta and destino != general:
-                        ya = run.inventarios_de_carpeta.get((clase, carpeta))
-                        escrito = self._escribir_un_excel(
-                            run, de_la_carpeta, Path(ya) if ya else destino, perfil
-                        )
-                        run.inventarios_de_carpeta[(clase, carpeta)] = str(escrito)
-
-            # El que baja la pantalla: el de consejo si lo hay, si no el de grado.
-            run.inventario = run.inventarios_generales.get(
-                CONSEJO.tipo_documental
-            ) or run.inventarios_generales.get(TIPO_DE_GRADO)
-            run.inventario_error = None
-            if con_general:
-                # Desde que terminó de escribirse: medido desde antes, una
-                # escritura más larga que el intervalo se encadenaba sin pausa.
-                run.inventario_general_en = time.monotonic()
-            if solo_carpeta is None:
-                run.inventario_escritas = len(run.inventario_filas)
-        except Exception as error:  # noqa: BLE001 - lo leído sigue en la corrida
-            logger.warning("no se pudo escribir el inventario de actas", exc_info=True)
-            run.inventario_error = explicar_fallo(error)
-
     @staticmethod
-    def _escribir_un_excel(
-        run: FolderRun, filas: list[dict], destino: Path, perfil=None
-    ) -> Path:
-        """Escribe un inventario de actas, con otro nombre sólo si el suyo está abierto."""
+    def _escribir_el_de_actas(run: FolderRun, filas: list[dict], destino: Path) -> Path:
+        """El Excel de actas de consejo, con el resumen de cada una; otro nombre sólo si el suyo está abierto."""
         from ..adapters.excel_actas import escribir_inventario_de_actas
         from ..application.acta_consejo import CONSEJO, SIN_IA
 
-        perfil = perfil or CONSEJO
-        if not perfil.con_resumen and not perfil.lee_folio:
-            # Las actas de grado: el FUID oficial, una fila por graduado.
-            from ..adapters.fuid_actas_de_grado import escribir_fuid_de_actas_de_grado
-
-            destino.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                return escribir_fuid_de_actas_de_grado(filas, destino)
-            except PermissionError:
-                destino = unique_path(destino.parent, destino.name)
-                return escribir_fuid_de_actas_de_grado(filas, destino)
         opciones = {
             "carpeta": al_operador(run.source),
             "nota": SIN_IA if run.lectura == "local" else None,
-            "titulo": perfil.titulo,
-            "con_resumen": perfil.con_resumen,
+            "titulo": CONSEJO.titulo,
+            "con_resumen": CONSEJO.con_resumen,
         }
         destino.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -3046,8 +3394,11 @@ class FolderRunner:
         """La constancia «completa» de un PDF entregado entero: la próxima corrida lo salta.
 
         Lleva lo que los generales necesitan de él -- su fila de procesos, sus
-        actas, sus unidades --, para que la corrida que lo salte lo siga
-        contando sin abrir nada.
+        filas del FUID, sus unidades --, para que la corrida que lo salte lo
+        siga contando sin abrir nada. Las filas son las que este PDF sumó a la
+        corrida, de la habilidad que sea: con sólo las de las actas, relanzar una
+        carpeta dejaba sin sus filas a las resoluciones, las matrículas y los
+        archivos enteros ya entregados (2026-10-30).
         """
         from .indices import fila_de_proceso, habilidad_del_proceso
 
@@ -3071,6 +3422,8 @@ class FolderRunner:
             rutas = entrega.archivos
         informe = job.report or {}
         carpeta = self._carpeta_de(run, origin)
+        with run.cerrojo:
+            aportadas = [dict(fila) for fila in (run.aportes.get(str(origin)) or ([], [], 0))[0]]
         constancia = Constancia(
             origen=str(self._relative(run, origin)),
             tamano=huella[0],
@@ -3080,7 +3433,7 @@ class FolderRunner:
             habilidad=habilidad_del_proceso(job),
             job_id=job.id,
             proceso=asdict(fila_de_proceso(job, self._destino_relativo(run, job))),
-            actas=[{**fila, "carpeta": carpeta} for fila in informe.get("inventario_actas") or []],
+            actas=aportadas or [{**fila, "carpeta": carpeta} for fila in informe.get("inventario_actas") or []],
             unidades=[
                 {**item, "source_document": origin.name}
                 for item in ((informe.get("inventory") or {}).get("items") or [])

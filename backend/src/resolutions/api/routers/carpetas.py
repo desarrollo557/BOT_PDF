@@ -81,7 +81,11 @@ async def start_folder_run(
     # La plantilla de la caja de correspondencia: índice electrónico, Kingspan
     # o mixto. Viaja igual que en una subida, para que elegir Kingspan en una
     # carpeta no se quede en nada.
-    tipo_documento_choice = _tipo_documento_choice(payload.get("tipo_documento"))
+    # La pantalla lo manda como «tipoDocumento» (2026-10-29): leyendo sólo
+    # «tipo_documento», una carpeta de Kingspan o de Afinia perdía su plantilla.
+    tipo_documento_choice = _tipo_documento_choice(
+        payload.get("tipo_documento") or payload.get("tipoDocumento")
+    )
     from .trabajos import _acta, _paralelo
 
     # El acta de transferencia del inventario de Kingspan, la misma para toda
@@ -89,6 +93,7 @@ async def start_folder_run(
     acta_choice = _acta(payload.get("acta"))
 
     a_la_vez = _paralelo(ctx, payload.get("paralelo"))
+    from ...domain.oficina_productora import oficina_escrita
 
     try:
         run = ctx.folders.start(
@@ -111,6 +116,9 @@ async def start_folder_run(
             retomar=str(payload.get("retomar") or "no"),
             # Cuántos PDF de la carpeta a la vez; sin él, los del planificador.
             paralelo=a_la_vez,
+            # La oficina productora de la cabecera del FUID. Sin ella se
+            # averigua de la carpeta al empezar.
+            oficina=oficina_escrita(payload.get("oficina")),
         )
     except FolderError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None
@@ -129,12 +137,14 @@ async def get_folder_run(ctx: Ctx, run_id: str) -> dict[str, object]:
 
 @router.get("/api/folder-runs/{run_id}/inventario.xlsx")
 async def folder_run_inventario(ctx: Ctx, run_id: str) -> FileResponse:
-    """El inventario de actas de la carpeta entera: una fila por PDF.
+    """El inventario general de la carpeta entera: «00.FUID GENERAL.xlsx».
 
-    Lo escribe la corrida en la carpeta de destino y se sirve ese mismo
-    archivo, para que lo que se descarga y lo que quedó entregado no puedan
-    discrepar. No es el FUID, así que no lleva su restricción: como la planilla
-    de un documento, la bajan los tres perfiles.
+    Desde el 2026-10-29 es el FUID FO-GD-008 con las filas de todas las
+    habilidades -- actas, graduados, estudiantes, resoluciones --, con la
+    oficina de la carpeta en la cabecera; antes era el Excel de las actas de
+    consejo. Lo escribe la corrida en la carpeta de destino y se sirve ese
+    mismo archivo, para que lo que se descarga y lo que quedó entregado no
+    puedan discrepar.
     """
     run = ctx.folders.get(run_id)
     if run is None:
@@ -144,7 +154,7 @@ async def folder_run_inventario(ctx: Ctx, run_id: str) -> FileResponse:
         detalle = (
             f"No se pudo escribir el inventario de esta carpeta: {run.inventario_error}"
             if run.inventario_error
-            else "Esta carpeta todavía no tiene inventario: se escribe con la primera acta."
+            else "Esta carpeta todavía no tiene inventario: el FUID general se escribe al entregar el primer PDF."
         )
         raise HTTPException(status_code=404, detail=detalle)
     return FileResponse(hoja, media_type=XLSX_MEDIA, filename=hoja.name)

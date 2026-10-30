@@ -164,11 +164,12 @@
 
 
   /**
-   * Cuántas actas van ya en el inventario de la carpeta. Lo dice el servicio,
-   * que es quien junta las filas; uno anterior a la revisión 20 no lo dice, y
-   * entonces no hay inventario de actas que enseñar.
+   * Cuántas filas van ya en el inventario general de la carpeta: actas,
+   * graduados, estudiantes, resoluciones… Lo dice el servicio, que es quien
+   * junta las filas; uno anterior a la revisión 20 no lo dice, y entonces no
+   * hay inventario que enseñar.
    */
-  const actasDelInventario = $derived(run.inventario_filas ?? 0);
+  const filasDelInventario = $derived(run.inventario_filas ?? 0);
 
   /*
    * Al retomar una carpeta de libros de diplomas: qué había de cada PDF en el
@@ -213,8 +214,8 @@
                 ? [
                     {
                       id: 'actas',
-                      titulo: 'Inventario de actas',
-                      detalle: 'Una fila por acta de toda la carpeta',
+                      titulo: 'FUID general',
+                      detalle: 'El FO-GD-008 de toda la carpeta: una fila por acta, graduado, estudiante o resolución',
                       formato: 'Excel' as const,
                       principal: true,
                       bajar: () =>
@@ -313,17 +314,24 @@
        porque es lo que se entrega: el «Excel de esta acta» de cada PDF, más
        abajo, es sólo de ese documento, y confundirlos dejaba al operador con
        una fila en vez de la carpeta entera. -->
-  {#if actasDelInventario > 0 || run.inventario_error}
+  {#if filasDelInventario > 0 || run.inventario_error}
     <div class="inventario" data-listo={run.inventario ? 'si' : 'no'}>
       {#if run.inventario}
         <div class="texto">
           <b>Inventario general de la carpeta</b>
           <small>
-            {actasDelInventario}
-            {actasDelInventario === 1 ? 'acta' : 'actas'}{active ? ' hasta ahora' : ''}, una fila
-            por PDF · quedó en la carpeta de destino como
-            <code title={run.inventario_ruta ?? run.inventario}>{run.inventario}</code>
+            {filasDelInventario}
+            {filasDelInventario === 1 ? 'fila' : 'filas'}{active ? ' hasta ahora' : ''} en el FUID{#if run.oficina}
+              de <b>{run.oficina}</b>{/if} · quedó en la carpeta de destino como
+            <code title={run.inventario_ruta ?? run.inventario}>{run.inventario}</code>, y cada
+            subcarpeta lleva el suyo
           </small>
+          {#if run.actas}
+            <small>
+              Las actas de consejo van además en
+              <code title={run.actas_ruta ?? run.actas}>{run.actas}</code>, con el resumen de cada una.
+            </small>
+          {/if}
           {#if validacion && validacion.filas}
             <!-- El control de calidad antes de entregar: qué tan completo va. -->
             <small class="validacion" data-pendientes={validacion.pendientes ? 'si' : 'no'}>
@@ -343,8 +351,19 @@
             </small>
           {/if}
         </div>
+      {:else if run.inventario_error}
+        <p class="inline-error">No se pudo escribir el FUID de la carpeta: {run.inventario_error}</p>
       {:else}
-        <p class="inline-error">No se pudo escribir el inventario de actas: {run.inventario_error}</p>
+        <!-- Las filas se suman al entregar cada PDF y el FUID general se
+             escribe de fondo poco después: mientras tanto no hay error. -->
+        <div class="texto">
+          <b>Inventario general de la carpeta</b>
+          <small>
+            {filasDelInventario}
+            {filasDelInventario === 1 ? 'fila' : 'filas'}{active ? ' hasta ahora' : ''} · escribiendo
+            el FUID general…
+          </small>
+        </div>
       {/if}
     </div>
   {/if}

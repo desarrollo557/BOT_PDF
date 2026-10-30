@@ -5,7 +5,7 @@
   import { reconocerCarpeta, type SugerenciaDeCarpeta } from '$lib/api';
   import { confirmar } from '$lib/confirmar.svelte';
   import { jobStore } from '$lib/jobs.svelte';
-  import type { AgruparChoice, CorteChoice } from '$lib/habilidades';
+  import { HABILIDADES, type AgruparChoice, type CorteChoice } from '$lib/habilidades';
   import type { LecturaChoice } from '$lib/lectura';
   import type { TipoPedido } from '$lib/tipos';
   import type { OracleChoice } from '$lib/oracles';
@@ -133,6 +133,15 @@
   let destination = $state('');
   let disposition = $state<SourceDisposition>('leave');
   let watch = $state(false);
+
+  /* -- la oficina productora del FUID -----------------------------------------
+     La cabecera de cada FUID lleva la de su carpeta (lo eligió el operador el
+     2026-10-29 para el REPOSITORIO UDC). El servicio la averigua sola -- del
+     inventario del cliente que trae la carpeta o de su nombre -- y el
+     reconocimiento la enseña antes de empezar; escribirla aquí la cambia. */
+  const escribeFuid = $derived(HABILIDADES.find((h) => h.id === habilidadId)?.escribeFuid ?? false);
+  let oficina = $state('');
+  const oficinaEscrita = $derived(oficina.replace(/\s+/g, ' ').trim());
   const RETOMAR: { id: RetomarChoice; label: string; hint: string }[] = [
     {
       id: 'no',
@@ -198,6 +207,7 @@
     disposition = 'leave';
     watch = false;
     retomar = 'no';
+    oficina = '';
     error = null;
     picking = null;
   });
@@ -281,6 +291,7 @@
         agrupar,
         ...(tipoDocumento ? { tipoDocumento } : {}),
         ...(acta ? { acta } : {}),
+        ...(escribeFuid && oficinaEscrita ? { oficina: oficinaEscrita } : {}),
         ...(modoRetomar !== 'no' ? { retomar: modoRetomar } : {}),
         ...(paralelo ? { paralelo } : {})
       });
@@ -352,6 +363,31 @@
         <small>Se miraron {analisis.mirados} de {analisis.total} PDF.</small>
       {/if}
     </div>
+  {/if}
+
+  {#if escribeFuid}
+    <label class="field">
+      <span class="caps">Oficina productora del FUID</span>
+      <input
+        class="input"
+        type="text"
+        spellcheck="false"
+        maxlength="120"
+        placeholder={analisis?.oficina ?? 'Se averigua de la carpeta al empezar'}
+        bind:value={oficina}
+      />
+      <small>
+        {#if oficinaEscrita}
+          La cabecera de cada FUID dirá <b>{oficinaEscrita.toUpperCase()}</b>.
+        {:else if analisis?.oficina}
+          Si no escribe otra, la cabecera de cada FUID dirá <b>{analisis.oficina}</b>: la del
+          inventario del cliente que trae la carpeta o la que nombra la carpeta.
+        {:else}
+          Va en la cabecera de cada FUID. Vacía, se averigua de la carpeta al empezar; si nada la
+          dice, queda la de la plantilla.
+        {/if}
+      </small>
+    </label>
   {/if}
 
   <div class="field">

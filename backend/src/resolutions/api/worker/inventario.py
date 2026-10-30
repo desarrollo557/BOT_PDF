@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import errno
 import logging
+from dataclasses import asdict
 from pathlib import Path
 
 from ...application.progress import Stage
@@ -124,7 +125,7 @@ def _inventory_job(payload: dict) -> dict:
 
 
 def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
-    """Inventariar las actas de consejo de un PDF: una fila por acta en un Excel sencillo.
+    """Inventariar las actas de consejo de un PDF: una fila por acta, en su Excel y en el FUID.
 
     Si además se pidió dividir -- la acción «Dividir e inventariar» --, cada
     sesión sale en su propio PDF con su portada, su citación, su asistencia, su
@@ -132,11 +133,16 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
     para el inventario, así que dividir no cuesta ninguna lectura más, ni de
     pago ni de casa.
 
-    No el FUID: una tabla con la carpeta, el archivo, las páginas, el acta, su
-    fecha, el folio inicial y el final, cuántos folios son y el resumen. Un PDF
-    de un acta da una fila; un libro, una por cada acta que trae. Queda junto al
-    trabajo, donde la busca el botón «Excel de esta acta», y en una corrida de
-    carpeta se junta con los demás PDF en un solo Excel. El original no se toca.
+    Su Excel de siempre -- la carpeta, el archivo, las páginas, el acta, su
+    fecha, el folio inicial y el final, cuántos folios son y el resumen -- y,
+    desde el 2026-10-29, el FUID oficial como todas las habilidades (ver
+    ``adapters/fuid_de_la_entrega.py``). Un PDF de un acta da una fila; un
+    libro, una por cada acta que trae. Quedan junto al trabajo, y en una
+    corrida de carpeta se juntan con los demás PDF en los de su subcarpeta y en
+    los generales. El original no se toca.
+
+    Las actas de grado (``grado``) son el mismo trabajo con otro perfil, y su
+    inventario es sólo el FUID: una fila por graduado.
     """
     from ...adapters.excel_actas import SUFIJO, escribir_inventario_de_actas
     from ...adapters.pymupdf_assembler import PyMuPDFAssembler
@@ -252,27 +258,37 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
         report["unwritable_pages"] = division.ilegibles
         report["dividido"] = True
 
-    _anunciar(payload, Stage.INVENTORYING, detail="escribiendo el Excel", done=0, total=1)
+    _anunciar(payload, Stage.INVENTORYING, detail="escribiendo el FUID", done=0, total=1)
     taller.control.check()
+    from ...adapters.fuid_de_la_entrega import SUFIJO_DEL_FUID, escribir_fuid
+
     # Con el nombre del PDF y no con su ruta: en una corrida de carpeta el
     # nombre llega con la carpeta delante, y el Excel caía en una subcarpeta
     # donde el botón de descarga no lo buscaba.
-    destino = taller.destination / sheet_filename(
-        Path(taller.name).name, SUFIJO, directory_length=len(str(taller.destination))
-    )
+    def junto_al_trabajo(sufijo: str) -> Path:
+        return taller.destination / sheet_filename(
+            Path(taller.name).name, sufijo, directory_length=len(str(taller.destination))
+        )
+
+    filas = [asdict(fila) for fila in outcome.filas]
     try:
         if grado:
-            # Las actas de grado van en el FUID oficial, una fila por graduado.
-            from ...adapters.fuid_actas_de_grado import escribir_fuid_de_actas_de_grado
-
-            report["inventario"] = escribir_fuid_de_actas_de_grado(outcome.filas, destino).name
+            # Las actas de grado: su inventario es el FUID, una fila por graduado.
+            report["inventario"] = escribir_fuid(
+                filas, junto_al_trabajo(SUFIJO), oficina=payload.get("oficina")
+            ).name
         else:
+            # Las de consejo, su Excel de siempre, con el resumen de cada acta,
+            # y además el FUID, como todas las habilidades desde el 2026-10-29.
             report["inventario"] = escribir_inventario_de_actas(
                 outcome.filas,
-                destino,
+                junto_al_trabajo(SUFIJO),
                 nota=None if taller.con_ia() else SIN_IA,
                 titulo=perfil.titulo,
                 con_resumen=perfil.con_resumen,
+            ).name
+            report["fuid_de_actas"] = escribir_fuid(
+                filas, junto_al_trabajo(SUFIJO_DEL_FUID), oficina=payload.get("oficina")
             ).name
     except Exception as error:  # noqa: BLE001 - la lectura sirvió igual
         logger.warning("no se pudo escribir el inventario del acta", exc_info=True)

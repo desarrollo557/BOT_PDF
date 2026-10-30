@@ -595,6 +595,9 @@ class PerfilDeActas:
     lee_formulario: bool = False
 
 
+#: Las actas de consejo: una por sesión, con su folio manuscrito y su resumen.
+#: Desde el 2026-10-29 van además en el FUID, que no tiene dónde poner el
+#: resumen: se queda en su Excel de actas, que se sigue entregando.
 CONSEJO = PerfilDeActas(
     tipo_documental=TIPO_DOCUMENTAL,
     titulo="INVENTARIO DE ACTAS DE CONSEJO",
@@ -2344,11 +2347,35 @@ def inventario_de_la_carpeta(filas: Sequence[Mapping[str, object]]) -> list[dict
     ordenadas = sorted((dict(fila) for fila in filas), key=_orden_natural)
     por_carpeta: dict[str, list[dict[str, object]]] = {}
     for fila in ordenadas:
+        if not es_de_actas(fila):
+            continue
         por_carpeta.setdefault(str(fila.get("carpeta") or ""), []).append(fila)
     for grupo in por_carpeta.values():
+        _numero_por_la_serie(grupo)
         _deducir_en(grupo)
-    # Lo último antes de escribir: ninguna celda vacía sin su porqué.
-    return [explicar_lo_que_falta(fila) for fila in ordenadas]
+    # Lo último antes de escribir: ninguna celda vacía sin su porqué. Lo que no
+    # es un acta -- una historia académica, una matrícula -- no tiene acta ni
+    # folio que deducir: trae ya su porqué.
+    return [explicar_lo_que_falta(fila) if es_de_actas(fila) else fila for fila in ordenadas]
+
+
+#: Las clases de fila que son actas: las de consejo, las de grado y las hojas
+#: de su ceremonia. Una fila sin tipo es de un informe viejo de consejo.
+_DE_ACTAS = frozenset({TIPO_DOCUMENTAL, TIPO_DE_GRADO, ROTULO_DE_CEREMONIA})
+
+
+def es_de_actas(fila: Mapping[str, object]) -> bool:
+    """Si la fila es de un acta, la única clase con folios encadenados y datos que deducir.
+
+    Las demás habilidades -- historias académicas, matrículas, lo que venga --
+    dejan sus filas en el mismo inventario, pero cada una llega ya con su porqué.
+    """
+    return (fila.get("tipo") or TIPO_DOCUMENTAL) in _DE_ACTAS
+
+
+def es_de_consejo(fila: Mapping[str, object]) -> bool:
+    """Si la fila es de un acta de consejo: las que llevan además su Excel con el resumen."""
+    return (fila.get("tipo") or TIPO_DOCUMENTAL) == TIPO_DOCUMENTAL
 
 
 #: Lo que cada clase de acta lleva en su fila y el papel puede traer, con su
@@ -2383,7 +2410,8 @@ def _vacio(valor: object) -> bool:
 
 def _datos_de(fila: Mapping[str, object]) -> tuple[tuple[str, str], ...]:
     tipo = fila.get("tipo")
-    if tipo == ROTULO_DE_CEREMONIA:
+    # Lo que no es un acta dice en su nota lo que le falta, con sus campos.
+    if tipo == ROTULO_DE_CEREMONIA or not es_de_actas(fila):
         return ()
     return _DATOS_DE_GRADO if tipo == TIPO_DE_GRADO else _DATOS_DE_CONSEJO
 
@@ -2445,12 +2473,58 @@ def validar_inventario(filas: Sequence[Mapping[str, object]]) -> dict[str, objec
     }
 
 
+def _fecha_de_la_fila(valor: object) -> date | None:
+    """«12-07-2017» de la fila a una fecha; ``None`` si no hay."""
+    hallada = re.fullmatch(r"(\d{2})-(\d{2})-(\d{4})", str(valor or ""))
+    if not hallada:
+        return None
+    try:
+        return date(int(hallada.group(3)), int(hallada.group(2)), int(hallada.group(1)))
+    except ValueError:
+        return None
+
+
+def _numero_por_la_serie(filas: list[dict[str, object]]) -> None:
+    """El número de un acta que el OCR truncó, deducido de las sesiones vecinas del mismo libro.
+
+    «ACTA N'l?» del 12/07/2017 entre la 16 (07/07) y la 18 (14/08) es la 17;
+    «ACTA N° 01.'^» del 11/09/2015 entre la 012 y la 014, la 013 (Odontología,
+    UPD3859796 y UPD3859789, 2026-10-30). Sólo cuando falta un número y uno
+    solo entre las dos vecinas, lo leído es su comienzo y la fecha cae entre
+    las de ellas. Se anota.
+    """
+    por_libro: dict[str, list[dict[str, object]]] = {}
+    for fila in filas:
+        por_libro.setdefault(str(fila.get("archivo") or ""), []).append(fila)
+    for suyas in por_libro.values():
+        for antes, fila, despues in zip(suyas, suyas[1:], suyas[2:], strict=False):
+            leidos = [str(x.get("numero") or "") for x in (antes, fila, despues)]
+            if not all(leido.isdigit() for leido in leidos):
+                continue
+            previo, leido, siguiente = (int(x) for x in leidos)
+            falta = previo + 1
+            if siguiente != falta + 1 or leido == falta or not str(falta).startswith(str(leido)):
+                continue
+            fechas = [_fecha_de_la_fila(x.get("fecha")) for x in (antes, fila, despues)]
+            if None in fechas or not fechas[0] <= fechas[1] <= fechas[2]:
+                continue
+            ancho = max(len(leidos[0]), len(leidos[2]))
+            fila["numero"] = str(falta).zfill(ancho)
+            nota = (
+                f"el número del acta se leyó «{leidos[1]}» y se dedujo de la serie: "
+                f"va entre la {leidos[0]} y la {leidos[2]}"
+            )
+            fila["observaciones"] = "; ".join(parte for parte in (nota, str(fila.get("observaciones") or "")) if parte)
+
+
 def _deducir_en(filas: list[dict[str, object]]) -> None:
     tramos = [
         (
             _folio(fila.get("folio_inicial")),
             _folio(fila.get("folio_final")),
-            int(fila.get("folios") or 0),
+            # Un acta de grado puede traer «140-141», el rango de su folio
+            # manuscrito, y no un número: entonces no hay folios que encadenar.
+            _folio(fila.get("folios")) or 0,
         )
         for fila in filas
     ]

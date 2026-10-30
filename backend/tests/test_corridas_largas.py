@@ -1100,7 +1100,7 @@ class TestElExcelDeActasDeUnaSubcarpetaAbierto:
             fila = {"carpeta": "CAJA/UPD1", "tipo": acta_consejo.CONSEJO.tipo_documental, "n": acta}
             run.inventario_filas.append(fila)
             run.filas_por_carpeta.setdefault("CAJA/UPD1", []).append(fila)
-            motor._escribir_inventarios(run, "CAJA/UPD1")
+            motor._escribir_inventario_de_actas(run, "CAJA/UPD1")
 
         assert run.inventario_error is None, run.inventario_error
         de_la_subcarpeta = {n for n in escritos if "UPD1" in n}

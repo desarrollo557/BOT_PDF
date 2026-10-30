@@ -19,6 +19,7 @@
     correspondencia: 'bandeja',
     actas: 'portapapeles',
     'actas-grado': 'birrete',
+    historias: 'documentos',
     archivo: 'carpeta',
     auto: 'buscar'
   };

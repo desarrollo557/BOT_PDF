@@ -239,6 +239,8 @@ class JobStore {
     tipoDocumento?: string;
     /** Y el acta de transferencia del inventario de Kingspan. */
     acta?: string;
+    /** Y la oficina productora de la cabecera del FUID. Ausente, la averigua el servicio. */
+    oficina?: string;
     /** Y qué clase de documento trae, cuando el operador lo sabe. */
     tipo?: TipoPedido;
     /** Y si retoma una entrega anterior (sólo libros de diplomas). */
