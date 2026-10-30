@@ -498,13 +498,27 @@ class MosaicoDeCampo(MosaicoDeNombres):
     rótulo impreso de cada renglón, en el orden en que se apilaron.
     """
 
-    def __init__(self, franja, **opciones) -> None:
+    def __init__(self, franja, *, localizar: Callable | None = None, **opciones) -> None:
         super().__init__(**opciones)
         self.CAMPO = franja.campo
         self.LEYENDAS = franja.leyendas
         self.ALTO = franja.alto
         self.MARGEN = franja.margen
         self._rotulo = re.compile(franja.rotulo, re.I)
+        #: Quién dice a qué altura está el rótulo cuando la capa de texto no:
+        #: en los escaneos de los 70 y 80 la capa rompe el rótulo y la mediana
+        #: recortaba otro renglón. Tesseract lo ubica en la imagen
+        #: (``ubicar_con_tesseract``).
+        self._localizar = localizar
+
+    def _altura_de_la_leyenda(self, source, pagina: int) -> float | None:
+        if self._localizar is not None:
+            try:
+                if (altura := self._localizar(source, pagina, self.LEYENDAS)) is not None:
+                    return altura
+            except Exception:  # noqa: BLE001 - sin ubicar, se mira la capa de texto
+                logger.debug("no se ubicó %s en la página %s", self.CAMPO, pagina, exc_info=True)
+        return super()._altura_de_la_leyenda(source, pagina)
 
     def _repartir_texto(self, texto: str, tanda: Sequence[int]) -> dict[int, str]:
         if (por_etiqueta := _por_etiqueta(texto, tanda)) is not None:
@@ -519,3 +533,25 @@ class MosaicoDeCampo(MosaicoDeNombres):
             pagina: texto[desde:hasta]
             for pagina, desde, hasta in zip(tanda, inicios, [*inicios[1:], len(texto)], strict=True)
         }
+
+
+def ubicar_con_tesseract(source, pagina: int, leyendas, dpi: int = 150) -> float | None:
+    """A qué altura de la página -- en fracción -- está la primera palabra de ``leyendas``, según Tesseract.
+
+    El rótulo va impreso, y Tesseract lo lee aunque al lado todo sea letra a
+    mano: es lo que dice dónde hacer el zoom (2026-10-30, «que la OCR haga un
+    buen zoom en las zonas identificadas»). Gratis: no paga nada.
+    """
+    from io import BytesIO
+
+    import pytesseract
+    from PIL import Image
+
+    with Image.open(BytesIO(source.render(pagina, dpi=dpi))) as imagen:
+        datos = pytesseract.image_to_data(imagen, lang="spa", output_type=pytesseract.Output.DICT, config="--psm 11")
+        alto = imagen.height
+    palabras = [_plano(palabra) for palabra in leyendas]
+    for texto, arriba in zip(datos["text"], datos["top"], strict=True):
+        if texto.strip() and any(palabra in _plano(texto) for palabra in palabras):
+            return arriba / alto
+    return None

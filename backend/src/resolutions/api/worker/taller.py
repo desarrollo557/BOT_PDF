@@ -265,9 +265,15 @@ class Taller:
         La segunda lectura estándar de todas las habilidades (``domain/doble_lectura.py``):
         cada una describe su campo con una ``Franja``. Con «Solo OCR» no hay.
         """
-        from ...adapters.mosaico_de_nombres import MosaicoDeCampo
+        from ...adapters.mosaico_de_nombres import MosaicoDeCampo, ubicar_con_tesseract
 
-        return self._mosaico(lambda **opciones: MosaicoDeCampo(franja, **opciones))
+        # Tres renglones por imagen y a 450 ppp: con diez, el proveedor reducía
+        # la imagen y la letra a mano dejaba de leerse (UPD3859718, 2026-10-30).
+        return self._mosaico(
+            lambda **opciones: MosaicoDeCampo(
+                franja, localizar=ubicar_con_tesseract, tamano=3, dpi=450, **opciones
+            )
+        )
 
     def mosaico_de_fechas(self):
         """Quien repesca la fecha manuscrita en el pie del diploma, con cualquier lectura de pago.

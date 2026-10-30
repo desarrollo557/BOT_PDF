@@ -442,3 +442,25 @@ def test_la_tarjeta_mal_leida_se_corrige_con_la_fecha_de_nacimiento():
 def test_la_cedula_del_acudiente_no_es_la_del_estudiante():
     texto = "Cédula o tarjeta No. Libreta Militar No. Nombre del acudiente (s) Luis Pérez C.C. 3.456.789 Dirección"
     assert leer_ficha(texto).cedula is None
+
+
+def test_lo_que_los_revisores_encontraron_en_el_papel():
+    """UPD3859718, revisado página por página (2026-10-30)."""
+    # Pág. 13: el «#» es de la cédula, no un código.
+    barreto = leer_ficha("Cédula o tarjeta No. CC # 78106659 de Ayapel Libreta Militar No. 78.106.659")
+    assert (barreto.cedula, barreto.codigo) == ("78106659", None)
+    # Pág. 37: la tarjeta rotulada, aunque sea corta.
+    assert leer_ficha("Cédula o tarjeta No. TI 66263 en trámite Libreta Militar No.").tarjeta == "66263"
+    # Pág. 144: la cédula al pie de la hoja de notas.
+    assert leer_ficha("SARYS Auxiliadora Salon Salcedo CC 45444285 C/gena").cedula == "45444285"
+
+
+def test_el_codigo_sin_rotulo_empieza_por_el_anio_de_ingreso():
+    from resolutions.domain.historia_academica import codigo_sin_rotulo
+
+    assert codigo_sin_rotulo("840222\n\nUNIVERSIDAD DE CARTAGENA ENFERMERIA", 1984) == "840222"
+    assert codigo_sin_rotulo("ENFERMERIA C-800656. REGISTRO DEL ESTUDIANTE", 1980) == "800656"
+    # La tarjeta empieza por la fecha de nacimiento, no por el ingreso.
+    assert codigo_sin_rotulo("Cédula o tarjeta No. 650609-03314 Observaciones 830303", 1983) == "830303"
+    assert codigo_sin_rotulo("Tel: 22309 Cédula o tarjeta No. 621122-01497", 1981) is None
+    assert codigo_sin_rotulo("840222", None) is None

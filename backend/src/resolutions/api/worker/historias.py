@@ -61,6 +61,8 @@ def _nombre_del_pdf(orden: int, ficha, *, carpeta: Path | None = None, paginas: 
 
 def historias_academicas_job(payload: dict) -> dict:
     """Divide e inventaría un PDF de historias académicas, un expediente por estudiante."""
+    from dataclasses import replace
+
     import pymupdf
 
     from ...adapters.pymupdf_source import PyMuPDFPageSource
@@ -71,6 +73,7 @@ def historias_academicas_job(payload: dict) -> dict:
         HISTORIA_ACADEMICA,
         SIN_ESTUDIANTE,
         abre_expediente,
+        codigo_sin_rotulo,
         es_de_notas,
         es_ficha,
         expedientes,
@@ -173,6 +176,11 @@ def historias_academicas_job(payload: dict) -> dict:
                     unidad, textos, textos_de_la_ficha, [notas_leidas, *de_las_hojas] if notas_leidas else de_las_hojas,
                     ventana, source, local,
                 )
+                if unidad.ficha is not None and not unidad.ficha.codigo and unidad.pagina_de_la_ficha:
+                    # El código sin rótulo, que empieza por el año de ingreso.
+                    texto_de_la_ficha = textos_de_la_ficha.get(unidad.pagina_de_la_ficha) or textos[unidad.pagina_de_la_ficha - 1]
+                    if codigo := codigo_sin_rotulo(texto_de_la_ficha, inicial):
+                        unidad.ficha = replace(unidad.ficha, codigo=codigo)
                 ficha = unidad.ficha
                 faltan = []
                 if ficha is not None:
@@ -326,12 +334,15 @@ def _leer_las_fichas_con_la_ia(payload, taller, source, de_pago, unidades, texto
             if notas:
                 notas_de_la_ia[unidad.pagina_de_la_ficha] = notas
             de_la_ia, de_casa = leer_ficha(ficha), unidad.ficha
+            # La cédula escrita al pie de la hoja de notas, si la ficha no la
+            # trae: «CC 45444285 C/gena» (UPD3859718, pág. 144).
+            de_las_notas = leer_ficha(notas)
             unidad.ficha = Ficha(
                 nombre=conciliado or de_la_ia.nombre or de_casa.nombre,
-                cedula=de_la_ia.cedula or de_casa.cedula,
+                cedula=de_la_ia.cedula or de_casa.cedula or de_las_notas.cedula,
                 codigo=de_casa.codigo or de_la_ia.codigo,
                 anio_de_grado=de_la_ia.anio_de_grado or de_casa.anio_de_grado,
-                tarjeta=de_la_ia.tarjeta or de_casa.tarjeta,
+                tarjeta=de_la_ia.tarjeta or de_casa.tarjeta or de_las_notas.tarjeta,
             )
     finally:
         pool.shutdown(wait=False, cancel_futures=True)

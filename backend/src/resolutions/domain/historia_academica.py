@@ -202,7 +202,7 @@ _CEDULA = re.compile(
     r"(?:CEDULA(?:\s+O\s+TARJETA)?|C\.\s*C\.)\s*(?:DE\s+CIUDADANIA\s*)?(?:N[O0]?\.?)?\W{0,3}"
     # Entre el rótulo y el número, la sigla escrita a mano -- «CC 9'132.107» --,
     # que el OCR lee «CC», «Ce» o «ee»: con ella delante la cédula se perdía.
-    r"(?:[CEQ]{1,2}\.?\s?){0,2}(\d{1,3}(?:[.,'\s\-]{1,2}\d{3}|\d{3}){1,3})\b"
+    r"(?:[CEQ]{1,2}\.?\s?){0,2}#?\s?(\d{1,3}(?:[.,'\s\-]{1,2}\d{3}|\d{3}){1,3})\b"
 )
 #: Cuántas cifras tiene una cédula: de 6 (las de los 60) a 8, o 10 las que
 #: empiezan por 1 (desde 2003). No hay cédulas de 9 cifras: un número así junto
@@ -221,7 +221,9 @@ def _parece_cedula(cifras: str) -> bool:
 _TARJETA = re.compile(r"(?<!\d)(\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))\s?[-–]\s?(\d{3,5})(?!\d)")
 #: «C.C 45.474.260», la cédula con su sigla en cualquier casilla: la ficha de
 #: los 80 la escribe a veces en la de la libreta militar.
-_CC = re.compile(r"\bC\s?\.?\s?[CQOG]\b\.?\s*(?:N[O0]\.?\s*)?(\d{1,3}(?:[.,'\s\-]{1,2}\d{3}|\d{3}){1,3})\b")
+_CC = re.compile(r"\b[CE]\s?\.?\s?[CEQOG]\b\.?\s*(?:N[O0]?\.?\s*|#\s*)?(\d{1,3}(?:[.,'\s\-]{1,2}\d{3}|\d{3}){1,3})\b")
+#: «TI 66263 en trámite»: la tarjeta rotulada, aunque sea corta (UPD3859718, pág. 37).
+_TI = re.compile(r"\bT\s?\.?\s?I\b\.?\s*(?:N[O0]?\.?\s*|#\s*)?(\d[\d.\-]{3,13}\d)")
 
 
 _MESES = {"ENE": 1, "FEB": 2, "MAR": 3, "ABR": 4, "MAY": 5, "JUN": 6, "JUL": 7, "AGO": 8,
@@ -364,6 +366,8 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
     zona = p[desde : hasta if hasta > desde else desde + 200] if desde >= 0 else p
     if hallado := _TARJETA.search(zona):
         tarjeta = f"{hallado.group(1)}-{hallado.group(2)}"
+    elif hallado := _TI.search(zona):
+        tarjeta = hallado.group(1)
     if (hallado := _CC.search(zona)) and _parece_cedula(cifras := re.sub(r"\D", "", hallado.group(1))):
         cedula = cifras
     elif hallado := _CEDULA.search(zona):
@@ -384,6 +388,9 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
             codigo = cifras
     if tarjeta:
         tarjeta = _con_la_fecha_de_nacimiento(tarjeta, _nacimiento(p))
+    if codigo and codigo == cedula:
+        # «CC # 78106659»: el «#» es de la cédula, no un código (pág. 13).
+        codigo = None
     anio = None
     if hallado := _FECHA_DE_GRADO.search(p):
         anio = int(hallado.group(1))
@@ -463,6 +470,29 @@ _PERIODO = re.compile(r"\b(19[2-9]\d|20[0-3]\d)\s?[-–]\s?(19[2-9]\d|20[0-3]\d|
 #: 18/87», «Nov. 25 83». Ninguna de las 312 de la caja 00C003277 se leía.
 _RECUADRO_DEL_GRADO = re.compile(r"\bGRADO EN\b(.{0,90}?)(?=PROMEDIO ORAL|OBSERVACION|$)")
 _ANIO_DE_LA_FECHA = re.compile(r"\b(19[2-9]\d|20[0-3]\d)\b|\d{1,2}\s?[/\- ]\s?(\d{2})\b")
+
+
+#: El código del estudiante que la ficha de 1968 a 1990 escribe a mano sin
+#: rótulo, arriba o en Observaciones: «840222», «C-800656», «Q=790403».
+_CODIGO_SIN_ROTULO = re.compile(r"(?<![\d.,'\-])(?:[CQ]\s?[=\-]\s?)?(\d{6})(?![\d.,'\-]?\d)")
+
+
+def codigo_sin_rotulo(texto: str, ingreso: int | None) -> str | None:
+    """El código de seis cifras sin rótulo, sólo si empieza por los dos dígitos del año de ingreso.
+
+    Medido en UPD3859718 (2026-10-30): los revisores lo vieron en casi todas las
+    fichas de 1979 a 1987 -- «840222» de quien entró en 1984 -- y su columna
+    salía N/A en 79 de 85. Sin esa coincidencia no se toma: puede ser un
+    teléfono, un folio o la tarjeta de identidad.
+    """
+    if not ingreso:
+        return None
+    prefijos = {f"{ingreso % 100:02d}", f"{(ingreso - 1) % 100:02d}"}
+    for hallado in _CODIGO_SIN_ROTULO.finditer(plano(texto)):
+        cifras = hallado.group(1)
+        if cifras[:2] in prefijos:
+            return cifras
+    return None
 
 
 def anios_de_la_ficha(texto: str) -> tuple[int | None, int | None]:
@@ -724,8 +754,12 @@ def expedientes(
 #: va a veces en la casilla de la libreta militar.
 FRANJA_DE_LA_CEDULA = Franja(
     campo="la cédula",
-    leyendas=("CEDULA O TARJETA", "TARJETA NO", "LIBRETA MILITAR"),
+    # Palabras sueltas: Tesseract ubica palabra por palabra.
+    leyendas=("CEDULA", "TARJETA"),
     rotulo=r"C[EÉ]DULA\W+O\W+TARJETA",
-    alto=0.04,
-    margen=0.012,
+    # Con margen: la cédula va escrita a mano por encima del renglón. Medido
+    # en 8 fichas de UPD3859718 (2026-10-30): así leyó 23229125, 49731465 y la
+    # T.I. 66263, que la página entera no leía o leía mal.
+    alto=0.055,
+    margen=0.028,
 )
