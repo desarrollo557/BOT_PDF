@@ -948,3 +948,26 @@ class TestLoQueViajaALaPantalla:
         assert publicado["delivered"] == DELIVERY_WINDOW + 40
         # La vista lee de arriba abajo: lo último entregado es lo que interesa.
         assert publicado["deliveries"][0]["file_name"] == f"{DELIVERY_WINDOW + 39}.pdf"
+
+
+class TestLaCarpetaDeLaCorrida:
+    """Lo pidió el operador el 2026-10-30, para todo el software: «DESTINO\<carpeta> - PROCESADO»."""
+
+    def test_el_destino_lleva_la_carpeta_de_la_corrida(self):
+        from resolutions.api.folders import destino_de_la_corrida
+
+        assert destino_de_la_corrida(
+            r"Z:\Shared with Me\REPOSITORIO UDC\14. ENFERMERIA 3277-3283 P", r"C:\Users\SIAR1\Desktop\FOLIA-BOT"
+        ) == r"C:\Users\SIAR1\Desktop\FOLIA-BOT\14. ENFERMERIA 3277-3283 P - PROCESADO"
+        # Si ya la eligió, no se duplica.
+        assert destino_de_la_corrida(
+            r"Z:\REPOSITORIO UDC\14. ENFERMERIA 3277-3283 P", r'"C:\FOLIA-BOT\14. ENFERMERIA 3277-3283 P - PROCESADO"'
+        ) == r"C:\FOLIA-BOT\14. ENFERMERIA 3277-3283 P - PROCESADO"
+
+    def test_dentro_de_ella_no_se_repite_el_nombre_de_la_elegida(self, tmp_path):
+        from resolutions.api.folders import FolderRun, FolderRunner
+
+        run = FolderRun(id="r", source=tmp_path / "14. ENFERMERIA", destination=tmp_path / "14. ENFERMERIA - PROCESADO")
+        assert FolderRunner._en_destino(run, r"14. ENFERMERIA\CAJA 00C003277") == run.destination / "CAJA 00C003277"
+        assert FolderRunner._en_destino(run, "14. ENFERMERIA") == run.destination
+        assert FolderRunner._ruta_del_inventario(run) == run.destination / "00.FUID GENERAL.xlsx"

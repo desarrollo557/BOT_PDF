@@ -31,3 +31,33 @@ def test_el_mosaico_reparte_por_el_rotulo_de_cada_renglon():
     assert (leer_ficha(trozos[39]).cedula, leer_ficha(trozos[39]).tarjeta) == ("45474260", "650609-03314")
     # Un rótulo de menos: nada, antes que dar el dato a otro estudiante.
     assert mosaico._repartir_texto(texto, [1, 39, 41]) == {}
+
+
+def test_el_nombre_se_vota_entre_la_pagina_y_sus_dos_zonas():
+    """UPD3859718: la página dice «OLEA»; el renglón del nombre y Observaciones, OLGA."""
+    from resolutions.domain.doble_lectura import votar_nombre
+
+    assert votar_nombre("ALVAREZ LONDONO OLEA", ["OLGA ALVAREZ LONDONO", "ALVAREZ LONDONO OLGA"]) == (
+        "ALVAREZ LONDONO OLGA", None,
+    )
+    # Dos de tres iguales: vale, con el orden de la página.
+    assert votar_nombre("MERINO RHENALS CARMEN", ["CARMEN MERINO RHENALS", None]) == ("MERINO RHENALS CARMEN", None)
+    # Una palabra en empate: desempata la lista de nombres conocidos.
+    nombre, duda = votar_nombre("IANACHO RODRIGUEZ REGINA", ["REGINA CAMACHO RODRIGUEZ"], {"CAMACHO", "RODRIGUEZ", "REGINA"})
+    assert (nombre, duda) == ("CAMACHO RODRIGUEZ REGINA", None)
+    # Sin desempate: queda la página y va a revisión con las lecturas.
+    nombre, duda = votar_nombre("MARTINEZ LAVARTE NANCY", ["NANCY MARTINEZ LARRARTE"], {"MARTINEZ", "NANCY"})
+    assert nombre == "MARTINEZ LAVARTE NANCY" and "LARRARTE" in duda
+
+
+def test_el_nombre_que_la_ficha_repite_bajo_observaciones():
+    from resolutions.domain.historia_academica import nombre_de_observaciones
+
+    conocidas = {"MERINO", "RHENALS", "CARMEN", "MUNOZ", "BARBOZA", "MARIA"}
+    assert nombre_de_observaciones("| Observaciones | MERIÑO RHENALS CARMEN 1977-80", conocidas) == "MERINO RHENALS CARMEN"
+    assert (
+        nombre_de_observaciones("Observaciones\n\nMUÑOZ BARBOZA MARIA DEL CARMEN 1977-80", conocidas)
+        == "MUNOZ BARBOZA MARIA DEL CARMEN"
+    )
+    # «Obtuvo el grado…» tiene forma de nombre y no lo es: la lista lo descarta.
+    assert nombre_de_observaciones("Observaciones Obtuvo el grado 1964", conocidas) is None

@@ -542,16 +542,36 @@ def ubicar_con_tesseract(source, pagina: int, leyendas, dpi: int = 150) -> float
     mano: es lo que dice dónde hacer el zoom (2026-10-30, «que la OCR haga un
     buen zoom en las zonas identificadas»). Gratis: no paga nada.
     """
+    palabras = [_plano(palabra) for palabra in leyendas]
+    for texto, arriba in _palabras_de(source, pagina, dpi):
+        if any(palabra in texto for palabra in palabras):
+            return arriba
+    return None
+
+
+#: Lo que Tesseract leyó de cada página, para ubicar todas sus zonas con una
+#: sola pasada: con tres zonas por ficha eran tres lecturas de la misma hoja.
+_LEIDAS: dict[tuple[int, int, int], list[tuple[str, float]]] = {}
+_LEIDAS_COMO_MUCHO = 400
+
+
+def _palabras_de(source, pagina: int, dpi: int) -> list[tuple[str, float]]:
+    """Las palabras de la página y su altura en fracción, de arriba abajo."""
     from io import BytesIO
 
     import pytesseract
     from PIL import Image
 
-    with Image.open(BytesIO(source.render(pagina, dpi=dpi))) as imagen:
-        datos = pytesseract.image_to_data(imagen, lang="spa", output_type=pytesseract.Output.DICT, config="--psm 11")
-        alto = imagen.height
-    palabras = [_plano(palabra) for palabra in leyendas]
-    for texto, arriba in zip(datos["text"], datos["top"], strict=True):
-        if texto.strip() and any(palabra in _plano(texto) for palabra in palabras):
-            return arriba / alto
-    return None
+    clave = (id(source), pagina, dpi)
+    if clave not in _LEIDAS:
+        if len(_LEIDAS) >= _LEIDAS_COMO_MUCHO:
+            _LEIDAS.clear()
+        with Image.open(BytesIO(source.render(pagina, dpi=dpi))) as imagen:
+            datos = pytesseract.image_to_data(imagen, lang="spa", output_type=pytesseract.Output.DICT, config="--psm 11")
+            alto = imagen.height
+        _LEIDAS[clave] = [
+            (_plano(texto), arriba / alto)
+            for texto, arriba in zip(datos["text"], datos["top"], strict=True)
+            if texto.strip()
+        ]
+    return _LEIDAS[clave]

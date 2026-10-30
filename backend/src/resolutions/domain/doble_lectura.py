@@ -24,7 +24,10 @@ eso es un detector y no un corrector, y sólo para los números.
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,3 +54,58 @@ def conciliar_numero(principal: str | None, segunda: str | None, campo: str) -> 
     if not principal:
         return segunda, None
     return principal, f"{campo} se leyó {principal} en la página y {segunda} en el renglón ampliado"
+
+
+#: Cuánto se parecen dos palabras para tomarlas por la misma, mal leída.
+PARECIDO_MINIMO = 0.6
+
+
+def votar_nombre(
+    principal: str | None, otras: Sequence[str | None], conocidas: Collection[str] = ()
+) -> tuple[str | None, str | None]:
+    """El nombre que dicen la mayoría de las lecturas, y por qué revisarlo si no hay mayoría.
+
+    Las lecturas son la de la página entera (``principal``, apellidos primero)
+    y las de cada zona donde la ficha escribe el nombre. Si dos dicen las
+    mismas palabras, vale eso, con el orden de la principal o, si ella no es
+    de la mayoría, el de la zona de Observaciones (apellidos primero). Si no,
+    se vota palabra por palabra: para cada palabra de la principal, la grafía
+    que repiten las otras; con un empate, la que está en la lista de nombres
+    conocidos. Lo que no se pueda votar se queda como lo leyó la principal, y
+    a revisión.
+    """
+    lecturas = [lectura for lectura in (principal, *otras) if lectura]
+    if not lecturas:
+        return None, None
+    if len(lecturas) == 1:
+        return lecturas[0], None
+    conjuntos = Counter(frozenset(lectura.split()) for lectura in lecturas)
+    mayoria, votos = conjuntos.most_common(1)[0]
+    if votos >= 2:
+        if principal and frozenset(principal.split()) == mayoria:
+            return principal, None
+        return next(lectura for lectura in reversed(lecturas) if frozenset(lectura.split()) == mayoria), None
+    base = (principal or lecturas[0]).split()
+    resto = [lectura.split() for lectura in lecturas if lectura != (principal or lecturas[0])]
+    votado: list[str] = []
+    dudosa = False
+    for palabra in base:
+        candidatas = [palabra]
+        for otra in resto:
+            parecida = max(otra, key=lambda p: SequenceMatcher(None, palabra, p).ratio(), default=None)
+            if parecida and SequenceMatcher(None, palabra, parecida).ratio() >= PARECIDO_MINIMO:
+                candidatas.append(parecida)
+        cuenta = Counter(candidatas).most_common()
+        if len(cuenta) > 1 and cuenta[0][1] == cuenta[1][1]:
+            empatadas = [p for p, n in cuenta if n == cuenta[0][1]]
+            conocida = [p for p in empatadas if p in conocidas]
+            elegida = conocida[0] if len(conocida) == 1 else palabra
+            dudosa = dudosa or len(conocida) != 1
+        else:
+            elegida = cuenta[0][0]
+        votado.append(elegida)
+    nombre = " ".join(votado)
+    if dudosa:
+        leidas = " / ".join(f"«{lectura}»" for lectura in lecturas)
+        return nombre, f"el nombre se leyó distinto en cada zona: {leidas}"
+    return nombre, None

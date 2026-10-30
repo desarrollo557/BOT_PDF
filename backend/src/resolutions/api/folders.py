@@ -35,6 +35,29 @@ from .settings import Settings
 
 logger = logging.getLogger(__name__)
 
+#: Lo que lleva detrás del nombre de la carpeta elegida la carpeta de la corrida
+#: en el destino: «14. ENFERMERIA 3277-3283 P - PROCESADO».
+SUFIJO_DE_LA_CORRIDA = " - PROCESADO"
+
+
+def destino_de_la_corrida(source: str, destination: str) -> str:
+    """La carpeta de la corrida dentro del destino elegido en la pantalla.
+
+    Lo pidió el operador el 2026-10-30, para todo el software: en la raíz del
+    destino, una carpeta con el nombre de la elegida y «- PROCESADO», y dentro
+    sus cajas, sus UPD y todos sus Excel. Si ya eligió esa carpeta, se respeta.
+    """
+    import ntpath
+
+    # Como en `validate_folders`: una ruta pegada con comillas o espacios.
+    source, destination = clean_path(source), clean_path(destination)
+    nombre = ntpath.basename(source.rstrip("\\/")) or "RAIZ"
+    destino = destination.rstrip("\\/")
+    if not source.strip() or not destino or ntpath.basename(destino) == f"{nombre}{SUFIJO_DE_LA_CORRIDA}":
+        return destination
+    separador = "/" if "/" in destino and "\\" not in destino else "\\"
+    return f"{destino}{separador}{nombre}{SUFIJO_DE_LA_CORRIDA}"
+
 #: Deliveries kept for the live view. It is a window on a running job, not a
 #: record -- the inventory is the record -- so it never grows without bound.
 DELIVERY_WINDOW = 60
@@ -2314,7 +2337,7 @@ class FolderRunner:
             del_inventario = list(run.inventario_filas)
             # También el de una corrida anterior que ésta todavía no reescribió.
             de_las_subcarpetas = {Path(ruta) for ruta in run.inventarios_de_carpeta.values()} | {
-                ruta_del_fuid(run.destination / carpeta) for carpeta in run.filas_por_carpeta if carpeta
+                ruta_del_fuid(FolderRunner._en_destino(run, carpeta)) for carpeta in run.filas_por_carpeta if carpeta
             }
         # Buscar cada FUID en el disco va fuera del cerrojo: con cientos de
         # libros, recorrer el destino cada 45 s paraba todas las entregas. Sin
@@ -2369,7 +2392,7 @@ class FolderRunner:
         ordenadas = inventario_de_la_carpeta(filas) if filas else []
         ruta = fuid_general_de(
             fuids,
-            run.destination / FolderRunner._raiz(run) if ordenadas else run.destination,
+            FolderRunner._en_destino(run, FolderRunner._raiz(run)) if ordenadas else run.destination,
             lecturas=run.lecturas_de_fuid,
             otras=filas_del_fuid(ordenadas),
             # Sólo con filas de las demás habilidades: un estante de libros de
@@ -2486,7 +2509,7 @@ class FolderRunner:
         """Las carpetas del destino con un libro de diplomas de esta corrida. Sólo memoria."""
         carpetas: dict[str, Path] = dict(run.carpetas_con_fuid)
         for control in run.controles.values():
-            carpetas.setdefault(control.carpeta, run.destination / control.carpeta)
+            carpetas.setdefault(control.carpeta, FolderRunner._en_destino(run, control.carpeta))
         return carpetas
 
     @staticmethod
@@ -3003,6 +3026,22 @@ class FolderRunner:
         """El nombre de la carpeta elegida como fuente, que abre el espejo en el destino."""
         return run.source.name or "RAIZ"
 
+    @staticmethod
+    def _en_destino(run: FolderRun, carpeta: str) -> Path:
+        """Dónde está en el disco la carpeta ``carpeta`` -- «14. ENFERMERIA…\\CAJA 00C003277» -- de la corrida.
+
+        Si el destino ya es la carpeta de la corrida, «14. ENFERMERIA 3277-3283 P
+        - PROCESADO», el nombre de la elegida no se repite dentro de ella: el
+        operador pidió el 2026-10-30, para todo el software, «DESTINO\\<carpeta>
+        - PROCESADO\\<caja>\\<UPD>» y nada más (ver ``destino_de_la_corrida``).
+        """
+        raiz = FolderRunner._raiz(run)
+        if run.destination.name == f"{raiz}{SUFIJO_DE_LA_CORRIDA}":
+            partes = Path(carpeta).parts
+            if partes and partes[0] == raiz:
+                return run.destination.joinpath(*partes[1:])
+        return run.destination / carpeta
+
     def _carpeta_de(self, run: FolderRun, origin: Path) -> str:
         """La carpeta de un PDF vista desde la raíz: «00C003284\\UPD3859772»."""
         return str(Path(self._raiz(run)) / self._relative(run, origin).parent)
@@ -3014,7 +3053,7 @@ class FolderRunner:
         ``DESTINO\\00C003284\\UPD3859772\\``: el destino es un espejo de la
         fuente, con la carpeta elegida delante y el trabajo hecho dentro.
         """
-        return run.destination / self._carpeta_de(run, origin)
+        return self._en_destino(run, self._carpeta_de(run, origin))
 
     def _entregar_actas(
         self, run: FolderRun, job: Job, origin: Path, huella: tuple[int, int] = (0, 0)
@@ -3103,7 +3142,7 @@ class FolderRunner:
         """
         from .indices import NOMBRE_DEL_FUID_GENERAL
 
-        return run.destination / cls._raiz(run) / NOMBRE_DEL_FUID_GENERAL
+        return cls._en_destino(run, cls._raiz(run)) / NOMBRE_DEL_FUID_GENERAL
 
     def _escribir_inventario_de_actas(
         self, run: FolderRun, solo_carpeta: str | None = None
@@ -3205,7 +3244,7 @@ class FolderRunner:
                 # Sin filas -- sólo hojas de una ceremonia, o lo de antes de la
                 # primera ficha -- no hay FUID que escribir.
                 ya = run.inventarios_de_carpeta.get(carpeta)
-                fuids.append((carpeta, filas, Path(ya) if ya else ruta_del_fuid(run.destination / carpeta), version))
+                fuids.append((carpeta, filas, Path(ya) if ya else ruta_del_fuid(self._en_destino(run, carpeta)), version))
             else:
                 run.version_escrita[carpeta] = version
             # Y las actas de consejo, su Excel de siempre con el resumen. La
@@ -3213,7 +3252,7 @@ class FolderRunner:
             de_consejo = [fila for fila in ordenadas if es_de_consejo(fila)]
             if carpeta and de_consejo and carpeta != raiz:
                 ya = run.actas_de_carpeta.get(carpeta)
-                actas.append((carpeta, de_consejo, Path(ya) if ya else self._ruta_de_un_excel(run.destination / carpeta)))
+                actas.append((carpeta, de_consejo, Path(ya) if ya else self._ruta_de_un_excel(self._en_destino(run, carpeta))))
         # El general de las actas de consejo en la carpeta raíz del espejo,
         # cada ``INVENTARIO_GENERAL_CADA`` y al terminar; y siempre que el PDF
         # que llegó está en la raíz, porque ése es también el suyo. El FUID
@@ -3226,7 +3265,7 @@ class FolderRunner:
             de_consejo = [fila for fila in todas if es_de_consejo(fila)]
             if de_consejo:
                 ya = run.actas_general
-                general_de_actas = (de_consejo, Path(ya) if ya else self._ruta_de_un_excel(run.destination / raiz))
+                general_de_actas = (de_consejo, Path(ya) if ya else self._ruta_de_un_excel(self._en_destino(run, raiz)))
         return {
             "fuids": fuids,
             "actas": actas,

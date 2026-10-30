@@ -137,7 +137,7 @@ def historias_academicas_job(payload: dict) -> dict:
             )
             # Y la segunda lectura de la cédula, de otra imagen: su renglón
             # ampliado. Lo que no coincide va a revisión.
-            _segunda_lectura(payload, taller, source, unidades)
+            _segunda_lectura(payload, taller, source, unidades, conocidas)
 
         # Los años, de las hojas de notas y los certificados, no de la ficha:
         # la ficha trae la fecha de nacimiento y la del bachillerato. Y dentro
@@ -352,33 +352,53 @@ def _leer_las_fichas_con_la_ia(payload, taller, source, de_pago, unidades, texto
         pool.shutdown(wait=False, cancel_futures=True)
 
 
-def _segunda_lectura(payload, taller, source, unidades) -> None:
-    """La cédula y la tarjeta de cada ficha releídas en su renglón ampliado: lo que discrepa, a revisión.
+def _segunda_lectura(payload, taller, source, unidades, conocidas=()) -> None:
+    """El nombre y la cédula de cada ficha releídos con zoom en sus zonas, y votados con la página.
 
-    Ver ``domain/doble_lectura.py``. Diez renglones por página facturada: unas
-    diez páginas por cada cien estudiantes. El nombre no: releído así daba más
-    alarmas falsas que errores (33 en 85 fichas de UPD3859718).
+    Tesseract ubica en la imagen el rótulo de cada zona -- «Nombre del
+    estudiante», «Observaciones», «Cédula o tarjeta» -- y su renglón se lee
+    ampliado, tres por página facturada (``domain/doble_lectura.py``). El
+    nombre se vota entre la página y las dos zonas donde la ficha lo escribe,
+    como pidió el operador (2026-10-30); la cédula, si discrepa, queda la de
+    la página y va a revisión. Lo que no se resuelve va a la cola de revisión.
     """
     from dataclasses import replace
 
-    from ...domain.doble_lectura import conciliar_numero
-    from ...domain.historia_academica import FRANJA_DE_LA_CEDULA, leer_ficha
+    from ...domain.doble_lectura import conciliar_numero, votar_nombre
+    from ...domain.historia_academica import (
+        FRANJA_DE_LA_CEDULA,
+        FRANJA_DE_OBSERVACIONES,
+        FRANJA_DEL_NOMBRE,
+        leer_ficha,
+        nombre_de_observaciones,
+    )
 
     con_ficha = [unidad for unidad in unidades if unidad.ficha is not None and unidad.pagina_de_la_ficha]
     if not con_ficha:
         return
-    taller.control.check()
-    _anunciar(payload, Stage.IDENTIFYING, detail="releyendo la cédula en su renglón ampliado")
-    mosaico = taller.mosaico_de_campo(FRANJA_DE_LA_CEDULA)
-    leidos = mosaico.leer_franjas(source, [unidad.pagina_de_la_ficha for unidad in con_ficha]) if mosaico else {}
+    paginas = [unidad.pagina_de_la_ficha for unidad in con_ficha]
+    leidos = {}
+    for franja in (FRANJA_DE_LA_CEDULA, FRANJA_DEL_NOMBRE, FRANJA_DE_OBSERVACIONES):
+        taller.control.check()
+        _anunciar(payload, Stage.IDENTIFYING, detail=f"releyendo {franja.campo} con zoom")
+        mosaico = taller.mosaico_de_campo(franja)
+        leidos[franja.campo] = mosaico.leer_franjas(source, paginas) if mosaico is not None else {}
     for unidad in con_ficha:
-        de_la_cedula = leer_ficha(leidos.get(unidad.pagina_de_la_ficha, ""))
+        pagina = unidad.pagina_de_la_ficha
+        de_la_cedula = leer_ficha(leidos[FRANJA_DE_LA_CEDULA.campo].get(pagina, ""))
         cedula, duda_de_la_cedula = conciliar_numero(unidad.ficha.cedula, de_la_cedula.cedula, "la cédula")
         tarjeta, duda_de_la_tarjeta = conciliar_numero(
             unidad.ficha.tarjeta, de_la_cedula.tarjeta, "la tarjeta de identidad"
         )
-        unidad.ficha = replace(unidad.ficha, cedula=cedula, tarjeta=tarjeta)
-        unidad.dudas.extend(duda for duda in (duda_de_la_cedula, duda_de_la_tarjeta) if duda)
+        del_renglon = leer_ficha(leidos[FRANJA_DEL_NOMBRE.campo].get(pagina, "")).nombre
+        de_observaciones = nombre_de_observaciones(
+            leidos[FRANJA_DE_OBSERVACIONES.campo].get(pagina, ""), conocidas
+        )
+        nombre, duda_del_nombre = votar_nombre(unidad.ficha.nombre, [del_renglon, de_observaciones], conocidas)
+        unidad.ficha = replace(unidad.ficha, nombre=nombre, cedula=cedula, tarjeta=tarjeta)
+        unidad.dudas.extend(
+            duda for duda in (duda_del_nombre, duda_de_la_cedula, duda_de_la_tarjeta) if duda
+        )
 
 
 def _con_los_extremos_de_la_ficha(de_las_notas, de_la_ficha):

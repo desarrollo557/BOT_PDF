@@ -96,9 +96,13 @@ async def start_folder_run(
     from ...domain.oficina_productora import oficina_escrita
 
     try:
+        from ..folders import destino_de_la_corrida
+
         run = ctx.folders.start(
             str(payload.get("source") or ""),
-            str(payload.get("destination") or ""),
+            # «DESTINO\<carpeta elegida> - PROCESADO»: todo lo de la corrida
+            # en su carpeta, nada suelto en la raíz del destino (2026-10-30).
+            destino_de_la_corrida(str(payload.get("source") or ""), str(payload.get("destination") or "")),
             disposition=disposition,
             watch=bool(payload.get("watch")),
             operator=_operator(x_operator),

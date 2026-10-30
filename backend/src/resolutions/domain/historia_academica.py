@@ -750,6 +750,43 @@ def expedientes(
 # -- la segunda lectura de la ficha ---------------------------------------------------
 
 
+#: Las dos zonas donde la ficha de 1968 a 1990 escribe el nombre: el renglón
+#: «Nombre del estudiante» y, debajo de «Observaciones», el mismo nombre en
+#: mayúsculas con los apellidos primero. El operador pidió compararlas
+#: (2026-10-30): «cuando las 2 áreas tengan el nombre, para tener mejores
+#: resultados».
+FRANJA_DEL_NOMBRE = Franja(
+    campo="el nombre",
+    # La primera «NOMBRE» de la ficha, de arriba abajo, es la del estudiante.
+    leyendas=("NOMBRE",),
+    rotulo=r"N\w{1,4}BRE\W+DEL\W+ESTU\S*",
+    alto=0.055,
+    margen=0.03,
+)
+FRANJA_DE_OBSERVACIONES = Franja(
+    campo="el nombre en Observaciones",
+    leyendas=("OBSERVACIONES",),
+    rotulo=r"OBSERVACI\S*",
+    alto=0.08,
+    margen=0.005,
+)
+
+#: El nombre de la zona de Observaciones: las palabras que siguen al rótulo,
+#: hasta el primer número («MERIÑO RHENALS CARMEN 1977-80»).
+_DE_OBSERVACIONES = re.compile(r"OBSERVACI\w*\W*([A-Z][A-Z\s.,\-]{4,80}?)(?=\d|$)")
+
+
+def nombre_de_observaciones(texto: str, conocidas: Collection[str] = ()) -> str | None:
+    """El nombre que la ficha repite bajo «Observaciones», si dos de sus palabras son nombres conocidos.
+
+    Con la lista: bajo «Observaciones» va también «Obtuvo el grado de
+    Enfermera General…», que tiene forma de nombre y no lo es.
+    """
+    if hallado := _DE_OBSERVACIONES.search(_sin_puntuacion(plano(texto))):
+        return _limpio(hallado.group(1), conocidas)
+    return None
+
+
 #: El renglón «Cédula o tarjeta No. … Libreta Militar No. …», entero: la cédula
 #: va a veces en la casilla de la libreta militar.
 FRANJA_DE_LA_CEDULA = Franja(
