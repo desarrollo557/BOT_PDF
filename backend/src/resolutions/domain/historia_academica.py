@@ -173,6 +173,8 @@ class Ficha:
     codigo: str | None = None
     #: El año de grado, si la ficha lo trae: «Fecha de Grado 1996».
     anio_de_grado: int | None = None
+    #: La tarjeta de identidad, «650609-03314», que no es la cédula.
+    tarjeta: str | None = None
 
     @property
     def clave(self) -> str | None:
@@ -206,6 +208,26 @@ _CIFRAS_DE_CEDULA = range(6, 9)
 
 def _parece_cedula(cifras: str) -> bool:
     return len(cifras) in _CIFRAS_DE_CEDULA or (len(cifras) == 10 and cifras.startswith("1"))
+
+
+#: «Cédula o tarjeta No. 650609-03314»: la tarjeta de identidad empieza por la
+#: fecha de nacimiento (AAMMDD), un guion y su serial. No es la cédula: el bot
+#: tomaba sus seis primeras cifras por una en 22 de las 312 historias de la caja
+#: 00C003277 (2026-10-30).
+_TARJETA = re.compile(r"(?<!\d)(\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))\s?[-–]\s?(\d{3,5})(?!\d)")
+#: «C.C 45.474.260», la cédula con su sigla en cualquier casilla: la ficha de
+#: los 80 la escribe a veces en la de la libreta militar.
+_CC = re.compile(r"\bC\s?\.?\s?C\b\.?\s*(?:N[O0]\.?\s*)?(\d{1,3}(?:[.,'\s]?\d{3}){1,3})\b")
+
+
+def _parece_fecha(cifras: str) -> bool:
+    """Seis cifras que son una fecha AAMMDD: las de la tarjeta de identidad, no una cédula."""
+    return bool(re.fullmatch(r"\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])", cifras))
+
+
+def _sin_puntuacion(p: str) -> str:
+    """«CASTILLO, SOLORZANO», «BARBOZA-LUEY», «CELMIRA. FLOREZ»: la puntuación que el OCR deja dentro del nombre."""
+    return re.sub(r"(?<=[A-Z])[,;\-.]+(?=\s*[A-Z])", " ", p)
 #: «Código. 549310019», «Cód. Estudiante 5420011003», «# 549310044».
 _CODIGO = re.compile(r"(?:\bCODIGO\b|\bCOD\b)\W{0,4}(?:ESTUDIANTE\W{0,3})?(\d{7,12})\b|#\s*(\d{8,12})\b")
 _FECHA_DE_GRADO = re.compile(r"FECHA DE GRADO\W{0,4}.{0,30}?\b(19[2-9]\d|20[0-3]\d)\b")
@@ -280,21 +302,31 @@ def _limpio(nombre: str | None, conocidas: Collection[str] = ()) -> str | None:
 def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
     """El nombre, la cédula, el código y el año de grado que trae la página que abre."""
     p = plano(texto)
+    # La puntuación se quita sólo detrás del rótulo: delante de él, en la capa
+    # rota de 1993, «LOI. EJTQ OLO» pasaba por un nombre.
+    para_el_nombre = _sin_puntuacion(p)
     nombre = None
-    for patron in (_NOMBRE_DESPUES, _NOMBRE_ANTES):
-        if hallado := patron.search(p):
+    for patron, donde in ((_NOMBRE_DESPUES, para_el_nombre), (_NOMBRE_ANTES, p)):
+        if hallado := patron.search(donde):
             nombre = _limpio(hallado.group(1), conocidas)
             if nombre:
                 break
-    if nombre is None and (hallado := _APELLIDOS_Y_NOMBRES.search(p)):
+    if nombre is None and (hallado := _APELLIDOS_Y_NOMBRES.search(para_el_nombre)):
         nombre = _limpio(f"{hallado.group(1)} {hallado.group(2)}", conocidas)
-    cedula = None
-    codigo = None
+    cedula = tarjeta = codigo = None
     if hallado := _CODIGO.search(p):
         codigo = hallado.group(1) or hallado.group(2)
-    if hallado := _CEDULA.search(p):
+    if hallado := _TARJETA.search(p):
+        tarjeta = f"{hallado.group(1)}-{hallado.group(2)}"
+    if (hallado := _CC.search(p)) and _parece_cedula(cifras := re.sub(r"\D", "", hallado.group(1))):
+        cedula = cifras
+    elif hallado := _CEDULA.search(p):
         cifras = re.sub(r"\D", "", hallado.group(1))
-        if _parece_cedula(cifras):
+        if tarjeta and tarjeta.startswith(cifras):
+            pass  # el número del rótulo es la tarjeta de identidad
+        elif len(cifras) == 6 and _parece_fecha(cifras):
+            tarjeta = tarjeta or cifras
+        elif _parece_cedula(cifras):
             cedula = cifras
         elif len(cifras) in (9, 10) and not codigo:
             # El código del estudiante, escrito junto al rótulo de la cédula:
@@ -303,7 +335,39 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
     anio = None
     if hallado := _FECHA_DE_GRADO.search(p):
         anio = int(hallado.group(1))
-    return Ficha(nombre=nombre, cedula=cedula, codigo=codigo, anio_de_grado=anio)
+    return Ficha(nombre=nombre, cedula=cedula, codigo=codigo, anio_de_grado=anio, tarjeta=tarjeta)
+
+
+#: Lo que se le pide a la IA cuando ni la capa, ni el OCR de casa, ni el texto
+#: del OCR de pago dejaron leer el nombre (2026-10-30: «ningún PDF sin nombre;
+#: cuando vaya sin nombre, que sea la IA quien actúe»).
+INSTRUCCIONES_DEL_ESTUDIANTE = (
+    "Eres archivista de la Universidad de Cartagena. Recibes el texto, leído por OCR, de la ficha de "
+    "un estudiante (formulario «Registro del estudiante» o «Ficha historia académica»). El OCR trae "
+    "errores y a veces separa el rótulo de su valor.\n\n"
+    "Devuelve solo el nombre completo del estudiante, en mayúsculas, con los apellidos primero y luego "
+    "los nombres, por ejemplo: ALVAREZ LONDOÑO OLGA.\n"
+    "- Está en «Nombre del estudiante» (o en APELLIDOS y NOMBRES) y a veces repetido en otra parte de la ficha.\n"
+    "- No es el nombre de los padres, del acudiente ni del colegio, ni una dirección.\n"
+    "- Sin anotaciones como «(Hoy de …)».\n"
+    "- Copia cada palabra tal como está en el texto, aunque parezca mal escrita: no la corrijas ni inventes.\n"
+    "- Si el texto no trae el nombre del estudiante, devuelve solo: NINGUNO"
+)
+
+
+def nombre_de_la_ia(respuesta: str, texto: str) -> str | None:
+    """El nombre que devolvió la IA, si cada palabra suya está en el texto de la ficha.
+
+    La IA ordena y descarta los rótulos; no puede poner una palabra que el papel
+    no diga: un nombre inventado es peor que uno por revisar.
+    """
+    palabras = re.findall(r"[A-Z]+", plano(respuesta))
+    if not palabras or "NINGUNO" in palabras:
+        return None
+    del_texto = set(re.findall(r"[A-Z]+", plano(texto)))
+    if any(palabra not in del_texto for palabra in palabras):
+        return None
+    return _limpio(" ".join(palabras))
 
 
 # -- los años de las notas ---------------------------------------------------------
@@ -336,9 +400,18 @@ _INGRESO = re.compile(r"\bANO\s*(?:DE\s*)?INGRESO\W{0,4}([0-9][0-9\-.\s]{2,6}[0-
 _GRADUACION = re.compile(r"FECHA DE GRADU?(?:ACION|O)\W{0,4}.{0,24}?\b(19[2-9]\d|20[0-3]\d)\b")
 
 
+#: Los años de estudio que la ficha de 1968 a 1999 anota a mano junto al
+#: nombre: «1965-1968», «1.983-86», «1978 - 1981».
+_PERIODO = re.compile(r"\b(19[2-9]\d|20[0-3]\d)\s?[-–]\s?(19[2-9]\d|20[0-3]\d|\d{2})\b")
+#: La fecha de su recuadro «Grado en / Fecha»: «Fecha Marzo 31 de 1970», «Dic
+#: 18/87», «Nov. 25 83». Ninguna de las 312 de la caja 00C003277 se leía.
+_RECUADRO_DEL_GRADO = re.compile(r"\bGRADO EN\b(.{0,90}?)(?=PROMEDIO ORAL|OBSERVACION|$)")
+_ANIO_DE_LA_FECHA = re.compile(r"\b(19[2-9]\d|20[0-3]\d)\b|\d{1,2}\s?[/\- ]\s?(\d{2})\b")
+
+
 def anios_de_la_ficha(texto: str) -> tuple[int | None, int | None]:
-    """El año de ingreso y el de grado que escribe la ficha; ``None`` el que no se deje leer."""
-    p = plano(texto)
+    """El año de ingreso y el de grado -- o el último de estudio -- que escribe la ficha; ``None`` el que no se lea."""
+    p = _ANIO_CON_PUNTO.sub(lambda m: m.group(1) + m.group(2), plano(texto))
     ingreso = grado = None
     if hallado := _INGRESO.search(p):
         cifras = re.sub(r"\D", "", hallado.group(1))
@@ -346,6 +419,18 @@ def anios_de_la_ficha(texto: str) -> tuple[int | None, int | None]:
             ingreso = int(cifras)
     if hallado := _GRADUACION.search(p):
         grado = int(hallado.group(1))
+    if hallado := _PERIODO.search(_PLAN_DE_ESTUDIOS.sub(" ", p)):
+        desde, hasta = int(hallado.group(1)), hallado.group(2)
+        hasta = int(hasta) if len(hasta) == 4 else desde // 100 * 100 + int(hasta)
+        hasta += 100 if hasta < desde else 0
+        if hasta - desde <= 15:
+            ingreso = ingreso or desde
+            grado = max(grado or hasta, hasta)
+    if (recuadro := _RECUADRO_DEL_GRADO.search(p)) and (hallado := _ANIO_DE_LA_FECHA.search(recuadro.group(1))):
+        corto = hallado.group(2)
+        del_recuadro = int(hallado.group(1)) if hallado.group(1) else (1900 if int(corto) >= 30 else 2000) + int(corto)
+        if ingreso is None or 0 <= del_recuadro - ingreso <= 15:
+            grado = max(grado or del_recuadro, del_recuadro)
     return ingreso, grado
 
 
@@ -475,6 +560,7 @@ def _junta(ficha: Ficha, otra: Ficha) -> Ficha:
         cedula=ficha.cedula or otra.cedula,
         codigo=ficha.codigo or otra.codigo,
         anio_de_grado=ficha.anio_de_grado or otra.anio_de_grado,
+        tarjeta=ficha.tarjeta or otra.tarjeta,
     )
 
 

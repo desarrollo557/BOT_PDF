@@ -102,7 +102,7 @@ def _entregar_las_dos(runner, run, settings):
 def test_cada_fuid_va_con_sus_pdf_y_el_general_las_junta_todas(corrida):
     """Las resoluciones, donde quedan sus PDF; las actas, en su espejo; el general, con todas.
 
-    Los PDF de una resolución partida se entregan en ``DESTINO\<caja>\<pdf>\``
+    Los PDF de una resolución partida se entregan en ``DESTINO\\<caja>\\<pdf>\\``
     y los de las actas en el espejo con la carpeta elegida delante: cada FUID va
     con los suyos, y no en un árbol aparte que sólo tenga el FUID (2026-10-30).
     """
@@ -170,3 +170,70 @@ def test_los_libros_de_diplomas_no_suman_filas_hechas(corrida):
     runner._deliver(run, trabajo, libro)
 
     assert run.inventario_filas == []
+
+
+def test_los_pdf_sueltos_en_la_raiz_dejan_su_fuid_junto_al_general(tmp_path):
+    """«20.ACTAS DE GRADO 3362» trae sus dos PDF sueltos, sin subcarpeta de caja.
+
+    Su FUID caía en la raíz del destino con el nombre del destino -- fuera del
+    espejo de la carpeta, donde dos carpetas lanzadas al mismo destino se lo
+    pisan -- y con la caja vacía. Va junto al general, con la caja y las hojas
+    que el Excel del cliente anota de cada UPD (2026-10-30).
+    """
+    from dataclasses import replace
+
+    from resolutions.api.folders import FolderRun, FolderRunner
+    from resolutions.api.jobs import Job, JobRegistry
+    from resolutions.api.settings import Settings
+
+    carpeta = "20.ACTAS DE GRADO 3362"
+    settings = replace(Settings(), output_dir=tmp_path / "outputs")
+    (tmp_path / carpeta).mkdir()
+    (tmp_path / "destino").mkdir()
+    runner = FolderRunner(JobRegistry(), settings, run_job=None)
+    run = FolderRun(
+        id="r1",
+        source=tmp_path / carpeta,
+        destination=tmp_path / "destino",
+        task="inventory_file",
+        oficina="FACULTAD DE MEDICINA",
+        oficina_mirada=True,
+        folios_del_cliente={"UPD3860000": 101},
+        cajas_del_cliente={"UPD3860000": "00C003362"},
+        folios_mirados=True,
+    )
+    examenes = run.source / "UPD3860000-EXAMENES PREPARATORIOS DE GRADO 1924-46.pdf"
+    examenes.write_bytes(b"%PDF")
+    (settings.output_dir / "exa").mkdir(parents=True)
+    trabajo = Job(id="exa", filename=examenes.name, source=examenes, owns_source=False)
+    trabajo.task = "inventory_file"
+    trabajo.report = {
+        "task": "inventory_file",
+        "filas_del_fuid": [
+            {
+                "orden": 1,
+                "asunto": "Documento sin identificar",
+                "fecha_inicial": "N/A",
+                "fecha_final": "N/A",
+                "caja": "N/A",
+                "carpeta": "N/A",
+                "folios": 199,
+                "folios_siar": 199,
+                "notas": "",
+                "pagina_inicial": 1,
+            }
+        ],
+    }
+    runner._deliver(run, trabajo, examenes)
+    runner._escribir_inventario_de_actas(run)
+
+    fuid = leer_fuid(run.destination / carpeta / f"{carpeta}__FUID.xlsx")
+    assert [fila[2] for fila in fuid.filas] == ["EXAMENES PREPARATORIOS DE GRADO 1924-46"]
+    assert [(fila[7], fila[8]) for fila in fuid.filas] == [("00C003362", "UPD3860000")]
+    # Opción B: las hojas del cliente en «No. de folios» y las páginas en SIAR.
+    assert [(fila[11], fila[12]) for fila in fuid.filas] == [("101", "199")]
+    assert not list(run.destination.glob("*__FUID.xlsx"))
+
+    runner._escribir_el_fuid_general(run, [], list(run.inventario_filas))
+    general = leer_fuid(run.destination / carpeta / "00.FUID GENERAL.xlsx")
+    assert [(fila[7], fila[8]) for fila in general.filas] == [("00C003362", "UPD3860000")]

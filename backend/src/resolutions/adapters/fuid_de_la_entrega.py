@@ -303,6 +303,10 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
     convertida = conversor(fila)
     if convertida is None:
         return None
+    # La caja que anota el cliente cuando la ruta no la dice: «20.ACTAS DE
+    # GRADO 3362» trae sus PDF sueltos, sin subcarpeta de caja (2026-10-30).
+    if convertida.caja in ("", NO_LEIDO) and fila.get("caja_del_cliente"):
+        convertida = replace(convertida, caja=str(fila["caja_del_cliente"]))
     archivo = archivo_de(fila)
     # Una fila hecha que ya dice su archivo -- la resolución partida en
     # «03_RESOLUCION-00031.pdf» -- no lleva además el del original.

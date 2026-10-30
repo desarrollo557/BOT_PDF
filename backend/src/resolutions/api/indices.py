@@ -103,6 +103,11 @@ def habilidad_del_proceso(job) -> str:
     Con «No estoy seguro» el despachador elige: el informe dice adónde fue.
     """
     informe = job.report or {}
+    if not informe and (pedido := _habilidad_pedida(getattr(job, "tipo", None))):
+        # Cancelado o caído antes de informar: la habilidad que se pidió. Las
+        # historias canceladas de Enfermería salían «Legajo de resoluciones»
+        # porque su tarea era «dividir e inventariar» (2026-10-30).
+        return pedido
     tipo = str((informe.get("stats") or {}).get("document_type") or "")
     if informe.get("indice_electronico") or informe.get("agrupar") or job.task == "segment":
         return "Caja de correspondencia"
@@ -122,6 +127,19 @@ def habilidad_del_proceso(job) -> str:
     if tipo == "resolucion" or job.task in ("split", "both"):
         return "Legajo de resoluciones"
     return tipo or job.task or "—"
+
+
+def _habilidad_pedida(tipo: str | None) -> str | None:
+    """La etiqueta de la habilidad que declaró el operador, o ``None`` con el automático."""
+    from ..application.tipo_pedido import TipoPedido
+
+    try:
+        pedido = TipoPedido.parse(tipo)
+    except ValueError:
+        return None
+    if pedido is TipoPedido.AUTO:
+        return None
+    return "Libro de diplomas" if pedido is TipoPedido.DIPLOMA else pedido.label
 
 
 def _duracion(inicio: str | None, fin: str | None) -> str:

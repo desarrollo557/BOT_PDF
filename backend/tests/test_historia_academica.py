@@ -335,3 +335,84 @@ def test_las_paginas_sin_estudiante_no_llevan_fila():
     assert fila_del_fuid(_fila(tipo=SIN_ESTUDIANTE)) is None
     filas = filas_del_fuid([_fila(tipo=SIN_ESTUDIANTE), _fila(), _fila(nombre="OTRA PERSONA")])
     assert [f.orden for f in filas] == [1, 2]
+
+
+# -- la caja 00C003277, leída por el OCR de pago (2026-10-30) ------------------------
+#
+# Textos recortados de lo que devolvió el OCR de pago sobre las fichas reales:
+# el nombre estaba y el bot lo perdía por una coma, un guion o un punto; la
+# cédula salía de la tarjeta de identidad; y los años de la ficha no se leían.
+
+
+@pytest.mark.parametrize(
+    ("texto", "nombre"),
+    [
+        ("Nombre del estudiante. Judith Castillo, Solorzano. Dirección actual San Pedro", "JUDITH CASTILLO SOLORZANO"),
+        ("Nombre del estudiante: Bertel Barboza-Luey Dirección actual Cllc Del Porvenir", "BERTEL BARBOZA LUEY"),
+        ("Nombre del estudiante. Celmira. Flórez de Cuesta Dirección actual", "CELMIRA FLOREZ DE CUESTA"),
+    ],
+)
+def test_la_puntuacion_del_ocr_no_borra_el_nombre(texto, nombre):
+    assert leer_ficha(texto).nombre == nombre
+
+
+def test_la_tarjeta_de_identidad_no_es_la_cedula():
+    con_las_dos = leer_ficha(
+        "Nombre del estudiante: Grima del Carmen Guenas Suárez. Cédula o tarjeta No. 650609-03314 "
+        "Libreta Militar No. C.C 45.474.260 c/pena Nombre del acudiente (s)"
+    )
+    assert (con_las_dos.cedula, con_las_dos.tarjeta) == ("45474260", "650609-03314")
+
+    solo_tarjeta = leer_ficha("Cédula o tarjeta No. 621122-01497 de Cartagena Libreta Militar No.")
+    assert (solo_tarjeta.cedula, solo_tarjeta.tarjeta) == (None, "621122-01497")
+
+    # La cédula de siempre sigue leyéndose.
+    assert leer_ficha("Cédula o tarjeta No. 33.116.012 de España y libreta Militar No.").cedula == "33116012"
+
+
+@pytest.mark.parametrize(
+    ("texto", "extremos"),
+    [
+        (
+            "Observaciones ALVAREZ LONDOÑO OLGA 1965-1968 PRUEBAS DE ADMISION | Grado en | | Fecha Marzo 31 "
+            "de 1970 | | Promedio oral de Calificaciones",
+            (1965, 1970),
+        ),
+        ("Observaciones | 8303 03 1.983-86 | Grado en | | Fecha Dic 18/87 | | Promedio oral", (1983, 1987)),
+        ("Observaciones Barrio Rivera Pelida 1978 - 1981 | Grado en Nov. 25 83 | | Fecha | | Promedio oral", (1978, 1983)),
+    ],
+)
+def test_los_anios_que_anota_la_ficha_vieja(texto, extremos):
+    assert anios_de_la_ficha(texto) == extremos
+
+
+def test_la_ia_solo_nombra_con_palabras_del_papel():
+    from resolutions.domain.historia_academica import nombre_de_la_ia
+
+    texto = "Nombre del estudiante.\n\nREGISTRO DEL ESTUDIANTE\n\nBarrios Rivera Nelida\n\nDirección actual"
+    assert nombre_de_la_ia("BARRIOS RIVERA NÉLIDA", texto) == "BARRIOS RIVERA NELIDA"
+    assert nombre_de_la_ia("BARRERA RIVERA MELIDA", texto) is None
+    assert nombre_de_la_ia("NINGUNO", texto) is None
+
+
+def test_ningun_pdf_se_llama_sin_nombre():
+    from resolutions.api.worker.historias import _nombre_del_pdf
+
+    assert _nombre_del_pdf(2, Ficha(), paginas=(3, 4)) == "02_HISTORIA-ACADEMICA-PAGINAS-3-4.pdf"
+    assert "SIN-NOMBRE" not in _nombre_del_pdf(7, Ficha(cedula="33116012"), paginas=(13, 14))
+
+
+def test_la_ficha_que_dice_los_dos_extremos_manda_sobre_el_grupo_de_las_notas():
+    from resolutions.api.worker.historias import _con_los_extremos_de_la_ficha
+
+    assert _con_los_extremos_de_la_ficha((1961, 1961), (1961, 1974)) == (1961, 1974)
+    assert _con_los_extremos_de_la_ficha((1983, 1986), (1983, None)) == (1983, 1986)
+
+
+def test_un_trabajo_cancelado_dice_la_habilidad_que_se_pidio():
+    from types import SimpleNamespace
+
+    from resolutions.api.indices import habilidad_del_proceso
+
+    cancelado = SimpleNamespace(report=None, tipo="historia-academica", task="both")
+    assert habilidad_del_proceso(cancelado) == "Historias académicas"

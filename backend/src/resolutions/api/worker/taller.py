@@ -331,6 +331,31 @@ class Taller:
             encabezado="Texto del documento",
         )
 
+    def lector_del_estudiante(self):
+        """Quien saca con la IA el nombre de un estudiante del texto de su ficha, si se pidió la IA.
+
+        Lo pidió el operador el 2026-10-30: «ningún PDF sin nombre; cuando vaya
+        sin nombre, que sea la IA quien actúe». Lee el texto que el OCR de pago
+        ya sacó de la ficha, no la imagen: se paga por tokens. Con «Solo OCR» no hay.
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_resumen import MistralResumenConfig, MistralResumidor
+        from ...domain.historia_academica import INSTRUCCIONES_DEL_ESTUDIANTE
+
+        return MistralResumidor(
+            api_key=llave,
+            config=MistralResumenConfig(max_tokens=40, temperatura=0.0),
+            consumo=self.consumo,
+            turnos=self.turnos_de_ia,
+            instrucciones=INSTRUCCIONES_DEL_ESTUDIANTE,
+            encabezado="Texto de la ficha",
+        )
+
     def lector_de_folios(self):
         """Quien lee el folio manuscrito de un acta, si se pidió la IA.
 

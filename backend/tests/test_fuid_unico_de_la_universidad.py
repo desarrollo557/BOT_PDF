@@ -282,3 +282,56 @@ def test_el_pdf_entero_lleva_las_hojas_del_cliente_y_las_paginas_en_siar():
     )
     assert (fila.folios, fila.folios_siar) == (101, 199)
     assert "las hojas del inventario del cliente" in fila.notas
+
+
+# -- la caja del inventario del cliente, cuando la ruta no la dice (2026-10-30) ------
+
+
+def test_la_caja_de_cada_upd_sale_del_excel_del_cliente(tmp_path):
+    """Medicina escribe la caja con un cero de más («000C003362») y la UPD con un espacio."""
+    from openpyxl import Workbook
+
+    from resolutions.adapters.inventario_del_cliente import cajas_por_upd
+
+    libro = Workbook()
+    hoja = libro.active
+    hoja.append(["ITEM", "NOMBRE O ASUNTOS", "FOLIOS ", "IMÁGENES", "CAJA", "UPD "])
+    hoja.append([1, "EXAMENES PREPARATORIOS DE GRADO 1926-1395", 154, 305, "00C003362", "UPD3859999"])
+    hoja.append([2, "EXAMENES PREPARATORIOS DE GRADO 1924-46", 101, 199, "000C003362", "UPD 3860000"])
+    # Una fila sin caja no deja ninguna: no se inventa.
+    hoja.append([3, "SIN CAJA", 3, 3, None, "UPD3860001"])
+    libro.save(tmp_path / "ACTAS DE GRADO MEDICINA.xlsx")
+    assert cajas_por_upd(tmp_path / "ACTAS DE GRADO MEDICINA.xlsx") == {
+        "UPD3859999": "00C003362",
+        "UPD3860000": "00C003362",
+    }
+
+
+def test_la_fila_cuya_ruta_no_dice_la_caja_lleva_la_del_cliente():
+    """«20.ACTAS DE GRADO 3362» trae sus PDF sueltos: sin el Excel del cliente la caja salía vacía."""
+    fila = fila_del_fuid(
+        {
+            "tipo": FILA_HECHA,
+            "fuid": _archivo_ilegible(caja="N/A", carpeta="N/A"),
+            "carpeta": "20.ACTAS DE GRADO 3362",
+            "archivo": "UPD3860000-EXAMENES PREPARATORIOS DE GRADO 1924-46.pdf",
+            "entero": True,
+            "caja_del_cliente": "00C003362",
+        }
+    )
+    assert (fila.caja, fila.carpeta) == ("00C003362", "UPD3860000")
+
+
+def test_la_caja_de_la_ruta_manda_sobre_la_del_cliente():
+    """El Excel sólo llena lo que la ruta no dice: la carpeta en que está el PDF manda."""
+    fila = fila_del_fuid(
+        {
+            "tipo": PDF_ENTERO,
+            "archivo": "UPD 3859597 HISTORIAS ACADEMICAS 1948-1960.pdf",
+            "carpeta": "17. FACULTAD DE MEDICINA 3261- 3268 P\\CAJA00C003261",
+            "folios": 187,
+            "entero": True,
+            "caja_del_cliente": "00C003262",
+        }
+    )
+    assert fila.caja == "00C003261"

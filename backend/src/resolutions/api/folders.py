@@ -184,8 +184,10 @@ class FolderRun:
     oficina_del_operador: bool = False
     #: Los folios -- las hojas de papel -- que el inventario del cliente anota
     #: de cada UPD, para la fila de un PDF inventariado entero (opción B del
-    #: operador, 2026-10-30), y si ya se miraron.
+    #: operador, 2026-10-30); la caja de cada UPD, para la fila que no la tiene
+    #: en su ruta; y si ya se miraron.
     folios_del_cliente: dict[str, int] = field(default_factory=dict, repr=False)
+    cajas_del_cliente: dict[str, str] = field(default_factory=dict, repr=False)
     folios_mirados: bool = False
     #: Y qué clase de documento trae esta carpeta, cuando el operador lo sabe.
     #: Una carpeta suele ser homogénea -- una estantería de libros de diplomas
@@ -696,15 +698,20 @@ def _padre_de(ruta: str) -> str:
     return limpia.rsplit(separador, 1)[0] if separador in limpia else ""
 
 
-def folios_de_la_carpeta_de_origen(ruta: str) -> dict[str, int]:
-    """Los folios que el inventario del cliente anota de cada UPD: el de la carpeta o el de la de arriba."""
-    from ..adapters.inventario_del_cliente import folios_por_upd
+def por_upd_de_la_carpeta_de_origen(ruta: str) -> tuple[dict[str, int], dict[str, str]]:
+    """Los folios y la caja que el inventario del cliente anota de cada UPD: el de la carpeta o el de la de arriba.
+
+    De una vez: por la red, cada Excel que se mira se baja una sola vez.
+    """
+    from ..adapters.inventario_del_cliente import cajas_por_upd, folios_por_upd
+
+    def leer(excel: Path) -> tuple[dict[str, int], dict[str, str]] | None:
+        folios, cajas = folios_por_upd(excel), cajas_por_upd(excel)
+        return (folios, cajas) if folios or cajas else None
 
     padre = _padre_de(ruta)
-    hallados = _leer_del_cliente(ruta, folios_por_upd) or (
-        _leer_del_cliente(padre, folios_por_upd) if padre and padre != ruta else None
-    )
-    return dict(hallados) if isinstance(hallados, dict) else {}
+    hallados = _leer_del_cliente(ruta, leer) or (_leer_del_cliente(padre, leer) if padre and padre != ruta else None)
+    return hallados if isinstance(hallados, tuple) else ({}, {})
 
 
 def oficina_de_la_carpeta_de_origen(ruta: str) -> str | None:
@@ -938,8 +945,11 @@ class FolderRunner:
         try:
             if not run.folios_mirados:
                 # Los folios del inventario del cliente, para las filas de los
-                # PDF inventariados enteros (opción B, 2026-10-30).
-                run.folios_del_cliente = await asyncio.to_thread(folios_de_la_carpeta_de_origen, str(run.source))
+                # PDF inventariados enteros (opción B, 2026-10-30), y la caja de
+                # cada UPD, para la fila cuya ruta no la dice.
+                run.folios_del_cliente, run.cajas_del_cliente = await asyncio.to_thread(
+                    por_upd_de_la_carpeta_de_origen, str(run.source)
+                )
                 run.folios_mirados = True
             if not run.oficina_mirada:
                 # Antes del primer PDF: cada trabajo la lleva a la cabecera de
@@ -1499,13 +1509,15 @@ class FolderRunner:
 
     @staticmethod
     def _con_los_folios_del_cliente(run: FolderRun, fila: dict, origin: Path) -> dict:
-        """Le pone a la fila de un PDF inventariado entero las hojas que el cliente anota de su UPD."""
+        """Le pone a la fila la caja que el cliente anota de su UPD y, si es de un PDF entero, sus hojas."""
         from ..adapters.fuid_actas_de_grado import ubicacion
         from ..adapters.fuid_de_la_entrega import PDF_ENTERO
 
+        _caja, upd = ubicacion(str(fila.get("carpeta") or ""), origin.name)
+        if upd in run.cajas_del_cliente:
+            fila["caja_del_cliente"] = run.cajas_del_cliente[upd]
         if not run.folios_del_cliente or not (fila.get("entero") or fila.get("tipo") == PDF_ENTERO):
             return fila
-        _caja, upd = ubicacion(str(fila.get("carpeta") or ""), origin.name)
         if upd in run.folios_del_cliente:
             fila["folios_del_cliente"] = run.folios_del_cliente[upd]
         return fila
@@ -2789,6 +2801,10 @@ class FolderRunner:
         try:
             carpeta = str(self._output_dir(run, origin, job).parent.relative_to(run.destination))
         except ValueError:
+            carpeta = ""
+        if carpeta in ("", "."):
+            # Un PDF suelto en la carpeta elegida: su FUID va en el espejo de
+            # ella, junto al general, y no en la raíz del destino con su nombre.
             carpeta = self._carpeta_de(run, origin)
         # Por lo que hizo el trabajo y no sólo por lo que se pidió: «Solo el
         # inventario» de un PDF sin registros acaba inventariándolo entero.

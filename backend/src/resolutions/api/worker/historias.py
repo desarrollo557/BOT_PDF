@@ -37,16 +37,19 @@ def _sin_tildes(texto: str) -> str:
 LARGO_DEL_NOMBRE = 80
 
 
-def _nombre_del_pdf(orden: int, ficha, *, carpeta: Path | None = None) -> str:
+def _nombre_del_pdf(orden: int, ficha, *, carpeta: Path | None = None, paginas: tuple[int, int] | None = None) -> str:
     """«03_HISTORIA-ACADEMICA-AGUAS-GARRIDO-CLARENA-LUCIA-1047382991.pdf», en mayúsculas.
 
     Recortado para que quepa en ``carpeta`` sin pasar el límite de Windows.
+    Ninguno se llama «SIN-NOMBRE» (2026-10-30): si ni la IA leyó el nombre, el
+    PDF dice sus páginas, como la regla general de «UPD… PAGINAS a-b».
     """
     from ...domain.naming import WINDOWS_PATH_LIMIT
 
     if ficha is None:
         return f"{orden:02d}_SIN-FICHA-DE-ESTUDIANTE.pdf"
-    partes = ["HISTORIA-ACADEMICA", _sin_tildes(ficha.nombre or "SIN-NOMBRE")]
+    sin_nombre = f"PAGINAS-{paginas[0]}-{paginas[1]}" if paginas else "NOMBRE-POR-REVISAR"
+    partes = ["HISTORIA-ACADEMICA", _sin_tildes(ficha.nombre) if ficha.nombre else sin_nombre]
     if ficha.cedula:
         partes.append(ficha.cedula)
     tallo = f"{orden:02d}_{'-'.join(partes)}"
@@ -127,6 +130,9 @@ def historias_academicas_job(payload: dict) -> dict:
             and not (unidad.ficha.nombre and unidad.ficha.cedula)
         ]
         textos_de_la_ficha: dict[int, str] = {}
+        # Y si ni así sale el nombre, la IA lo saca del texto que el OCR de pago
+        # ya leyó: se paga por tokens, no por otra página (2026-10-30).
+        nombrador = taller.lector_del_estudiante() if de_pago is not None else None
         if de_pago is not None and faltan:
             for hecho, unidad in enumerate(faltan, start=1):
                 taller.control.check()
@@ -142,11 +148,15 @@ def historias_academicas_job(payload: dict) -> dict:
                     continue
                 textos_de_la_ficha[unidad.pagina_de_la_ficha] = leido
                 de_la_ia, de_casa = leer_ficha(leido), unidad.ficha
+                nombre_leido = de_la_ia.nombre or de_casa.nombre
+                if nombre_leido is None and nombrador is not None:
+                    nombre_leido = _nombre_por_la_ia(nombrador, leido, nombre)
                 unidad.ficha = Ficha(
-                    nombre=de_la_ia.nombre or de_casa.nombre,
+                    nombre=nombre_leido,
                     cedula=de_la_ia.cedula or de_casa.cedula,
                     codigo=de_casa.codigo or de_la_ia.codigo,
                     anio_de_grado=de_la_ia.anio_de_grado or de_casa.anio_de_grado,
+                    tarjeta=de_la_ia.tarjeta or de_casa.tarjeta,
                 )
 
         # Los años, de las hojas de notas y los certificados, no de la ficha:
@@ -174,7 +184,9 @@ def historias_academicas_job(payload: dict) -> dict:
         with pymupdf.open(taller.source) as original:
             for orden, unidad in enumerate(unidades, start=1):
                 taller.control.check()
-                archivo = _nombre_del_pdf(orden, unidad.ficha, carpeta=carpeta_de_salida)
+                archivo = _nombre_del_pdf(
+                    orden, unidad.ficha, carpeta=carpeta_de_salida, paginas=(unidad.paginas[0], unidad.paginas[-1])
+                )
                 if pidio_dividir:
                     with pymupdf.open() as nuevo:
                         nuevo.insert_pdf(original, from_page=unidad.paginas[0] - 1, to_page=unidad.paginas[-1] - 1)
@@ -189,7 +201,11 @@ def historias_academicas_job(payload: dict) -> dict:
                     if not ficha.nombre:
                         faltan.append("el nombre")
                     if not ficha.cedula:
-                        faltan.append("la cédula" + (f" (código {ficha.codigo})" if ficha.codigo else ""))
+                        faltan.append(
+                            "la cédula"
+                            + (f" (código {ficha.codigo})" if ficha.codigo else "")
+                            + (f" (la ficha trae la tarjeta de identidad {ficha.tarjeta})" if ficha.tarjeta else "")
+                        )
                     if inicial is None and final is None:
                         faltan.append("los años de las notas")
                     elif final is None:
@@ -207,6 +223,7 @@ def historias_academicas_job(payload: dict) -> dict:
                         "nombre": ficha.nombre if ficha else None,
                         "cedula": ficha.cedula if ficha else None,
                         "codigo": ficha.codigo if ficha else None,
+                        "tarjeta": ficha.tarjeta if ficha else None,
                         "anio_inicial": inicial,
                         "anio_final": final,
                         "folios": len(unidad.paginas),
@@ -257,15 +274,44 @@ def _anios_del_expediente(unidad, textos, textos_de_la_ficha, de_las_hojas, vent
 
     pagina = unidad.pagina_de_la_ficha
     de_la_ficha = anios_de_la_ficha(textos_de_la_ficha.get(pagina) or textos[pagina - 1]) if pagina else []
-    inicial, final = anios(de_las_hojas, ventana=ventana, de_la_ficha=de_la_ficha)
+    inicial, final = _con_los_extremos_de_la_ficha(anios(de_las_hojas, ventana=ventana, de_la_ficha=de_la_ficha), de_la_ficha)
     if inicial is None and pagina and pagina not in textos_de_la_ficha:
         try:
             releida = local.read(source.render(pagina, dpi=200)).text
         except Exception:  # noqa: BLE001 - sin la relectura queda N/A, con su nota
             logger.debug("no se pudo releer la ficha de la página %s", pagina, exc_info=True)
             return inicial, final
-        inicial, final = anios(de_las_hojas, ventana=ventana, de_la_ficha=anios_de_la_ficha(releida))
+        de_la_ficha = anios_de_la_ficha(releida)
+        inicial, final = _con_los_extremos_de_la_ficha(anios(de_las_hojas, ventana=ventana, de_la_ficha=de_la_ficha), de_la_ficha)
     return inicial, final
+
+
+def _con_los_extremos_de_la_ficha(de_las_notas, de_la_ficha):
+    """Si la ficha dice los dos extremos -- «1965-1968» y el grado en 1970 --, mandan sobre el grupo de las notas.
+
+    El grupo de años de ``anios`` parte en dos un ingreso y un grado separados
+    más de cuatro años, y se quedaba con uno solo: «1961-1961» para quien
+    entró en 1961 y se licenció en 1974 (caja 00C003277, 2026-10-30).
+    """
+    inicial, final = de_las_notas
+    ingreso, grado = (list(de_la_ficha) + [None, None])[:2]
+    if ingreso and grado and ingreso <= grado:
+        inicial = min(ingreso, inicial or ingreso)
+        final = max(grado, final or grado)
+    return inicial, final
+
+
+def _nombre_por_la_ia(nombrador, texto: str, nombre: str) -> str | None:
+    """El nombre del estudiante que la IA saca del texto de su ficha, o ``None`` si no lo dice el papel."""
+    from ...application.ports import ResumenNoDisponible
+    from ...domain.historia_academica import nombre_de_la_ia
+
+    try:
+        respuesta = nombrador.resumir(texto)
+    except ResumenNoDisponible as error:
+        logger.warning("la IA no nombró a un estudiante de %s: %s", nombre, error)
+        return None
+    return nombre_de_la_ia(respuesta, texto)
 
 
 def _escribir_el_fuid(payload: dict, taller: Taller, nombre: str, filas: list[dict], report: dict) -> None:
