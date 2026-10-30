@@ -41,8 +41,8 @@ def _nombre_del_pdf(orden: int, ficha, *, carpeta: Path | None = None, paginas: 
     """«04_BARRIOS-RIVERA-HELIDA-45427277.pdf»: orden, nombre y cédula, en mayúsculas.
 
     Lo dictó el operador el 2026-10-30: sin «HISTORIA-ACADEMICA», que ya dice
-    la carpeta. Sin cédula, la tarjeta de identidad («…-TI-611208-03173») o
-    nada. Recortado para que quepa en ``carpeta`` sin pasar el límite de
+    la carpeta. Sin cédula, las cifras de la tarjeta de identidad
+    («…-61120803173») o nada. Recortado para que quepa en ``carpeta`` sin pasar el límite de
     Windows, y siempre por el nombre: la cédula no se corta nunca. Ninguno se
     llama «SIN-NOMBRE»: si ni la IA leyó el nombre, el PDF dice sus páginas,
     como la regla general de «UPD… PAGINAS a-b».
@@ -53,7 +53,9 @@ def _nombre_del_pdf(orden: int, ficha, *, carpeta: Path | None = None, paginas: 
         return f"{orden:02d}_SIN-FICHA-DE-ESTUDIANTE.pdf"
     sin_nombre = f"PAGINAS-{paginas[0]}-{paginas[1]}" if paginas else "NOMBRE-POR-REVISAR"
     nombre = _sin_tildes(ficha.nombre) if ficha.nombre else sin_nombre
-    documento = ficha.cedula or (f"TI-{_sin_tildes(ficha.tarjeta)}" if ficha.tarjeta else "")
+    # Sólo cifras, sea cédula o tarjeta: sin «TI», guiones ni puntos (lo
+    # dictó el operador el 2026-10-30).
+    documento = re.sub(r"\D", "", ficha.cedula or ficha.tarjeta or "")
     cola = f"-{documento}" if documento else ""
     cabe = LARGO_DEL_NOMBRE
     if carpeta is not None:

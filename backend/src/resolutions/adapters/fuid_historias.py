@@ -7,7 +7,7 @@ título», «cédula», «código».
 * **Nombre o asunto**: «AGUAS GARRIDO CLARENA LUCIA - HISTORIA ACADEMICA»: primero el
   nombre y luego el tipo, en todos los inventarios de la Universidad (2026-10-30).
 * **Consecutivo inicial**: la cédula del estudiante, sin puntos; sin cédula, la
-  tarjeta de identidad que trae la ficha, «T.I. 650409-01935».
+  tarjeta de identidad que trae la ficha, sólo sus cifras: «65040901935».
 * **Consecutivo final**: su código de estudiante; N/A si la ficha no lo trae
   o no se leyó.
 * **Fechas extremas**: el primer y el último año de sus notas, «01/01/1993» y
@@ -23,6 +23,7 @@ lleva fila, como las hojas de la ceremonia en las actas de grado.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
@@ -40,11 +41,13 @@ def _fechas(fila: Mapping[str, object]) -> tuple[str, str]:
 
 
 def _identificacion(fila: Mapping[str, object]) -> str:
-    """La cédula; si la ficha sólo trae la tarjeta de identidad, ésa, dicha como tal."""
-    if cedula := str(fila.get("cedula") or ""):
-        return cedula
-    tarjeta = str(fila.get("tarjeta") or "")
-    return f"T.I. {tarjeta}" if tarjeta else NO_LEIDO
+    """La cédula, o si la ficha sólo trae la tarjeta de identidad, la suya: sólo sus cifras.
+
+    Sin «T.I.», guiones ni puntos: lo dictó el operador el 2026-10-30. Que es
+    una tarjeta lo dice la nota de la fila.
+    """
+    cifras = re.sub(r"\D", "", str(fila.get("cedula") or fila.get("tarjeta") or ""))
+    return cifras or NO_LEIDO
 
 
 def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:

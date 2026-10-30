@@ -194,6 +194,8 @@ class Ficha:
 _NOMBRE = r"([A-Z][A-Z]+(?:\s+[A-Z][A-Z.]*){2,6})"
 _NOMBRE_DESPUES = re.compile(r"NOMBRE DEL ESTUDIANTE\W{0,6}" + _NOMBRE)
 _NOMBRE_ANTES = re.compile(_NOMBRE + r"\W{0,8}NOMBRE DEL ESTUDIANTE")
+#: «ESTUDIANTE Matos Agudelo Johana Margarita SEXO M F»: el nombre hasta «SEXO».
+_ESTUDIANTE_Y_SEXO = re.compile(r"\bESTUDIANTE\W{0,6}([A-Z][A-Z]+(?:\s+[A-Z][A-Z.]*){1,6}?)\W{0,6}SEXO\b")
 _APELLIDOS_Y_NOMBRES = re.compile(
     r"APELLIDOS\W{0,3}" + r"([A-Z][A-Z ]{3,60}?)" + r"\W{0,3}NOMBRES\W{0,3}" + r"([A-Z][A-Z ]{2,60}?)(?=\s+[A-Z]+\s*[:;]|$)"
 )
@@ -260,6 +262,13 @@ def _con_la_fecha_de_nacimiento(tarjeta: str, nacimiento: str | None) -> str:
     if nacimiento and sum(a != b for a, b in zip(tarjeta[:6], nacimiento, strict=False)) == 1:
         return nacimiento + tarjeta[6:]
     return tarjeta
+
+
+#: Una cédula con sus puntos: «45.467.824», «57,446,637». En el primer grupo el
+#: OCR lee a veces una letra por la cifra manuscrita: «A5.467.824» (Pájaro
+#: Martínez, 2026-10-30).
+_CEDULA_CON_PUNTOS = re.compile(r"(?<![\w.,])([0-9AOILSBZG]{1,3})[.,]\s?(\d{3})[.,]\s?(\d{3})(?![\d.,]?\d)")
+_LETRA_POR_CIFRA = str.maketrans("AOILSBZG", "40115826")
 
 
 def _parece_fecha(cifras: str) -> bool:
@@ -356,18 +365,29 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
                 break
     if nombre is None and (hallado := _APELLIDOS_Y_NOMBRES.search(para_el_nombre)):
         nombre = _limpio(f"{hallado.group(1)} {hallado.group(2)}", conocidas)
+    if nombre is None and (hallado := _ESTUDIANTE_Y_SEXO.search(para_el_nombre)):
+        # La ficha de alrededor del 2000: «ESTUDIANTE Matos Agudelo Johana
+        # Margarita SEXO M F» (2026-10-30).
+        nombre = _limpio(hallado.group(1), conocidas)
     cedula = tarjeta = codigo = None
     if hallado := _CODIGO.search(p):
         codigo = hallado.group(1) or hallado.group(2)
     # La cédula y la tarjeta se buscan en su casilla y en las de al lado, hasta
     # la del acudiente: la cédula de éste es de otra persona.
+    # Desde un poco antes del rótulo: la tarjeta va a veces escrita encima del
+    # renglón -- «T.I. 81090409336» sobre «CÉDULA No.» -- y en el texto queda
+    # delante (ficha de alrededor del 2000, 2026-10-30).
     desde = p.find("CEDULA")
+    desde = max(0, desde - 60) if desde >= 0 else desde
     hasta = p.find("NOMBRE DEL ACUDIENTE", max(desde, 0))
     zona = p[desde : hasta if hasta > desde else desde + 200] if desde >= 0 else p
     if hallado := _TARJETA.search(zona):
         tarjeta = f"{hallado.group(1)}-{hallado.group(2)}"
     elif hallado := _TI.search(zona):
         tarjeta = hallado.group(1)
+        cifras = re.sub(r"\D", "", tarjeta)
+        if len(cifras) == 11 and _parece_fecha(cifras[:6]):
+            tarjeta = f"{cifras[:6]}-{cifras[6:]}"
     if (hallado := _CC.search(zona)) and _parece_cedula(cifras := re.sub(r"\D", "", hallado.group(1))):
         cedula = cifras
     elif hallado := _CEDULA.search(zona):
@@ -386,6 +406,13 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
             # El código del estudiante, escrito junto al rótulo de la cédula:
             # «549310006» no es una cédula (EGRESADOS 1996, 2026-10-30).
             codigo = cifras
+    if cedula is None and (hallado := _CEDULA_CON_PUNTOS.search(zona)):
+        # El número escrito fuera de su sitio -- debajo del renglón, tras «de:
+        # Fundación» -- y con la forma de una cédula, con sus puntos: el código
+        # va sin ellos (UPD de los 90, 2026-10-30).
+        cifras = hallado.group(1).translate(_LETRA_POR_CIFRA) + hallado.group(2) + hallado.group(3)
+        if cifras.isdigit() and _parece_cedula(cifras) and not (tarjeta and tarjeta.startswith(cifras[:6])):
+            cedula = cifras
     if tarjeta:
         tarjeta = _con_la_fecha_de_nacimiento(tarjeta, _nacimiento(p))
     if codigo and codigo == cedula:

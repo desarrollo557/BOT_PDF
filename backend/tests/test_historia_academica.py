@@ -427,7 +427,7 @@ def test_la_cedula_con_la_sigla_a_mano_y_la_tarjeta_sin_guion():
 
 def test_sin_cedula_la_fila_lleva_la_tarjeta_y_el_nombre_va_primero():
     fila = fila_del_fuid(_fila(cedula=None, tarjeta="650409-01935"))
-    assert fila.consecutivo_inicial == "T.I. 650409-01935"
+    assert fila.consecutivo_inicial == "65040901935"
     assert fila.asunto.endswith(" - HISTORIA ACADEMICA")
 
 
@@ -474,8 +474,26 @@ def test_el_pdf_se_llama_orden_nombre_y_cedula():
     assert _nombre_del_pdf(8, Ficha(nombre="BERDUGO FIGUEROA GLORIA")) == "08_BERDUGO-FIGUEROA-GLORIA.pdf"
     assert (
         _nombre_del_pdf(9, Ficha(nombre="CABARCAS PARDO CONCEPCION", tarjeta="611208-03173"))
-        == "09_CABARCAS-PARDO-CONCEPCION-TI-611208-03173.pdf"
+        == "09_CABARCAS-PARDO-CONCEPCION-61120803173.pdf"
     )
     # Recortado por el nombre: la cédula queda entera.
     largo = _nombre_del_pdf(1, Ficha(nombre="A" * 120, cedula="1047382991"))
     assert largo.endswith("-1047382991.pdf") and len(largo) <= 80 + len(".pdf")
+
+
+def test_la_cedula_de_la_ficha_de_los_90_aunque_este_fuera_de_su_sitio():
+    """Pájaro Martínez y Guerra Arocha (2026-10-30): el «4» leído «A» y el número bajo el renglón."""
+    pajaro = leer_ficha("Fecha de Grado. Dic 4 de 1986 Cédula No. A5.467.824 de: C/gena. Código. 549010014 Libreta Militar:")
+    assert (pajaro.cedula, pajaro.codigo) == ("45467824", "549010014")
+    guerra = leer_ficha("Cédula No. | de: Fundación | x 57.446.637 de Fundación | Código. 549010026 | Libreta Militar:")
+    assert (guerra.cedula, guerra.codigo) == ("57446637", "549010026")
+
+
+def test_la_ficha_de_alrededor_del_2000_con_la_tarjeta_sobre_el_renglon():
+    """Matos Agudelo (2026-10-30): «ESTUDIANTE … SEXO» y «T.I. 81090409336» escrita encima de «CÉDULA No.»."""
+    ficha = leer_ficha(
+        "FACULTAD DE ENFERMERÍA ESTUDIANTE Matos Agudelo Johana Margarita SEXO M F X TELÉFONO 6634729 "
+        "FECHA DE NACIMIENTO Sept. 4/81 LUGAR C/gena T.I. 81090409336 ESTADO CIVIL Soltera CÉDULA No. "
+        "LIB. MILITAR ACUDIENTE: NOMBRE Eduardo CÓDIGO 549910006 AÑO INGRESO 1999"
+    )
+    assert (ficha.nombre, ficha.tarjeta, ficha.codigo) == ("MATOS AGUDELO JOHANA MARGARITA", "810904-09336", "549910006")
