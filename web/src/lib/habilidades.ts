@@ -389,22 +389,22 @@ export const HABILIDADES: Habilidad[] = [
     corta:
       'Si lo pides, un PDF por estudiante: cada ficha abre su expediente —también la «Ficha historia académica»— hasta la ficha siguiente; su certificado de matrícula y sus recibos van con ella. Lo de antes de la primera ficha sale aparte. Un PDF sin ninguna ficha reconocible se entrega entero, con su fila.',
     nombra:
-      'El inventario es el FUID oficial (FO-GD-008), como las actas de grado: una fila por estudiante con «HISTORIA ACADEMICA - NOMBRE», la cédula, el primer y el último año de sus notas, la caja, la carpeta y sus folios. Lo que no se pudo leer va en NOTAS.',
+      'El inventario es el FUID oficial (FO-GD-008), como las actas de grado: una fila por estudiante con «NOMBRE - HISTORIA ACADEMICA», la cédula (o la tarjeta de identidad), el primer y el último año de sus notas, la caja, la carpeta y sus folios. Lo que no se pudo leer va en NOTAS.',
     nombraConIa: 'Y el nombre y la cédula, que en la ficha van escritos a mano, leídos por la IA.',
     aportaIa:
-      'Lee con la IA sólo la ficha de cada estudiante: una página facturada por estudiante. Las notas se leen gratis.',
+      'Lee con la IA la ficha de cada estudiante al que le falte un dato, y su hoja de notas si la ficha no dice los años: una o dos páginas facturadas por estudiante.',
     tipo: 'historia-academica',
     task: null,
     acciones: [
       {
-        id: 'inventory_file',
-        label: 'Solo inventariar',
-        hint: 'Una fila por estudiante en el FUID. El PDF queda entero.'
-      },
-      {
         id: 'both',
         label: 'Dividir e inventariar',
         hint: 'Un PDF por estudiante y el FUID.'
+      },
+      {
+        id: 'inventory_file',
+        label: 'Solo inventariar',
+        hint: 'Una fila por estudiante en el FUID. El PDF queda entero: no se entrega ningún PDF dividido.'
       }
     ],
     requiereTipo: 'historia-academica',

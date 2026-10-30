@@ -185,7 +185,7 @@ def test_la_fila_generica_de_un_tipo_sin_reglas_propias():
             "archivo": "UPD0077188 - MATRICULAS ESPECIALES.pdf",
         }
     )
-    assert fila.asunto == "MATRICULA ACADEMICA - ANA PEREZ"
+    assert fila.asunto == "ANA PEREZ - MATRICULA ACADEMICA"
     assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("N/A", "5420011003")
     assert (fila.fecha_inicial, fila.fecha_final) == ("01/01/1990", "03/07/1991")
     assert (fila.caja, fila.carpeta) == ("00C003268", "UPD0077188")
@@ -291,7 +291,7 @@ def test_las_filas_se_numeran_desde_uno_sin_contar_las_que_no_llevan_fila():
         ]
     )
     assert [fila.orden for fila in filas] == [1, 2]
-    assert filas[0].asunto == "HISTORIA ACADEMICA - ANA PEREZ"
+    assert filas[0].asunto == "ANA PEREZ - HISTORIA ACADEMICA"
 
 
 # -- lo que queda escrito -----------------------------------------------------

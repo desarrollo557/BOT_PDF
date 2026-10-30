@@ -198,7 +198,9 @@ _APELLIDOS_Y_NOMBRES = re.compile(
 #: «Cédula No. 45.755.189», «Cédula o tarjeta No. CC 9'132.107», «C.C. 1047382991».
 _CEDULA = re.compile(
     r"(?:CEDULA(?:\s+O\s+TARJETA)?|C\.\s*C\.)\s*(?:DE\s+CIUDADANIA\s*)?(?:N[O0]?\.?)?\W{0,3}"
-    r"(?:C\.?\s?C\.?\s*)?(\d{1,3}(?:[.,'\s]?\d{3}){1,3})\b"
+    # Entre el rótulo y el número, la sigla escrita a mano -- «CC 9'132.107» --,
+    # que el OCR lee «CC», «Ce» o «ee»: con ella delante la cédula se perdía.
+    r"(?:[A-Z]{1,2}\.?\s?){0,2}(\d{1,3}(?:[.,'\s]?\d{3}){1,3})\b"
 )
 #: Cuántas cifras tiene una cédula: de 6 (las de los 60) a 8, o 10 las que
 #: empiezan por 1 (desde 2003). No hay cédulas de 9 cifras: un número así junto
@@ -229,7 +231,8 @@ def _sin_puntuacion(p: str) -> str:
     """«CASTILLO, SOLORZANO», «BARBOZA-LUEY», «CELMIRA. FLOREZ»: la puntuación que el OCR deja dentro del nombre."""
     return re.sub(r"(?<=[A-Z])[,;\-.]+(?=\s*[A-Z])", " ", p)
 #: «Código. 549310019», «Cód. Estudiante 5420011003», «# 549310044».
-_CODIGO = re.compile(r"(?:\bCODIGO\b|\bCOD\b)\W{0,4}(?:ESTUDIANTE\W{0,3})?(\d{7,12})\b|#\s*(\d{8,12})\b")
+#: Con el rótulo, también de seis cifras: «Código. 800642» (1980).
+_CODIGO = re.compile(r"(?:\bCODIGO\b|\bCOD\b)\W{0,4}(?:ESTUDIANTE\W{0,3})?(\d{6,12})\b|#\s*(\d{8,12})\b")
 _FECHA_DE_GRADO = re.compile(r"FECHA DE GRADO\W{0,4}.{0,30}?\b(19[2-9]\d|20[0-3]\d)\b")
 #: Palabras de la propia ficha que se cuelan en un nombre leído de la capa de
 #: texto o por OCR, y lo que el OCR hace con ellas.
@@ -326,6 +329,9 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
             pass  # el número del rótulo es la tarjeta de identidad
         elif len(cifras) == 6 and _parece_fecha(cifras):
             tarjeta = tarjeta or cifras
+        elif (len(cifras) == 11 or (len(cifras) == 10 and not cifras.startswith("1"))) and _parece_fecha(cifras[:6]):
+            # «61120803173»: la tarjeta de identidad escrita sin su guion.
+            tarjeta = tarjeta or f"{cifras[:6]}-{cifras[6:]}"
         elif _parece_cedula(cifras):
             cedula = cifras
         elif len(cifras) in (9, 10) and not codigo:

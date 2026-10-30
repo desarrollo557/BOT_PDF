@@ -108,7 +108,9 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
     folios = _folio(fila.get("folio_inicial"), fila.get("folio_final"))
     return FuidRow(
         orden=0,
-        asunto=f"{acta} - {nombre} - {titulo}",
+        # Primero el nombre y luego el tipo, en todos los inventarios de la
+        # Universidad (lo pidió el operador el 2026-10-30).
+        asunto=f"{nombre} - {acta} - {titulo}",
         codigo_trd="",
         # Un acta de grado no trae código: el consecutivo es la cédula en las
         # dos columnas, como en el modelo del operador.

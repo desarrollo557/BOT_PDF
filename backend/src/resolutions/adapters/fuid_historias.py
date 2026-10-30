@@ -4,8 +4,10 @@ El operador lo pidió «como las actas de grado» (2026-10-29), sobre la carpeta
 «14. ENFERMERIA 3277-3283 P», y con la fila guía de su plantilla: «nombre -
 título», «cédula», «código».
 
-* **Nombre o asunto**: «HISTORIA ACADEMICA - AGUAS GARRIDO CLARENA LUCIA».
-* **Consecutivo inicial**: la cédula del estudiante, sin puntos.
+* **Nombre o asunto**: «AGUAS GARRIDO CLARENA LUCIA - HISTORIA ACADEMICA»: primero el
+  nombre y luego el tipo, en todos los inventarios de la Universidad (2026-10-30).
+* **Consecutivo inicial**: la cédula del estudiante, sin puntos; sin cédula, la
+  tarjeta de identidad que trae la ficha, «T.I. 650409-01935».
 * **Consecutivo final**: su código de estudiante; N/A si la ficha no lo trae
   o no se leyó.
 * **Fechas extremas**: el primer y el último año de sus notas, «01/01/1993» y
@@ -37,6 +39,14 @@ def _fechas(fila: Mapping[str, object]) -> tuple[str, str]:
     )
 
 
+def _identificacion(fila: Mapping[str, object]) -> str:
+    """La cédula; si la ficha sólo trae la tarjeta de identidad, ésa, dicha como tal."""
+    if cedula := str(fila.get("cedula") or ""):
+        return cedula
+    tarjeta = str(fila.get("tarjeta") or "")
+    return f"T.I. {tarjeta}" if tarjeta else NO_LEIDO
+
+
 def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
     """La fila del FUID de un estudiante, o ``None`` si las páginas no son de nadie.
 
@@ -51,9 +61,9 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
     folios = folios if isinstance(folios, int) else NO_LEIDO
     return FuidRow(
         orden=0,
-        asunto=f"{HISTORIA_ACADEMICA} - {nombre}",
+        asunto=f"{nombre} - {HISTORIA_ACADEMICA}",
         codigo_trd="",
-        consecutivo_inicial=str(fila.get("cedula") or "") or NO_LEIDO,
+        consecutivo_inicial=_identificacion(fila),
         consecutivo_final=str(fila.get("codigo") or "") or NO_LEIDO,
         fecha_inicial=inicial,
         fecha_final=final,

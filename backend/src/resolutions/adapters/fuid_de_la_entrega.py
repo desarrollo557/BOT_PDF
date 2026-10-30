@@ -77,7 +77,7 @@ def fila_generica(fila: Mapping[str, object]) -> FuidRow:
     asunto = str(fila.get("asunto") or "").strip()
     if not asunto:
         nombre = str(fila.get("nombre") or "").strip() or NO_LEIDO
-        asunto = f"{fila.get('tipo') or 'DOCUMENTO'} - {nombre}"
+        asunto = f"{nombre} - {fila.get('tipo') or 'DOCUMENTO'}"
     consecutivo = str(fila.get("consecutivo") or "").strip()
     folios = _entero(fila.get("folios"))
     return FuidRow(

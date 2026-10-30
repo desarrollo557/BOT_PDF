@@ -486,7 +486,7 @@ class TestElFuidDeGrado:
         hoja = load_workbook(escribir_fuid_de_actas_de_grado(self._filas(), tmp_path / "f.xlsx")).active
         fila = [hoja.cell(14, columna).value for columna in range(1, 17)]
         assert fila[:12] == [
-            1, None, "ACTA DE GRADO No. 01/05 - MARTHA LUCIA HERRERA VILLAMIZAR - "
+            1, None, "MARTHA LUCIA HERRERA VILLAMIZAR - ACTA DE GRADO No. 01/05 - "
             "ESPECIALISTA EN GESTION DE LA CALIDAD Y AUDITORIA EN SALUD",
             "39692338", "39692338", "03/03/2005", "03/03/2005", "00C003292", "UPD3859821", None, None, "N/A",
         ]
@@ -526,7 +526,7 @@ class TestElFuidDeGrado:
         from resolutions.adapters.fuid_actas_de_grado import filas_del_fuid
 
         fila = {**{k: "" for k in ("carpeta", "archivo")}, "acta": "N/A", "nombre": "ANA RUIZ", "titulo": "ENFERMERA", "tipo": "ACTA DE GRADO"}
-        assert filas_del_fuid([fila])[0].asunto == "ACTA DE GRADO No. N/A - ANA RUIZ - ENFERMERA"
+        assert filas_del_fuid([fila])[0].asunto == "ANA RUIZ - ACTA DE GRADO No. N/A - ENFERMERA"
 
 
 class TestElFolioManuscrito:

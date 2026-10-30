@@ -195,6 +195,10 @@ def historias_academicas_job(payload: dict) -> dict:
                 inicial, final = _anios_del_expediente(
                     unidad, textos, textos_de_la_ficha, sin_la_ficha(unidad.paginas), ventana, source, local
                 )
+                if (inicial is None or final is None) and de_pago is not None:
+                    inicial, final = _anios_de_las_notas_por_la_ia(
+                        unidad, textos, textos_de_la_ficha, sin_la_ficha(unidad.paginas), ventana, source, de_pago
+                    ) or (inicial, final)
                 ficha = unidad.ficha
                 faltan = []
                 if ficha is not None:
@@ -284,6 +288,34 @@ def _anios_del_expediente(unidad, textos, textos_de_la_ficha, de_las_hojas, vent
         de_la_ficha = anios_de_la_ficha(releida)
         inicial, final = _con_los_extremos_de_la_ficha(anios(de_las_hojas, ventana=ventana, de_la_ficha=de_la_ficha), de_la_ficha)
     return inicial, final
+
+
+def _anios_de_las_notas_por_la_ia(unidad, textos, textos_de_la_ficha, de_las_hojas, ventana, source, de_pago):
+    """Los años de la hoja de notas leída por la IA, si la ficha no dice los dos extremos.
+
+    Las notas de 1979 a 1987 van escritas a mano -- «I Semestre 1979» … «VIII
+    sem 1º p. acad. 1.984» -- y la capa de texto no deja leer ningún año: el
+    primero quedaba N/A en 34 de las 85 historias de UPD3859718 (2026-10-30).
+    Una página facturada más, sólo para esos estudiantes. ``None`` si no aporta.
+    """
+    from ...domain.historia_academica import anios, anios_de_la_ficha
+
+    notas = [numero for numero in unidad.paginas if numero != unidad.pagina_de_la_ficha][:1]
+    if not notas:
+        return None
+    try:
+        leida = de_pago.read(source.render(notas[0], dpi=200, formato="jpeg")).text
+    except Exception:  # noqa: BLE001 - sin la IA quedan los años que ya había
+        logger.warning("la IA no pudo leer la hoja de notas de la página %s", notas[0], exc_info=True)
+        return None
+    if not leida:
+        return None
+    pagina = unidad.pagina_de_la_ficha
+    de_la_ficha = anios_de_la_ficha(textos_de_la_ficha.get(pagina) or textos[pagina - 1]) if pagina else ()
+    inicial, final = _con_los_extremos_de_la_ficha(
+        anios([leida, *de_las_hojas], ventana=ventana, de_la_ficha=de_la_ficha), de_la_ficha
+    )
+    return (inicial, final) if inicial or final else None
 
 
 def _con_los_extremos_de_la_ficha(de_las_notas, de_la_ficha):

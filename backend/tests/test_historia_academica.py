@@ -317,7 +317,7 @@ def _fila(**cambios):
 
 def test_la_fila_del_fuid_de_un_estudiante():
     fila = fila_del_fuid(_fila())
-    assert fila.asunto == "HISTORIA ACADEMICA - AGUAS GARRIDO CLARENA LUCIA"
+    assert fila.asunto == "AGUAS GARRIDO CLARENA LUCIA - HISTORIA ACADEMICA"
     assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("45755189", "549310044")
     assert (fila.fecha_inicial, fila.fecha_final) == ("01/01/1993", "31/12/1996")
     assert (fila.caja, fila.carpeta) == ("00C003282", "UPD3859753")
@@ -326,7 +326,7 @@ def test_la_fila_del_fuid_de_un_estudiante():
 
 def test_lo_que_no_se_leyo_queda_na():
     fila = fila_del_fuid(_fila(nombre=None, cedula=None, codigo=None, anio_inicial=None, anio_final=None, folios=None))
-    assert fila.asunto == "HISTORIA ACADEMICA - N/A"
+    assert fila.asunto == "N/A - HISTORIA ACADEMICA"
     assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("N/A", "N/A")
     assert (fila.fecha_inicial, fila.fecha_final, fila.folios) == ("N/A", "N/A", "N/A")
 
@@ -416,3 +416,16 @@ def test_un_trabajo_cancelado_dice_la_habilidad_que_se_pidio():
 
     cancelado = SimpleNamespace(report=None, tipo="historia-academica", task="both")
     assert habilidad_del_proceso(cancelado) == "Historias académicas"
+
+
+def test_la_cedula_con_la_sigla_a_mano_y_la_tarjeta_sin_guion():
+    """UPD3859718: «CC 9'132.107» (Acuña Meza, pág. 1) y «61120803173» (Cabarcas Pardo, pág. 17)."""
+    assert leer_ficha("Cédula o tarjeta No. Ce 9'132.107 Magangué Libreta Militar No.").cedula == "9132107"
+    con_tarjeta = leer_ficha("Código. 800642 9/V Cédula o tarjeta No. 61120803173 C/gena Libreta Militar No.")
+    assert (con_tarjeta.cedula, con_tarjeta.tarjeta, con_tarjeta.codigo) == (None, "611208-03173", "800642")
+
+
+def test_sin_cedula_la_fila_lleva_la_tarjeta_y_el_nombre_va_primero():
+    fila = fila_del_fuid(_fila(cedula=None, tarjeta="650409-01935"))
+    assert fila.consecutivo_inicial == "T.I. 650409-01935"
+    assert fila.asunto.endswith(" - HISTORIA ACADEMICA")
