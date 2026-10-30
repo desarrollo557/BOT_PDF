@@ -6,10 +6,10 @@ su capa de texto, y se entrega como las actas de grado: los PDF y una fila por
 estudiante, que la corrida de carpeta reúne en el FUID de cada subcarpeta.
 
 El corte nunca paga: sale de la capa de texto y del OCR de casa. La IA, si se
-pidió, lee sólo la ficha de los estudiantes a los que les falta el nombre o la
-cédula después de mirar su ficha y su certificado de matrícula -- que trae el
-nombre y el código a máquina --: una página facturada por estudiante, como
-mucho, y ninguna por los certificados (2026-10-30).
+pidió, lee la ficha y la primera hoja de notas de cada estudiante -- dos páginas
+facturadas -- y concilia su nombre entre todo lo leído; ninguna por los
+certificados. Lo pidió el operador el 2026-10-30: el nombre, la cédula y las
+fechas, perfectos y del papel.
 """
 
 from __future__ import annotations
@@ -70,12 +70,10 @@ def historias_academicas_job(payload: dict) -> dict:
     from ...domain.historia_academica import (
         HISTORIA_ACADEMICA,
         SIN_ESTUDIANTE,
-        Ficha,
         abre_expediente,
         es_de_notas,
         es_ficha,
         expedientes,
-        leer_ficha,
         plano,
         plantilla_de_apertura,
         ventana_de_anios,
@@ -118,46 +116,18 @@ def historias_academicas_job(payload: dict) -> dict:
         # El corte, sin pagar nada: de lo que dicen las páginas.
         unidades = expedientes(textos, conocidas=conocidas)
 
-        # Y la IA, si se pidió, sólo donde hace falta: la ficha del estudiante
-        # al que, después de su ficha y su certificado, le falta el nombre o la
-        # cédula. Lo que lee manda sobre lo de casa, que en la ficha escrita a
-        # mano casi nunca es el nombre entero.
-        faltan = [
-            unidad
-            for unidad in unidades
-            if unidad.ficha is not None
-            and unidad.pagina_de_la_ficha is not None
-            and not (unidad.ficha.nombre and unidad.ficha.cedula)
-        ]
+        # Y la IA, si se pidió: la ficha y la hoja de notas de cada estudiante
+        # al que le falte algo. Medido sobre 24 fichas de UPD3859718 contra el
+        # papel (2026-10-30): con sólo la ficha, 10 nombres de 24 salían bien y
+        # el año final se quedaba en el anotado («1983-86») y no en el último
+        # semestre. La hoja de notas trae los años y el nombre otra vez, y la IA
+        # concilia el nombre entre todo lo leído, sólo con palabras del papel.
         textos_de_la_ficha: dict[int, str] = {}
-        # Y si ni así sale el nombre, la IA lo saca del texto que el OCR de pago
-        # ya leyó: se paga por tokens, no por otra página (2026-10-30).
-        nombrador = taller.lector_del_estudiante() if de_pago is not None else None
-        if de_pago is not None and faltan:
-            for hecho, unidad in enumerate(faltan, start=1):
-                taller.control.check()
-                _anunciar(
-                    payload, Stage.IDENTIFYING, detail="leyendo la ficha de cada estudiante", done=hecho, total=len(faltan)
-                )
-                try:
-                    leido = de_pago.read(source.render(unidad.pagina_de_la_ficha, dpi=200, formato="jpeg")).text
-                except Exception:  # noqa: BLE001 - sin la IA queda lo del OCR de casa
-                    logger.warning(
-                        "la IA no pudo leer la ficha de la página %s de %s", unidad.pagina_de_la_ficha, nombre, exc_info=True
-                    )
-                    continue
-                textos_de_la_ficha[unidad.pagina_de_la_ficha] = leido
-                de_la_ia, de_casa = leer_ficha(leido), unidad.ficha
-                nombre_leido = de_la_ia.nombre or de_casa.nombre
-                if nombre_leido is None and nombrador is not None:
-                    nombre_leido = _nombre_por_la_ia(nombrador, leido, nombre)
-                unidad.ficha = Ficha(
-                    nombre=nombre_leido,
-                    cedula=de_la_ia.cedula or de_casa.cedula,
-                    codigo=de_casa.codigo or de_la_ia.codigo,
-                    anio_de_grado=de_la_ia.anio_de_grado or de_casa.anio_de_grado,
-                    tarjeta=de_la_ia.tarjeta or de_casa.tarjeta,
-                )
+        notas_de_la_ia: dict[int, str] = {}
+        if de_pago is not None:
+            _leer_las_fichas_con_la_ia(
+                payload, taller, source, de_pago, unidades, textos_de_la_ficha, notas_de_la_ia, nombre
+            )
 
         # Los años, de las hojas de notas y los certificados, no de la ficha:
         # la ficha trae la fecha de nacimiento y la del bachillerato. Y dentro
@@ -192,13 +162,14 @@ def historias_academicas_job(payload: dict) -> dict:
                         nuevo.insert_pdf(original, from_page=unidad.paginas[0] - 1, to_page=unidad.paginas[-1] - 1)
                         nuevo.save(carpeta_de_salida / archivo, garbage=3, deflate=True)
                     salidas.append((carpeta_de_salida / archivo).relative_to(taller.destination).as_posix())
+                # Con lo que la IA leyó de su hoja de notas, si la leyó: ahí están
+                # los años de cada semestre, escritos a mano.
+                notas_leidas = notas_de_la_ia.get(unidad.pagina_de_la_ficha)
+                de_las_hojas = sin_la_ficha(unidad.paginas)
                 inicial, final = _anios_del_expediente(
-                    unidad, textos, textos_de_la_ficha, sin_la_ficha(unidad.paginas), ventana, source, local
+                    unidad, textos, textos_de_la_ficha, [notas_leidas, *de_las_hojas] if notas_leidas else de_las_hojas,
+                    ventana, source, local,
                 )
-                if (inicial is None or final is None) and de_pago is not None:
-                    inicial, final = _anios_de_las_notas_por_la_ia(
-                        unidad, textos, textos_de_la_ficha, sin_la_ficha(unidad.paginas), ventana, source, de_pago
-                    ) or (inicial, final)
                 ficha = unidad.ficha
                 faltan = []
                 if ficha is not None:
@@ -290,32 +261,70 @@ def _anios_del_expediente(unidad, textos, textos_de_la_ficha, de_las_hojas, vent
     return inicial, final
 
 
-def _anios_de_las_notas_por_la_ia(unidad, textos, textos_de_la_ficha, de_las_hojas, ventana, source, de_pago):
-    """Los años de la hoja de notas leída por la IA, si la ficha no dice los dos extremos.
+#: Cuántos estudiantes se leen con la IA a la vez: cada uno son dos páginas de
+#: OCR y una consulta al chat, segundos de espera que no ocupan este proceso.
+LECTORES_DE_IA = 4
 
-    Las notas de 1979 a 1987 van escritas a mano -- «I Semestre 1979» … «VIII
-    sem 1º p. acad. 1.984» -- y la capa de texto no deja leer ningún año: el
-    primero quedaba N/A en 34 de las 85 historias de UPD3859718 (2026-10-30).
-    Una página facturada más, sólo para esos estudiantes. ``None`` si no aporta.
+
+def _leer_las_fichas_con_la_ia(payload, taller, source, de_pago, unidades, textos_de_la_ficha, notas_de_la_ia, nombre):
+    """La ficha y la primera hoja de notas de cada estudiante, leídas por la IA, y su nombre conciliado.
+
+    En las de 1960 a 1990, escritas a mano, la capa de texto no deja leer ni el
+    nombre, ni la cédula, ni los años: dos páginas facturadas por estudiante.
+    Lo que lee la IA manda sobre lo de casa. Las páginas se renderizan de a una
+    -- el documento no se lee desde dos hilos -- y se piden de a ``LECTORES_DE_IA``.
     """
-    from ...domain.historia_academica import anios, anios_de_la_ficha
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    notas = [numero for numero in unidad.paginas if numero != unidad.pagina_de_la_ficha][:1]
-    if not notas:
-        return None
+    from ...domain.historia_academica import Ficha, leer_ficha
+
+    nombrador = taller.lector_del_estudiante()
+    candado = threading.Lock()
+    con_ficha = [unidad for unidad in unidades if unidad.ficha is not None and unidad.pagina_de_la_ficha is not None]
+
+    def leer_pagina(numero: int) -> str:
+        try:
+            with candado:
+                imagen = source.render(numero, dpi=200, formato="jpeg")
+            return de_pago.read(imagen).text or ""
+        except Exception:  # noqa: BLE001 - sin la IA queda lo del OCR de casa
+            logger.warning("la IA no pudo leer la página %s de %s", numero, nombre, exc_info=True)
+            return ""
+
+    def leer(unidad):
+        ficha = leer_pagina(unidad.pagina_de_la_ficha)
+        siguientes = [numero for numero in unidad.paginas if numero != unidad.pagina_de_la_ficha][:1]
+        notas = leer_pagina(siguientes[0]) if siguientes else ""
+        conciliado = None
+        if nombrador is not None and (ficha or notas):
+            conciliado = _nombre_por_la_ia(nombrador, f"{ficha}\n\n{notas}".strip(), nombre)
+        return unidad, ficha, notas, conciliado
+
+    pool = ThreadPoolExecutor(max_workers=LECTORES_DE_IA)
     try:
-        leida = de_pago.read(source.render(notas[0], dpi=200, formato="jpeg")).text
-    except Exception:  # noqa: BLE001 - sin la IA quedan los años que ya había
-        logger.warning("la IA no pudo leer la hoja de notas de la página %s", notas[0], exc_info=True)
-        return None
-    if not leida:
-        return None
-    pagina = unidad.pagina_de_la_ficha
-    de_la_ficha = anios_de_la_ficha(textos_de_la_ficha.get(pagina) or textos[pagina - 1]) if pagina else ()
-    inicial, final = _con_los_extremos_de_la_ficha(
-        anios([leida, *de_las_hojas], ventana=ventana, de_la_ficha=de_la_ficha), de_la_ficha
-    )
-    return (inicial, final) if inicial or final else None
+        futuros = [pool.submit(leer, unidad) for unidad in con_ficha]
+        for hecho, futuro in enumerate(as_completed(futuros), start=1):
+            taller.control.check()
+            _anunciar(
+                payload, Stage.IDENTIFYING, detail="leyendo con la IA la ficha y las notas de cada estudiante",
+                done=hecho, total=len(futuros),
+            )
+            unidad, ficha, notas, conciliado = futuro.result()
+            if ficha:
+                textos_de_la_ficha[unidad.pagina_de_la_ficha] = ficha
+            if notas:
+                notas_de_la_ia[unidad.pagina_de_la_ficha] = notas
+            de_la_ia, de_casa = leer_ficha(ficha), unidad.ficha
+            unidad.ficha = Ficha(
+                nombre=conciliado or de_la_ia.nombre or de_casa.nombre,
+                cedula=de_la_ia.cedula or de_casa.cedula,
+                codigo=de_casa.codigo or de_la_ia.codigo,
+                anio_de_grado=de_la_ia.anio_de_grado or de_casa.anio_de_grado,
+                tarjeta=de_la_ia.tarjeta or de_casa.tarjeta,
+            )
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _con_los_extremos_de_la_ficha(de_las_notas, de_la_ficha):

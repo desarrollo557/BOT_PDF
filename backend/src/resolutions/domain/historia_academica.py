@@ -200,7 +200,7 @@ _CEDULA = re.compile(
     r"(?:CEDULA(?:\s+O\s+TARJETA)?|C\.\s*C\.)\s*(?:DE\s+CIUDADANIA\s*)?(?:N[O0]?\.?)?\W{0,3}"
     # Entre el rótulo y el número, la sigla escrita a mano -- «CC 9'132.107» --,
     # que el OCR lee «CC», «Ce» o «ee»: con ella delante la cédula se perdía.
-    r"(?:[A-Z]{1,2}\.?\s?){0,2}(\d{1,3}(?:[.,'\s]?\d{3}){1,3})\b"
+    r"(?:[CEQ]{1,2}\.?\s?){0,2}(\d{1,3}(?:[.,'\s\-]{1,2}\d{3}|\d{3}){1,3})\b"
 )
 #: Cuántas cifras tiene una cédula: de 6 (las de los 60) a 8, o 10 las que
 #: empiezan por 1 (desde 2003). No hay cédulas de 9 cifras: un número así junto
@@ -219,7 +219,43 @@ def _parece_cedula(cifras: str) -> bool:
 _TARJETA = re.compile(r"(?<!\d)(\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))\s?[-–]\s?(\d{3,5})(?!\d)")
 #: «C.C 45.474.260», la cédula con su sigla en cualquier casilla: la ficha de
 #: los 80 la escribe a veces en la de la libreta militar.
-_CC = re.compile(r"\bC\s?\.?\s?C\b\.?\s*(?:N[O0]\.?\s*)?(\d{1,3}(?:[.,'\s]?\d{3}){1,3})\b")
+_CC = re.compile(r"\bC\s?\.?\s?[CQOG]\b\.?\s*(?:N[O0]\.?\s*)?(\d{1,3}(?:[.,'\s\-]{1,2}\d{3}|\d{3}){1,3})\b")
+
+
+_MESES = {"ENE": 1, "FEB": 2, "MAR": 3, "ABR": 4, "MAY": 5, "JUN": 6, "JUL": 7, "AGO": 8,
+          "SEP": 9, "SET": 9, "OCT": 10, "NOV": 11, "DIC": 12, "DEC": 12}
+_ROMANOS = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7, "VIII": 8, "IX": 9, "X": 10, "XI": 11, "XII": 12}
+_NACIMIENTO = re.compile(r"FECHA DE NACIMIENTO\W{0,4}([^|]{0,40})")
+
+
+def _nacimiento(p: str) -> str | None:
+    """La fecha de nacimiento de la ficha como AAMMDD: «Dic 8 1.961», «20 Junio /57», «26-I/44»."""
+    if not (hallada := _NACIMIENTO.search(p)):
+        return None
+    texto = _ANIO_CON_PUNTO.sub(lambda m: m.group(1) + m.group(2), hallada.group(1))
+    numeros = re.findall(r"\d+", texto)
+    mes = next(
+        (_MESES.get(palabra[:3]) or _ROMANOS.get(palabra) for palabra in re.findall(r"[A-Z]+", texto)
+         if palabra[:3] in _MESES or palabra in _ROMANOS),
+        None,
+    )
+    if mes is None and len(numeros) >= 3:
+        mes = int(numeros[1])
+        numeros = [numeros[0], numeros[2]]
+    if mes is None or len(numeros) < 2 or not 1 <= mes <= 12 or not 1 <= int(numeros[0]) <= 31:
+        return None
+    return f"{numeros[-1][-2:]}{mes:02d}{int(numeros[0]):02d}"
+
+
+def _con_la_fecha_de_nacimiento(tarjeta: str, nacimiento: str | None) -> str:
+    """La tarjeta empieza por la fecha de nacimiento: un dígito que el OCR leyó mal se corrige con ella.
+
+    «61720803173» en la ficha de Cabarcas Pardo, nacida el «Dic 8 1.961»: es
+    611208-03173 (UPD3859718, pág. 17). Sólo un dígito: más ya no es la misma.
+    """
+    if nacimiento and sum(a != b for a, b in zip(tarjeta[:6], nacimiento, strict=False)) == 1:
+        return nacimiento + tarjeta[6:]
+    return tarjeta
 
 
 def _parece_fecha(cifras: str) -> bool:
@@ -319,18 +355,24 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
     cedula = tarjeta = codigo = None
     if hallado := _CODIGO.search(p):
         codigo = hallado.group(1) or hallado.group(2)
-    if hallado := _TARJETA.search(p):
+    # La cédula y la tarjeta se buscan en su casilla y en las de al lado, hasta
+    # la del acudiente: la cédula de éste es de otra persona.
+    desde = p.find("CEDULA")
+    hasta = p.find("NOMBRE DEL ACUDIENTE", max(desde, 0))
+    zona = p[desde : hasta if hasta > desde else desde + 200] if desde >= 0 else p
+    if hallado := _TARJETA.search(zona):
         tarjeta = f"{hallado.group(1)}-{hallado.group(2)}"
-    if (hallado := _CC.search(p)) and _parece_cedula(cifras := re.sub(r"\D", "", hallado.group(1))):
+    if (hallado := _CC.search(zona)) and _parece_cedula(cifras := re.sub(r"\D", "", hallado.group(1))):
         cedula = cifras
-    elif hallado := _CEDULA.search(p):
+    elif hallado := _CEDULA.search(zona):
         cifras = re.sub(r"\D", "", hallado.group(1))
         if tarjeta and tarjeta.startswith(cifras):
             pass  # el número del rótulo es la tarjeta de identidad
         elif len(cifras) == 6 and _parece_fecha(cifras):
             tarjeta = tarjeta or cifras
-        elif (len(cifras) == 11 or (len(cifras) == 10 and not cifras.startswith("1"))) and _parece_fecha(cifras[:6]):
-            # «61120803173»: la tarjeta de identidad escrita sin su guion.
+        elif len(cifras) == 11 or (len(cifras) == 10 and not cifras.startswith("1") and _parece_fecha(cifras[:6])):
+            # «61120803173»: la tarjeta de identidad escrita sin su guion. Once
+            # cifras no las tiene ninguna cédula.
             tarjeta = tarjeta or f"{cifras[:6]}-{cifras[6:]}"
         elif _parece_cedula(cifras):
             cedula = cifras
@@ -338,6 +380,8 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
             # El código del estudiante, escrito junto al rótulo de la cédula:
             # «549310006» no es una cédula (EGRESADOS 1996, 2026-10-30).
             codigo = cifras
+    if tarjeta:
+        tarjeta = _con_la_fecha_de_nacimiento(tarjeta, _nacimiento(p))
     anio = None
     if hallado := _FECHA_DE_GRADO.search(p):
         anio = int(hallado.group(1))
@@ -350,13 +394,17 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
 INSTRUCCIONES_DEL_ESTUDIANTE = (
     "Eres archivista de la Universidad de Cartagena. Recibes el texto, leído por OCR, de la ficha de "
     "un estudiante (formulario «Registro del estudiante» o «Ficha historia académica»). El OCR trae "
-    "errores y a veces separa el rótulo de su valor.\n\n"
+    "errores y a veces separa el rótulo de su valor. Puede venir también el texto de su hoja de notas.\n\n"
     "Devuelve solo el nombre completo del estudiante, en mayúsculas, con los apellidos primero y luego "
     "los nombres, por ejemplo: ALVAREZ LONDOÑO OLGA.\n"
-    "- Está en «Nombre del estudiante» (o en APELLIDOS y NOMBRES) y a veces repetido en otra parte de la ficha.\n"
+    "- El nombre aparece varias veces: en «Nombre del estudiante» (o en APELLIDOS y NOMBRES), a veces "
+    "repetido en grande en la ficha o al pie de la hoja de notas, y sus apellidos en «Nombre de los padres» "
+    "(el primer apellido suele ser el primero del padre, y el segundo, el primero de la madre). El OCR se "
+    "equivoca distinto en cada aparición: elige para cada palabra la grafía que confirmen las demás.\n"
+    "- Los apellidos de soltera: sin el apellido de casada («López de Zabana», «(Hoy de Arteta)»). "
+    "«de Jesús», «del Carmen» o «de la Hoz» son parte del nombre o del apellido y sí van.\n"
     "- No es el nombre de los padres, del acudiente ni del colegio, ni una dirección.\n"
-    "- Sin anotaciones como «(Hoy de …)».\n"
-    "- Copia cada palabra tal como está en el texto, aunque parezca mal escrita: no la corrijas ni inventes.\n"
+    "- Cada palabra tiene que estar escrita así en alguna parte del texto: no la corrijas por tu cuenta ni inventes.\n"
     "- Si el texto no trae el nombre del estudiante, devuelve solo: NINGUNO"
 )
 

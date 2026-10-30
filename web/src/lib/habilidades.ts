@@ -392,7 +392,7 @@ export const HABILIDADES: Habilidad[] = [
       'El inventario es el FUID oficial (FO-GD-008), como las actas de grado: una fila por estudiante con «NOMBRE - HISTORIA ACADEMICA», la cédula (o la tarjeta de identidad), el primer y el último año de sus notas, la caja, la carpeta y sus folios. Lo que no se pudo leer va en NOTAS.',
     nombraConIa: 'Y el nombre y la cédula, que en la ficha van escritos a mano, leídos por la IA.',
     aportaIa:
-      'Lee con la IA la ficha de cada estudiante al que le falte un dato, y su hoja de notas si la ficha no dice los años: una o dos páginas facturadas por estudiante.',
+      'Lee con la IA la ficha y la hoja de notas de cada estudiante y concilia su nombre entre todo lo leído: dos páginas facturadas por estudiante.',
     tipo: 'historia-academica',
     task: null,
     acciones: [

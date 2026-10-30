@@ -429,3 +429,16 @@ def test_sin_cedula_la_fila_lleva_la_tarjeta_y_el_nombre_va_primero():
     fila = fila_del_fuid(_fila(cedula=None, tarjeta="650409-01935"))
     assert fila.consecutivo_inicial == "T.I. 650409-01935"
     assert fila.asunto.endswith(" - HISTORIA ACADEMICA")
+
+
+def test_la_tarjeta_mal_leida_se_corrige_con_la_fecha_de_nacimiento():
+    """Cabarcas Pardo (UPD3859718, pág. 17): el OCR leyó «61720803173» y la ficha dice que nació el «Dic 8 1.961»."""
+    texto = "Fecha de nacimiento Dic 8 1.961 Estado civil Soltera Cédula o tarjeta No. 61720803173 C/jean Libreta Militar No."
+    assert leer_ficha(texto).tarjeta == "611208-03173"
+    # Sin fecha que la confirme, la tarjeta queda como se leyó.
+    assert leer_ficha("Cédula o tarjeta No. 61720803173 Libreta Militar No.").tarjeta == "617208-03173"
+
+
+def test_la_cedula_del_acudiente_no_es_la_del_estudiante():
+    texto = "Cédula o tarjeta No. Libreta Militar No. Nombre del acudiente (s) Luis Pérez C.C. 3.456.789 Dirección"
+    assert leer_ficha(texto).cedula is None
