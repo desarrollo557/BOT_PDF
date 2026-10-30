@@ -38,25 +38,29 @@ LARGO_DEL_NOMBRE = 80
 
 
 def _nombre_del_pdf(orden: int, ficha, *, carpeta: Path | None = None, paginas: tuple[int, int] | None = None) -> str:
-    """«03_HISTORIA-ACADEMICA-AGUAS-GARRIDO-CLARENA-LUCIA-1047382991.pdf», en mayúsculas.
+    """«04_BARRIOS-RIVERA-HELIDA-45427277.pdf»: orden, nombre y cédula, en mayúsculas.
 
-    Recortado para que quepa en ``carpeta`` sin pasar el límite de Windows.
-    Ninguno se llama «SIN-NOMBRE» (2026-10-30): si ni la IA leyó el nombre, el
-    PDF dice sus páginas, como la regla general de «UPD… PAGINAS a-b».
+    Lo dictó el operador el 2026-10-30: sin «HISTORIA-ACADEMICA», que ya dice
+    la carpeta. Sin cédula, la tarjeta de identidad («…-TI-611208-03173») o
+    nada. Recortado para que quepa en ``carpeta`` sin pasar el límite de
+    Windows, y siempre por el nombre: la cédula no se corta nunca. Ninguno se
+    llama «SIN-NOMBRE»: si ni la IA leyó el nombre, el PDF dice sus páginas,
+    como la regla general de «UPD… PAGINAS a-b».
     """
     from ...domain.naming import WINDOWS_PATH_LIMIT
 
     if ficha is None:
         return f"{orden:02d}_SIN-FICHA-DE-ESTUDIANTE.pdf"
     sin_nombre = f"PAGINAS-{paginas[0]}-{paginas[1]}" if paginas else "NOMBRE-POR-REVISAR"
-    partes = ["HISTORIA-ACADEMICA", _sin_tildes(ficha.nombre) if ficha.nombre else sin_nombre]
-    if ficha.cedula:
-        partes.append(ficha.cedula)
-    tallo = f"{orden:02d}_{'-'.join(partes)}"
+    nombre = _sin_tildes(ficha.nombre) if ficha.nombre else sin_nombre
+    documento = ficha.cedula or (f"TI-{_sin_tildes(ficha.tarjeta)}" if ficha.tarjeta else "")
+    cola = f"-{documento}" if documento else ""
     cabe = LARGO_DEL_NOMBRE
     if carpeta is not None:
         cabe = min(cabe, WINDOWS_PATH_LIMIT - len(str(carpeta)) - 1 - len(".pdf"))
-    return f"{tallo[: max(cabe, 24)].rstrip('-')}.pdf"
+    prefijo = f"{orden:02d}_"
+    nombre = nombre[: max(cabe - len(prefijo) - len(cola), 12)].rstrip("-")
+    return f"{prefijo}{nombre}{cola}.pdf"
 
 
 def historias_academicas_job(payload: dict) -> dict:

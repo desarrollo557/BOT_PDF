@@ -398,7 +398,7 @@ def test_la_ia_solo_nombra_con_palabras_del_papel():
 def test_ningun_pdf_se_llama_sin_nombre():
     from resolutions.api.worker.historias import _nombre_del_pdf
 
-    assert _nombre_del_pdf(2, Ficha(), paginas=(3, 4)) == "02_HISTORIA-ACADEMICA-PAGINAS-3-4.pdf"
+    assert _nombre_del_pdf(2, Ficha(), paginas=(3, 4)) == "02_PAGINAS-3-4.pdf"
     assert "SIN-NOMBRE" not in _nombre_del_pdf(7, Ficha(cedula="33116012"), paginas=(13, 14))
 
 
@@ -464,3 +464,18 @@ def test_el_codigo_sin_rotulo_empieza_por_el_anio_de_ingreso():
     assert codigo_sin_rotulo("Cédula o tarjeta No. 650609-03314 Observaciones 830303", 1983) == "830303"
     assert codigo_sin_rotulo("Tel: 22309 Cédula o tarjeta No. 621122-01497", 1981) is None
     assert codigo_sin_rotulo("840222", None) is None
+
+
+def test_el_pdf_se_llama_orden_nombre_y_cedula():
+    """Lo dictó el operador el 2026-10-30: sin «HISTORIA-ACADEMICA»."""
+    from resolutions.api.worker.historias import _nombre_del_pdf
+
+    assert _nombre_del_pdf(4, Ficha(nombre="BARRIOS RIVERA HELIDA", cedula="45427277")) == "04_BARRIOS-RIVERA-HELIDA-45427277.pdf"
+    assert _nombre_del_pdf(8, Ficha(nombre="BERDUGO FIGUEROA GLORIA")) == "08_BERDUGO-FIGUEROA-GLORIA.pdf"
+    assert (
+        _nombre_del_pdf(9, Ficha(nombre="CABARCAS PARDO CONCEPCION", tarjeta="611208-03173"))
+        == "09_CABARCAS-PARDO-CONCEPCION-TI-611208-03173.pdf"
+    )
+    # Recortado por el nombre: la cédula queda entera.
+    largo = _nombre_del_pdf(1, Ficha(nombre="A" * 120, cedula="1047382991"))
+    assert largo.endswith("-1047382991.pdf") and len(largo) <= 80 + len(".pdf")
