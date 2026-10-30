@@ -259,6 +259,16 @@ class Taller:
             lectores=max(1, int(self.settings.get("page_workers") or 8) // 2),
         )
 
+    def mosaico_de_campo(self, franja):
+        """Quien relee un campo de muchas páginas en su renglón ampliado, con cualquier lectura de pago.
+
+        La segunda lectura estándar de todas las habilidades (``domain/doble_lectura.py``):
+        cada una describe su campo con una ``Franja``. Con «Solo OCR» no hay.
+        """
+        from ...adapters.mosaico_de_nombres import MosaicoDeCampo
+
+        return self._mosaico(lambda **opciones: MosaicoDeCampo(franja, **opciones))
+
     def mosaico_de_fechas(self):
         """Quien repesca la fecha manuscrita en el pie del diploma, con cualquier lectura de pago.
 

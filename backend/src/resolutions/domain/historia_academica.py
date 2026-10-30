@@ -39,6 +39,8 @@ import unicodedata
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 
+from .doble_lectura import Franja
+
 #: La clase de las filas de esta habilidad en el inventario, y la de las páginas
 #: que no son de ningún estudiante (las de antes de la primera ficha).
 HISTORIA_ACADEMICA = "HISTORIA ACADEMICA"
@@ -713,3 +715,17 @@ def expedientes(
         actual.certificados.append(ficha)
         actual.ficha = _junta(actual.ficha, ficha)
     return resultado
+
+
+# -- la segunda lectura de la ficha ---------------------------------------------------
+
+
+#: El renglón «Cédula o tarjeta No. … Libreta Militar No. …», entero: la cédula
+#: va a veces en la casilla de la libreta militar.
+FRANJA_DE_LA_CEDULA = Franja(
+    campo="la cédula",
+    leyendas=("CEDULA O TARJETA", "TARJETA NO", "LIBRETA MILITAR"),
+    rotulo=r"C[EÉ]DULA\W+O\W+TARJETA",
+    alto=0.04,
+    margen=0.012,
+)

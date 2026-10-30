@@ -486,3 +486,36 @@ def _por_leyenda(texto: str) -> list[str]:
         if trozos:
             trozos[-1].append(renglon)
     return ["\n".join(trozo) for trozo in trozos]
+
+
+class MosaicoDeCampo(MosaicoDeNombres):
+    """El mosaico para cualquier campo de cualquier formulario, descrito por su :class:`Franja`.
+
+    Es el de los diplomas generalizado (2026-10-30): cada habilidad dice dónde
+    está su nombre, su cédula o su número, y la segunda lectura sale igual
+    para todas -- diez renglones ampliados por página facturada --. La respuesta
+    se reparte por la etiqueta de cada franja o, si vuelve sin ellas, por el
+    rótulo impreso de cada renglón, en el orden en que se apilaron.
+    """
+
+    def __init__(self, franja, **opciones) -> None:
+        super().__init__(**opciones)
+        self.CAMPO = franja.campo
+        self.LEYENDAS = franja.leyendas
+        self.ALTO = franja.alto
+        self.MARGEN = franja.margen
+        self._rotulo = re.compile(franja.rotulo, re.I)
+
+    def _repartir_texto(self, texto: str, tanda: Sequence[int]) -> dict[int, str]:
+        if (por_etiqueta := _por_etiqueta(texto, tanda)) is not None:
+            return por_etiqueta
+        inicios = [hallado.start() for hallado in self._rotulo.finditer(texto)]
+        if len(inicios) != len(tanda):
+            # Sin saber qué renglón es de quién, nada: un dato devuelto a otro
+            # estudiante es peor que una segunda lectura que falta.
+            logger.info("el mosaico de %s volvió con %d rótulos para %d franjas", self.CAMPO, len(inicios), len(tanda))
+            return {}
+        return {
+            pagina: texto[desde:hasta]
+            for pagina, desde, hasta in zip(tanda, inicios, [*inicios[1:], len(texto)], strict=True)
+        }

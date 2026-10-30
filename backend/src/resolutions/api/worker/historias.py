@@ -128,6 +128,9 @@ def historias_academicas_job(payload: dict) -> dict:
             _leer_las_fichas_con_la_ia(
                 payload, taller, source, de_pago, unidades, textos_de_la_ficha, notas_de_la_ia, nombre
             )
+            # Y la segunda lectura de la cédula, de otra imagen: su renglón
+            # ampliado. Lo que no coincide va a revisión.
+            _segunda_lectura(payload, taller, source, unidades)
 
         # Los años, de las hojas de notas y los certificados, no de la ficha:
         # la ficha trae la fecha de nacimiento y la del bachillerato. Y dentro
@@ -228,7 +231,14 @@ def historias_academicas_job(payload: dict) -> dict:
         "inventario_actas": filas,
         "historias": estudiantes,
         "groups": [{"code": fila["archivo_generado"] or str(orden)} for orden, fila in enumerate(filas, start=1)],
-        "review_queue": [],
+        # Lo que las dos lecturas no confirmaron, en la cola de revisión de
+        # siempre: la pantalla y el general de procesos ya la cuentan.
+        "review_queue": [
+            {"page": unidad.pagina_de_la_ficha, "reason": duda}
+            for unidad in unidades
+            if unidad.pagina_de_la_ficha
+            for duda in unidad.dudas
+        ],
     }
     if pidio_dividir:
         report["outputs"] = salidas
@@ -325,6 +335,35 @@ def _leer_las_fichas_con_la_ia(payload, taller, source, de_pago, unidades, texto
             )
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _segunda_lectura(payload, taller, source, unidades) -> None:
+    """La cédula y la tarjeta de cada ficha releídas en su renglón ampliado: lo que discrepa, a revisión.
+
+    Ver ``domain/doble_lectura.py``. Diez renglones por página facturada: unas
+    diez páginas por cada cien estudiantes. El nombre no: releído así daba más
+    alarmas falsas que errores (33 en 85 fichas de UPD3859718).
+    """
+    from dataclasses import replace
+
+    from ...domain.doble_lectura import conciliar_numero
+    from ...domain.historia_academica import FRANJA_DE_LA_CEDULA, leer_ficha
+
+    con_ficha = [unidad for unidad in unidades if unidad.ficha is not None and unidad.pagina_de_la_ficha]
+    if not con_ficha:
+        return
+    taller.control.check()
+    _anunciar(payload, Stage.IDENTIFYING, detail="releyendo la cédula en su renglón ampliado")
+    mosaico = taller.mosaico_de_campo(FRANJA_DE_LA_CEDULA)
+    leidos = mosaico.leer_franjas(source, [unidad.pagina_de_la_ficha for unidad in con_ficha]) if mosaico else {}
+    for unidad in con_ficha:
+        de_la_cedula = leer_ficha(leidos.get(unidad.pagina_de_la_ficha, ""))
+        cedula, duda_de_la_cedula = conciliar_numero(unidad.ficha.cedula, de_la_cedula.cedula, "la cédula")
+        tarjeta, duda_de_la_tarjeta = conciliar_numero(
+            unidad.ficha.tarjeta, de_la_cedula.tarjeta, "la tarjeta de identidad"
+        )
+        unidad.ficha = replace(unidad.ficha, cedula=cedula, tarjeta=tarjeta)
+        unidad.dudas.extend(duda for duda in (duda_de_la_cedula, duda_de_la_tarjeta) if duda)
 
 
 def _con_los_extremos_de_la_ficha(de_las_notas, de_la_ficha):
