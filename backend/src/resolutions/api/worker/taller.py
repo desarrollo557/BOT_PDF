@@ -372,6 +372,32 @@ class Taller:
             encabezado="Texto de la ficha",
         )
 
+    def lector_del_acta_de_grado(self):
+        """Quien saca con la IA, del texto de un acta de grado, sus cinco datos, si se pidió la IA.
+
+        Número, fecha, título, nombre y cédula, entendidos como los lee una
+        persona aunque la máquina de escribir los dejara corridos de sus
+        renglones (UPD3859808, 2026-10-31). Lee el texto que el OCR de pago ya
+        sacó, no la imagen: se paga por tokens. Con «Solo OCR» no hay.
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_resumen import MistralResumenConfig, MistralResumidor
+        from ...domain.acta_grado import INSTRUCCIONES_DEL_ACTA_DE_GRADO
+
+        return MistralResumidor(
+            api_key=llave,
+            config=MistralResumenConfig(max_tokens=160, temperatura=0.0),
+            consumo=self.consumo,
+            turnos=self.turnos_de_ia,
+            instrucciones=INSTRUCCIONES_DEL_ACTA_DE_GRADO,
+            encabezado="Texto del acta de grado",
+        )
+
     def lector_de_folios(self):
         """Quien lee el folio manuscrito de un acta, si se pidió la IA.
 

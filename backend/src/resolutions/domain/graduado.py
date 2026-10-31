@@ -654,12 +654,19 @@ _COLA_DEL_FORMULARIO = re.compile(
 #: «… AL ESTUIMANTE», «… AL PROFESTONAL»: la cola mal leída, una palabra tras «AL».
 _AL_Y_UNA_PALABRA = re.compile(r"\s+AL\W?\s+\S+$")
 
+#: La frase que sigue al título en las actas y constancias de 1961-1983:
+#: «ENFERMERA y le expide el presente…», «LICENCIADAS EN ENFERMERÍA, según
+#: recomendación…», «ENFERMERA, la es…» (UPD3859800, Odontología, 2026-10-31).
+#: La coma sola no: «ESPECIALISTA EN TEORÍA, MÉTODOS Y TÉCNICAS…» es un título.
+_COLA_DE_LA_FRASE = re.compile(r"\s*,?\s*(?:\bY\s+(?:LE|SE)\b|\bLA\s+ES\b|\bSEGUN\b|\bQUE\b|\bCONFORME\b).*$")
+
 
 def titulo_limpio(titulo_leido: str | None) -> str | None:
     """El título, sin las colas del formulario ni letras sueltas; ``None`` si es un renglón del formulario."""
     if not titulo_leido:
         return None
     clave = _AL_Y_UNA_PALABRA.sub("", _COLA_DEL_FORMULARIO.sub("", _clave(titulo_leido)))
+    clave = _COLA_DE_LA_FRASE.sub("", clave)
     # Sin letras sueltas ni palabras imposibles por largas («OOOOOOMEANCMCNMM…»).
     palabras = [p for p in clave.split() if (len(p) > 1 or p == "Y") and len(p) < LARGO_IMPOSIBLE]
     while palabras and (palabras[0] in ("RESUELVE", "Y", "DE", "EN") or (len(palabras[0]) <= 3 and not palabras[0].isalpha())):

@@ -56,12 +56,14 @@ VENTANA_DEL_CUERPO = 600
 _FECHA = re.compile(
     # El día no va pegado a una «/»: en «No. 29/05 días del mes de Julio» el 05
     # es del número del acta (Secretaría 3292, UPD3859825 p. 44; 2026-10-31).
-    r"(?<![/\d])\(?\s*(?P<dia>\d{1,2})\s*\)?\s*D\S{0,2}AS?\s+DEL?\s+MES\s+DE\s+(?P<mes>[A-Z]{4,11})\W+"
+    # «14( ) días»: el día a máquina delante del paréntesis vacío del formulario
+    # (UPD3859808, 2000).
+    r"(?<![/\d])\(?\s*(?P<dia>\d{1,2})\s*\(?\s*\)?\s*D\S{0,2}AS?\s+DEL?\s+MES\s+DE\s+(?P<mes>[A-Z]{4,11})\W+"
     r"(?:DEL?\s+)?(?:A\S?O\s+)?(?:[A-Z ]{0,70}?)\(?\s*(?P<anio>(?:19|20)\d\d|[12]\s*[.,]\s*\d\s*\d\s*\d)\b"
 )
 #: Para cuando el OCR desordenó la frase: el día entre paréntesis, un mes en
 #: algún sitio y un año.
-_DIA_SUELTO = re.compile(r"\(\s*(\d{1,2})\s*\)\s*D")
+_DIA_SUELTO = re.compile(r"\(?\s*(\d{1,2})\s*\(?\s*\)\s*D")
 _ANIO_SUELTO = re.compile(r"\(\s*([12]\s*[.,]?\s*\d\s*\d\s*\d)\s*\)|\b((?:19|20)\d\d)\b")
 _PALABRA = re.compile(r"[A-Z]{4,11}")
 PARECIDO_DEL_MES = 0.7
@@ -206,10 +208,16 @@ def fecha_en_letras(trozo: str) -> date | None:
     return _fecha(dia, mes, str(anio))
 
 
+_DOS_MIL_EXACTO = re.compile(r"DOS\s+MIL\W*\(\s*2\s*[.,]?\s*0\s*0\s*0\s*\)")
+
+
 def _cola_del_anio(
     palabras: list[str | None], desde: int, base: int, usados: set[int], trozo: str
 ) -> int | None:
     """Lo que va detrás de «novecientos» o de «dos mil»: «noventa y dos», «tres»."""
+    # «dos mil (2.000)»: el año 2000 no lleva nada detrás de «mil» (UPD3859808).
+    if base == 2000 and _DOS_MIL_EXACTO.search(trozo):
+        return 0
     # Entre «novecientos» y la decena puede colarse el día -- «MIL NOVECIENTOS
     # UN NOVENTA Y SEIS» -- o una palabra rota; se saltan sin consumirlas.
     for salto in range(3):
@@ -458,10 +466,22 @@ _TRATAMIENTO = re.compile(r"\b(?:SENORITA|SENOR|SRITA|SRTA|ALUMN[AO])\b\W{0,2}")
 _COLECTIVA = re.compile(r"\b(?:LAS|LOS)\s+(?:\w+\s+\(\d+\)\s+)?(?:SENORITAS|SENORES|ALUMNAS|ALUMNOS)\b|\bA\s*:\s+[A-Z]")
 #: El cargo que sigue al nombre de quien firma o preside, que no es el graduado:
 #: «la Srita. VILMA MERCADO V., Decana de la Facultad».
-_CARGO = re.compile(r"\W{0,4}(?:[A-Z]\W{1,3})?(?:DECAN|DIRECT|SECRETARI|PROFESOR|PRESID|RECTOR)")
+#: También el que va detrás con un «y»: «Srita. Didia Quintero B, y la
+#: Secretaria Académica…» es la decana (UPD3859800 pág. 16).
+_CARGO = re.compile(
+    r"\W{0,4}(?:[A-Z]\W{1,3})?(?:Y\s+(?:LA|EL)\s+)?(?:DECAN|DIRECT|SECRETARI|PROFESOR|PRESID|RECTOR)"
+)
 _ENLACES_DEL_NOMBRE = {"DE", "DEL", "LA", "LAS", "LOS", "Y"}
-#: Lo que nunca es parte de un nombre aunque vaya en mayúsculas detrás.
-_NO_ES_NOMBRE = {"ESTE", "QUIEN", "CON", "PARA", "POR", "EL", "SE", "QUE"}
+#: Lo que nunca es parte de un nombre aunque vaya en mayúsculas detrás: también
+#: «… y otras», «… (hoy Sra. de Vela)», «… quienes cumplieron» (UPD3859800).
+_NO_ES_NOMBRE = {"ESTE", "QUIEN", "CON", "PARA", "POR", "EL", "SE", "QUE", "OTRAS", "OTROS", "HOY", "QUIENES"}
+#: «Licenciada en Enfermería a: MARTHA PEÑALOZA DIAZ (hoy Sra. de Vela) y otras»:
+#: la graduada a quien se expide la constancia, nombrada tras los dos puntos.
+#: También sin ellos: «Licenciadas en Enfermería a ENYS GUTIERREZ DE MOYA c.c.…».
+_A_DOS_PUNTOS = re.compile(r"\bA\s*:\s*|\bENFERMER(?:IA|A|O)S?\s+A\s+(?=[A-Z])")
+#: Lo que sigue al nombre de la graduada de la constancia, y nunca al de quien
+#: firma: «… y otras», «… (hoy Sra. de Vela)», «… c.c.#32'617.274».
+_ES_LA_GRADUADA = re.compile(r"^\W{0,4}(?:\(|Y\s+OTR|C\W{0,2}C\W)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,10 +512,16 @@ def _nombre_tras(texto: str) -> str | None:
     palabras: list[str] = []
     for token in texto[:90].split():
         limpio = re.sub(r"[^A-Z]", "", token)
-        if limpio in _NO_ES_NOMBRE:
+        # «… DE MOYA c.c.#32'617.274»: la cédula pegada acaba el nombre.
+        if limpio in _NO_ES_NOMBRE or token.startswith("(") or re.search(r"\d", token) or limpio == "CC":
             break
+        # «a las ocho (8) señoritas»: un nombre no empieza por un artículo.
+        if not palabras and limpio in _ENLACES_DEL_NOMBRE - {"DE", "DEL"}:
+            return None
         if _CARGO_EN_PALABRA.search(limpio):
-            if not palabras or palabras[-1] not in _ENLACES_DEL_NOMBRE:
+            # «DIDIA QUINTERO BUELVAS y la Secretaria»: el «y» dice que ella
+            # también firma (es la decana), y no se gradúa (UPD3859800 pág. 22).
+            if not palabras or palabras[-1] not in _ENLACES_DEL_NOMBRE or "Y" in palabras[-2:]:
                 return None
             break
         if len(limpio) >= 2 or limpio in _ENLACES_DEL_NOMBRE:
@@ -524,21 +550,40 @@ def constancia(texto: str) -> Constancia | None:
     copia = cuerpo[: expedida.start()] if expedida else cuerpo
     numero = _ACTA_CITADA.search(copia)
     nombre = None
-    for tratamiento in _TRATAMIENTO.finditer(copia):
-        candidato = _nombre_tras(copia[tratamiento.end() :])
+    senalada = None
+    marcas = sorted([*_TRATAMIENTO.finditer(copia), *_A_DOS_PUNTOS.finditer(copia)], key=lambda m: m.start())
+    for marca in marcas:
+        candidato = _nombre_tras(copia[marca.end() :])
+        if not candidato:
+            continue
         # Lo que va justo detrás del nombre: «VILMA MERCADO V., Decana» es quien
         # preside, no quien se gradúa.
-        fin = tratamiento.end() + (len(candidato) if candidato else 0)
-        if candidato and not _CARGO.match(copia[fin : fin + 30]):
+        detras = _detras_del_nombre(copia, marca.end(), candidato)
+        if _CARGO.match(detras):
+            continue
+        if senalada is None and _ES_LA_GRADUADA.match(detras):
+            senalada = candidato
+        if nombre is None and marca.re is _TRATAMIENTO:
             nombre = candidato
-            break
+    colectiva = bool(_COLECTIVA.search(copia))
     return Constancia(
         numero=numero.group("numero") if numero else None,
-        nombre=nombre,
+        # La que la constancia señala -- «a: MARTHA PEÑALOZA DIAZ y otras» -- es
+        # a quien se expide, aunque el acta nombre a varias; si no señala a
+        # nadie y nombra a varias, no se adivina.
+        nombre=senalada or (None if colectiva else nombre),
         expedida=fecha_de_grado(cuerpo[expedida.start() :]) if expedida else None,
         del_acta=fecha_de_grado(copia),
-        colectiva=bool(_COLECTIVA.search(copia)),
+        colectiva=colectiva,
     )
+
+
+def _detras_del_nombre(copia: str, desde: int, nombre: str) -> str:
+    """Lo que sigue al nombre en la copia, para ver si es un cargo o «y otras»."""
+    ultima = nombre.split()[-1]
+    posicion = copia.find(ultima, desde)
+    fin = posicion + len(ultima) if posicion != -1 else desde + len(nombre)
+    return copia[fin : fin + 30]
 
 
 def _con_la_constancia(acta: ActaDeConsejo, hecha: Constancia) -> ActaDeConsejo:
@@ -558,7 +603,11 @@ def _con_la_constancia(acta: ActaDeConsejo, hecha: Constancia) -> ActaDeConsejo:
         acta,
         constancia=True,
         numero=acta.numero or hecha.numero,
-        nombre=acta.nombre or (None if hecha.colectiva else hecha.nombre),
+        # El de la constancia manda sobre el que adivina el lector general: en
+        # «la Decana, Srta. DIDIA QUINTERO BUELVAS y la Secretaria…» aquél
+        # tomaba a la decana (UPD3859800). Si nombra a varias sin señalar a
+        # ninguna, no hay nombre: mejor N/A que el de otra.
+        nombre=hecha.nombre or (None if hecha.colectiva else acta.nombre),
         # La de expedición manda: es la fecha del documento que se inventaría.
         fecha=hecha.expedida or acta.fecha or hecha.del_acta,
         dudas=(*acta.dudas, nota) if nota not in acta.dudas else acta.dudas,
@@ -681,3 +730,113 @@ def le_falta_algo(acta: ActaDeConsejo) -> bool:
     return bool(
         dudas or not all((acta.numero, acta.fecha, acta.nombre, acta.titulo, acta.cedula))
     )
+
+
+# -- la IA que lee el acta como una persona ----------------------------------------
+
+#: Lo que se le pide al lector de texto de la IA sobre la hoja que ya leyó el OCR
+#: de pago. En los formularios de 1997-2001 la máquina escribió los datos
+#: corridos de sus renglones -- «al estudiante FAIMA / LUZ FELFLE CASTILLA», el
+#: título en dos renglones, el número del acta junto al día -- y ninguna regla
+#: fija los pone en su sitio; una persona sí (UPD3859808, Odontología,
+#: 2026-10-31). Lo que devuelve se valida contra el texto: ninguna palabra ni
+#: cifra que la hoja no diga.
+INSTRUCCIONES_DEL_ACTA_DE_GRADO = (
+    "Eres archivista de la Universidad de Cartagena. Recibes el texto, leído por OCR, de un acta de "
+    "grado (o de una constancia de la secretaría que copia un acta de grado). Es un formulario "
+    "rellenado a máquina: los datos pueden haber quedado corridos de su renglón y el OCR puede "
+    "devolverlos en otro orden.\n\n"
+    "Devuelve exactamente estas cinco líneas, sin nada más:\n"
+    "NUMERO: el número del acta de grado (el que sigue a «ACTA DE GRADO No.»; no el número impreso al pie "
+    "del formulario ni el de la resolución)\n"
+    "FECHA: la fecha de la ceremonia en DD-MM-AAAA (la de «a los … días del mes de …»; no la de la resolución "
+    "ni la de expedición)\n"
+    "TITULO: el título otorgado completo, aunque ocupe dos renglones (por ejemplo «ESPECIALISTA EN ENFERMERIA "
+    "MATERNO INFANTIL CON ENFASIS EN NEONATOLOGIA»)\n"
+    "NOMBRE: el nombre completo del graduado tal como aparece, nombres y apellidos en el orden del acta, "
+    "aunque esté partido en dos renglones (no el rector, el decano, la secretaria ni quien firma)\n"
+    "CEDULA: el número de la cédula del graduado, sólo cifras\n\n"
+    "- En una constancia que nombra a varios graduados, el nombre es el de quien la constancia señala; si no "
+    "señala a ninguno, NINGUNO.\n"
+    "- Cada palabra y cada cifra tiene que estar escrita en el texto: no corrijas ni inventes.\n"
+    "- Si un dato no está, escribe NINGUNO."
+)
+
+#: Las palabras de un título profesional: un «título» sin ninguna -- «FAIMA»,
+#: «FECHA» -- es un pedazo de otro renglón.
+_DEL_GRADO = re.compile(
+    r"ESPECIALIST|ENFERMER|LICENCIAD|MAGISTER|MAESTR|DOCTOR|ODONTOLOG|MEDIC|BACTERIOLOG|QUIMIC|"
+    r"FARMACEUT|INGENIER|ABOGAD|ADMINISTRAD|ECONOMIST|CONTADOR|PSICOLOG|TRABAJADOR|TECNOLOG|TECNIC|"
+    r"NUTRICION|FONOAUDIOLOG|BIOLOG|MATEMATIC|FISIC|HISTORIADOR|FILOSOF|COMUNICADOR|ARQUITECT|"
+    r"PROFESIONAL|NORMALISTA|SOCIOLOG|ANTROPOLOG|LINGUIST|ESTADISTIC|ZOOTECNIST|AGRONOM|VETERINARI"
+)
+
+
+def es_un_titulo(texto: str | None) -> bool:
+    """Si dice un título profesional: lleva al menos una palabra de grado."""
+    return bool(texto) and _DEL_GRADO.search(_plano(texto)) is not None
+
+
+def datos_de_la_ia(respuesta: str, texto: str) -> dict[str, object]:
+    """Lo que la IA leyó del acta, campo por campo, si la hoja lo dice; lo demás no se devuelve.
+
+    Una palabra o una cifra que no está en el texto descarta el campo entero:
+    un dato inventado es peor que uno por revisar.
+    """
+    palabras_del_texto = set(re.findall(r"[A-Z]+", _plano(texto)))
+    cifras_del_texto = re.sub(r"\D", "", texto)
+    datos: dict[str, object] = {}
+    for linea in (respuesta or "").splitlines():
+        campo, _, valor = linea.partition(":")
+        campo, valor = _plano(campo).strip(" -*"), valor.strip(" *`")
+        if not valor or "NINGUNO" in _plano(valor):
+            continue
+        if campo in ("NOMBRE", "TITULO"):
+            # Con sus tildes y su Ñ, como en el acta; se comparan sin ellas.
+            palabras = re.findall(r"[A-ZÁÉÍÓÚÜÑ]+", valor.upper())
+            dice_la_hoja = palabras and all(_plano(palabra) in palabras_del_texto for palabra in palabras)
+            if campo == "NOMBRE" and dice_la_hoja and len(palabras) >= 2:
+                datos["nombre"] = " ".join(palabras)
+            elif campo == "TITULO" and dice_la_hoja and es_un_titulo(valor):
+                datos["titulo"] = " ".join(palabras)
+        elif campo == "CEDULA":
+            cifras = re.sub(r"\D", "", valor)
+            if 6 <= len(cifras) <= 11 and cifras in cifras_del_texto:
+                datos["cedula"] = cifras
+        elif campo == "NUMERO":
+            # Sólo el que sigue a «ACTA DE GRADO No.»: con el número en blanco, la
+            # IA daba el de la resolución (0816) o el folio (73/V) (UPD3859808).
+            numero = re.search(r"\d{1,4}", valor)
+            if numero and re.search(
+                rf"ACTA\W+DE\W+GRADO\W{{0,3}}N\S{{0,3}}\s*0*{int(numero.group(0))}(?!\d)", _plano(texto)
+            ):
+                datos["numero"] = numero.group(0)
+        elif campo == "FECHA":
+            partes = re.fullmatch(r"(\d{1,2})\D(\d{1,2})\D(\d{4})", valor.strip())
+            if partes:
+                dia, mes, anio = (int(parte) for parte in partes.groups())
+                fecha = _fecha(dia, mes, str(anio))
+                if fecha is not None and _la_hoja_dice_la_fecha(fecha, texto):
+                    datos["fecha"] = fecha
+    return datos
+
+
+def _la_hoja_dice_la_fecha(fecha: date, texto: str) -> bool:
+    """Si el texto trae esa fecha: la misma que lee la regla, o, si la regla no lee ninguna, su mes y su año.
+
+    Si la regla lee otra, no: «a los Catorce ( 03 ) días» es el día 14 y el 03
+    es el número del acta corrido junto al día (UPD3859808 pág. 138).
+    """
+    de_la_regla = fecha_de_grado(texto)
+    if de_la_regla is not None:
+        return de_la_regla == fecha
+    plano = _plano(texto)
+    mes = MESES_EN_LETRAS[fecha.month]
+    cifras = re.sub(r"(?<=\d)[.,](?=\d{3})", "", plano)
+    return mes in plano and str(fecha.year) in cifras
+
+
+MESES_EN_LETRAS = {
+    1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL", 5: "MAYO", 6: "JUNIO", 7: "JULIO",
+    8: "AGOSTO", 9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE", 12: "DICIEMBRE",
+}

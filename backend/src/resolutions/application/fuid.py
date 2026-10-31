@@ -51,6 +51,24 @@ class FuidRow:
     #: de la lista de archivos y desde ahí todo queda corrido una fila --, y un
     #: inventario corrido una fila es peor que uno sin nombres de archivo.
     pagina_inicial: int | None = None
+    #: De un acta de consejo, lo que el operador pidió a la derecha del formato
+    #: (2026-10-31): su número, el objetivo o resumen y la última página del PDF
+    #: en que va. ``None`` en las demás filas; el FUID sólo lleva esas columnas
+    #: si alguna fila es un acta.
+    acta: str | None = None
+    resumen: str | None = None
+    pagina_final: int | None = None
+
+    def celdas_del_acta(self) -> list[object]:
+        """ACTA #, OBJETIVO / RESUMEN y las páginas del PDF desde y hasta: columnas Q a T."""
+        if self.acta is None:
+            return [NO_APLICA] * 4
+        return [
+            self.acta,
+            self.resumen or NO_APLICA,
+            self.pagina_inicial if self.pagina_inicial is not None else NO_APLICA,
+            self.pagina_final if self.pagina_final is not None else NO_APLICA,
+        ]
 
     def as_cells(self) -> list[object]:
         """Los valores en el orden de las columnas A a P de la plantilla."""

@@ -329,6 +329,56 @@ def test_el_fuid_lleva_la_oficina_de_su_carpeta_y_las_filas_de_todas_las_habilid
     assert planilla.filas[1][15] == ""  # NOTAS va vacía (2026-10-30)
 
 
+def test_las_actas_llevan_a_la_derecha_su_numero_su_resumen_y_sus_paginas(tmp_path):
+    """Odontología (2026-10-31): ACTA #, OBJETIVO / RESUMEN y las páginas del PDF desde y hasta."""
+    from openpyxl import load_workbook
+
+    destino = escribir_fuid(
+        [
+            {
+                "acta": "ACTA ORDINARIA",
+                "numero": "022",
+                "fecha": "13-12-2016",
+                "folios": 15,
+                "resumen": "El Consejo de Facultad aprobó el calendario académico.",
+                "carpeta": "15. ODONTOLOGIA\\00C003286\\UPD3859793",
+                "archivo": "1ACTAS DE CONSEJO N°22 Y 23 2016.pdf",
+                "pagina_inicial": 1,
+                "pagina_final": 50,
+            },
+            {
+                "acta": "ACTA EXTRAORDINARIA",
+                "numero": "023",
+                "fecha": "19-12-2016",
+                "folios": 6,
+                "resumen": "N/A",
+                "carpeta": "15. ODONTOLOGIA\\00C003286\\UPD3859793",
+                "archivo": "1ACTAS DE CONSEJO N°22 Y 23 2016.pdf",
+                "pagina_inicial": 51,
+                "pagina_final": 57,
+            },
+        ],
+        tmp_path / "UPD3859793__FUID.xlsx",
+    )
+    hoja = load_workbook(destino)["INVENTARIO"]
+    assert [hoja[c].value for c in ("Q12", "R12", "S12", "S13", "T13")] == [
+        "ACTA #", "OBJETIVO / RESUMEN", "PÁGINAS DEL PDF", "Desde", "Hasta",
+    ]
+    assert [hoja.cell(row=14, column=c).value for c in range(17, 21)] == [
+        "022", "El Consejo de Facultad aprobó el calendario académico.", 1, 50,
+    ]
+    assert [hoja.cell(row=15, column=c).value for c in range(17, 21)] == ["023", "N/A", 51, 57]
+    # Las de siempre siguen donde estaban: fechas extremas y folios.
+    assert (hoja["F14"].value, hoja["L14"].value) == ("13/12/2016", 15)
+
+
+def test_sin_actas_el_fuid_no_lleva_esas_columnas(tmp_path):
+    from openpyxl import load_workbook
+
+    destino = escribir_fuid([FuidRow(orden=1, asunto="X")], tmp_path / "x__FUID.xlsx")
+    assert load_workbook(destino)["INVENTARIO"]["Q12"].value is None
+
+
 def test_sin_oficina_la_cabecera_queda_como_la_plantilla(tmp_path):
     destino = escribir_fuid([FuidRow(orden=1, asunto="X")], tmp_path / "x__FUID.xlsx")
     assert "OFICINA PRODUCTORA" in leer_fuid(destino).oficina_productora

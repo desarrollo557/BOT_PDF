@@ -77,6 +77,8 @@ from ..domain.acta_grado import (
     actas_de_grado_del_pdf,
     completar_acta,
     con_la_franja,
+    datos_de_la_ia,
+    es_un_titulo,
     folios_de_la_foliacion,
     le_falta_algo,
     leer_acta_de_grado,
@@ -564,6 +566,8 @@ class _Lectura:
     nota_del_nombre: str | None = None
     #: La hoja leída por la IA, cuando se pidió: con ella se cruza cada campo.
     texto_de_la_ia: str | None = None
+    #: Lo que el lector de texto de la IA entendió de esa hoja, validado.
+    datos_de_la_ia: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -669,6 +673,9 @@ class InventariarActa:
         #: detrás de otro, para lo que a un acta todavía le falta antes de
         #: entregar el inventario: cada uno sólo con lo que dejó el anterior.
         lectores_de_tinta_clara: Sequence[OcrEngine] = (),
+        #: Quien lee con la IA, del texto de la hoja, los datos del graduado
+        #: (un ``Resumidor`` con las instrucciones del acta de grado).
+        lector_de_datos: Resumidor | None = None,
         #: Cuánto se espera antes de volver a pedir los resúmenes que el
         #: proveedor no atendió por estar saturado.
         espera_para_reintentar: float | None = None,
@@ -679,6 +686,7 @@ class InventariarActa:
         self._lector_de_cifras = lector_de_cifras
         self._lector_de_franja = lector_de_franja
         self._lectores_de_tinta_clara = tuple(lectores_de_tinta_clara)
+        self._lector_de_datos = lector_de_datos
         self._perfil = perfil
         self._relector_de_pago = relector_de_pago
         self._ocr = ocr
@@ -1390,6 +1398,11 @@ class InventariarActa:
             and not lectura.tramo.ceremonia
             and not lectura.acta.constancia
         ]
+        # Las constancias no se votan -- su nombre lo dice la constancia --,
+        # pero sí se cruzan con la lectura de la IA, como lo demás.
+        for constancia_ in lecturas:
+            if constancia_.acta.rotulo == ROTULO_DE_GRADO and constancia_.acta.constancia:
+                _nombre_de_la_ia(constancia_, nombres_conocidos())
         if not graduados:
             return
         conocidas = nombres_conocidos() | _palabras_del_libro(graduados, paginas, lecturas)
@@ -1407,6 +1420,7 @@ class InventariarActa:
             for lectura in dudosos:
                 self._decidir_nombre(lectura, conocidas)
         for lectura in graduados:
+            _nombre_de_la_ia(lectura, conocidas)
             if lectura.nombre_dudoso and lectura.acta.nombre:
                 lectura.razonado.append(
                     "nombre dudoso: las lecturas de la hoja no coinciden del todo; "
@@ -1679,11 +1693,9 @@ class InventariarActa:
         lector = self._relector_de_pago
         if lector is None:
             return
-        propias = [
-            lectura
-            for lectura in lecturas
-            if not lectura.tramo.ceremonia and not lectura.acta.constancia
-        ]
+        # Las constancias también: su capa es la peor del libro (UPD3859800,
+        # 1981-1983: «ESPERAN^ VIAM» por ESPERANZA VIANA).
+        propias = [lectura for lectura in lecturas if not lectura.tramo.ceremonia]
         pendientes = [lectura for lectura in propias if lectura.texto_de_la_ia is None]
         with hilos(self._workers) as lectores:
             vuelo: list[tuple[_Lectura, Future]] = []
@@ -1713,14 +1725,96 @@ class InventariarActa:
                         detail=f"comprobando con la IA {len(vuelo)} acta(s)",
                     )
                 )
+        self._leer_los_datos_con_la_ia(propias)
         for lectura in propias:
             if lectura.texto_de_la_ia:
                 self._cruzar_con_la_ia(lectura)
+        self._cedulas_con_zoom(source, propias)
+
+    def _cedulas_con_zoom(self, source: PageSource, lecturas: list[_Lectura]) -> None:
+        """La cédula que ni la página entera ni la IA leyeron, buscada en su zona ampliada.
+
+        La máquina de escribir la dejó a veces encima de «juramento», y leída
+        con la hoja entera se pierde: «22.793.650» y «45.760.742» en UPD3859808
+        (págs. 138 y 156, comprobadas en el papel). Se recorta la franja de
+        «portador» a «juramento», se amplía y la lee la IA. Una página
+        facturada por hoja, sólo para las que siguen sin cédula.
+        """
+        lector = self._relector_de_pago
+        trozos_de = getattr(source, "trozos_of", None)
+        medida_de = getattr(source, "size_of", None)
+        if lector is None or trozos_de is None or medida_de is None:
+            return
+        sin_cedula = [
+            lectura
+            for lectura in lecturas
+            if lectura.acta.rotulo == ROTULO_DE_GRADO
+            and not lectura.tramo.ceremonia
+            and not lectura.acta.constancia
+            and not lectura.acta.cedula
+        ]
+        for lectura in sin_cedula:
+            self._control.check()
+            pagina = lectura.tramo.desde + (lectura.acta.pagina or 1) - 1
+            try:
+                banda = _banda_de_la_cedula(trozos_de(pagina), *medida_de(pagina))
+                if banda is None:
+                    continue
+                texto = lector.read(source.render(pagina, banda, DPI_DE_LA_ZONA)).text or ""
+            except Exception:  # noqa: BLE001 - se queda sin cédula, y lo dice
+                logger.warning("no se pudo leer la zona de la cédula de la página %s", pagina, exc_info=True)
+                continue
+            cedula = cedula_leida(texto) or _cedula_suelta(texto)
+            if cedula:
+                lectura.acta = replace(lectura.acta, cedula=cedula)
+                lectura.razonado.append(
+                    "la cédula se leyó con la IA en su zona ampliada (la máquina la escribió "
+                    "encima del texto impreso): revísela en el papel"
+                )
+
+    def _leer_los_datos_con_la_ia(self, lecturas: list[_Lectura]) -> None:
+        """Número, fecha, título, nombre y cédula de cada graduado, leídos por la IA como una persona.
+
+        El texto ya lo sacó el OCR de pago; el lector de texto lo entiende aunque
+        la máquina de escribir dejara los datos corridos de sus renglones -- «al
+        estudiante FAIMA / LUZ FELFLE CASTILLA», el título en dos renglones
+        (UPD3859808, 2026-10-31) --. Se paga por tokens, unos centavos por libro,
+        y ``datos_de_la_ia`` sólo deja lo que la hoja dice.
+        """
+        lector = self._lector_de_datos
+        graduados = [
+            lectura
+            for lectura in lecturas
+            if lectura.texto_de_la_ia and lectura.acta.rotulo == ROTULO_DE_GRADO and not lectura.tramo.ceremonia
+        ]
+        if lector is None or not graduados:
+            return
+        with hilos(LECTURAS_A_LA_VEZ) as proveedor:
+            vuelo = [(lectura, proveedor.submit(lector.resumir, lectura.texto_de_la_ia)) for lectura in graduados]
+            for hechas, (lectura, futuro) in enumerate(vuelo, start=1):
+                aguardar(futuro, self._control)
+                try:
+                    lectura.datos_de_la_ia = datos_de_la_ia(futuro.result(), lectura.texto_de_la_ia or "")
+                except Exception:  # noqa: BLE001 - se queda con lo que leyeron el OCR y la IA
+                    logger.warning("la IA no pudo leer los datos de un acta", exc_info=True)
+                self._report(
+                    ProgressEvent(
+                        stage=Stage.VERIFYING,
+                        done=hechas,
+                        total=len(vuelo),
+                        detail=f"leyendo con la IA los datos de {len(vuelo)} graduado(s)",
+                    )
+                )
 
     def _cruzar_con_la_ia(self, lectura: _Lectura) -> None:
         """Cada campo del acta decidido entre el OCR y la IA; lo que discrepe, a observaciones."""
         acta = lectura.acta
-        de_la_ia = self._perfil.leer([lectura.texto_de_la_ia or ""])
+        leida = self._perfil.leer([lectura.texto_de_la_ia or ""])
+        datos = lectura.datos_de_la_ia
+        # Lo que el lector de texto entendió manda sobre lo que la regla saca
+        # del mismo texto: con los datos corridos, la regla toma el pedazo de
+        # otro renglón («FAIMA» por título).
+        de_la_ia = replace(leida, **{campo: datos[campo] for campo in ("numero", "fecha", "titulo", "cedula") if campo in datos})
         gratuitas = [
             self._perfil.leer([texto]) for texto, peso in lectura.textos if peso < PESO_DE_LA_IA
         ]
@@ -1729,13 +1823,19 @@ class InventariarActa:
             if campo == "cedula" and acta.rotulo != ROTULO_DE_GRADO:
                 continue
             actual = getattr(acta, campo)
+            if campo == "titulo" and actual is not None and not es_un_titulo(actual):
+                actual = None  # «FAIMA», «FECHA»: un pedazo de otro renglón, no un título
             apoyos = sum(
                 1
                 for otra in gratuitas
                 if getattr(otra, campo) is not None and actual is not None and igual(getattr(otra, campo), actual)
             )
+            # Si el lector de texto y la regla leen lo mismo en la hoja de la IA,
+            # son dos lecturas que lo confirman: el «8» que tres lecturas del OCR
+            # sacaron de la misma capa rota no les gana (UPD3859808, acta 03).
+            confirmada = campo in datos and getattr(leida, campo) is not None and igual(getattr(leida, campo), datos[campo])
             valor, nota = decidir_con_la_ia(
-                nombre, actual, getattr(de_la_ia, campo), apoyos, igual=igual, mostrar=mostrar
+                nombre, actual, getattr(de_la_ia, campo), 0 if confirmada else apoyos, igual=igual, mostrar=mostrar
             )
             if valor is not actual:
                 cambios[campo] = valor
@@ -2142,6 +2242,39 @@ def _palabras_del_libro(
     return del_libro
 
 
+#: A cuánto se amplía la zona de la cédula para leerla otra vez.
+DPI_DE_LA_ZONA = 400
+#: Cuánto se toma por encima de «portador» y por debajo de «juramento»: la
+#: máquina escribe un poco por encima o por debajo de su renglón.
+MARGEN_DE_LA_ZONA = 18.0
+
+#: Una cédula escrita con sus puntos, suelta en el texto: «22.793.650», «50'849.361».
+_CEDULA_CON_PUNTOS = re.compile(r"(?<![\d.,'])(\d{1,3}(?:[.,']\d{3}){2,3})(?![\d.,'])")
+
+
+def _cedula_suelta(texto: str) -> str | None:
+    """La cédula con sus puntos que trae la zona, si trae una sola."""
+    halladas = {re.sub(r"\D", "", m) for m in _CEDULA_CON_PUNTOS.findall(texto)}
+    validas = [c for c in halladas if 6 <= len(c) <= 11]
+    return validas[0] if len(validas) == 1 else None
+
+
+def _banda_de_la_cedula(trozos, ancho: float, alto: float) -> Band | None:
+    """La franja de la cédula en la hoja: del renglón de «portador» al de «juramento»."""
+    arriba = [t.y0 for t in trozos if "portador" in t.texto.lower()]
+    if not arriba or not alto:
+        return None
+    desde = min(arriba)
+    abajo = [t.y1 for t in trozos if re.search(r"juramento|expedida", t.texto, re.IGNORECASE) and t.y0 >= desde]
+    hasta = max(abajo) if abajo else desde + alto * 0.1
+    return Band(
+        0.0,
+        max(0.0, (desde - MARGEN_DE_LA_ZONA) / alto),
+        1.0,
+        min(1.0, (hasta + MARGEN_DE_LA_ZONA) / alto),
+    )
+
+
 def _banda_del_nombre(trozos, ancho: float, alto: float) -> Band | None:
     """La franja del nombre en la hoja: del renglón de «al estudiante» al de «portador»."""
     arriba = [t.y0 for t in trozos if re.search(r"estudiante|profesional", t.texto, re.IGNORECASE)]
@@ -2458,6 +2591,73 @@ def _fila(
         numero=f"{acta.numero} BIS" if acta.numero and acta.bis else acta.numero or "",
         piezas=resumen_de_piezas(lectura.piezas),
     )
+
+
+#: Cuántas palabras puede tener un nombre completo.
+PALABRAS_DE_UN_NOMBRE = 6
+
+
+def _lo_completa(nombre: str, otro: str) -> bool:
+    """Si ``otro`` es ``nombre`` con más palabras -- todas con forma de nombre --, en el mismo orden."""
+    una, otra = [clave(p) for p in nombre.split()], [clave(p) for p in otro.split()]
+    if len(otra) <= len(una) or len(otra) > PALABRAS_DE_UN_NOMBRE:
+        return False
+    sobrantes = list(otra)
+    for palabra in una:
+        if palabra not in sobrantes:
+            return False
+        sobrantes.remove(palabra)
+    orden = [p for p in otra if p in una]
+    return orden == una and all(parece_palabra_de_nombre(p) for p in sobrantes)
+
+
+def _nombre_de_la_ia(lectura: _Lectura, conocidas: set[str]) -> None:
+    """El nombre del graduado, cruzado con el que leyó la IA en su hoja, como los demás datos.
+
+    El voto entre lecturas se quedaba a veces con el del OCR aunque la IA lo
+    leyera bien: «IIEI ANA ESTHER» por LILIANA ESTHER, «… SALGUEDO MNANNE» por
+    LUZ MARINA HOWARD SALGUEDO (UPD3859803, Odontología, devuelto por el
+    cliente; comprobado en el papel el 2026-10-31). Si la IA leyó en la frase
+    «al estudiante …» un nombre de dos palabras o más, todas con forma de
+    nombre, manda la IA; si discrepa del OCR, se anota para revisarlo.
+    """
+    if not lectura.texto_de_la_ia:
+        return
+    acta = lectura.acta
+    # La frase «al estudiante …» de los libros de los 90, o el renglón propio
+    # del nombre en las actas de hoy, que sólo ve el lector del acta de grado.
+    # En una constancia, el que ella señala: la frase de la zona tomaría a la
+    # decana o a la secretaria que firman.
+    de_la_hoja = leer_acta_de_grado([lectura.texto_de_la_ia]).nombre
+    de_la_zona = zona_del_nombre(lectura.texto_de_la_ia, titulo=acta.titulo, conocidas=conocidas)
+    if lectura.datos_de_la_ia.get("nombre"):
+        # Lo que el lector de texto entendió, ya validado contra la hoja: con
+        # el nombre partido o corrido de su renglón es el único que lo junta.
+        leido = str(lectura.datos_de_la_ia["nombre"])
+    elif acta.constancia:
+        leido = de_la_hoja
+    else:
+        leido = de_la_zona or de_la_hoja
+    # «LUZ FELFLE CASTILLA» y, en otra lectura de la misma hoja, «FAIMA LUZ
+    # FELFLE CASTILLA»: la que lo dice entero (UPD3859808 pág. 96), si lo que
+    # añade tiene forma de nombre.
+    for otro in (de_la_hoja, de_la_zona):
+        if leido and otro and _lo_completa(leido, otro) and not acta.constancia:
+            leido = otro
+    palabras = (leido or "").split()
+    if len(palabras) < 2 or not all(parece_palabra_de_nombre(clave(palabra)) for palabra in palabras):
+        return
+    lectura.nombre_dudoso = False
+    actual = acta.nombre or ""
+    if [clave(p) for p in actual.split()] == [clave(p) for p in palabras]:
+        return
+    lectura.acta = replace(
+        acta, nombre=leido, dudas=tuple(d for d in acta.dudas if not d.startswith("el nombre"))
+    )
+    if actual:
+        lectura.razonado.append(
+            f"el nombre: el OCR leyó {actual} y la IA {leido}; se dejó lo de la IA: revíselo en el papel"
+        )
 
 
 def _con_el_numero_de_la_serie(filas: list[FilaDeActa]) -> list[FilaDeActa]:

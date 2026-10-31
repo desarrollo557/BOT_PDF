@@ -37,9 +37,10 @@ ENDPOINT = "https://api.mistral.ai/v1/chat/completions"
 PROVEEDOR = "mistral-resumen"
 
 #: Lo que se le pide al modelo. Las reglas son las del operador: el resumen del
-#: documento en general y nunca el llamado a lista ni la verificación del
-#: quórum. El texto ya llega sin ellos; decírselo es para que no lo deduzca de
-#: lo que queda.
+#: documento en general y nunca el llamado a lista, la verificación del
+#: quórum, las proposiciones ni los varios (estos dos, desde el 2026-10-31). El
+#: texto ya llega sin el llamado a lista; decírselo es para que no lo deduzca
+#: de lo que queda.
 INSTRUCCIONES = (
     "Eres archivista de la Universidad de Cartagena y preparas el Formato Único "
     "de Inventario Documental. Recibes el texto de un acta de sesión de un "
@@ -49,8 +50,9 @@ INSTRUCCIONES = (
     "- Un solo párrafo en español, de 60 a 140 palabras, en tercera persona y en pasado.\n"
     "- Di qué órgano sesionó y quién presidió, y resume los asuntos tratados, las "
     "decisiones, los compromisos y los anexos que se mencionen.\n"
-    "- No menciones el llamado a lista, la verificación del quórum ni la asistencia, "
-    "y no enumeres el orden del día.\n"
+    "- No menciones el llamado a lista, la verificación del quórum, la asistencia, "
+    "las proposiciones ni los varios, y no enumeres el orden del día. Si en "
+    "proposiciones y varios se decidió algo, cuéntalo sin nombrar ese punto.\n"
     "- No repitas el número ni la fecha del acta: ya constan en otras columnas.\n"
     "- No inventes nada que no esté en el texto. Si un nombre está ilegible, omítelo.\n"
     "- Devuelve solo el párrafo, en texto plano, sin títulos, viñetas ni comillas."

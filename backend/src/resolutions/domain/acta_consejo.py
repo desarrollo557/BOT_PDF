@@ -1515,23 +1515,38 @@ def sin_llamado_a_lista(texto: str) -> str:
     return "".join(partes)
 
 
-def depurar_resumen(resumen: str) -> str:
-    """El resumen sin ninguna frase que hable del llamado a lista o del quórum.
+#: Lo que abre una frase para decir en qué punto del orden del día se trató
+#: algo: «En proposiciones y varios, se aprobó…». Se quita y la frase se queda.
+_EN_EL_PUNTO_DE_VARIOS = re.compile(
+    r"^(?:en|dentro\s+de|durante)\s+(?:el\s+punto\s+(?:de\s+)?|los?\s+|las?\s+)?"
+    r"(?:proposiciones|asuntos\s+varios|varios)(?:\s+y\s+varios)?\s*,?\s*",
+    re.IGNORECASE,
+)
+#: Lo que, si sigue en la frase, la hace frase del orden del día y no del acta.
+_DEL_ORDEN_DEL_DIA = re.compile(
+    r"llamado\s+a\s+lista|qu[oó]rum|verificaci[oó]n\s+de\s+(?:la\s+)?asistencia"
+    r"|proposici[oó]n(?:es)?|(?:asuntos|puntos?(?:\s+de)?)\s+varios|\by\s+varios\b",
+    re.IGNORECASE,
+)
 
-    Es la última defensa. El texto ya salió sin ellos y las instrucciones le
-    piden al modelo que no los mencione, pero un modelo puede deducirlo de
-    «se verificó la asistencia», y lo que el operador pidió es que no aparezca.
+
+def depurar_resumen(resumen: str) -> str:
+    """El resumen sin el llamado a lista, el quórum, las proposiciones ni los varios.
+
+    Es la última defensa. El texto ya salió sin el llamado a lista y las
+    instrucciones le piden al modelo que no los mencione, pero un modelo puede
+    deducirlo de «se verificó la asistencia», y lo que el operador pidió es que
+    no aparezca (las proposiciones y los varios, desde el 2026-10-31). Lo que
+    se decidió en varios se queda: sólo se quita el «En proposiciones y varios,».
     """
     frases = re.split(r"(?<=[.!?])\s+", resumen.strip())
-    limpias = [
-        frase
-        for frase in frases
-        if not re.search(
-            r"llamado\s+a\s+lista|qu[oó]rum|verificaci[oó]n\s+de\s+(?:la\s+)?asistencia",
-            frase,
-            re.IGNORECASE,
-        )
-    ]
+    limpias = []
+    for frase in frases:
+        sin_el_punto = _EN_EL_PUNTO_DE_VARIOS.sub("", frase)
+        if sin_el_punto != frase and sin_el_punto:
+            frase = sin_el_punto[0].upper() + sin_el_punto[1:]
+        if frase and not _DEL_ORDEN_DEL_DIA.search(frase):
+            limpias.append(frase)
     return re.sub(r"\s{2,}", " ", " ".join(limpias)).strip()
 
 

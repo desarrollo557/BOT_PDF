@@ -205,6 +205,14 @@ class TestDepurarElResumen:
     def test_y_la_del_llamado_a_lista(self):
         assert "lista" not in depurar_resumen("Se hizo el llamado a lista. Se trató X.")
 
+    def test_ni_las_proposiciones_ni_los_varios(self):
+        """Lo pidió el operador el 2026-10-31; lo decidido en varios se queda, sin nombrar el punto."""
+        resumen = depurar_resumen(
+            "En proposiciones y varios, se aprobó el viaje del decano. Se trataron "
+            "proposiciones y varios. Se aprobaron varios programas."
+        )
+        assert resumen == "Se aprobó el viaje del decano. Se aprobaron varios programas."
+
 
 # -----------------------------------------------------------------------------
 #  El folio de la esquina

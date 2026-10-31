@@ -452,6 +452,14 @@ class TestLaRelectura:
         assert fila.cedula == "1049539266"
         assert "la cédula: el OCR leyó 1049539286 y la IA 1049539266" in fila.observaciones
 
+    def test_el_nombre_que_la_ia_lee_distinto_se_corrige_y_se_anota(self):
+        """UPD3859803: «IIEI ANA ESTHER» era LILIANA ESTHER; el voto se quedaba con el OCR."""
+        mal = MODERNA_COMPLETA.replace("ANDRES FELIPE BALLESTAS MENDOZA", "IIEI FELIPE BALLESTAS MENDOZA AAN")
+        fila = self._inventario([mal], Ocr(mal), Ocr(MODERNA_COMPLETA)).filas[0]
+        assert fila.nombre == "ANDRES FELIPE BALLESTAS MENDOZA"
+        assert "el nombre: el OCR leyó IIEI FELIPE BALLESTAS MENDOZA AAN" in fila.observaciones
+        assert "nombre dudoso" not in fila.observaciones
+
     def test_lo_que_no_se_lee_va_a_las_notas(self):
         sin_cedula = MODERNA_COMPLETA.replace("N°. 1.049.539.266", "N°. ilegible")
         outcome = self._inventario([sin_cedula], Ocr(sin_cedula))
@@ -898,3 +906,89 @@ class TestLaBasuraDeSecretaria:
         assert nombre_limpio("II BRAVO NIEVES JOSE JOAQUIN") == "BRAVO NIEVES JOSE JOAQUIN"
         # «DE LA HOZ» es un apellido y se queda.
         assert nombre_limpio("DE LA HOZ SIEGLER ILICH HERBERT") == "DE LA HOZ SIEGLER ILICH HERBERT"
+
+
+class TestLasConstanciasDe1981:
+    """UPD3859800 (Odontología, devuelto por el cliente): constancias que copian actas de 1961-1981."""
+
+    CABEZA = (
+        "LA SUSCRITA SECRETARIA ACADEMICA DE LA FACULTAD DE ENFERMERIA DE LA UNIVERSIDAD DE CARTAGENA,\n"
+        "HACE CONSTAR:\nQue en el Libro de Actas de Grado de la Facultad aparece el Acta Nº 14 bajo el "
+        "folio 187, que a la letra dice: \"En la ciudad de Cartagena a los tres (3) dias del mes de Junio "
+        "de 1.977, se reunieron en el Paraninfo de la Universidad el Rector, la Decana de la Facultad de "
+        "Enfermería, Srita. Di- dia Quintero B, y la Secretaria Académica Srita, Piedad Pérez C, para "
+    )
+
+    def test_la_graduada_es_la_que_senala_no_la_que_firma(self):
+        from resolutions.domain.acta_grado import constancia
+
+        texto = self.CABEZA + (
+            "hacer entrega del Diploma que acredita como Licenciadas en Enfermería a ENYS GUTIERREZ DE "
+            "MOYA c.c.#32'617.274 de B'quilla, y otras quienes cumplieron.\" Es fiel copia expedida en "
+            "Cartagena a los 20 dias del mes de Enero de 1.982."
+        )
+        assert constancia(texto).nombre == "ENYS GUTIERREZ DE MOYA"
+
+    def test_con_los_dos_puntos_y_el_nombre_de_casada(self):
+        from resolutions.domain.acta_grado import constancia
+
+        texto = self.CABEZA + (
+            "entregar el Diploma que la acredita como Licenciada en Enfermería a: MARTHA PEÑALOZA DIAZ "
+            "(hoy Sra. de Vela) y otras.\" Es fiel copia expedida en Cartagena a los 20 dias del mes de "
+            "Enero de 1.982."
+        )
+        assert constancia(texto).nombre == "MARTHA PENALOZA DIAZ"
+
+    def test_si_nombra_a_un_grupo_sin_senalar_a_nadie_no_se_adivina(self):
+        from resolutions.domain.acta_grado import constancia
+
+        texto = self.CABEZA + (
+            "otorgar el Diploma de Licenciadas a las ocho (8) señoritas de la promoción.\" Es fiel copia "
+            "expedida en Cartagena a los 30 dias del mes de Noviembre de 1.981."
+        )
+        assert constancia(texto).nombre is None
+
+    def test_el_titulo_sin_la_frase_que_sigue(self):
+        from resolutions.domain.graduado import titulo_limpio
+
+        assert titulo_limpio("ENFERMERA Y LE EXPIDE EL PRESENTE") == "ENFERMERA"
+        assert titulo_limpio("LICENCIADAS EN ENFERMERÍA, SEGÚN RECOMENDACION") == "LICENCIADAS EN ENFERMERIA"
+        # La coma sola no corta: es parte del título.
+        titulo = "ESPECIALISTA EN TEORÍA, MÉTODOS Y TÉCNICAS DE INVESTIGACIÓN SOCIAL"
+        assert titulo_limpio(titulo) == titulo
+
+
+class TestLaIaLeeElActaComoUnaPersona:
+    """UPD3859808 (1997-2001): datos corridos de su renglón; sólo vale lo que la hoja dice."""
+
+    TEXTO = (
+        "ACTA DE GRADO No. 03\nEn la ciudad de Cartagena, a los Catorce 14( ) días del mes de\n\n"
+        "Diciembre de dos mil (2.000)\n\nel título de\n\nal estudiante\n\nENFERMERA\n\nFAIMA\n\n"
+        "portador de la cédula de ciudadanía\n\nLUZ FELFLE CASTILLA\n\nNo.\n\n33.101.502\n\n"
+        "Resolución No. 3028 de fecha 12 de Diciembre de 2000"
+    )
+
+    def test_lo_que_la_hoja_dice_vale(self):
+        from resolutions.domain.acta_grado import datos_de_la_ia
+
+        respuesta = (
+            "NUMERO: 03\nFECHA: 14-12-2000\nTITULO: ENFERMERA\nNOMBRE: FAIMA LUZ FELFLE CASTILLA\nCEDULA: 33101502"
+        )
+        assert datos_de_la_ia(respuesta, self.TEXTO) == {
+            "numero": "03", "fecha": date(2000, 12, 14), "titulo": "ENFERMERA",
+            "nombre": "FAIMA LUZ FELFLE CASTILLA", "cedula": "33101502",
+        }
+
+    def test_lo_inventado_o_de_otro_sitio_no(self):
+        from resolutions.domain.acta_grado import datos_de_la_ia
+
+        respuesta = (
+            "NUMERO: 3028\nFECHA: 12-12-2000\nTITULO: FAIMA\nNOMBRE: FATIMA LUZ FELFLE CASTILLA\nCEDULA: 33101503"
+        )
+        assert datos_de_la_ia(respuesta, self.TEXTO) == {}
+
+    def test_el_nombre_mas_completo_de_la_misma_hoja(self):
+        from resolutions.application.acta_consejo import _lo_completa
+
+        assert _lo_completa("LUZ FELFLE CASTILLA", "FAIMA LUZ FELFLE CASTILLA")
+        assert not _lo_completa("ROSE MARY GUERRA", "CON ENFASIS EN PERINATOLOGIA")

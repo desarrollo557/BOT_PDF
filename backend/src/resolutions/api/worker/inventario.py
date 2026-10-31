@@ -192,6 +192,7 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
             lector_de_cifras=_lector_de_cifras(taller) if grado else None,
             lector_de_franja=_lector_de_franja(taller) if grado else None,
             lectores_de_tinta_clara=_lectores_de_tinta_clara(taller),
+            lector_de_datos=taller.lector_del_acta_de_grado() if grado else None,
         ).execute(source, document_name=Path(taller.name).name, carpeta=carpeta)
     finally:
         source.close()
