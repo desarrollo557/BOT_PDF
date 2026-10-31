@@ -6,12 +6,14 @@ rellenado así:
 
 * **Nombre o asunto**: «ACTA DE GRADO No. 01/05 - MARTHA LUCIA HERRERA
   VILLAMIZAR - ESPECIALISTA EN GESTION DE LA CALIDAD Y AUDITORIA EN SALUD».
-* **Consecutivo inicial y final**: la cédula del graduado, sin puntos.
+* **Consecutivo inicial**: la cédula del graduado, sin puntos; **final**, N/A: el
+  acta no trae otro número (lo pidió el operador el 2026-10-31: la cédula sólo
+  en la columna D).
 * **Fechas extremas**: la fecha del acta, la misma en las dos, «03/03/2005».
 * **Caja** y **carpeta**: «00C003292» y «UPD3859821», de dónde está el PDF.
-* **No. de folios** y **No. de folios SIAR**: el folio manuscrito de la
-  esquina de su hoja, «140». La hoja que la sigue sin folio -- su vuelto,
-  «140/V» -- va en el mismo PDF. Sin la IA el folio no se lee y queda N/A.
+* **No. de folios**: cuántos folios -- hojas -- tiene el acta, «1»; **No. de
+  folios SIAR**: cuántas páginas se escanearon. No el folio manuscrito de la
+  esquina, que es el lugar del acta en el libro y no su tamaño (2026-10-31).
 * Las demás columnas -- código TRD, tomo, otro, soporte, frecuencia -- en
   blanco, como en el modelo. **Notas** lleva lo que no se
   pudo leer, para quien revise.
@@ -77,6 +79,10 @@ def _fecha_del_fuid(fecha: object) -> str:
     return NO_LEIDO
 
 
+def _es_numero(valor: object) -> bool:
+    return isinstance(valor, int) and not isinstance(valor, bool)
+
+
 def _folio(inicial: object, final: object) -> int | str:
     """El folio de la fila: «140», o «140-141» si su acta ocupa dos hojas foliadas."""
     if not isinstance(inicial, int) or isinstance(inicial, bool):
@@ -103,28 +109,33 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
     titulo = str(fila.get("titulo") or "") or NO_LEIDO
     cedula = str(fila.get("cedula") or "") or NO_LEIDO
     fecha = _fecha_del_fuid(fila.get("fecha"))
-    # El folio manuscrito de la esquina de su hoja: «140». Sin la IA no
-    # se lee, y queda N/A.
-    folios = _folio(fila.get("folio_inicial"), fila.get("folio_final"))
+    # Cuántos folios tiene el acta y cuántas páginas se escanearon: no el
+    # folio manuscrito de la esquina, que es su lugar en el libro.
+    # Un acta con su vuelto es un folio y dos páginas.
+    desde, hasta = fila.get("pagina_inicial"), fila.get("pagina_final")
+    paginas = hasta - desde + 1 if isinstance(desde, int) and isinstance(hasta, int) and hasta >= desde else 1
+    inicial, final = fila.get("folio_inicial"), fila.get("folio_final")
+    if _es_numero(inicial) and _es_numero(final) and final >= inicial:
+        folios = final - inicial + 1
+    else:
+        folios = max(1, (paginas + 1) // 2)
     return FuidRow(
         orden=0,
         # Primero el nombre y luego el tipo, en todos los inventarios de la
         # Universidad (lo pidió el operador el 2026-10-30).
         asunto=f"{nombre} - {acta} - {titulo}",
         codigo_trd="",
-        # Un acta de grado no trae código: el consecutivo es la cédula en las
-        # dos columnas, como en el modelo del operador.
+        # La cédula sólo en la columna D: el acta no trae otro número.
         consecutivo_inicial=cedula,
-        consecutivo_final=cedula,
+        consecutivo_final=NO_LEIDO,
         fecha_inicial=fecha,
         fecha_final=fecha,
         caja=caja,
         carpeta=upd,
         tomo="",
         otro="",
-        folios=folios,  # type: ignore[arg-type] - el número o N/A
-        # El operador pidió el mismo número en las dos columnas.
-        folios_siar=folios,  # type: ignore[arg-type]
+        folios=folios,
+        folios_siar=paginas,
         soporte="",
         frecuencia="",
         notas=str(fila.get("observaciones") or ""),

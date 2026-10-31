@@ -563,6 +563,14 @@ def _es_basura_corta(palabra: str) -> bool:
     return len(clave) <= 4 and clave[0] not in "AEIOU" and clave[1] not in "AEIOU" and clave[:2] not in _INICIOS_VALIDOS
 
 
+#: Lo de una resolución o del formulario que se queda delante del nombre.
+_DE_LA_RESOLUCION = frozenset({
+    "USO", "SUS", "ATRIBUCIONES", "LEGALES", "RESUELVE", "SALUD", "CONSIDERANDO", "OTORGAR",
+    "OTORGA", "CONFIERE", "CONFERIR",
+})
+#: Desde cuántas letras una palabra que no está en la lista no es un nombre.
+LARGO_IMPOSIBLE = 15
+
 #: Nombres y apellidos que sí terminan en X: la de chequeo no se les quita.
 _TERMINAN_EN_X = frozenset({"FELIX", "ALEX", "MAX", "ROUX", "MARX"})
 
@@ -584,9 +592,31 @@ def nombre_limpio(nombre_leido: str | None, titulo_leido: str | None = None, con
             if palabras and (_es_del_titulo(palabras[indice], titulo_leido) or _es_basura_corta(palabras[indice])):
                 palabras.pop(indice)
                 cambio = True
+    # «USO DE SUS ATRIBUCIONES LEGALES Y CORREA…», «SALUD REINALDO…», «SA DIANA…»:
+    # lo de la resolución o del renglón de arriba que quedó delante (Secretaría
+    # 3292, procesada el 2026-10-31).
+    while palabras:
+        primera = _clave(palabras[0])
+        siguiente = next((_clave(p) for p in palabras[1:] if _clave(p) not in _CONECTORES), "")
+        if primera in _DE_LA_RESOLUCION or primera == "Y":
+            palabras.pop(0)
+        elif primera in _CONECTORES:
+            # «DE LA HOZ» es un apellido; «DE SUS ATRIBUCIONES», no.
+            if siguiente not in _DE_LA_RESOLUCION:
+                break
+            palabras.pop(0)
+        elif len(primera) <= 2 and primera not in conocidas:
+            palabras.pop(0)
+        else:
+            break
+    while palabras and (_clave(palabras[-1]) in _CONECTORES or _clave(palabras[-1]) == "EN"):
+        palabras.pop()
     limpias = []
     for palabra in palabras:
         clave = _clave(palabra)
+        # Una letra suelta o una palabra imposible por larga («COOCOMONMAMANN…»).
+        if (len(clave) == 1 and clave not in _CONECTORES) or (len(clave) >= LARGO_IMPOSIBLE and clave not in conocidas):
+            continue
         # «BAENAX»: la X con que alguien chuleó la lista, si sin ella es un nombre.
         if clave.endswith("X") and clave not in conocidas and clave not in _TERMINAN_EN_X and (
             clave[:-1] in conocidas or (len(clave) >= 5 and clave[-2] in "AEIOU")
@@ -598,25 +628,107 @@ def nombre_limpio(nombre_leido: str | None, titulo_leido: str | None = None, con
 
 #: Lo que el OCR toma por título y es un renglón del formulario.
 _NO_ES_TITULO = re.compile(
-    r"CIUDADANIA|DISPOSICIONES|EXPEDIDA|PORTADOR|AL ESTUDIANTE|ESRCDIANTE|SOLICITUD|^AL$|^NO$"
+    r"CIUDADANIA|DISPOSICIONES|EXPEDIDA|PORTADOR|AL ESTUDIANTE|ESRCDIANTE|SOLICITUD|^AL$|^NO$|^ESTUDIANTE$|^GRADO$"
 )
 
 
+#: Lo que sigue al título en el formulario y se le pega: «… AL DOCTOR», «…
+#: AL ODONTOLOGO», «… A STUDIANTE», «… A EGRESADO DE LA FACULTAD DE …».
+_COLA_DEL_FORMULARIO = re.compile(
+    r"[\s,]+(?:AL?\W?|A\s+LA)\s+\W?(?:DOCTOR|ODONTOLOG|MEDIC|E?S?T?UDIANTE|EGRESAD|SENOR|PROFESIONAL)\w*(?:\W.*)?$"
+)
+
+
+#: «… AL ESTUIMANTE», «… AL PROFESTONAL»: la cola mal leída, una palabra tras «AL».
+_AL_Y_UNA_PALABRA = re.compile(r"\s+AL\W?\s+\S+$")
+
+
 def titulo_limpio(titulo_leido: str | None) -> str | None:
-    """El título, o ``None`` si lo leído es un renglón del formulario."""
-    if not titulo_leido or len(titulo_leido) < 4 or _NO_ES_TITULO.search(_clave(titulo_leido)):
+    """El título, sin las colas del formulario ni letras sueltas; ``None`` si es un renglón del formulario."""
+    if not titulo_leido:
         return None
-    return titulo_leido
+    clave = _AL_Y_UNA_PALABRA.sub("", _COLA_DEL_FORMULARIO.sub("", _clave(titulo_leido)))
+    # Sin letras sueltas ni palabras imposibles por largas («OOOOOOMEANCMCNMM…»).
+    palabras = [p for p in clave.split() if (len(p) > 1 or p == "Y") and len(p) < LARGO_IMPOSIBLE]
+    while palabras and (palabras[0] in ("RESUELVE", "Y", "DE", "EN") or (len(palabras[0]) <= 3 and not palabras[0].isalpha())):
+        palabras.pop(0)
+    while palabras and palabras[-1] in ("Y", "DE", "EN", "AL", "LA"):
+        palabras.pop()
+    titulo = " ".join(palabras).strip(" ,;:.()¿?¡!*\"'“”-")
+    if len(titulo) < 4 or _NO_ES_TITULO.search(titulo):
+        return None
+    # Con sus tildes si el original las traía y no se tocó.
+    return titulo_leido if titulo == _clave(titulo_leido) else titulo
+
+
+def _mismo_titulo(leido: str, otro: str) -> bool:
+    """Si ``leido`` es ``otro`` mal leído: palabra por palabra, y no otra especialidad.
+
+    Con el parecido del título entero, ORTODONCIA pasaba a ENDODONCIA y
+    ESTRUCTURAS a TEORÍA (Secretaría 3292, 2026-10-31): una especialidad no es
+    la otra por compartir «ESPECIALISTA EN».
+    """
+    una, otra = _clave(leido).split(), _clave(otro).split()
+    if "".join(una) == "".join(otra):
+        return True
+    if len(una) != len(otra):
+        return difflib.SequenceMatcher(None, "".join(una), "".join(otra)).ratio() >= 0.93
+    return all(difflib.SequenceMatcher(None, a, b).ratio() >= PARECIDO_DEL_TITULO for a, b in zip(una, otra, strict=True))
 
 
 def _genero(titulo_leido: str) -> str:
     """«INGENIERA CIVIL» → A; «INGENIERO» → O; «CONTADORA» → A; «CONTADOR» → O."""
-    primera = _clave(titulo_leido).split()[0] if titulo_leido.split() else ""
+    primera = "".join(letra for letra in (_clave(titulo_leido).split() or [""])[0] if letra.isalpha())
     if primera.endswith(("A", "ORA")):
         return "A"
     if primera.endswith(("O", "OR")):
         return "O"
     return ""
+
+
+def _completado(titulo: str | None, titulos: Sequence[str | None]) -> str | None:
+    """Un título cortado o con una palabra mal escrita, llevado al repetido del libro.
+
+    «ED EN GESTION DE LA CALIDAD Y AUDITORIA» es «ESPECIALISTA EN GESTION DE LA
+    CALIDAD Y AUDITORIA» sin su principio; «ESSPECIALISTA», «ETOMATOLOGIA» son
+    palabras que el libro escribe bien en otros títulos (Secretaría 3292).
+    """
+    from collections import Counter
+
+    if not titulo:
+        return titulo
+    repetidos = [t for t, n in Counter(t for t in titulos if t).items() if n >= 2 and t != titulo]
+    palabras = _clave(titulo).split()
+    sin_cabeza = [p for p in palabras if len(p) > 2 or p in ("DE", "EN", "LA", "Y")]
+    while sin_cabeza and len(sin_cabeza[0]) <= 2:
+        sin_cabeza.pop(0)
+    resto = " ".join(sin_cabeza)
+    if len(sin_cabeza) >= 3:
+        # Sin su comienzo: «ED EN GESTION…», o ya sin la letra suelta, «GESTION…».
+        for otro in repetidos:
+            if _clave(otro) != resto and _clave(otro).endswith(resto):
+                return otro
+    del_libro = Counter(p for t in titulos if t for p in _clave(t).split() if len(p) >= 5)
+    corregidas = []
+    for palabra in palabras:
+        if palabra.endswith("S") and del_libro[palabra[:-1]] >= 3 * max(del_libro[palabra], 1):
+            # «ESPECIALISTAS» donde el libro dice ESPECIALISTA.
+            palabra = palabra[:-1]
+        elif len(palabra) >= 5:
+            parecida = max(
+                (otra for otra in del_libro if otra != palabra),
+                key=lambda otra: difflib.SequenceMatcher(None, palabra, otra).ratio(),
+                default=None,
+            )
+            if (
+                parecida
+                and del_libro[parecida] >= 3 * max(del_libro[palabra], 1)
+                and difflib.SequenceMatcher(None, palabra, parecida).ratio() >= 0.85
+            ):
+                palabra = parecida
+        corregidas.append(palabra)
+    corregido = " ".join(corregidas)
+    return titulo if corregido == _clave(titulo) else corregido
 
 
 def titulos_unificados(titulos: Sequence[str | None]) -> list[str | None]:
@@ -630,6 +742,7 @@ def titulos_unificados(titulos: Sequence[str | None]) -> list[str | None]:
     """
     from collections import Counter
 
+    titulos = [_completado(t, titulos) for t in titulos]
     cuenta = Counter(t for t in titulos if t)
     repetidos = [t for t, n in cuenta.items() if n >= 2]
     resultado: list[str | None] = []
@@ -644,7 +757,7 @@ def titulos_unificados(titulos: Sequence[str | None]) -> list[str | None]:
             resultado.append(titulo)
             continue
         mejor = max(del_mismo_genero, key=lambda otro: _parecido(titulo, otro))
-        resultado.append(mejor if _parecido(titulo, mejor) >= PARECIDO_DEL_TITULO else titulo)
+        resultado.append(mejor if _mismo_titulo(titulo, mejor) else titulo)
     return resultado
 
 

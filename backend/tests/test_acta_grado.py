@@ -488,7 +488,7 @@ class TestElFuidDeGrado:
         assert fila[:12] == [
             1, None, "MARTHA LUCIA HERRERA VILLAMIZAR - ACTA DE GRADO No. 01/05 - "
             "ESPECIALISTA EN GESTION DE LA CALIDAD Y AUDITORIA EN SALUD",
-            "39692338", "39692338", "03/03/2005", "03/03/2005", "00C003292", "UPD3859821", None, None, "N/A",
+            "39692338", "N/A", "03/03/2005", "03/03/2005", "00C003292", "UPD3859821", None, None, 1,
         ]
         # Sin la IA el folio manuscrito no se lee: N/A en las dos columnas.
         assert fila[12] == fila[11]
@@ -578,7 +578,8 @@ class TestElFolioManuscrito:
         ]
         assert lector.mosaicos == 1  # las dos hojas en una página facturada
         hoja = load_workbook(escribir_fuid_de_actas_de_grado(outcome.filas, tmp_path / "f.xlsx")).active
-        assert (hoja["L14"].value, hoja["M14"].value) == (101, 101)
+        # Un folio (el 101 con su vuelto) y dos páginas escaneadas (2026-10-31).
+        assert (hoja["L14"].value, hoja["M14"].value) == (1, 2)
 
     def test_el_folio_se_pide_mientras_se_releen_las_franjas(self):
         """La IA lee las esquinas por la red mientras Tesseract relee en la CPU.
@@ -638,7 +639,8 @@ class TestElFolioManuscrito:
 
         outcome = InventariarActa(perfil=GRADO).execute(Fuente([MODERNA_COMPLETA]), document_name="x.pdf")
         hoja = load_workbook(escribir_fuid_de_actas_de_grado(outcome.filas, tmp_path / "f.xlsx")).active
-        assert (hoja["L14"].value, hoja["M14"].value) == ("N/A", "N/A")
+        # Sin la IA no se lee el folio de la esquina, pero el acta tiene un folio y una página.
+        assert (hoja["L14"].value, hoja["M14"].value) == (1, 1)
 
 
 class TestElFormularioPorZonas:
@@ -843,3 +845,38 @@ def test_el_dia_no_sale_del_numero_del_acta():
 
     assert fecha_de_grado("ACTA DE GRADO No. 29/05 días del mes de Julio de 2005") is None
     assert fecha_de_grado("a los veintidos (22) días del mes de Julio de 2005") == date(2005, 7, 22)
+
+
+class TestLaBasuraDeSecretaria:
+    """Lo que salió en la corrida real de Secretaría 3292 (2026-10-31)."""
+
+    def test_las_colas_del_formulario_se_quitan_del_titulo(self):
+        from resolutions.domain.graduado import titulo_limpio
+
+        assert titulo_limpio("ESPECIALISTA EN PEDIATRIA AL DOCTOR") == "ESPECIALISTA EN PEDIATRIA"
+        assert titulo_limpio("ESPECIALISTA EN ORTODONCIA AL ODONTÓLOGO") == "ESPECIALISTA EN ORTODONCIA"
+        assert titulo_limpio("ABOGADO, A EGRESADO DE LA FACULTAD DE DERECHO") == "ABOGADO"
+        assert titulo_limpio("ESPECIALISTA EN SEGURIDAD SOCIAL.- A] *STUDIANTE") == "ESPECIALISTA EN SEGURIDAD SOCIAL"
+        assert titulo_limpio("INGENIERO CIVIL AL ESTUIMANTE") == "INGENIERO CIVIL"
+
+    def test_el_titulo_mal_leido_va_al_del_libro_sin_cambiar_de_especialidad(self):
+        from resolutions.domain.graduado import titulos_unificados
+
+        libro = ["TRABAJADORA SOCIAL"] * 5 + ["ESPECIALISTA EN GESTION DE LA CALIDAD Y AUDITORIA"] * 3 + [
+            "ESPECIALISTA EN ENDODONCIA", "ESPECIALISTA EN ENDODONCIA",
+        ]
+        unificados = titulos_unificados(
+            libro + ["TRABAJADORA SOCIA", "ED EN GESTION DE LA CALIDAD Y AUDITORIA", "ESPECIALISTA EN ORTODONCIA"]
+        )
+        assert unificados[-3:] == [
+            "TRABAJADORA SOCIAL", "ESPECIALISTA EN GESTION DE LA CALIDAD Y AUDITORIA", "ESPECIALISTA EN ORTODONCIA",
+        ]
+
+    def test_el_nombre_sin_lo_de_la_resolucion_ni_palabras_imposibles(self):
+        from resolutions.domain.graduado import nombre_limpio
+
+        assert nombre_limpio("USO DE SUS ATRIBUCIONES LEGALES Y CORREA SOLANO LILIBETH") == "CORREA SOLANO LILIBETH"
+        assert nombre_limpio("LUIS MIGUEL URIBE ARDILA COOCOMONMAMANNAMANACADANMAMAMOS") == "LUIS MIGUEL URIBE ARDILA"
+        assert nombre_limpio("II BRAVO NIEVES JOSE JOAQUIN") == "BRAVO NIEVES JOSE JOAQUIN"
+        # «DE LA HOZ» es un apellido y se queda.
+        assert nombre_limpio("DE LA HOZ SIEGLER ILICH HERBERT") == "DE LA HOZ SIEGLER ILICH HERBERT"
