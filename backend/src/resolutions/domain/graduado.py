@@ -25,7 +25,7 @@ from __future__ import annotations
 import difflib
 import re
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
 
@@ -526,6 +526,99 @@ CONFIANZA_DE_LA_CEDULA = 85.0
 PARECIDO_DEL_TITULO = 0.75
 
 
+# -- limpieza para el FUID y el nombre del archivo (2026-10-31) -------------------
+#
+# Medido en «16. SECRETARIA 3292» contra el modelo del operador (749 graduados):
+# 8 de 54 nombres de UPD3859822 salían con un trozo del título pegado
+# («… TNGENIERO», «TITULODE INGENIERA ODALIS…»), 2 con la «X» con que se chuleó
+# la resolución («BAENAX»), y títulos que eran renglones del formulario
+# («CIUDADANÍA NO», «SEGÚN LAS DISPOSICIONES LEGALES VIGENTES»).
+
+#: Las palabras de un título que se pegan al nombre leído con OCR.
+_DEL_TITULO = (
+    "INGENIERO", "INGENIERA", "TITULO", "TITULODE", "QUIMICO", "QUIMICA", "ADMINISTRADOR",
+    "ADMINISTRADORA", "RESOLUCION", "ABOGADO", "ABOGADA", "MEDICO", "MEDICA", "CONTADOR",
+    "CONTADORA", "LICENCIADO", "LICENCIADA", "ENFERMERA", "ENFERMERO", "ESPECIALISTA",
+)
+#: Los comienzos de dos consonantes con que empieza una palabra en español.
+_INICIOS_VALIDOS = ("BL", "BR", "CL", "CR", "CH", "DR", "FL", "FR", "GL", "GR", "LL", "PL", "PR", "TR", "RR", "TH", "SH")
+
+
+def _es_del_titulo(palabra: str, titulo: str | None) -> bool:
+    clave = _clave(palabra)
+    if titulo and clave in _clave(titulo).split() and clave not in _CONECTORES:
+        return True
+    return any(
+        len(clave) >= 5 and difflib.SequenceMatcher(None, clave, del_titulo).ratio() >= 0.75 for del_titulo in _DEL_TITULO
+    )
+
+
+def _es_basura_corta(palabra: str) -> bool:
+    """«N», «TNA», «BBSO»: un trozo de 1 a 4 letras que no empieza como una palabra."""
+    clave = _clave(palabra)
+    if clave in _CONECTORES:
+        return False
+    if len(clave) <= 1:
+        return True
+    return len(clave) <= 4 and clave[0] not in "AEIOU" and clave[1] not in "AEIOU" and clave[:2] not in _INICIOS_VALIDOS
+
+
+#: Nombres y apellidos que sí terminan en X: la de chequeo no se les quita.
+_TERMINAN_EN_X = frozenset({"FELIX", "ALEX", "MAX", "ROUX", "MARX"})
+
+
+def nombre_limpio(nombre_leido: str | None, titulo_leido: str | None = None, conocidas: Collection[str] = ()) -> str | None:
+    """El nombre del graduado sin lo que no es suyo: el título pegado, la basura y la «X» de chequeo."""
+    if not nombre_leido:
+        return nombre_leido
+    palabras = nombre_leido.split()
+    # «JOSE MARIO GUARDO ROA INGENIERO CIVIL»: desde la primera palabra del
+    # título que va detrás de un nombre de dos palabras o más, nada es nombre.
+    corte = next((i for i, palabra in enumerate(palabras) if i >= 2 and _es_del_titulo(palabra, titulo_leido)), None)
+    if corte is not None:
+        palabras = palabras[:corte]
+    cambio = True
+    while palabras and cambio:
+        cambio = False
+        for indice in (0, -1):
+            if palabras and (_es_del_titulo(palabras[indice], titulo_leido) or _es_basura_corta(palabras[indice])):
+                palabras.pop(indice)
+                cambio = True
+    limpias = []
+    for palabra in palabras:
+        clave = _clave(palabra)
+        # «BAENAX»: la X con que alguien chuleó la lista, si sin ella es un nombre.
+        if clave.endswith("X") and clave not in conocidas and clave not in _TERMINAN_EN_X and (
+            clave[:-1] in conocidas or (len(clave) >= 5 and clave[-2] in "AEIOU")
+        ):
+            palabra = palabra[:-1]
+        limpias.append(palabra)
+    return " ".join(limpias) or None
+
+
+#: Lo que el OCR toma por título y es un renglón del formulario.
+_NO_ES_TITULO = re.compile(
+    r"CIUDADANIA|DISPOSICIONES|EXPEDIDA|PORTADOR|AL ESTUDIANTE|ESRCDIANTE|SOLICITUD|^AL$|^NO$"
+)
+
+
+def titulo_limpio(titulo_leido: str | None) -> str | None:
+    """El título, o ``None`` si lo leído es un renglón del formulario."""
+    if not titulo_leido or len(titulo_leido) < 4 or _NO_ES_TITULO.search(_clave(titulo_leido)):
+        return None
+    return titulo_leido
+
+
+def _genero(titulo_leido: str) -> str:
+    """«INGENIERA CIVIL» → A; «INGENIERO» → O; «CONTADORA» → A; «CONTADOR» → O."""
+    primera = _clave(titulo_leido).split()[0] if titulo_leido.split() else ""
+    if primera.endswith(("A", "ORA")):
+        return "A"
+    if primera.endswith(("O", "OR")):
+        return "O"
+    return ""
+
+
 def titulos_unificados(titulos: Sequence[str | None]) -> list[str | None]:
     """Los títulos de un libro, con los mal leídos llevados al repetido que se les parece.
 
@@ -544,7 +637,13 @@ def titulos_unificados(titulos: Sequence[str | None]) -> list[str | None]:
         if not titulo or cuenta[titulo] >= 2 or not repetidos:
             resultado.append(titulo)
             continue
-        mejor = max(repetidos, key=lambda otro: _parecido(titulo, otro))
+        # Sin cambiar el género: «INGENIERA CIVIL» no es «INGENIERO CIVIL» mal
+        # leído (UPD3859822 p. 28).
+        del_mismo_genero = [otro for otro in repetidos if _genero(otro) == _genero(titulo)]
+        if not del_mismo_genero:
+            resultado.append(titulo)
+            continue
+        mejor = max(del_mismo_genero, key=lambda otro: _parecido(titulo, otro))
         resultado.append(mejor if _parecido(titulo, mejor) >= PARECIDO_DEL_TITULO else titulo)
     return resultado
 

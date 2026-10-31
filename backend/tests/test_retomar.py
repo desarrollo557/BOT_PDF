@@ -324,7 +324,7 @@ class TestRetomarLaCarpeta:
         general, _ = filas_de_fuid(destino / "00.FUID GENERAL.xlsx")
         # Los tres libros, también el que se saltó por completo.
         assert len(general) == 9
-        assert general[0].notas.startswith("Archivo: A")
+        assert general[0].notas == ""  # NOTAS va vacía (2026-10-30)
 
     def test_revisar_no_procesa_nada(self, workspace, entrega_a_medias):
         origen, destino = entrega_a_medias

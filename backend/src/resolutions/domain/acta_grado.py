@@ -54,7 +54,9 @@ VENTANA_DEL_CUERPO = 600
 #: «(12) días del mes de Diciembre del año 2023», «(27) días del mes de
 #: Noviembre de mil novecientos ochenta (1.980)».
 _FECHA = re.compile(
-    r"\(?\s*(?P<dia>\d{1,2})\s*\)?\s*D\S{0,2}AS?\s+DEL?\s+MES\s+DE\s+(?P<mes>[A-Z]{4,11})\W+"
+    # El día no va pegado a una «/»: en «No. 29/05 días del mes de Julio» el 05
+    # es del número del acta (Secretaría 3292, UPD3859825 p. 44; 2026-10-31).
+    r"(?<![/\d])\(?\s*(?P<dia>\d{1,2})\s*\)?\s*D\S{0,2}AS?\s+DEL?\s+MES\s+DE\s+(?P<mes>[A-Z]{4,11})\W+"
     r"(?:DEL?\s+)?(?:A\S?O\s+)?(?:[A-Z ]{0,70}?)\(?\s*(?P<anio>(?:19|20)\d\d|[12]\s*[.,]\s*\d\s*\d\s*\d)\b"
 )
 #: Para cuando el OCR desordenó la frase: el día entre paréntesis, un mes en

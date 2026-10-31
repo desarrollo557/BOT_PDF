@@ -59,14 +59,13 @@ def test_los_libros_van_seguidos_con_el_orden_corrido(tmp_path):
     assert [f[10] for f in filas] == ["1-8", "2-8", "1-8"]
 
 
-def test_la_nota_dice_en_que_carpeta_esta_el_archivo(tmp_path):
-    """Once libros producen once «1_DIPLOMA.pdf»: sin la carpeta no se encuentra."""
+def test_la_nota_del_general_va_vacia(tmp_path):
+    """NOTAS va vacía en el FUID que se entrega al cliente: lo pidió el operador el 2026-10-30."""
     salidas = tmp_path / "salidas"
     trabajos = [_libro(salidas, "a" * 32, "UPD3858079", ["ANA PEREZ"])]
     ruta = fuid_general(salidas, trabajos, tmp_path, destino_de=lambda t: t.filename[:-4])
     nota = leer_fuid(ruta).filas[0][15]
-    assert nota.startswith("Archivo: UPD3858079")
-    assert nota.endswith("1_DIPLOMA.pdf")
+    assert nota == ""  # NOTAS va vacía en el FUID que se entrega (2026-10-30)
 
 
 def test_sin_libros_terminados_no_escribe_nada(tmp_path):

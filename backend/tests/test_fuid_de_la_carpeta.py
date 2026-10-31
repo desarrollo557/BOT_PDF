@@ -116,8 +116,8 @@ def test_cada_fuid_va_con_sus_pdf_y_el_general_las_junta_todas(corrida):
     ]
     # La caja y la UPD de su ruta, que la resolución no sabía.
     assert [(fila[7], fila[8]) for fila in de_las_resoluciones.filas] == [(CAJA, "UPD3859990")] * 2
-    # Cada resolución dice su archivo partido, no el del original.
-    assert de_las_resoluciones.filas[0][15] == "Archivo: 01_RESOLUCION-00030.pdf"
+    # NOTAS va vacía en el FUID que se entrega al cliente (2026-10-30).
+    assert de_las_resoluciones.filas[0][15] == ""
     assert de_las_resoluciones.oficina_productora.endswith("FACULTAD DE DERECHO Y CIENCIAS POLITICAS")
 
     de_las_actas = leer_fuid(run.destination / CARPETA / CAJA / f"{CAJA}__FUID.xlsx")

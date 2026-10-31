@@ -326,7 +326,7 @@ def test_el_fuid_lleva_la_oficina_de_su_carpeta_y_las_filas_de_todas_las_habilid
     assert [fila[0] for fila in planilla.filas] == ["1", "2"]
     assert planilla.filas[0][2].startswith("RESOLUCION 00031")
     assert planilla.filas[1][2] == "ACTA DE CONSEJO DE FACULTAD No. 02 - ORDINARIA"
-    assert planilla.filas[1][15] == "Archivo: UPD3859988-ACTAS N° 02 AL 10- Y 13.pdf, págs. 1 a 7"
+    assert planilla.filas[1][15] == ""  # NOTAS va vacía (2026-10-30)
 
 
 def test_sin_oficina_la_cabecera_queda_como_la_plantilla(tmp_path):

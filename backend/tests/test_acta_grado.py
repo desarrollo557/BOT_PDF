@@ -512,7 +512,7 @@ class TestElFuidDeGrado:
         segunda = [hoja.cell(15, columna).value for columna in range(1, 17)]
         assert segunda[0] == 2
         assert segunda[3] == "N/A"
-        assert segunda[15] == "no se pudo leer la cédula"
+        assert segunda[15] is None  # NOTAS va vacía en el FUID que se entrega (2026-10-30)
         assert hoja.cell(16, 3).value in (None, "")
 
     def test_caja_y_carpeta_de_las_dos_formas_de_guardar(self):
@@ -792,3 +792,54 @@ class TestLaFranjaReleida:
 
         titulos = ["ESPECIALISTA EN SALUD FAMILIAR"] * 3 + ["ESPECIALISTA ENSALUD FAMILIAR", "ODONTOLOGO"]
         assert titulos_unificados(titulos)[3:] == ["ESPECIALISTA EN SALUD FAMILIAR", "ODONTOLOGO"]
+
+
+class TestElNombreYElTituloLimpios:
+    """Secretaría 3292 contra el modelo del operador (2026-10-31): de 42 a 52 nombres exactos de 54."""
+
+    def test_el_titulo_pegado_al_nombre_se_quita(self):
+        from resolutions.domain.graduado import nombre_limpio
+
+        assert nombre_limpio("ILUMINADA CASTELLAR ARRIETA TNGENIERO", "INGENIERO CIVIL") == "ILUMINADA CASTELLAR ARRIETA"
+        assert nombre_limpio("TITULODE INGENIERA ODALIS BEATRIZ OLEA SUAREZ") == "ODALIS BEATRIZ OLEA SUAREZ"
+        assert nombre_limpio("JOSE MARIO GUARDO ROA INGENIERO CIVIL") == "JOSE MARIO GUARDO ROA"
+        assert nombre_limpio("SENEN CANTILLO PATERNINA N TNA") == "SENEN CANTILLO PATERNINA"
+
+    def test_la_x_de_chequeo_no_es_del_apellido(self):
+        from resolutions.domain.graduado import nombre_limpio
+
+        assert nombre_limpio("NASLY MARIA ESPINOSA BAENAX") == "NASLY MARIA ESPINOSA BAENA"
+        assert nombre_limpio("FELIX ALEX PEREZ PAZ") == "FELIX ALEX PEREZ PAZ"
+
+    def test_el_titulo_que_es_un_renglon_del_formulario_no_vale(self):
+        from resolutions.domain.graduado import titulo_limpio, titulos_unificados
+
+        assert titulo_limpio("CIUDADANIA NO") is None
+        assert titulo_limpio("SEGUN LAS DISPOSICIONES LEGALES VIGENTES") is None
+        assert titulo_limpio("INGENIERA CIVIL") == "INGENIERA CIVIL"
+        # Sin cambiar el género al unificar.
+        assert titulos_unificados(["INGENIERO CIVIL", "INGENIERO CIVIL", "INGENIERA CIVIL"])[2] == "INGENIERA CIVIL"
+
+    def test_el_pdf_del_graduado_se_llama_nombre_y_titulo(self):
+        from resolutions.application.acta_consejo import (
+            TIPO_DE_GRADO,
+            FilaDeActa,
+            nombre_de_la_sesion,
+        )
+
+        fila = FilaDeActa(
+            archivo="a.pdf", acta="ACTA DE GRADO No. 01/05", fecha="03-03-2005", folio_inicial=1, folio_final=1,
+            folios=1, resumen="", tipo=TIPO_DE_GRADO, nombre="MARTHA LUCIA HERRERA VILLAMIZAR",
+            titulo="ESPECIALISTA EN GESTION DE LA CALIDAD", cedula="39692338",
+        )
+        assert nombre_de_la_sesion(fila) == "MARTHA LUCIA HERRERA VILLAMIZAR - ESPECIALISTA EN GESTION DE LA CALIDAD"
+
+
+def test_el_dia_no_sale_del_numero_del_acta():
+    """UPD3859825 p. 44: «No. 29/05 días del mes de Julio de 2005»: el 05 es del acta, no el día."""
+    from datetime import date
+
+    from resolutions.domain.acta_grado import fecha_de_grado
+
+    assert fecha_de_grado("ACTA DE GRADO No. 29/05 días del mes de Julio de 2005") is None
+    assert fecha_de_grado("a los veintidos (22) días del mes de Julio de 2005") == date(2005, 7, 22)

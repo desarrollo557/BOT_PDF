@@ -256,8 +256,14 @@ def entregar_fuid(
     if sumar:
         viejas, oficina_vieja = filas_de_fuid(existente)
         oficina = oficina_vieja or oficina
+        # NOTAS va vacía desde el 2026-10-30: sin «Archivo:», la página de
+        # cada fila vieja sale del orden. El FUID se escribió en el orden del
+        # libro, una fila por PDF entregado.
+        primeras = sorted(p for p in (a.primera for a in previo.archivos) if p is not None) if previo else []
         for indice, fila in enumerate(viejas, start=len(nuevas)):
-            pagina = previo.pagina_de(_archivo_de(fila.notas))
+            pagina = previo.pagina_de(_archivo_de(fila.notas)) if previo else None
+            if pagina is None and len(primeras) == len(viejas):
+                pagina = primeras[indice - len(nuevas)]
             situadas.append((pagina if pagina is not None else float("inf"), indice, fila))
 
     situadas.sort(key=lambda item: (item[0], item[1]))

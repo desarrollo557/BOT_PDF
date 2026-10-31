@@ -86,7 +86,7 @@ from ..domain.acta_grado import (
 from ..domain.fechas import fechas_de
 from ..domain.formulario import recuadro_tras, texto_del_formulario
 from ..domain.graduado import cedula as cedula_leida
-from ..domain.graduado import dudas_de, titulos_unificados
+from ..domain.graduado import dudas_de, nombre_limpio, titulo_limpio, titulos_unificados
 from ..domain.grouping import GroupingResult, PageGroup
 from ..domain.nombres import (
     calidad,
@@ -395,15 +395,20 @@ def nombre_de_la_sesion(fila: FilaDeActa) -> str:
     lo que se busca.
     """
     if fila.tipo == TIPO_DE_GRADO:
-        # El graduado: «ACTA DE GRADO No. 01-05 - 39692338 - MARTHA LUCIA
-        # HERRERA VILLAMIZAR». Es por lo que se busca en la carpeta.
-        partes = [fila.acta if fila.acta != NO_APLICA else "ACTA DE GRADO SIN NUMERO"]
+        # El graduado: «MARTHA LUCIA HERRERA VILLAMIZAR - ESPECIALISTA EN
+        # GESTION DE LA CALIDAD…», el nombre como va en el acta y el título que
+        # se le otorga, si lo hay. Lo dictó el operador el 2026-10-31.
         # Del nombre, sólo lo que puede ser un nombre: una palabra imposible
         # -- «MSCSDSS», «AAAAANONO» -- no va al nombre de un archivo.
         nombre = " ".join(
             palabra for palabra in (fila.nombre or "").split() if parece_palabra_de_nombre(clave(palabra))
         )
-        partes += [dato for dato in (fila.cedula, nombre) if dato]
+        if nombre:
+            partes = [nombre] + ([fila.titulo] if fila.titulo and fila.titulo != NO_APLICA else [])
+        else:
+            # Ningún archivo sin nombre que lo referencie: el acta y la cédula.
+            partes = [fila.acta if fila.acta != NO_APLICA else "ACTA DE GRADO SIN NUMERO"]
+            partes += [fila.cedula] if fila.cedula else []
         return _NO_VALE_EN_UNA_CARPETA.sub("-", " - ".join(partes)).strip(" .")
     partes = [fila.acta if fila.acta != NO_APLICA else "ACTA SIN NUMERO"]
     if fila.fecha != NO_APLICA:
@@ -1104,6 +1109,7 @@ class InventariarActa:
         _descartar_fechas_fuera_de_lugar(lecturas)
         _corregir_anios(lecturas)
         _por_la_ceremonia(lecturas)
+        _por_la_resolucion_de_la_ceremonia(lecturas)
         _fechas_del_cuerpo(paginas, lecturas)
 
     def _releer_con_tinta_clara(self, source: PageSource, lecturas: list[_Lectura]) -> None:
@@ -1996,6 +2002,29 @@ def _corregir_anios(lecturas: list[_Lectura]) -> None:
         fechas[orden] = corregida
 
 
+def _por_la_resolucion_de_la_ceremonia(lecturas: list[_Lectura]) -> None:
+    """La fecha de un acta de grado que no se leyó: la de las hojas de su ceremonia.
+
+    Cada ceremonia del libro va precedida de su resolución, que dice el día:
+    «el día viernes 22 de julio del año 2005». En UPD3859825 35 de 81 actas
+    salían sin fecha y sus vecinas tampoco la traían (Secretaría 3292,
+    2026-10-31). Sólo para las que no la tienen: una fecha leída no se pisa.
+    """
+    de_la_ceremonia = None
+    for lectura in lecturas:
+        if lectura.tramo.ceremonia:
+            de_la_ceremonia = lectura.acta.fecha or de_la_ceremonia
+            continue
+        acta = lectura.acta
+        if acta.rotulo != ROTULO_DE_GRADO or acta.fecha is not None or de_la_ceremonia is None:
+            continue
+        lectura.acta = replace(acta, fecha=de_la_ceremonia)
+        lectura.fecha_descartada = None
+        lectura.razonado.append(
+            f"la fecha no se pudo leer y es la de la resolución de su ceremonia ({de_la_ceremonia.strftime('%d-%m-%Y')})"
+        )
+
+
 def _por_la_ceremonia(lecturas: list[_Lectura]) -> None:
     """La fecha y el número de un acta de grado, de las de su misma ceremonia.
 
@@ -2282,8 +2311,10 @@ def _fila_de_grado(
         pagina_final=tramo.hasta,
         numero=acta.numero or "",
         tipo=ROTULO_DE_CEREMONIA if ceremonia else TIPO_DE_GRADO,
-        nombre=acta.nombre or "",
-        titulo=acta.titulo or "",
+        # Sin el título pegado, la basura ni la «X» de chequeo; y el título,
+        # sin los renglones del formulario (Secretaría 3292, 2026-10-31).
+        nombre=nombre_limpio(acta.nombre, acta.titulo, nombres_conocidos()) or "",
+        titulo=titulo_limpio(acta.titulo) or "",
         cedula=acta.cedula or "",
     )
 

@@ -33,6 +33,9 @@ from .guardar_libro import guardar_libro
 
 logger = logging.getLogger(__name__)
 
+#: La columna NOTAS en la fila de ``FuidRow.as_cells``, la última.
+COLUMNA_DE_NOTAS = 15
+
 
 HOJA = "INVENTARIO"
 
@@ -195,6 +198,11 @@ class FuidInventory:
         hoja: Worksheet, numero: int, fila: FuidRow, estilos: list[dict]
     ) -> None:
         for indice, valor in enumerate(fila.as_cells()):
+            if indice == COLUMNA_DE_NOTAS:
+                # NOTAS va vacía en el FUID que se entrega al cliente: lo pidió
+                # el operador el 2026-10-30 para todos los del FO-GD-008. Lo
+                # que no se pudo leer sigue en la cola de revisión del bot.
+                valor = None
             celda = hoja.cell(row=numero, column=indice + 1, value=valor)
             estilo = estilos[indice]
             celda.font = copy(estilo["font"])
