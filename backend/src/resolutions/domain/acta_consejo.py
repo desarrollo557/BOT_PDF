@@ -26,7 +26,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -101,6 +101,11 @@ _ENCABEZADO = re.compile(
     r"(?P<numero>(?:[0-9OIl]|(?-i:[SBGZ])){1,3})(?!\w)",
     re.IGNORECASE | re.MULTILINE,
 )
+
+#: «ACTA No. 15 BIS»: la sesión que se celebró con el número de la anterior.
+#: Odontología, UPD3859789 p. 168: la 15 BIS del 30 de octubre de 2015 se
+#: fundía con la 015 del 13 de octubre.
+_BIS = re.compile(r"[ \t]*[-–]?[ \t]*BIS\b", re.IGNORECASE)
 
 #: El año pegado detrás del número: «Acta No. 022-2012», el membrete corrido.
 _CORRIDO = re.compile(r"\s*[-–]\s*(?:19|20)\d\d\b")
@@ -203,6 +208,8 @@ class ActaDeConsejo:
     #: y no el acta misma: no trae cédula ni título, y su fecha es la de
     #: expedición.
     constancia: bool = False
+    #: «ACTA No. 15 BIS»: otra sesión con el número de la anterior.
+    bis: bool = False
 
     @property
     def encabezado(self) -> str | None:
@@ -210,7 +217,8 @@ class ActaDeConsejo:
         if self.numero is None:
             return None
         clase = f" {self.sesion}" if self.sesion else ""
-        return f"{self.rotulo}{clase} No. {self.numero}"
+        bis = " BIS" if self.bis else ""
+        return f"{self.rotulo}{clase} No. {self.numero}{bis}"
 
     @property
     def fecha_larga(self) -> str | None:
@@ -264,10 +272,17 @@ class EncabezadoDeActa:
     #: Dónde acaba el encabezado en el texto de la página, para buscar detrás
     #: la fecha de la sesión.
     fin: int
+    #: «ACTA No. 15 BIS»: una sesión aparte con el número de la anterior.
+    bis: bool = False
 
     @property
     def valor(self) -> int:
         return int(self.numero)
+
+    @property
+    def clave(self) -> tuple[int, bool]:
+        """Lo que distingue una sesión de otra: el número, y si es «BIS»."""
+        return (self.valor, self.bis)
 
 
 def encabezados_de_acta(paginas: Sequence[str]) -> list[EncabezadoDeActa]:
@@ -307,6 +322,7 @@ def encabezados_de_acta(paginas: Sequence[str]) -> list[EncabezadoDeActa]:
                     fuerte=(bool(sesion) or apertura) and not corrido,
                     organo=_organo(mayusculas, match.start(), match.end()),
                     fin=match.end(),
+                    bis=_BIS.match(plano, match.end()) is not None,
                 )
             )
     return encontrados
@@ -458,6 +474,7 @@ def leer_acta(paginas: Sequence[str], *, hoy: date | None = None) -> ActaDeConse
         fecha=fecha,
         dia_impreso=dia,
         pagina=elegido.pagina,
+        bis=elegido.bis,
     )
 
 
@@ -828,7 +845,7 @@ def actas_del_pdf(paginas: Sequence[str], *, hoy: date | None = None) -> ActasDe
     for encabezado in encabezados_del_libro(encabezados_de_acta(paginas)):
         if not encabezado.fuerte:
             continue
-        if inicios and encabezado.valor == inicios[-1].valor:
+        if inicios and encabezado.clave == inicios[-1].clave:
             continue
         inicios.append(encabezado)
     if len(inicios) <= 1:
@@ -936,6 +953,7 @@ def _apertura(
         for enlace in ("DE ", "")
     )
     desde = encabezado.pagina
+    neutras = 0
     for pagina in range(encabezado.pagina - 1, limite - 1, -1):
         cabecera = re.sub(r"\s+", " ", _plano(paginas[pagina - 1][:CABECERA_DE_APERTURA]).upper())
         # Una hoja con el membrete corrido de otra acta es la continuación de
@@ -945,10 +963,36 @@ def _apertura(
         corrido = _CORRIDO_DE_OTRA.search(cabecera)
         if corrido and int(corrido.group(1)) != encabezado.valor:
             break
-        if not any(marca in cabecera for marca in marcas):
-            break
-        desde = pagina
+        if any(marca in cabecera for marca in marcas):
+            desde = pagina
+            neutras = 0
+            continue
+        # El registro de asistencia, el vuelto en blanco o la hoja con el día
+        # mal leído («MIERCOLES U DE JUNIO») van entre la citación y el acta
+        # sin decir la fecha: se cruzan, pero sólo son de esta acta si detrás
+        # aparece la citación con la fecha. Antes paraban la búsqueda y la
+        # citación se quedaba en el acta anterior (Odontología, UPD3859790
+        # acta 018 y UPD3859792 actas 14 y 15, 2026-10-31).
+        if neutras < HOJAS_SIN_FECHA_EN_LA_APERTURA and _sin_fecha_propia(
+            paginas[pagina - 1], cabecera, f"{mes} DE {fecha.year}"
+        ):
+            neutras += 1
+            continue
+        break
     return desde
+
+
+#: Cuántas hojas sin la fecha se cruzan buscando la citación de un acta.
+HOJAS_SIN_FECHA_EN_LA_APERTURA = 3
+
+
+def _sin_fecha_propia(texto: str, cabecera: str, mes_y_anio: str) -> bool:
+    """Si la hoja puede ir entre la citación y el acta sin decir la fecha de la sesión."""
+    return (
+        "REGISTRO DE ASISTENCIA" in cabecera
+        or len(texto.strip()) <= PORTADA_MAXIMA
+        or ("FECHA" in cabecera and mes_y_anio in cabecera)
+    )
 
 
 # -- el folio -----------------------------------------------------------------
@@ -1158,6 +1202,98 @@ class FolioEncadenado:
     @property
     def cantidad(self) -> int:
         return self.final - self.inicial + 1
+
+
+# -- la foliación página a página ----------------------------------------------
+
+#: Lo que cuesta no creerle a la lectura de una hoja: una esquina con un folio
+#: viejo tachado («249» tachado junto al 239) se descarta si cuadrarla costaría
+#: más que esto en folios de desfase.
+COSTO_DE_DESCARTAR = 4
+
+#: Cuántas hojas leídas hacia atrás se miran para encadenar una lectura.
+VENTANA_DE_LA_CADENA = 15
+
+#: Qué parte de las hojas leídas tiene que caber en la cadena para creer que el
+#: libro va foliado página a página. Uno foliado por hoja -- el vuelto sin
+#: número -- no cabe, y se queda con la cuenta por las hojas con tinta.
+PARTE_QUE_CUADRA = 0.5
+
+
+def foliacion_por_pagina(candidatos: Mapping[int, Sequence[int]]) -> dict[int, int] | None:
+    """El folio de cada hoja leída que cabe en la foliación seguida del libro.
+
+    En los libros de consejo de Odontología cada página lleva su folio y van
+    seguidos: folio = página + un desfase que se mueve poco (196 al principio
+    de UPD3859792, 199 al final). Pero muchas esquinas traen también el folio
+    viejo tachado -- «239» y «249» tachado --, y la IA lee a veces el tachado.
+    ``candidatos`` dice, por página, todos los números que se leyeron en su
+    esquina; se elige la cadena que mejor sigue a las páginas: entre dos hojas
+    elegidas el folio sube lo mismo que la página, y cada folio de desfase o
+    cada hoja descartada cuesta. El tachado no cabe y se descarta.
+
+    Devuelve el folio de cada hoja que quedó en la cadena, o ``None`` si la
+    cadena no explica al menos la mitad de las hojas leídas: el libro no va
+    foliado página a página.
+    """
+    paginas = sorted(p for p, numeros in candidatos.items() if numeros)
+    if len(paginas) < 2:
+        return None
+    opciones = [list(dict.fromkeys(candidatos[p])) for p in paginas]
+    # mejor[j][k]: el menor costo de una cadena que acaba eligiendo el número
+    # k de la página j; de dónde viene, para rehacerla.
+    mejor: list[list[float]] = []
+    previo: list[list[tuple[int, int] | None]] = []
+    for j, pagina in enumerate(paginas):
+        fila: list[float] = []
+        origen: list[tuple[int, int] | None] = []
+        for folio in opciones[j]:
+            costo, desde = j * COSTO_DE_DESCARTAR, None
+            for i in range(max(0, j - VENTANA_DE_LA_CADENA), j):
+                saltadas = (j - i - 1) * COSTO_DE_DESCARTAR
+                for k, anterior in enumerate(opciones[i]):
+                    if folio <= anterior:
+                        continue
+                    total = mejor[i][k] + saltadas + abs((folio - anterior) - (pagina - paginas[i]))
+                    if total < costo:
+                        costo, desde = total, (i, k)
+            fila.append(costo)
+            origen.append(desde)
+        mejor.append(fila)
+        previo.append(origen)
+    final, punto = float("inf"), None
+    for j in range(len(paginas)):
+        for k, costo in enumerate(mejor[j]):
+            total = costo + (len(paginas) - 1 - j) * COSTO_DE_DESCARTAR
+            if total < final:
+                final, punto = total, (j, k)
+    elegidos: dict[int, int] = {}
+    while punto is not None:
+        j, k = punto
+        elegidos[paginas[j]] = opciones[j][k]
+        punto = previo[j][k]
+    if len(elegidos) < PARTE_QUE_CUADRA * len(paginas):
+        return None
+    return elegidos
+
+
+def folio_de_la_pagina(elegidos: Mapping[int, int], pagina: int) -> tuple[int, bool] | None:
+    """El folio de una página por la foliación seguida, y si se leyó (``True``) o se dedujo.
+
+    La que no se leyó toma el desfase de las hojas leídas de alrededor: el de
+    la más cercana, que es el que menos ha podido moverse.
+    """
+    if pagina in elegidos:
+        return elegidos[pagina], True
+    antes = max((p for p in elegidos if p < pagina), default=None)
+    despues = min((p for p in elegidos if p > pagina), default=None)
+    if antes is None and despues is None:
+        return None
+    if despues is None or (antes is not None and pagina - antes <= despues - pagina):
+        cercana = antes
+    else:
+        cercana = despues
+    return pagina + elegidos[cercana] - cercana, False
 
 
 def folios_del_libro(

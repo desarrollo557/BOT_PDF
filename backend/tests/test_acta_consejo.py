@@ -1060,6 +1060,72 @@ class TestLosLibros:
         assert reparto.previas == (1, 2)
         assert reparto.tramos[0] == TramoDeActa(3, 6)
 
+    def test_las_paginas_previas_van_con_la_primera_sesion_y_su_fila_las_cuenta(self):
+        """Odontología: lo escaneado delante de la primera acta son sus anexos (regla 6)."""
+        outcome = InventariarActa().execute(
+            Fuente(["CARTA DE REMISION DEL LIBRO", "Resolución del Ministerio", *LIBRO]),
+            document_name="libro.pdf",
+        )
+        primera = outcome.filas[0]
+        assert (primera.pagina_inicial, primera.pagina_final) == (1, 6)
+        assert primera.piezas.startswith("Anexo pp. 1-2")
+        assert "como anexo, las páginas 1 a 2" in primera.observaciones
+        assert [s.orden for s in outcome.sesiones] == [1, 2]
+        assert outcome.sesiones[0].desde == 1
+
+    def test_la_citacion_detras_del_registro_de_asistencia_es_de_su_acta(self):
+        """UPD3859792: citación (22 de junio), citación con el día mal leído, asistencia y acta 14."""
+        def acta(numero, fecha):
+            return _hoja_de_libro(f"ACTA No. {numero}\nCONSEJO DE FACULTAD\nFECHA: {fecha}\nLUGAR: Decanatura")
+
+        libro = [
+            acta("13", "13 de junio de 2016"),
+            "Anexo del acta 13 sobre las monitorias del programa.",
+            "CONSEJO DE FACULTAD SESION EXTRAORDINARIA FECHA: MIERCOLES 22 DE JUNIO DE 2016 LUGAR: DECANATURA",
+            "CONSEJO DE FACULTAD EXTRAORDINARIO FECHA: MIERCOLES U DE JUNIO DE 2016 LUGAR: DECANATURA",
+            "REGISTRO DE ASISTENCIA FECHA: 01-12-2009 DEPENDENCIA: ODONTOLOGIA FECHA: 2U>E JUNIO DE 2016",
+            acta("14", "22 de junio de 2016"),
+        ]
+        assert [(t.desde, t.hasta) for t in actas_del_pdf(libro).tramos] == [(1, 2), (3, 6)]
+        # Sin la citación detrás, la asistencia sola no se lleva nada.
+        sin_citacion = [libro[0], libro[1], libro[4], libro[5]]
+        assert [(t.desde, t.hasta) for t in actas_del_pdf(sin_citacion).tramos] == [(1, 3), (4, 4)]
+
+    def test_el_acta_bis_es_otra_sesion(self):
+        """UPD3859789 p. 168: «ACTA No. 15 BIS» del 30/10/2015 no es el membrete de la 015."""
+        def hoja(numero, fecha):
+            return _hoja_de_libro(f"ACTA No. {numero}\nCONSEJO DE FACULTAD\nFECHA: {fecha}\nLUGAR: Decanatura")
+
+        libro = [
+            hoja("014", "1 de octubre de 2015"),
+            hoja("015", "13 de octubre de 2015"),
+            "sigue",
+            hoja("15 BIS", "30 de octubre de 2015"),
+            hoja("016", "5 de noviembre de 2015"),
+        ]
+        assert [(t.desde, t.hasta) for t in actas_del_pdf(libro).tramos] == [(1, 1), (2, 3), (4, 4), (5, 5)]
+        outcome = InventariarActa().execute(Fuente(libro), document_name="libro.pdf")
+        assert outcome.filas[2].acta == "ACTA No. 15 BIS"
+        assert outcome.filas[2].numero == "15 BIS"
+
+    def test_con_la_ia_cada_acta_se_cruza_y_lo_que_discrepa_se_anota(self):
+        """«OCR + IA» (2026-10-31): un número completo pero mal leído ya no sale sin aviso."""
+        from test_acta_grado import Ocr
+
+        def hoja(numero, fecha):
+            return _hoja_de_libro(f"ACTA No. {numero}\nCONSEJO DE FACULTAD\nFECHA: {fecha}\nLUGAR: Decanatura")
+
+        mal, bien = hoja("018", "8 de julio de 2016"), hoja("016", "8 de julio de 2016")
+        ia = Ocr(bien)
+        outcome = InventariarActa(relector_de_pago=ia).execute(Fuente([mal]), document_name="a.pdf")
+
+        fila = outcome.filas[0]
+        assert ia.leidas == 1
+        assert fila.numero == "016"
+        assert "el número del acta: el OCR leyó 018 y la IA 016" in fila.observaciones
+        # Sin la IA, lo del OCR, como siempre.
+        assert InventariarActa().execute(Fuente([mal]), document_name="a.pdf").filas[0].numero == "018"
+
     def test_los_formatos_de_2005_a_2009(self):
         libro = [
             _hoja_de_libro("ACTA CONSEJO DE FACULTAD ORDINARIO\nNo. 007\nFECHA:\nHORA:\nLUGAR:\n10 de agosto de 2005"),
@@ -1324,3 +1390,70 @@ class TestLosEncabezadosYLaSerieDelLibro:
             self._sesion("05", "15 de noviembre de 2000"),
         ]
         assert len(actas_del_pdf(libro).tramos) == 5
+
+
+class TestLaFoliacionPaginaAPagina:
+    """UPD3859792 (2026-10-31): cada página foliada, y el folio viejo tachado al lado."""
+
+    #: Lo que leyó la IA en las esquinas de los bordes de las nueve actas, con
+    #: los tachados; el papel dice 197, 211, 231, 232, 238, 239, 275, 276, 299,
+    #: 300, 350, 351, 364, 365, 382, 383 y 410.
+    LEIDO = {
+        1: [197], 15: [211], 35: [231], 36: [232, 228], 43: [238, 259], 44: [249, 239],
+        77: [275, 299], 78: [276, 260], 101: [299, 244], 102: [300], 151: [341, 350],
+        152: [351, 316], 165: [364, 374], 166: [365], 184: [332], 185: [383], 212: [410],
+    }
+
+    def test_el_tachado_no_cabe_en_la_cadena_y_se_descarta(self):
+        from resolutions.domain.acta_consejo import (
+            foliacion_por_pagina,
+            folio_de_la_pagina,
+        )
+
+        elegidos = foliacion_por_pagina(self.LEIDO)
+        assert elegidos[44] == 239 and elegidos[101] == 299 and elegidos[151] == 350
+        assert 184 not in elegidos  # «332»: no cabe
+        assert folio_de_la_pagina(elegidos, 184) == (382, False)
+        assert folio_de_la_pagina(elegidos, 16) == (212, False)
+
+    def test_lo_que_no_sigue_a_las_paginas_no_es_foliacion_pagina_a_pagina(self):
+        from resolutions.domain.acta_consejo import foliacion_por_pagina
+
+        assert foliacion_por_pagina({1: [5], 9: [3], 20: [1]}) is None
+        assert foliacion_por_pagina({1: [5]}) is None
+
+    def test_el_mosaico_devuelve_todos_los_numeros_de_cada_esquina(self):
+        from resolutions.adapters.esquinas_del_folio import candidatos_etiquetados
+
+        texto = "P43 238 259\nP44 239 ~~249~~\nP45\nP46 241"
+        assert candidatos_etiquetados(texto, [43, 44, 45, 46]) == {43: [238, 259], 44: [239, 249], 45: [], 46: [241]}
+
+    def test_cada_acta_toma_sus_folios_de_la_cadena(self):
+        class Etiquetado:
+            def __init__(self):
+                self.pedidas = []
+
+            def leer_esquinas(self, source, paginas):
+                return ""
+
+            def armar_mosaico_etiquetado(self, source, paginas):
+                return b"x"
+
+            def leer_candidatos_etiquetados(self, imagen, paginas):
+                self.pedidas.extend(paginas)
+                # Foliado página a página desde el 197; la 3 con un tachado y
+                # la 4 sin leer.
+                return {p: ([196 + p, 900] if p == 3 else [196 + p]) for p in paginas if p != 4}
+
+        def hoja(numero, fecha):
+            return _hoja_de_libro(f"ACTA No. {numero}\nCONSEJO DE FACULTAD\nFECHA: {fecha}\nLUGAR: Decanatura")
+
+        libro = [hoja("13", "13 de junio de 2016"), "sigue", "sigue", hoja("14", "22 de junio de 2016"), "sigue"]
+        lector = Etiquetado()
+        outcome = InventariarActa(lector_de_folios=lector).execute(
+            Fuente(libro, foliadas=range(1, 6)), document_name="libro.pdf"
+        )
+        assert sorted(set(lector.pedidas)) == [1, 2, 3, 4, 5]
+        filas = [(f.folio_inicial, f.folio_final, f.folios) for f in outcome.filas]
+        assert filas == [(197, 199, 3), (200, 201, 2)]
+        assert "el folio inicial no se leyó en su esquina" in outcome.filas[1].observaciones

@@ -61,3 +61,18 @@ def test_el_nombre_que_la_ficha_repite_bajo_observaciones():
     )
     # «Obtuvo el grado…» tiene forma de nombre y no lo es: la lista lo descarta.
     assert nombre_de_observaciones("Observaciones Obtuvo el grado 1964", conocidas) is None
+
+
+def test_con_la_ia_cada_dato_se_cruza_y_lo_que_discrepa_va_a_revision():
+    """«Que el bot se asegure de que lo que entrega sí es lo que está en el PDF» (2026-10-31)."""
+    from resolutions.domain.doble_lectura import decidir_con_la_ia
+
+    assert decidir_con_la_ia("la cédula", "1049539266", "1049539266", 1) == ("1049539266", None)
+    assert decidir_con_la_ia("la cédula", None, "1049539266", 0) == ("1049539266", None)
+    assert decidir_con_la_ia("la cédula", "1049539266", None, 1) == ("1049539266", None)
+    # Discrepan: gana la IA, y a revisión con las dos lecturas.
+    valor, nota = decidir_con_la_ia("la cédula", "1049539286", "1049539266", 1)
+    assert valor == "1049539266" and "1049539286" in nota
+    # Dos lecturas gratuitas que coinciden pesan más que la IA, pero también a revisión.
+    valor, nota = decidir_con_la_ia("el número del acta", "016", "018", 2)
+    assert valor == "016" and "018" in nota

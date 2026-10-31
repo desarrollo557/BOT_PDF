@@ -175,8 +175,9 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
         outcome = InventariarActa(
             # El OCR de casa y nada más para leer el texto, elija lo que elija
             # el operador: el acta es mecanografiada, y la ayuda de pago entra
-            # sólo para lo que el de casa no sabe leer -- el folio manuscrito --
-            # y para escribir el resumen a partir del texto ya leído.
+            # para lo que el de casa no sabe leer -- el folio manuscrito --, para
+            # cruzar cada dato de la fila con una segunda lectura y para escribir
+            # el resumen a partir del texto ya leído.
             ocr=HeaderAndPageOcr(language=taller.settings["ocr_language"]),
             resumidor=taller.resumidor(),
             lector_de_folios=taller.lector_de_folios(),
@@ -185,7 +186,9 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
             workers=int(taller.settings.get("page_workers") or 8),
             motivo_sin_resumidor=taller.motivo_sin_resumidor(),
             perfil=perfil,
-            relector_de_pago=taller.lector_de_pago() if grado else None,
+            # Con «OCR + IA», la IA lee también la hoja de cada acta -- de consejo
+            # y de grado -- para cruzar cada dato con el OCR (2026-10-31).
+            relector_de_pago=taller.lector_de_pago(),
             lector_de_cifras=_lector_de_cifras(taller) if grado else None,
             lector_de_franja=_lector_de_franja(taller) if grado else None,
             lectores_de_tinta_clara=_lectores_de_tinta_clara(taller),

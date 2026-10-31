@@ -622,6 +622,18 @@ def nombre_limpio(nombre_leido: str | None, titulo_leido: str | None = None, con
             clave[:-1] in conocidas or (len(clave) >= 5 and clave[-2] in "AEIOU")
         ):
             palabra = palabra[:-1]
+        # «MONTOYA YA»: la capa partió «MONTO YA», el voto unió la palabra y el
+        # trozo se quedó detrás (UPD3859819 p. 21). Un trozo corto que repite
+        # el final de la palabra anterior no es otro nombre.
+        anterior = _clave(limpias[-1]) if limpias else ""
+        if (
+            len(clave) <= 3
+            and clave not in _CONECTORES
+            and clave not in conocidas
+            and len(anterior) >= len(clave) + 3
+            and anterior.endswith(clave)
+        ):
+            continue
         limpias.append(palabra)
     return " ".join(limpias) or None
 

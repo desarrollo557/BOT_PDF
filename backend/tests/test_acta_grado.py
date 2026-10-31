@@ -432,15 +432,25 @@ class TestLaRelectura:
         assert casa.leidas == 1
         assert fila.observaciones == ""
 
-    def test_la_ia_solo_lee_lo_que_tesseract_tampoco_supo(self):
+    def test_con_la_ia_se_lee_cada_hoja_una_vez(self):
+        """Tesseract, sólo lo que falta; la IA, toda hoja de graduado, una vez (2026-10-31)."""
         completa = MODERNA_COMPLETA
         sin_cedula = completa.replace("N°. 1.049.539.266", "N°. ilegible")
         casa, pago = Ocr(sin_cedula), Ocr(completa)
         outcome = self._inventario([completa, sin_cedula], casa, pago)
 
         assert [f.cedula for f in outcome.filas] == ["1049539266", "1049539266"]
-        # La primera estaba completa: ni Tesseract ni la IA la leyeron.
-        assert (casa.leidas, pago.leidas) == (1, 1)
+        assert (casa.leidas, pago.leidas) == (1, 2)
+        assert all(f.observaciones == "" for f in outcome.filas)
+
+    def test_la_cedula_que_la_ia_lee_distinta_se_corrige_y_se_anota(self):
+        """Una cifra mal leída pero completa ya no sale sin aviso."""
+        mal = MODERNA_COMPLETA.replace("1.049.539.266", "1.049.539.286")
+        outcome = self._inventario([mal], Ocr(mal), Ocr(MODERNA_COMPLETA))
+
+        fila = outcome.filas[0]
+        assert fila.cedula == "1049539266"
+        assert "la cédula: el OCR leyó 1049539286 y la IA 1049539266" in fila.observaciones
 
     def test_lo_que_no_se_lee_va_a_las_notas(self):
         sin_cedula = MODERNA_COMPLETA.replace("N°. 1.049.539.266", "N°. ilegible")
@@ -812,6 +822,14 @@ class TestElNombreYElTituloLimpios:
 
         assert nombre_limpio("NASLY MARIA ESPINOSA BAENAX") == "NASLY MARIA ESPINOSA BAENA"
         assert nombre_limpio("FELIX ALEX PEREZ PAZ") == "FELIX ALEX PEREZ PAZ"
+
+    def test_el_trozo_de_la_palabra_partida_no_es_otro_nombre(self):
+        """UPD3859819 p. 21: la capa dice «MONTO YA»; el voto unió MONTOYA y «YA» se quedaba."""
+        from resolutions.domain.graduado import nombre_limpio
+
+        assert nombre_limpio("MALYTH MERCETT MONTOYA YA MENDOZA") == "MALYTH MERCETT MONTOYA MENDOZA"
+        assert nombre_limpio("LUISA FERNANDA ARRIETA DE LA BARRERA") == "LUISA FERNANDA ARRIETA DE LA BARRERA"
+        assert nombre_limpio("ANA MARIA LIA") == "ANA MARIA LIA"
 
     def test_el_titulo_que_es_un_renglon_del_formulario_no_vale(self):
         from resolutions.domain.graduado import titulo_limpio, titulos_unificados

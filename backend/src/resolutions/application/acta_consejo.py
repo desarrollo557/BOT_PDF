@@ -57,6 +57,8 @@ from ..domain.acta_consejo import (
     actas_del_pdf,
     depurar_resumen,
     fechas_fuera_de_lugar,
+    foliacion_por_pagina,
+    folio_de_la_pagina,
     folios_del_libro,
     folios_por_continuidad,
     folios_que_cuadran,
@@ -83,6 +85,7 @@ from ..domain.acta_grado import (
 from ..domain.acta_grado import (
     ROTULO as ROTULO_DE_GRADO,
 )
+from ..domain.doble_lectura import decidir_con_la_ia
 from ..domain.fechas import fechas_de
 from ..domain.formulario import recuadro_tras, texto_del_formulario
 from ..domain.graduado import cedula as cedula_leida
@@ -100,6 +103,7 @@ from ..domain.nombres import (
 )
 from ..domain.piezas_de_acta import (
     ACTA,
+    ANEXO,
     PORTADA,
     SIN_SESION,
     PiezaDeActa,
@@ -416,8 +420,9 @@ def nombre_de_la_sesion(fila: FilaDeActa) -> str:
     return _NO_VALE_EN_UNA_CARPETA.sub("-", " - ".join(partes)).strip(" .")
 
 
-#: Lo que va delante de la primera sesión: portada del libro, cartas de
-#: remisión. No es de ninguna sesión y no se mete en ninguna; sale aparte.
+#: Lo que va delante de la primera sesión de un libro de grado: portada,
+#: cartas de remisión. Sale aparte. En uno de consejo son los anexos de la
+#: primera sesión y van dentro de ella (``_con_las_previas``).
 PAGINAS_PREVIAS = "PAGINAS PREVIAS"
 
 
@@ -557,6 +562,8 @@ class _Lectura:
     nombre_leido: str | None = None
     #: Lo que se tomó del nombre del archivo, o en lo que discrepa del papel.
     nota_del_nombre: str | None = None
+    #: La hoja leída por la IA, cuando se pidió: con ella se cruza cada campo.
+    texto_de_la_ia: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -747,6 +754,7 @@ class InventariarActa:
                 else None
             )
             self._releer_lo_que_falta(source, lecturas)
+            self._verificar_con_la_ia(source, lecturas)
             if declarada and len(lecturas) == 1:
                 _contrastar_con_el_nombre(lecturas[0], paginas, *declarada)
             _descartar_fechas_fuera_de_lugar(lecturas)
@@ -789,17 +797,20 @@ class InventariarActa:
                 archivo=document_name,
                 carpeta=carpeta,
                 ilegibles=[p for p in ilegibles if lectura.tramo.desde <= p <= lectura.tramo.hasta],
-                previas=reparto.previas if indice == 0 else None,
                 por_eleccion=self._motivo_sin_resumidor,
             )
             for indice, lectura in enumerate(lecturas)
             ]
         ]
+        if reparto.es_libro and self._perfil.tipo_documental != TIPO_DE_GRADO:
+            filas = _con_el_numero_de_la_serie(filas)
+        if reparto.previas and filas[0].tipo != TIPO_DE_GRADO and filas[0].tipo != ROTULO_DE_CEREMONIA:
+            filas[0] = _con_las_previas(filas[0], lecturas[0], reparto.previas)
         sesiones = [
             SesionDeActa(orden, nombre_de_la_sesion(fila), tuple(lectura.piezas))
             for orden, (lectura, fila) in enumerate(zip(lecturas, filas, strict=True), start=1)
         ]
-        if reparto.previas:
+        if reparto.previas and sesiones[0].desde != reparto.previas[0]:
             desde, hasta = reparto.previas
             sesiones.insert(
                 0, SesionDeActa(0, PAGINAS_PREVIAS, (PiezaDeActa(SIN_SESION, desde, hasta),))
@@ -1201,6 +1212,81 @@ class InventariarActa:
             dia_impreso=acta.dia_impreso or (nuevo.dia_impreso if acta.fecha is None else None),
         )
 
+    def _folios_por_la_pagina(self, source: PageSource, lecturas: list[_Lectura]) -> bool:
+        """Los folios de todas las actas, leídos en la esquina de cada página y encadenados.
+
+        La primera lectura -- las dos esquinas de cada acta en un mosaico, sin
+        decir de qué hoja es cada número -- falla donde la esquina trae también
+        el folio viejo tachado: en UPD3859792 dejó sin folio 8 de 9 actas, y la
+        relectura exigía que la cuenta cuadrara exacta con las hojas con tinta,
+        que se equivocan por una. Aquí se leen todas las páginas, diez por
+        página facturada y con su etiqueta, con todos los números de cada
+        esquina, y ``foliacion_por_pagina`` elige la cadena que sigue al libro.
+
+        Devuelve si el libro resultó foliado página a página. Si no -- un libro
+        foliado por hoja, con el vuelto sin número --, no toca nada.
+        """
+        armar = getattr(self._lector_de_folios, "armar_mosaico_etiquetado", None)
+        leer = getattr(self._lector_de_folios, "leer_candidatos_etiquetados", None)
+        if armar is None or leer is None:
+            return False
+        paginas = sorted({p for lectura in lecturas for p in range(lectura.tramo.desde, lectura.tramo.hasta + 1)})
+        candidatos: dict[int, list[int]] = {}
+        with hilos(LECTURAS_A_LA_VEZ) as proveedor:
+            vuelo: list[Future] = []
+            for inicio in range(0, len(paginas), FOLIOS_POR_MOSAICO):
+                self._control.check()
+                tanda = paginas[inicio : inicio + FOLIOS_POR_MOSAICO]
+                imagen = armar(source, tanda)
+                if imagen:
+                    vuelo.append(proveedor.submit(leer, imagen, tanda))
+            for hechas, futuro in enumerate(vuelo, start=1):
+                aguardar(futuro, self._control)
+                try:
+                    candidatos.update(futuro.result())
+                except Exception:  # noqa: BLE001 - esas hojas se quedan sin leer
+                    logger.warning("no se pudo leer un mosaico de folios", exc_info=True)
+                self._report(
+                    ProgressEvent(
+                        stage=Stage.INVENTORYING,
+                        done=hechas,
+                        total=len(vuelo),
+                        detail=f"leyendo el folio de cada una de las {len(paginas)} páginas",
+                    )
+                )
+        self._candidatos_de_folio = candidatos
+        elegidos = foliacion_por_pagina(candidatos)
+        if elegidos is None:
+            return False
+        for lectura in lecturas:
+            # Las hojas con tinta en la esquina, si se midieron: un vuelto en
+            # blanco al final no lleva folio y no se cuenta.
+            primera = min(lectura.foliadas) if lectura.foliadas else lectura.tramo.desde
+            ultima = max(lectura.foliadas) if lectura.foliadas else lectura.tramo.hasta
+            inicial, final = folio_de_la_pagina(elegidos, primera), folio_de_la_pagina(elegidos, ultima)
+            if inicial is None or final is None or final[0] < inicial[0]:
+                continue
+            antes = lectura.folios
+            lectura.folios = FoliosDelActa(
+                inicial=inicial[0], final=final[0], foliadas=len(lectura.foliadas)
+            )
+            deducidos = [
+                que for que, (_folio, leido) in (("inicial", inicial), ("final", final)) if not leido
+            ]
+            if deducidos:
+                lectura.deducido = (
+                    f"el folio {' y el '.join(deducidos)} no se leyó en su esquina y se dedujo de la "
+                    "foliación seguida del libro: revíselo en el papel"
+                )
+            elif antes.inicial is not None and (antes.inicial, antes.final) != (inicial[0], final[0]):
+                lectura.deducido = (
+                    f"en la primera lectura de las esquinas salió {antes.inicial} a {antes.final}; "
+                    f"leídas hoja por hoja y encadenadas con el libro son {inicial[0]} a {final[0]}"
+                )
+            else:
+                lectura.deducido = None
+        return True
+
     def _folios_hoja_por_hoja(self, source: PageSource, lecturas: list[_Lectura]) -> None:
         """Las actas de consejo que se quedaron sin folio: la esquina de cada hoja suya, leída.
 
@@ -1213,6 +1299,8 @@ class InventariarActa:
         sólo para las actas que lo necesitan.
         """
         if not self._perfil.lee_folio or self._perfil.folio_por_hoja:
+            return
+        if self._folios_por_la_pagina(source, lecturas):
             return
         armar = getattr(self._lector_de_folios, "armar_mosaico_etiquetado", None)
         leer = getattr(self._lector_de_folios, "leer_mosaico_etiquetado", None)
@@ -1237,6 +1325,12 @@ class InventariarActa:
                 if lectura.folios.final is not None:
                     leidos[max(lectura.foliadas)] = lectura.folios.final
         paginas = sorted({p for lectura in sin_folio for p in lectura.foliadas})
+        ya_leidas = getattr(self, "_candidatos_de_folio", None)
+        if ya_leidas:
+            # Ya se leyeron todas las páginas buscando la foliación página a
+            # página: no se paga dos veces la misma esquina.
+            leidos.update({p: ya_leidas[p][0] for p in paginas if ya_leidas.get(p)})
+            paginas = []
         with hilos(LECTURAS_A_LA_VEZ) as proveedor:
             vuelo: list[Future] = []
             for inicio in range(0, len(paginas), FOLIOS_POR_MOSAICO):
@@ -1557,6 +1651,8 @@ class InventariarActa:
                         logger.warning("no se pudo releer un acta", exc_info=True)
                         continue
                     peso = PESO_DE_LA_IA if motor is self._relector_de_pago else PESO_DE_UNA_LECTURA
+                    if motor is self._relector_de_pago:
+                        lectura.texto_de_la_ia = texto
                     lectura.textos.append((texto, peso))
                     lectura.acta = completar(lectura.acta, texto)
                     self._report(
@@ -1567,6 +1663,93 @@ class InventariarActa:
                             detail=f"releyendo {len(vuelo)} acta(s) a las que les faltaba algo",
                         )
                     )
+
+    def _verificar_con_la_ia(self, source: PageSource, lecturas: list[_Lectura]) -> None:
+        """Con «OCR + IA», la IA lee toda hoja que da una fila, y cada dato se cruza con el OCR.
+
+        Hasta aquí la IA leía sólo las hojas a las que les faltaba algo: un
+        número de acta o una cédula mal leídos pero completos se entregaban sin
+        aviso. Lo pidió el operador el 2026-10-31: «que el bot se asegure de
+        que lo que entrega sí es lo que está en el PDF». La hoja del encabezado
+        de cada acta -- o la del graduado -- se lee otra vez con la IA, que
+        cobra por página (del orden de un dólar por mil), y cada campo se
+        decide con ``decidir_con_la_ia``: lo que discrepa va a observaciones
+        con las dos lecturas.
+        """
+        lector = self._relector_de_pago
+        if lector is None:
+            return
+        propias = [
+            lectura
+            for lectura in lecturas
+            if not lectura.tramo.ceremonia and not lectura.acta.constancia
+        ]
+        pendientes = [lectura for lectura in propias if lectura.texto_de_la_ia is None]
+        with hilos(self._workers) as lectores:
+            vuelo: list[tuple[_Lectura, Future]] = []
+            for lectura in pendientes:
+                self._control.check()
+                pagina = lectura.tramo.desde + (lectura.acta.pagina or 1) - 1
+                try:
+                    imagen = source.render(pagina, None, DPI_DE_LECTURA)
+                except Exception:  # noqa: BLE001 - se queda con lo del OCR
+                    logger.warning("no se pudo rasterizar la página %s", pagina, exc_info=True)
+                    continue
+                vuelo.append((lectura, lectores.submit(lector.read, imagen)))
+            for hechas, (lectura, futuro) in enumerate(vuelo, start=1):
+                aguardar(futuro, self._control)
+                try:
+                    lectura.texto_de_la_ia = futuro.result().text or ""
+                except Exception:  # noqa: BLE001 - se queda con lo del OCR
+                    logger.warning("la IA no pudo leer un acta", exc_info=True)
+                    continue
+                if lectura.acta.rotulo == ROTULO_DE_GRADO:
+                    lectura.textos.append((lectura.texto_de_la_ia, PESO_DE_LA_IA))
+                self._report(
+                    ProgressEvent(
+                        stage=Stage.VERIFYING,
+                        done=hechas,
+                        total=len(vuelo),
+                        detail=f"comprobando con la IA {len(vuelo)} acta(s)",
+                    )
+                )
+        for lectura in propias:
+            if lectura.texto_de_la_ia:
+                self._cruzar_con_la_ia(lectura)
+
+    def _cruzar_con_la_ia(self, lectura: _Lectura) -> None:
+        """Cada campo del acta decidido entre el OCR y la IA; lo que discrepe, a observaciones."""
+        acta = lectura.acta
+        de_la_ia = self._perfil.leer([lectura.texto_de_la_ia or ""])
+        gratuitas = [
+            self._perfil.leer([texto]) for texto, peso in lectura.textos if peso < PESO_DE_LA_IA
+        ]
+        cambios: dict[str, object] = {}
+        for campo, nombre, igual, mostrar in _CAMPOS_QUE_CRUZA_LA_IA:
+            if campo == "cedula" and acta.rotulo != ROTULO_DE_GRADO:
+                continue
+            actual = getattr(acta, campo)
+            apoyos = sum(
+                1
+                for otra in gratuitas
+                if getattr(otra, campo) is not None and actual is not None and igual(getattr(otra, campo), actual)
+            )
+            valor, nota = decidir_con_la_ia(
+                nombre, actual, getattr(de_la_ia, campo), apoyos, igual=igual, mostrar=mostrar
+            )
+            if valor is not actual:
+                cambios[campo] = valor
+            if nota:
+                lectura.razonado.append(nota)
+        if cambios.get("numero") is not None and acta.rotulo != ROTULO_DE_GRADO:
+            # El número de la IA trae su «BIS» y su clase de sesión con él.
+            cambios["bis"] = de_la_ia.bis
+            cambios["sesion"] = de_la_ia.sesion or acta.sesion
+        if cambios:
+            lectura.acta = replace(acta, **cambios)
+        if self._perfil.completar is not None:
+            # Los huecos que siguen -- el nombre, en un graduado -- los llena la IA.
+            lectura.acta = self._perfil.completar(lectura.acta, lectura.texto_de_la_ia or "")
 
     @staticmethod
     def _capa(source: PageSource, numero: int) -> str:
@@ -1854,6 +2037,31 @@ def _descartar_fechas_fuera_de_lugar(lecturas: list[_Lectura]) -> None:
 
 
 #: Los datos de un acta que una relectura puede llenar, con su nombre para las notas.
+def _mismo_numero(a: object, b: object) -> bool:
+    return str(a).lstrip("0") == str(b).lstrip("0")
+
+
+def _mismas_cifras(a: object, b: object) -> bool:
+    return re.sub(r"\D", "", str(a)) == re.sub(r"\D", "", str(b))
+
+
+def _mismo_titulo(a: object, b: object) -> bool:
+    def letras(titulo: object) -> str:
+        return re.sub(r"[^A-Z]", "", clave(titulo_limpio(str(titulo)) or str(titulo)))
+
+    return letras(a) == letras(b)
+
+
+#: Los campos que se cruzan con la lectura de la IA: cómo se dicen, cuándo dos
+#: lecturas son la misma y cómo se escriben en la nota.
+_CAMPOS_QUE_CRUZA_LA_IA = (
+    ("numero", "el número del acta", _mismo_numero, str),
+    ("fecha", "la fecha", lambda a, b: a == b, lambda f: f.strftime("%d-%m-%Y")),
+    ("titulo", "el título", _mismo_titulo, str),
+    ("cedula", "la cédula", _mismas_cifras, str),
+)
+
+
 _CAMPOS_DEL_ACTA = (
     ("numero", "el número"),
     ("fecha", "la fecha"),
@@ -2198,7 +2406,6 @@ def _fila(
     archivo: str,
     carpeta: str,
     ilegibles: list[int],
-    previas: tuple[int, int] | None,
     por_eleccion: str | None = None,
 ) -> FilaDeActa:
     """La fila del inventario de un acta.
@@ -2230,12 +2437,6 @@ def _fila(
     ):
         avisos = [a for a in avisos if a != "no se encontró la fecha de la sesión"]
     avisos.extend(lectura.razonado)
-    if previas:
-        avisos.insert(
-            0,
-            f"las páginas {previas[0]} a {previas[1]} del PDF van antes de la primera acta "
-            "(portada, cartas): no son de ninguna",
-        )
     return FilaDeActa(
         archivo=archivo,
         acta=acta.encabezado or NO_APLICA,
@@ -2252,7 +2453,60 @@ def _fila(
         carpeta=carpeta,
         pagina_inicial=tramo.desde,
         pagina_final=tramo.hasta,
-        numero=acta.numero or "",
+        # «15 BIS»: el número es el de la sesión anterior, y lo que la distingue
+        # tiene que llegar al consecutivo del FUID.
+        numero=f"{acta.numero} BIS" if acta.numero and acta.bis else acta.numero or "",
+        piezas=resumen_de_piezas(lectura.piezas),
+    )
+
+
+def _con_el_numero_de_la_serie(filas: list[FilaDeActa]) -> list[FilaDeActa]:
+    """Las filas de un libro con el número truncado deducido de sus vecinas, ya en el trabajo.
+
+    La deducción se hacía sólo al juntar la carpeta: el FUID decía la 013, pero
+    el PDF dividido ya se había escrito «04_ACTA-EXTRAORDINARIA-NO-01…»
+    (UPD3859789, 2026-10-31). Ahora se hace antes de nombrar las sesiones.
+    """
+    datos = [
+        {"archivo": "", "numero": fila.numero, "fecha": fila.fecha, "observaciones": fila.observaciones}
+        for fila in filas
+    ]
+    _numero_por_la_serie(datos)
+    hechas = []
+    for fila, dato in zip(filas, datos, strict=True):
+        numero = str(dato["numero"])
+        if numero != fila.numero and fila.numero:
+            fila = replace(
+                fila,
+                numero=numero,
+                acta=re.sub(rf"No\. {re.escape(fila.numero)}\b", f"No. {numero}", fila.acta),
+                observaciones=str(dato["observaciones"]),
+            )
+        hechas.append(fila)
+    return hechas
+
+
+def _con_las_previas(fila: FilaDeActa, lectura: _Lectura, previas: tuple[int, int]) -> FilaDeActa:
+    """La primera sesión del libro con las hojas que se escanearon delante de ella.
+
+    En los libros de Odontología medidos (UPD3859787, 3859789, 3859793, 3859796:
+    de 31 a 93 páginas) lo que va delante de la primera acta son sus anexos,
+    escaneados antes que ella. Salían en un PDF aparte y sin fila, y la UPD
+    sumaba en el FUID menos folios de los que cuenta el cliente. Ahora van
+    dentro de la primera sesión, como un anexo más, y su fila los cuenta.
+    """
+    desde, hasta = previas
+    lectura.piezas = [PiezaDeActa(ANEXO, desde, hasta), *lectura.piezas]
+    paginas = hasta - desde + 1
+    aviso = (
+        f"lleva delante, como anexo, las páginas {desde} a {hasta} del PDF, "
+        "escaneadas antes que el acta"
+    )
+    return replace(
+        fila,
+        pagina_inicial=desde,
+        folios=fila.folios + paginas,
+        observaciones="; ".join(a for a in (aviso, fila.observaciones) if a),
         piezas=resumen_de_piezas(lectura.piezas),
     )
 

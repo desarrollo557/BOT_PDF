@@ -130,6 +130,10 @@ class LectorDeFolios:
         """El folio de cada hoja del mosaico, por su etiqueta. Puede ir en otro hilo."""
         return folios_etiquetados(self._leer(imagen), paginas)
 
+    def leer_candidatos_etiquetados(self, imagen: bytes, paginas: Sequence[int]) -> dict[int, list[int]]:
+        """Todos los números de la esquina de cada hoja: el folio y el viejo tachado, si lo hay."""
+        return candidatos_etiquetados(self._leer(imagen), paginas)
+
     # -- cualquier franja, no sólo la esquina ------------------------------------
 
     def armar_mosaico_de_franjas(self, source, franjas: Sequence[tuple[int, Band]]) -> bytes | None:
@@ -220,3 +224,23 @@ def folios_etiquetados(texto: str, paginas: Sequence[int]) -> dict[int, int]:
         if pagina in pedidas and numero and int(numero.group(1)) > 0:
             folios[pagina] = int(numero.group(1))
     return folios
+
+
+def candidatos_etiquetados(texto: str, paginas: Sequence[int]) -> dict[int, list[int]]:
+    """De lo que el proveedor leyó en el mosaico, todos los números de cada página pedida.
+
+    Muchas esquinas traen el folio y, al lado, el viejo tachado: «239 249».
+    Quedarse con el primero era quedarse a veces con el tachado; aquí van los
+    dos, y la foliación seguida del libro (``foliacion_por_pagina``) elige.
+    """
+    import re
+
+    pedidas = set(paginas)
+    candidatos: dict[int, list[int]] = {}
+    trozos = re.split(r"\bP\s?(\d{1,4})\b", texto)
+    for indice in range(1, len(trozos) - 1, 2):
+        pagina = int(trozos[indice])
+        numeros = [int(n) for n in re.findall(r"(?<![\d.,])(\d{1,3})(?![\d.,])", trozos[indice + 1])]
+        if pagina in pedidas:
+            candidatos.setdefault(pagina, []).extend(n for n in numeros if n > 0)
+    return candidatos

@@ -109,3 +109,47 @@ def votar_nombre(
         leidas = " / ".join(f"«{lectura}»" for lectura in lecturas)
         return nombre, f"el nombre se leyó distinto en cada zona: {leidas}"
     return nombre, None
+
+
+#: Cuántas lecturas gratuitas que coinciden pesan más que la IA que discrepa.
+APOYOS_CONTRA_LA_IA = 2
+
+
+def decidir_con_la_ia(
+    campo: str,
+    actual: object | None,
+    de_la_ia: object | None,
+    apoyos: int,
+    *,
+    igual=lambda a, b: a == b,
+    mostrar=str,
+) -> tuple[object | None, str | None]:
+    """Lo que se entrega de un campo cuando la IA leyó también la hoja, y por qué revisarlo.
+
+    Con «OCR + IA», la IA lee toda hoja que da una fila, no sólo las que traen
+    un hueco: un número mal leído pero completo salía sin aviso (Odontología y
+    Secretaría, 2026-10-31: «que el bot se asegure de que lo que entrega sí es
+    lo que está en el PDF»).
+
+    * La IA no leyó nada: queda lo del OCR.
+    * El OCR no leyó nada: queda lo de la IA.
+    * Coinciden: confirmado, sin nota.
+    * Discrepan: gana la IA, salvo que ``apoyos`` lecturas gratuitas
+      independientes digan lo mismo que el OCR. Y en los dos casos va a
+      revisión con las dos lecturas.
+    """
+    if de_la_ia is None:
+        return actual, None
+    if actual is None:
+        return de_la_ia, None
+    if igual(actual, de_la_ia):
+        return actual, None
+    if apoyos >= APOYOS_CONTRA_LA_IA:
+        return actual, (
+            f"{campo}: el OCR leyó {mostrar(actual)} en {apoyos} lecturas y la IA "
+            f"{mostrar(de_la_ia)}; se dejó {mostrar(actual)}: revíselo en el papel"
+        )
+    return de_la_ia, (
+        f"{campo}: el OCR leyó {mostrar(actual)} y la IA {mostrar(de_la_ia)}; "
+        "se dejó lo de la IA: revíselo en el papel"
+    )
