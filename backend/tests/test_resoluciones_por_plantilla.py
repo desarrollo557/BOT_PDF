@@ -379,3 +379,140 @@ class TestLaSecuencia:
             ]
         )
         assert [g.code.value for g in agrupacion.groups] == ["00591"]
+
+
+# -- resoluciones internas de facultad (caja 00C003303, 2026-11-03) -------------------
+
+INTERNA_030 = (
+    "UNIVERSIDAD DE CARTAGENA\nFundada en 1827\nFACULTAD DE CIENCIAS SOCIALES Y EDUCACION\n"
+    "RESOLUCIÓN INTERNA N°030- 2010\n"
+    "Por la cual se conforma el Comité de Investigación de la Facultad de Ciencias Sociales y\nEducación\n"
+    "EL CONSEJO DE FACULTAD DE CIENCIAS SOCIALES Y EDUCACIÓN DE LA \nUNIVERSIDAD DE CARTAGENA,\n.V\n"
+    "En uso de sus facultades,\nRESUELVE:\nARTICULO 1°\n"
+    "Conformar el comité de investigación de la Facultad de Ciencias Sociales \n"
+    "y Educación, integrado por los siguientes miembros:\nJORGE LUIS LLAMAS CHÁVEZ"
+)
+INTERNA_031 = (
+    "UNIVERSIDAD DE CARTAGENA\nFundada en 1827\nFACULTAD DE CIENCIAS SOCIALES Y EDUCACION\n"
+    "Resolución Interna N°031 de 2010\n"
+    "Por la cual se conforma el Comité de Bienestar de la Facultad de Ciencias Sociales y Educación\n"
+    "EL CONSEJO DE FACULTAD DE CIENCIAS SOCIALES Y EDUCACIÓN DE LA \nUNIVERSIDAD DE CARTAGENA\n"
+    "En uso de sus facultades,\nRESUELVE:\n"
+    "Conformar el Comité de Bienestar de la Facultad de Ciencias Sociales y \n"
+    "Educación, integrado por los siguientes miembros:\nARTICULO 1.\nMARÍA DEL SOCORRO ACOSTA"
+)
+
+
+class TestLasResolucionesInternas:
+    """Un legajo de resoluciones de facultad: cada una es su propia unidad."""
+
+    def test_el_numero_en_una_sola_forma(self):
+        # La misma resolución, escrita de varias maneras en la caja 00C003303.
+        for texto, esperado in [
+            ("RESOLUCIÓN INTERNA N°030- 2010", "030-2010"),
+            ("Resolución Interna N°020 de 2011", "020-2011"),
+            ("Resolución Interna N° 020-2011", "020-2011"),
+            ("Resolución Interna N“ 009 2011", "009-2011"),
+            ("RESOLUCIÓN interna' Ne 039- 2012", "039-2012"),
+            ("RESOLUCIÓN INTERNA No 011-14", "011-2014"),
+            ("Resolución No. 03-2022", "003-2022"),
+            ("RESOLUCIÓN No. 002--2023", "002-2023"),
+            ("RESOLUCIÓN No. 01", "001"),
+        ]:
+            assert [c.code.value for c in extract_candidates(texto)] == [esperado], texto
+
+    def test_rectoria_no_cambia(self):
+        assert extract_candidates("RESOLUCIÓN No 02234 de 2022")[0].code.value == "02234"
+        assert extract_candidates("RESOLUCIÓN No. 006 2025")[0].code.value == "006"
+
+    def test_el_anio_solo_no_es_un_numero(self):
+        assert extract_candidates("Resolución Interna N“ — 2012") == []
+
+    def test_interna_abre_su_resolucion(self):
+        assert opens_a_resolution(extract_candidates("Resolución Interna N°031 de 2010")[0])
+
+    def test_una_de_facultad_no_es_soporte_de_otra_de_facultad(self):
+        agrupacion, stats = clasificar([INTERNA_030, INTERNA_031])
+        assert [(g.code.value, g.page_numbers) for g in agrupacion.groups] == [
+            ("030-2010", [1]),
+            ("031-2010", [2]),
+        ]
+        assert stats.soportes == {}
+
+    def test_el_asunto_es_lo_que_resuelve(self):
+        agrupacion, _ = clasificar([INTERNA_030, INTERNA_031])
+        textos = [INTERNA_030, INTERNA_031]
+        filas = filas_de_resoluciones(
+            agrupacion.groups, nombre_del_archivo="UPD3859990-RESOLUCIONES INTERNAS 2010.pdf",
+            texto_de=lambda numero: textos[numero - 1],
+        )
+        assert [f.asunto for f in filas] == [
+            "RESOLUCION 030-2010 - CONFORMAR EL COMITÉ DE INVESTIGACIÓN DE LA FACULTAD DE CIENCIAS "
+            "SOCIALES Y EDUCACIÓN, INTEGRADO POR LOS SIGUIENTES MIEMBROS",
+            "RESOLUCION 031-2010 - CONFORMAR EL COMITÉ DE BIENESTAR DE LA FACULTAD DE CIENCIAS "
+            "SOCIALES Y EDUCACIÓN, INTEGRADO POR LOS SIGUIENTES MIEMBROS",
+        ]
+        assert [f.consecutivo_inicial for f in filas] == ["030-2010", "031-2010"]
+
+    def test_sin_resuelve_el_titulo(self):
+        filas = filas_de_resoluciones(
+            [PageGroup(code=ResolutionCode.parse("010"), page_numbers=[1], title="Cierre proceso disciplinario")],
+            nombre_del_archivo="x.pdf",
+            texto_de=lambda _numero: "RESOLUCIÓN No. 010\nCierre proceso disciplinario",
+        )
+        assert filas[0].asunto == "RESOLUCION 010 CIERRE PROCESO DISCIPLINARIO"
+
+
+INTERNA_026_SIN_ANIO = "UNIVERSIDAD DE CARTAGENA\nRESOLUCIÓN No. 026\nPor la cual se aprueba el plan de estudios del programa"
+INTERNA_026_CON_ANIO = "UNIVERSIDAD DE CARTAGENA\nRESOLUCIÓN No. 026-2014\nARTÍCULO SEGUNDO: continúa el plan de estudios"
+INTERNA_027 = "UNIVERSIDAD DE CARTAGENA\nRESOLUCIÓN No. 027-2014\nPor la cual se conforma el comité de bienestar"
+INTERNA_028 = "UNIVERSIDAD DE CARTAGENA\nRESOLUCIÓN No. 028-2014\nPor la cual se conforma el comité curricular"
+COPIA_DE_RECTORIA = (
+    "Universidad\nde Cartagena\nRESOLUCIÓN No. 00238 DE 2016\n"
+    "“Por medio de la cual se autoriza ceremonia de grado”\nEL RECTOR DE LA UNIVERSIDAD DE CARTAGENA"
+)
+
+
+class TestElLegajoDeResolucionesInternas:
+    def test_con_y_sin_anio_son_la_misma(self):
+        agrupacion, _ = clasificar([INTERNA_026_SIN_ANIO, INTERNA_026_CON_ANIO, INTERNA_027])
+        assert [(g.code.value, g.page_numbers) for g in agrupacion.groups] == [
+            ("026-2014", [1, 2]),
+            ("027-2014", [3]),
+        ]
+
+    def test_la_copia_de_rectoria_va_dentro_de_la_interna(self):
+        agrupacion, stats = clasificar([INTERNA_026_CON_ANIO, INTERNA_027, COPIA_DE_RECTORIA, INTERNA_028])
+        assert [(g.code.value, g.page_numbers) for g in agrupacion.groups] == [
+            ("026-2014", [1]),
+            ("027-2014", [2, 3]),
+            ("028-2014", [4]),
+        ]
+        assert 3 in stats.soportes
+
+
+class TestLoQueResuelve:
+    """El asunto del FUID: lo que ordena el RESUELVE, sin rótulos ni rayas (caja 00C003303)."""
+
+    def test_sin_el_rotulo_del_articulo(self):
+        from resolutions.domain.title import lo_que_resuelve
+
+        for texto, esperado in [
+            ("RESUELVE:\n«ARTÍCULO ÚNICO: Solicitar a la Rectoría autorización para ceremonia de grado.",
+             "Solicitar a la Rectoría autorización para ceremonia de grado"),
+            ("RESUELVE:\nARTICUL01° SOLICITAR a la rectoría la exoneración del pago",
+             "SOLICITAR a la rectoría la exoneración del pago"),
+            ("RESUELVE:\nARTICULO 1°\nConstituir el Comité de Postgrado de la Facultad. ________ ______",
+             "Constituir el Comité de Postgrado de la Facultad"),
+        ]:
+            assert lo_que_resuelve([texto]) == esperado, texto
+
+    def test_sin_resuelve_no_hay_orden(self):
+        from resolutions.domain.title import lo_que_resuelve
+
+        assert lo_que_resuelve(["Por la cual se conforma el comité", "ARTÍCULO 2. Comuníquese"]) is None
+
+    def test_la_copia_de_rectoria_que_trae_el_numero_de_la_interna_no_abre(self):
+        copia = COPIA_DE_RECTORIA + "\nVista la resolución No. 027-2014 del consejo de facultad"
+        agrupacion, _ = clasificar([INTERNA_026_CON_ANIO, INTERNA_027, copia, INTERNA_028])
+        assert [g.code.value for g in agrupacion.groups] == ["026-2014", "027-2014", "028-2014"]

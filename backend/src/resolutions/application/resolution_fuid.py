@@ -11,21 +11,37 @@ exactamente lo que el instructivo prohíbe.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import logging
+from collections.abc import Callable, Iterator, Sequence
 
 from ..domain.grouping import PageGroup
+from ..domain.title import lo_que_resuelve
 from .fuid import NO_APLICA, FuidRow, Ubicacion
 
+logger = logging.getLogger(__name__)
 
-def asunto(group: PageGroup) -> str:
-    """«RESOLUCION 00002 POR MEDIO DE LA CUAL SE FIJA CRONOGRAMA…».
 
-    El número y el asunto, en mayúsculas, como la Universidad nombra cada
-    resolución en su inventario: una fila que dijera sólo «Por medio de la
-    cual se designan los docentes de cátedra» no distingue la 00006 de la 00007.
+def asunto(group: PageGroup, resuelve: str | None = None) -> str:
+    """«RESOLUCION 030-2010 - CONFORMAR EL COMITÉ DE INVESTIGACIÓN…».
+
+    El número y lo que ordena su RESUELVE, en mayúsculas (el operador,
+    2026-11-03: «Asunto: RESOLUCION + RESUELVE»). Si el RESUELVE no se dejó
+    leer, el título del encabezado («POR MEDIO DE LA CUAL SE FIJA…»): una fila
+    que dijera sólo el número no distingue la 00006 de la 00007.
     """
+    if resuelve:
+        return f"RESOLUCION {group.code.value} - {resuelve}".upper()
     titulo = (group.title or "").strip()
     return f"RESOLUCION {group.code.value} {titulo}".strip().upper()
+
+
+def _textos(group: PageGroup, texto_de: Callable[[int], str]) -> Iterator[str]:
+    """El texto de cada página de la resolución, uno a uno: se para en el primer RESUELVE."""
+    for numero in group.page_numbers:
+        try:
+            yield texto_de(numero)
+        except Exception:  # noqa: BLE001 - el asunto es un dato más, no un requisito
+            logger.debug("no se pudo leer la página %s", numero, exc_info=True)
 
 
 def fecha_de_la_fila(group: PageGroup) -> str:
@@ -43,8 +59,13 @@ def filas_de_resoluciones(
     nombre_del_archivo: str,
     ubicacion: Ubicacion | None = None,
     desde: int = 1,
+    texto_de: Callable[[int], str] | None = None,
 ) -> list[FuidRow]:
-    """Una fila por resolución, en el orden en que aparecen en el documento."""
+    """Una fila por resolución, en el orden en que aparecen en el documento.
+
+    ``texto_de`` da el texto de una página; con él, el asunto lleva lo que
+    ordena el RESUELVE (``lo_que_resuelve``).
+    """
     donde = ubicacion or Ubicacion()
     upd = donde.carpeta_de(nombre_del_archivo)
 
@@ -52,7 +73,7 @@ def filas_de_resoluciones(
         FuidRow(
             orden=desde + desplazamiento,
             codigo_trd=donde.codigo_trd,
-            asunto=asunto(group),
+            asunto=asunto(group, lo_que_resuelve(_textos(group, texto_de)) if texto_de else None),
             # El número de la resolución es el número de identificación de la
             # unidad documental, que es lo que el instructivo pide en esta
             # columna.

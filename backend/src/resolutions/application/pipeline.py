@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
 from dataclasses import dataclass, field, replace
 
@@ -14,15 +15,57 @@ from ..domain.extraction import (
 )
 from ..domain.legibility import garble_score, is_garbled
 from ..domain.page import PageClassification, Provenance
-from ..domain.plantilla_de_pagina import Evidencia, plantilla_de
+from ..domain.plantilla_de_pagina import Evidencia, Plantilla, plantilla_de
 from ..domain.resolution_code import ResolutionCode
-from ..domain.scoring import Selection, select_best
+from ..domain.scoring import Selection, opens_a_resolution, select_best
 from ..domain.serie_del_legajo import copias_fuera_de_la_serie
 from ..domain.title import extract_title
 from .control import Cancelled, NullRunControl, RunControl, hilos, mapear
 from .diagnostico import explicar
 from .ports import HEADER_BAND, Band, Crop, OcrEngine, PageSource, VisionOracle
 from .progress import NullProgressReporter, ProgressEvent, ProgressReporter, Stage
+
+#: El número de una resolución de rectoría: cinco o seis cifras («00086»).
+_DE_RECTORIA = re.compile(r"^\d{5,6}$")
+#: El de una de facultad con su año, en la forma única de ``extraction``: «026-2014».
+_CON_SU_ANIO = re.compile(r"^(\d{3})-(\d{4})$")
+
+
+def _legajo_de_facultad(analyses: list[PageAnalysis]) -> bool:
+    """Si el legajo es de resoluciones internas: sus encabezados son, de largo, de facultad.
+
+    La caja 00C003303 trae un PDF por año de resoluciones internas, con alguna
+    copia de rectoría dentro («00139», «00238»). Al revés que en un legajo de
+    rectoría, aquí la copia es la que va dentro.
+    """
+    de_facultad, de_rectoria = set(), set()
+    for analysis in analyses:
+        for candidate in analysis.candidates:
+            if opens_a_resolution(candidate):
+                (de_rectoria if _DE_RECTORIA.match(candidate.code.value) else de_facultad).add(candidate.code.value)
+    return len(de_facultad) >= 3 and len(de_facultad) > 2 * len(de_rectoria)
+
+
+def _un_numero_por_resolucion(classifications: list[PageClassification]) -> list[PageClassification]:
+    """«026» y «026-2014» son la misma resolución si el legajo sólo trae ese año para ella.
+
+    Unas hojas repiten el número con su año y otras sin él (caja 00C003303,
+    2014: «026» en una página y «026-2014» en la siguiente), y la resolución se
+    partía en dos archivos. El número sin año toma el del gemelo, si hay uno solo.
+    """
+    anios: dict[str, set[str]] = {}
+    for clasificacion in classifications:
+        if clasificacion.code is not None and (hallado := _CON_SU_ANIO.match(clasificacion.code.value)):
+            anios.setdefault(hallado.group(1), set()).add(clasificacion.code.value)
+    gemelos = {numero: next(iter(con_anio)) for numero, con_anio in anios.items() if len(con_anio) == 1}
+    if not gemelos:
+        return classifications
+    return [
+        replace(clasificacion, code=ResolutionCode(value=gemelos[clasificacion.code.value], raw=clasificacion.code.raw))
+        if clasificacion.code is not None and clasificacion.code.value in gemelos
+        else clasificacion
+        for clasificacion in classifications
+    ]
 
 logger = logging.getLogger(__name__)
 
@@ -344,7 +387,7 @@ class ClassificationPipeline:
             )
         if unresolved:
             classifications = self._escalate(source, classifications, unresolved, stats)
-        return self._copias_dentro(classifications, stats), stats
+        return _un_numero_por_resolucion(self._copias_dentro(classifications, stats)), stats
 
     @staticmethod
     def _copias_dentro(
@@ -470,12 +513,15 @@ class ClassificationPipeline:
         #: -- la 006 del decano en la 00316 --: sus hojas siguientes repiten
         #: su encabezado sin decir ya quién la expide, y tampoco abren nada.
         soportes_del_abierto: set[str] = set()
+        de_facultad = _legajo_de_facultad(analyses)
 
         for analysis in analyses:
             stats.by_provenance[str(analysis.provenance)] += 1
             if analysis.plantilla is not None:
                 stats.plantillas[str(analysis.plantilla.plantilla)] += 1
-            if previous is not None and self._es_soporte(analysis, previous, soportes_del_abierto):
+            if previous is not None and self._es_soporte(
+                analysis, previous, soportes_del_abierto, de_facultad=de_facultad
+            ):
                 # Lo que la página trae de «RESOLUCIÓN No.» es la resolución
                 # con que un decano pidió algo, o lo que cita un oficio: es el
                 # soporte de la resolución abierta y va en su archivo. Ni abre
@@ -504,6 +550,14 @@ class ClassificationPipeline:
                 stats.mis_decoded_pages.append(analysis.page_number)
             if analysis.failed:
                 stats.failures[analysis.page_number] = analysis.error or "unknown error"
+            if de_facultad:
+                # En un legajo de internas, un número de rectoría no abre nada:
+                # es la copia con que rectoría respondió, y suele traer también
+                # el número de la interna («00139» con «008-2016», 2016, pág. 16).
+                analysis = replace(
+                    analysis,
+                    candidates=[c for c in analysis.candidates if not _DE_RECTORIA.match(c.code.value)],
+                )
             selection = select_best(
                 analysis.candidates,
                 previous_code=previous,
@@ -608,20 +662,32 @@ class ClassificationPipeline:
 
     @staticmethod
     def _es_soporte(
-        analysis: PageAnalysis, abierta: ResolutionCode, soportes: set[str]
+        analysis: PageAnalysis, abierta: ResolutionCode, soportes: set[str], *, de_facultad: bool = False
     ) -> bool:
         """Si esta página es soporte de la resolución abierta y no puede abrir nada.
 
         Lo es cuando su plantilla lo dice -- una resolución de facultad, un
         oficio -- o cuando sólo trae el número de un soporte que ya va dentro.
         Una página que repite el número de la abierta nunca es soporte: es la
-        resolución misma, que sigue.
+        resolución misma, que sigue. En un legajo de resoluciones internas
+        (``de_facultad``), la copia de una de rectoría es soporte de la interna
+        que la trae: «00238» se llevaba 40 páginas de las internas de 2016.
         """
         numeros = {candidate.code.value for candidate in analysis.candidates}
         if abierta.value in numeros:
             return False
-        if analysis.plantilla is not None and analysis.plantilla.es_soporte:
+        if de_facultad and numeros and all(_DE_RECTORIA.match(numero) for numero in numeros):
             return True
+        if analysis.plantilla is not None and analysis.plantilla.es_soporte:
+            # Una resolución de facultad es el soporte de la de rectoría que le
+            # responde, no de otra de facultad: en un legajo de resoluciones
+            # internas (caja 00C003303) cada una es su propia unidad, y tomarlas
+            # por soporte de la anterior juntaba el año entero en un archivo.
+            return not (
+                analysis.plantilla.plantilla is Plantilla.RESOLUCION_DE_FACULTAD
+                and numeros
+                and not _DE_RECTORIA.match(abierta.value)
+            )
         return bool(numeros) and numeros <= soportes
 
     @staticmethod

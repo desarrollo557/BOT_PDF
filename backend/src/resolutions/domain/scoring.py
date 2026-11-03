@@ -48,6 +48,9 @@ _LONG_LINE_WORDS = 12
 _PALABRAS_DE_ENCABEZADO = frozenset(
     {
         "N", "NO", "NRO", "NUM", "NUMERO",
+        # «RESOLUCIÓN INTERNA N° 031 DE 2010»: así numeran las facultades (caja
+        # 00C003303). Sin ella ninguna resolución interna abría documento.
+        "INTERNA", "INTERNAS",
         "DE", "DEL",
         "ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
         "JULIO", "AGOSTO", "SEPTIEMBRE", "SETIEMBRE", "OCTUBRE",

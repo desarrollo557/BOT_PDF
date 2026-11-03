@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import Counter
 
 from resolutions.domain.doctype import DocumentType as T
-from resolutions.domain.doctype import classify_pages
+from resolutions.domain.doctype import TypeVerdict, classify_pages
 from resolutions.domain.patrones import (
     paginas_con_nucleo,
     pista_del_nombre,
@@ -210,3 +210,26 @@ class TestDetectarAutomaticamente:
         assert _familia_de_historias({"source": str(consejo)}) is None
         assert _familia_de_historias({"source": str(grado)}) is None
         assert _familia_de_historias({"source": str(tmp_path / "no-existe.pdf")}) is None
+
+
+RESOLUCION_INTERNA = (
+    "Resolución Interna N° 015 de 2022\nPor la cual se solicita autorización para ceremonia de grado\n"
+    "EL CONSEJO DE FACULTAD\nRESUELVE:\nSolicitar a la Rectoría autorización para graduar a los graduandos "
+    "de la lista\nComuníquese, publíquese y cúmplase\n"
+)
+
+
+class TestLasResolucionesInternas:
+    """Caja 00C003303 (2026-11-03): las de 2022 piden ceremonias de grado."""
+
+    def test_por_la_cual_y_resuelve_son_nucleo_de_resolucion(self):
+        assert T.RESOLUCION in tipos_de_la_pagina(RESOLUCION_INTERNA)
+
+    def test_el_nombre_que_confirma_a_los_marcadores_no_se_veta(self):
+        # Los marcadores dicen resolución y 5 páginas traen el núcleo de actas de
+        # grado (las listas de graduandos): con el nombre «RESOLUCIONES» no hay veto.
+        veredicto = TypeVerdict(document_type=T.RESOLUCION, confidence=0.8)
+        nombre = "UPD3859996-RESOLUCIONES INTERNAS 2022 N° 01-71.pdf"
+        assert reconocer(veredicto, Counter({T.ACTA: 5}), nombre).tipo is T.RESOLUCION
+        # Sin ese nombre, el veto sigue como antes.
+        assert reconocer(veredicto, Counter({T.ACTA: 5}), "UPD1.pdf").tipo is T.ACTA

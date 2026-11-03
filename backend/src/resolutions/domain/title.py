@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 from .anchor import find_anchors, strip_accents
 
@@ -226,6 +227,72 @@ def extract_title(
 
     if titulo_encima and anchors:
         return _titulo_impreso_encima(lines, anchors[0].line_index, max_length)
+    return None
+
+
+# -- lo que ordena la resolución -----------------------------------------------------
+
+#: «RESUELVE:», también espaciado como lo imprimen algunas («R E S U E L V E»).
+_RESUELVE = re.compile(r"\bR\s?E\s?S\s?U\s?E\s?L\s?V\s?E\b\s*[:.;]?", re.IGNORECASE)
+#: El rótulo del artículo con que empieza lo que se ordena: «ARTÍCULO 1°»,
+#: «ARTICULO PRIMERO:», ««ARTÍCULO ÚNICO:», «ARTICUL01°», «PRIMERO.-», y el
+#: de una letra que el OCR deja por el ordinal («ARTICULO F»).
+_ROTULO_DEL_ARTICULO = re.compile(
+    r"[«\"“]?\s*(?:ART[IÍ]CUL[O0]|ART\.)\s*(?:PRIMERO|[UÚ]NICO|1\s*[°º.oO]?|\d?\s*[°º]|[A-Z](?=\s))?"
+    r"\s*[:.\-–—°º]*\s*|PRIMERO\s*[:.\-–—]+\s*",
+    re.IGNORECASE,
+)
+#: El del primero, cuando la capa lo pone detrás de la orden y no delante.
+_PRIMER_ARTICULO = re.compile(
+    r"\b(?:ART[IÍ]CUL[O0]|ART\.)\s*(?:PRIMERO|[UÚ]NICO|1\s*[°º.oO]?)\s*[:.\-–—]*\s*", re.IGNORECASE
+)
+#: Donde termina la orden: los dos puntos de una lista («integrado por los
+#: siguientes miembros:»), el punto y seguido, el artículo segundo o la raya
+#: que llena el renglón («EDUCACIÓN. ________»).
+_FIN_DE_LA_ORDEN = re.compile(
+    r"[:;](?=\s|$)|\.(?=\s+[A-ZÁÉÍÓÚÑ_]|\s*$)|[_\-]{3,}"
+    r"|\b(?:ART[IÍ]CUL[O0]|ART\.)\s*(?:SEGUNDO|2\b)|\bSEGUNDO\s*[:.\-–—]",
+    re.IGNORECASE,
+)
+
+
+def _sin_lo_que_va_delante(texto: str) -> str:
+    """Sin las viñetas, letras sueltas y puntos que el escáner deja delante."""
+    palabras = texto.split()
+    while palabras and len(re.sub(r"[\W\d_]", "", palabras[0])) <= 1:
+        palabras.pop(0)
+    return " ".join(palabras)
+MAX_LENGTH_DE_LO_QUE_RESUELVE = 200
+#: Una orden más corta que esto es un rótulo suelto, no lo que se resolvió.
+_LETRAS_DE_LA_ORDEN = 20
+
+
+def lo_que_resuelve(textos: Iterable[str], max_length: int = MAX_LENGTH_DE_LO_QUE_RESUELVE) -> str | None:
+    """Lo que ordena el artículo primero del RESUELVE; ``None`` si no se deja leer.
+
+    Es el asunto de una resolución en el FUID (el operador, 2026-11-03, caja
+    00C003303: «Asunto: RESOLUCION + RESUELVE»): «Conformar el comité de
+    investigación de la Facultad de Ciencias Sociales y Educación, integrado
+    por los siguientes miembros», sin el rótulo del artículo y hasta donde
+    termina la orden. Se busca en las páginas en orden y gana el primer
+    RESUELVE: el de la resolución, antes que el de una copia que traiga detrás.
+    """
+    for texto in textos:
+        hallado = _RESUELVE.search(texto or "")
+        if hallado is None:
+            continue
+        resto = _sin_lo_que_va_delante(texto[hallado.end() : hallado.end() + 1500])
+        if rotulo := _ROTULO_DEL_ARTICULO.match(resto):
+            resto = resto[rotulo.end() :]
+        else:
+            resto = _PRIMER_ARTICULO.sub(" ", resto, count=1)
+        resto = _sin_lo_que_va_delante(resto)
+        fin = _FIN_DE_LA_ORDEN.search(resto, _LETRAS_DE_LA_ORDEN)
+        orden = (resto[: fin.start()] if fin else resto).strip(" ,.-–—_«»\"“”")
+        if len(orden) > max_length:
+            orden = orden[:max_length].rsplit(" ", 1)[0].rstrip(" ,.-–—") + "…"
+        if len(orden.split()) >= 3:
+            return orden
     return None
 
 

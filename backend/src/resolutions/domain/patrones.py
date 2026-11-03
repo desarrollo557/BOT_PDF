@@ -74,7 +74,13 @@ NUCLEOS: dict[DocumentType, tuple[str, ...]] = {
     ),
     DocumentType.RESOLUCION: (
         r"POR MEDIO DE LA CUAL SE",
-        r"COMUNIQUESE Y CUMPLASE",
+        # Las resoluciones internas de facultad (caja 00C003303): «Por la cual
+        # se…», «RESUELVE:» y «Comuníquese, publíquese y cúmplase». Las de 2022
+        # piden ceremonias de grado con su lista de graduandos, y sin esto el
+        # núcleo de actas de grado vetaba a las resoluciones.
+        r"\bPOR LA CUAL SE\b",
+        r"\bRESUELVE\s*:",
+        r"COMUNIQUESE,? (?:PUBLIQUESE,? )?Y CUMPLASE",
     ),
 }
 _NUCLEOS = {
@@ -164,7 +170,9 @@ def reconocer(
 
     if veredicto.is_identified:
         ganador = veredicto.document_type
-        if nucleo[ganador] == 0:
+        # El nombre que dice lo mismo que los marcadores no se veta: «RESOLUCIONES
+        # INTERNAS 2022» es un legajo de resoluciones aunque pidan grados.
+        if nucleo[ganador] == 0 and pista_del_nombre(nombre) is not ganador:
             rivales = [
                 (veces, tipo)
                 for tipo, veces in nucleo.items()

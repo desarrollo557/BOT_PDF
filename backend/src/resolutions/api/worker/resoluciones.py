@@ -45,11 +45,17 @@ def _split_job(payload: dict, task) -> dict:
         from ...application.fuid import con_los_archivos
         from ...application.resolution_fuid import filas_de_resoluciones
 
-        filas = filas_de_resoluciones(
-            resultado.grouping.groups,
-            nombre_del_archivo=taller.name,
-            ubicacion=taller.ubicacion(),
-        )
+        # El texto de las páginas, para el asunto: lo que ordena el RESUELVE.
+        fuente = PyMuPDFDocumentStore(taller.name).open(taller.source)
+        try:
+            filas = filas_de_resoluciones(
+                resultado.grouping.groups,
+                nombre_del_archivo=taller.name,
+                ubicacion=taller.ubicacion(),
+                texto_de=fuente.text_of,
+            )
+        finally:
+            fuente.close()
         # Cada fila diciendo cómo se llama su archivo, cuando se escribió alguno.
         # El inventario y la carpeta son las dos mitades de la misma entrega, y
         # esto es lo que permite cruzarlas sin contar filas.

@@ -10,7 +10,7 @@ from .resolution_code import ResolutionCode
 # Tokens that sit between the anchor and the number and carry no meaning.
 _SEPARATOR_TOKENS = frozenset(
     {
-        "N", "N°", "Nº", "N.", "NO", "NO.", "NRO", "NRO.", "NRO:",
+        "N", "N°", "Nº", "N.", "NO", "NO.", "NE", "NRO", "NRO.", "NRO:",
         "NUM", "NUM.", "NUMERO", "#", ":", "-", "–", "—", ".", "·",
     }
 )
@@ -81,7 +81,7 @@ def _first_code(segment: str) -> tuple[ResolutionCode, bool] | None:
     The flag says whether a numbering token ("No.", "N°", "NRO.") stood between
     the anchor and the number, which is half of what makes a header official.
     """
-    numbered = False
+    numbered = interna = False
     tokens = segment.split()
     for indice, token in enumerate(tokens):
         # Los filetes que el escáner pega al número cuentan como puntuación de
@@ -99,8 +99,11 @@ def _first_code(segment: str) -> tuple[ResolutionCode, bool] | None:
         # 00960-00979 se leen bien de la imagen y se perdían justo ahí:
         # "RESOLUCIÓN N* 00973" en el folio 208 y "RESOLUCIÓN N? 00974" en el
         # 209.
-        cleaned = token.strip(",;()[]\"'_*?")
+        cleaned = token.strip(",;()[]\"'_*?“”")
         if not cleaned:
+            continue
+        if cleaned in _CALIFICATIVOS:
+            interna = True
             continue
         # «N°.», «Nº.», «No:»: la partícula con su punto o sus dos puntos
         # detrás. La 00191 de 2025 está impresa «RESOLUCIÓN N°. 00191», y sin
@@ -110,16 +113,69 @@ def _first_code(segment: str) -> tuple[ResolutionCode, bool] | None:
             numbered = True
             continue
         cleaned = _unido_si_el_ocr_lo_partio(cleaned, tokens[indice + 1 : indice + 2])
+        # "No.00086" glues the token to the number; the prefix is stripped
+        # while parsing, so the announcement still counts.
+        pegado = bool(_PARTICULA_PEGADA.match(cleaned))
+        cleaned = _con_su_anio(cleaned, tokens[indice + 1 : indice + 3], interna=interna)
+        if interna and re.fullmatch(r"(?:19|20)\d{2}", cleaned):
+            # «Resolución Interna N“ — 2012»: el número en blanco y el año
+            # solo. El año no es el número de nadie.
+            return None
         if _looks_like_a_code(cleaned):
             code = ResolutionCode.try_parse(cleaned)
             if code is None:
                 return None
-            # "No.00086" glues the token to the number; the prefix is stripped
-            # while parsing, so the announcement still counts.
-            announced = numbered or len(cleaned) > len(code.value)
+            announced = numbered or pegado or len(cleaned) > len(code.value)
             return code, announced
         return None
     return None
+
+
+#: Lo que una facultad escribe entre «RESOLUCIÓN» y el número y no es ni la
+#: partícula ni el número: «RESOLUCIÓN INTERNA N°030- 2010» (Facultad de
+#: Ciencias Sociales y Educación, caja 00C003303). Cortaba la lectura y ninguna
+#: resolución interna abría documento: el PDF entero iba a cuarentena.
+_CALIFICATIVOS = frozenset({"INTERNA", "INTERNAS"})
+_PARTICULA_PEGADA = re.compile(r"^(?:NRO|NUM|N[º°O.]|#)\.?\d")
+#: El consecutivo de una facultad, con su año pegado o sin él: «030-», «N°030»,
+#: «020-2011», «011-14», «002--2023». Hasta tres cifras: rectoría escribe cinco
+#: («00086») y esas no se tocan.
+_DE_FACULTAD = re.compile(r"^(?:NRO|NUM|N[º°O.]*|#)?(\d{1,3})(?:[-–]{1,2}(\d{4}|\d{2}))?[-–]?$")
+#: El año que va detrás, en el token siguiente: «- 2010», «-2011», «2011», «-14».
+_ANIO_DETRAS = re.compile(r"^(?:[-–]{0,2}((?:19|20)\d{2})|[-–]{1,2}(\d{2}))$")
+
+
+def _con_su_anio(numero: str, siguientes: list[str], *, interna: bool = False) -> str:
+    """El consecutivo de una facultad en una sola forma, «NNN-AAAA».
+
+    La misma resolución se escribe de varias maneras en la caja 00C003303, a
+    veces en dos páginas seguidas: «Resolución Interna N°020 de 2011» y «N°
+    020-2011», «N“ 009 2011», «N° 008 -2011», «No. 011-14», «No. 03-2022»,
+    «No. 002--2023». Como códigos distintos, una resolución se partía en dos.
+    Con la forma única -- el consecutivo en tres cifras y el año entero --, el
+    año sigue siendo parte del número (así se distinguen de las de rectoría,
+    ver ``_OFFICIAL_NUMBER``) y «03» y «003» son la misma. Sin año a la vista,
+    el consecutivo sólo se rellena si ya tenía dos cifras: un «1» suelto no es
+    un número de resolución.
+    """
+    hallado = _DE_FACULTAD.match(numero)
+    if not hallado:
+        return numero
+    consecutivo, anio = hallado.groups()
+    if anio is None:
+        resto = [token.strip(",;.()") for token in siguientes]
+        # El año suelto, sin «de» ni guion, sólo en una resolución interna: en
+        # rectoría «No. 006 2025» es un número y un año que no se juntan.
+        anunciado = interna or numero.endswith(("-", "–"))
+        if resto and resto[0] == "DE":
+            resto, anunciado = resto[1:], True
+        if resto and (detras := _ANIO_DETRAS.match(resto[0])) and (anunciado or resto[0][0] in "-–"):
+            anio = detras.group(1) or detras.group(2)
+    if anio is None:
+        return f"{int(consecutivo):03d}" if len(consecutivo) >= 2 else numero
+    if len(anio) == 2:
+        anio = f"20{anio}"
+    return f"{int(consecutivo):03d}-{anio}"
 
 
 def _unido_si_el_ocr_lo_partio(numero: str, siguiente: list[str]) -> str:
