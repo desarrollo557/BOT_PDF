@@ -114,17 +114,21 @@ def historias_academicas_job(payload: dict) -> dict:
     source = PyMuPDFPageSource(taller.source, taller.name)
     try:
         total = source.page_count
-        _anunciar(payload, Stage.IDENTIFYING, detail="leyendo cada página", done=0, total=total)
+        # Cuántas páginas trae, para que la pantalla dibuje sus cuadritos; y
+        # luego cada una al leerla, con de dónde salió su texto.
+        _anunciar(payload, Stage.OPENED, page_count=total)
         textos: list[str] = []
         for numero in range(1, total + 1):
             taller.control.check()
             texto = source.text_of(numero) or ""
+            procedencia = "text_layer"
             if al_reves(texto):
                 # Una hoja de Medicina escaneada cabeza abajo: se endereza, y su
                 # texto es el de Tesseract leyéndola derecha. Gratis.
                 source.enderezar(numero)
                 try:
                     texto = local.read(source.render(numero, dpi=200)).text
+                    procedencia = "ocr_full_page"
                 except Exception:  # noqa: BLE001 - sin relectura sigue con su capa
                     logger.debug("no se pudo releer derecha la página %s de %s", numero, nombre, exc_info=True)
             # La ficha y las notas de Medicina se reconocen por su capa: releída,
@@ -139,10 +143,14 @@ def historias_academicas_job(payload: dict) -> dict:
                     leido = local.read(source.render(numero, dpi=200)).text
                     if len(plano(leido)) > len(plano(texto)) // 2:
                         texto = leido
+                        procedencia = "ocr_full_page"
                 except Exception:  # noqa: BLE001 - una página que no se deja leer sigue con su capa
                     logger.debug("no se pudo releer la página %s de %s", numero, nombre, exc_info=True)
             textos.append(texto)
-            _anunciar(payload, Stage.IDENTIFYING, detail="leyendo cada página", done=numero, total=total)
+            _anunciar(
+                payload, Stage.PAGE, page_count=total, detail="leyendo cada página", done=numero, total=total,
+                page_number=numero, provenance=procedencia,
+            )
 
         # Medicina se corta por el nombre de cada ficha y de cada hoja de notas,
         # que lee la IA si se pidió (2026-11-03). Lo demás, sin pagar nada: de

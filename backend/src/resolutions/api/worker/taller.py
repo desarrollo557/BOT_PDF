@@ -556,8 +556,14 @@ def _anunciar(
     detail: str | None = None,
     done: int | None = None,
     total: int | None = None,
+    page_number: int | None = None,
+    provenance: str | None = None,
 ) -> None:
     """Decir en qué va el trabajo, sin que un fallo del aviso lo interrumpa.
+
+    Con ``page_number`` y ``provenance`` (en ``Stage.PAGE``) la pantalla pinta
+    el cuadrito de esa página: sin ellos el monitor de las historias decía
+    «0/?» y no pintaba ninguno (2026-11-03).
 
     El detalle y el contador no son adorno: una etapa que sólo dice su nombre
     dice lo mismo en el primer archivo que en el número 287, y desde la pantalla
@@ -576,7 +582,7 @@ def _anunciar(
         QueueProgressReporter(queue, payload["job_id"]).emit(
             ProgressEvent(
                 stage=stage, page_count=page_count, detail=detail, done=done, total=total,
-                consumo=cuentas,
+                page_number=page_number, provenance=provenance, consumo=cuentas,
             )
         )
     except Exception:  # noqa: BLE001 - la telemetría nunca rompe el trabajo

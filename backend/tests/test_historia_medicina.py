@@ -153,10 +153,16 @@ def test_la_cedula_de_la_ficha():
     assert cedula_de_la_ficha("Cédula - Tarjeta No. 877851\n\nExpedida en Cartagena.-") == "877851"
     # De los 70 en adelante, detrás del rótulo.
     assert cedula_de_la_ficha("C. de C. No. 8'748.124 B/quilla Tde. Identi. No.") == "8748124"
-    # Escrita encima del renglón, en el texto va delante de su rótulo
-    # (internados, pág. 1): sin el rótulo a su izquierda no se toma (el
-    # operador, 2026-11-03: «que al lado izquierdo diga cédula, TI o CC»).
-    assert cedula_de_la_ficha("Firma\n\n39' 693.597\n\nC. de C. No. de\n\nBogotá") is None
+    # Escrita en su casilla pero encima del renglón «C. de C. No.»: en el texto
+    # va justo delante del rótulo (internados, pág. 1; y en el servidor,
+    # 2026-11-03, HERRERA RODRIGUEZ DANILO y JIMENEZ LAGARES ARMANDO ANTONIO).
+    assert cedula_de_la_ficha("Firma\n\n39' 693.597\n\nC. de C. No. de\n\nBogotá") == "39693597"
+    assert cedula_de_la_ficha("Firma 73'105.869 C/gena\nC. de C. No. de Tde. Identi. No.") == "73105869"
+    assert cedula_de_la_ficha("Firma\n689.282\nC. de C. No. de Montería Tde. Identi. No.") == "689282"
+    # Con un espacio por separador de miles (ZOLA HERNANDEZ CARLOS).
+    assert cedula_de_la_ficha("Cédula - Tarjeta No. 3082 912 Expedida en Magdalena") == "3082912"
+    # Un número suelto lejos del rótulo, o con otro número en medio, no.
+    assert cedula_de_la_ficha("Tel. 52-676 Libro 58 Folio 218 Firma C. de C. No. de") is None
     assert cedula_de_la_ficha("C.C. 45.474.260 Cartagena") == "45474260"
     assert cedula_de_la_ficha("T.I. 66263544 de Turbaco") == "66263544"
     # Sólo la tarjeta de identidad (pág. 7): no es una cédula.
