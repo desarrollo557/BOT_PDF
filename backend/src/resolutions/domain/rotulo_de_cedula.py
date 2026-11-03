@@ -17,12 +17,15 @@ from __future__ import annotations
 import re
 
 #: El rótulo, al final de lo que va a la izquierda del número: «CÉDULA», «C.C.»,
-#: «CC», «C. de C.», «CIUDADANÍA», «TARJETA», «IDENTIDAD», «Tde. Identi.»,
+#: «CC», «C. de C.», «CIUDADANÍA», «TARJETA», «IDENTIDAD», «Tde. Ident.»,
 #: «T.I.», con su «No.», «N°» o «#» y la puntuación de en medio. Se compara en
-#: mayúsculas y sin tildes.
+#: mayúsculas y sin tildes. Con la barra de las tablas: la IA devuelve la ficha
+#: como tabla, «C. de C. No. | 9.093.493» (COVO TORRES PEDRO CLAVER), y a veces
+#: lee «Códula» (DIX SANABRIA TOMAS); las dos salían sin cédula en el servidor
+#: (2026-11-03).
 _ROTULO = re.compile(
-    r"(?:CEDULA|CIUDADANIA|TARJETA|IDENTIDAD|IDENTI|\bC\s?\.?\s?C\b|\bC\.?\s?DE\s?C\b|\bT\s?\.?\s?I\b)"
-    r"[\s.:\-]*(?:DE\s+(?:CIUDADANIA|IDENTIDAD)[\s.:\-]*)?(?:(?:N[O0°º]?|#)[\s.:\-°º]*)?$"
+    r"(?:C[EO]DULA|CIUDADANIA|TARJETA|IDENTIDAD|IDENTI?|\bC\s?\.?\s?C\b|\bC\.?\s?DE\s?C\b|\bT\s?\.?\s?I\b)"
+    r"[\s.:\-|]*(?:DE\s+(?:CIUDADANIA|IDENTIDAD)[\s.:\-|]*)?(?:(?:N\.?[O0°º]?|#)[\s.:\-°º|]*)?$"
 )
 #: Cuánto texto a la izquierda del número se mira.
 ALCANCE = 40

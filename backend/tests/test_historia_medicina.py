@@ -161,6 +161,13 @@ def test_la_cedula_de_la_ficha():
     assert cedula_de_la_ficha("Firma\n689.282\nC. de C. No. de Montería Tde. Identi. No.") == "689282"
     # Con un espacio por separador de miles (ZOLA HERNANDEZ CARLOS).
     assert cedula_de_la_ficha("Cédula - Tarjeta No. 3082 912 Expedida en Magdalena") == "3082912"
+    # Leídas por la IA como tabla, con la barra en medio, «Códula» y el guion
+    # de miles: COVO TORRES, DIX SANABRIA y GALVAN CARRASCAL (servidor, 2026-11-03).
+    assert cedula_de_la_ficha("|  C. de C. No. | 9.093.493 C/gena.- | die | J. libreta Militar N.o  |") == "9093493"
+    assert cedula_de_la_ficha("|  Códula - Tarjeta No. | 2466053 | Expedida en Cartagena  |") == "2466053"
+    assert cedula_de_la_ficha("C. de C. No 7'374-983 de S.Pelayo Tde. Identi. No. de") == "7374983"
+    # Sin cédula, la libreta militar.
+    assert cedula_de_la_ficha("C. de C. No. de Tde. Ident. No. de Libreta Militar N.o 4521876 de 2a.") == "4521876"
     # Un número suelto lejos del rótulo, o con otro número en medio, no.
     assert cedula_de_la_ficha("Tel. 52-676 Libro 58 Folio 218 Firma C. de C. No. de") is None
     assert cedula_de_la_ficha("C.C. 45.474.260 Cartagena") == "45474260"

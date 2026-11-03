@@ -18,6 +18,9 @@ from resolutions.domain.rotulo_de_cedula import tiene_rotulo
         "T.I. ",
         "TARJETA DE IDENTIDAD NO: ",
         "TDE. IDENTI. NO. ",
+        "TDE. IDENT. NO. ",
+        "|  C. DE C. NO. | ",
+        "|  CODULA - TARJETA NO. | ",
     ],
 )
 def test_con_su_rotulo(izquierda):

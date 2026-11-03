@@ -235,8 +235,9 @@ def _otro_nombre_completo(renglones: Sequence[str], nombre: str) -> bool:
 
 #: El número de una cédula como se escribe en la ficha: «877851», «8'748.124».
 #: Detrás de «Cédula - Tarjeta No.» (de 1941 a 1965) o de «C. de C. No.» (de los
-#: 70 en adelante), que comprueba ``tiene_rotulo``.
-_NUMERO = r"(?<![\d.,'’])(\d{1,4}(?:\s?[.,'’]\s?\d{3}|\s\d{3}){1,2}|\d{5,10})(?![\d\-])"
+#: 70 en adelante), que comprueba ``tiene_rotulo``. El guion también separa los
+#: miles: «7'374-983» (GALVAN CARRASCAL MIGUEL ANGEL).
+_NUMERO = r"(?<![\d.,'’])(\d{1,4}(?:\s?[.,'’\-]\s?\d{3}|\s\d{3}){1,2}|\d{5,10})(?![\d\-])"
 #: La cédula escrita a máquina en su casilla pero encima del renglón «C. de C.
 #: No.» -- «73'105.869 C/gena» sobre él (HERRERA RODRIGUEZ DANILO), «689.282»
 #: (JIMENEZ LAGARES ARMANDO ANTONIO) --: en el texto queda justo antes del
@@ -248,6 +249,12 @@ _CIFRAS_ENCIMA = range(6, 9)
 #: 77975» (Castillo), «79921» (Carrasquilla), UPD 3859597 -- salían sin cédula
 #: aun leídas por la IA.
 _CIFRAS_TRAS_EL_ROTULO = range(5, 9)
+#: Si la ficha no trae cédula, el número de la libreta militar identifica al
+#: estudiante (el operador, 2026-11-03: «lo que importa es que el bot logre
+#: identificar la cédula o la tarjeta de identidad o la libreta militar»). Sólo
+#: aquí y después de la cédula: en un acta de grado la libreta va junto a la
+#: cédula y no la reemplaza.
+_TRAS_LA_LIBRETA = re.compile(r"\bMILITAR[\s.:\-|]*(?:N\.?[O0°º]?|#)?[\s.:\-°º|]*" + _NUMERO)
 
 
 def cedula_de_la_ficha(texto: str) -> str | None:
@@ -259,7 +266,9 @@ def cedula_de_la_ficha(texto: str) -> str | None:
     No.»**, que en el texto queda justo antes del rótulo («73'105.869 C/gena /
     C. de C. No.»): de 6 a 8 cifras y sin otro número en medio. Detrás del
     rótulo, de 5 a 8 cifras (las de los 40 y 50 tienen cinco), o 10 si
-    empieza por 1; con puntos, apóstrofos o espacios de miles («3082 912»).
+    empieza por 1; con puntos, apóstrofos, guiones o espacios de miles
+    («3082 912», «7'374-983»), y con la barra de la tabla en que la IA
+    devuelve la ficha. Si no trae cédula, el número de la libreta militar.
     La tarjeta de identidad la lee ``leer_ficha``.
     """
     p = plano(texto)
@@ -272,6 +281,10 @@ def cedula_de_la_ficha(texto: str) -> str | None:
     if hallado := _ENCIMA_DEL_ROTULO.search(p):
         cifras = re.sub(r"\D", "", hallado.group(1))
         if len(cifras) in _CIFRAS_ENCIMA or (len(cifras) == 10 and cifras.startswith("1")):
+            return cifras
+    if hallado := _TRAS_LA_LIBRETA.search(p):
+        cifras = re.sub(r"\D", "", hallado.group(1))
+        if 5 <= len(cifras) <= 10:
             return cifras
     return None
 
