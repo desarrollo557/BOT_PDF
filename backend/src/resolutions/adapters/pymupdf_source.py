@@ -166,10 +166,25 @@ class PyMuPDFPageSource:
         #: nombre --, de modo que MuPDF reconstruía la misma página tres o
         #: cuatro veces por cara.
         self._renglones: dict[int, tuple[list[TextLine], list[LineBox]]] = {}
+        #: Las páginas escaneadas al revés, que se rasterizan derechas.
+        self._al_reves: set[int] = set()
 
     @property
     def page_count(self) -> int:
         return self._document.page_count
+
+    def enderezar(self, page_number: int) -> None:
+        """Rasteriza esta página girada media vuelta: se escaneó al revés.
+
+        La hoja de notas de Medicina va a veces cabeza abajo (INTERNADOS
+        ROTATORIO 1978-1984, págs. 30, 59, 65): su pie, con el nombre, queda
+        arriba e invertido, y el renglón que se recortaba era otro. Una banda
+        pedida se refleja para que siga siendo la misma zona de la hoja
+        derecha. Su capa de texto, leída al revés, no dice dónde está nada:
+        ``boxes_of`` no devuelve renglones y quien recorte usa la altura de las
+        demás.
+        """
+        self._al_reves.add(page_number)
 
     def text_of(self, page_number: int) -> str:
         """La capa de texto de una página, extraída una sola vez.
@@ -221,6 +236,8 @@ class PyMuPDFPageSource:
         descartaría encabezados de verdad y perder una resolución en silencio es
         exactamente lo que esto viene a evitar.
         """
+        if page_number in self._al_reves:
+            return []
         return list(self._renglones_de(page_number)[1])
 
     def size_of(self, page_number: int) -> tuple[float, float]:
@@ -377,8 +394,11 @@ class PyMuPDFPageSource:
         hilo que rasteriza, y ese hilo es el único que puede rasterizar.
         """
         page = self._document[page_number - 1]
+        al_reves = page_number in self._al_reves
         clip = None
         if band is not None:
+            if al_reves:
+                band = Band(1 - band.x1, 1 - band.y1, 1 - band.x0, 1 - band.y0)
             rect = page.rect
             clip = pymupdf.Rect(
                 rect.x0 + band.x0 * rect.width,
@@ -388,8 +408,9 @@ class PyMuPDFPageSource:
             )
 
         zoom = dpi / _PDF_DPI
+        matriz = pymupdf.Matrix(zoom, zoom)
         pixmap = page.get_pixmap(
-            matrix=pymupdf.Matrix(zoom, zoom),
+            matrix=matriz.prerotate(180) if al_reves else matriz,
             clip=clip,
             # Greyscale: Tesseract binarises anyway, and it is a third of the
             # bytes to move around per page.
@@ -424,7 +445,7 @@ class PyMuPDFPageSource:
         megas -- devuelve ``None`` y quien pregunta rasteriza como siempre.
         """
         page = self._document[page_number - 1]
-        if page.rotation:
+        if page.rotation or page_number in self._al_reves:
             return None
         imagenes = page.get_images(full=True)
         if len(imagenes) != 1:

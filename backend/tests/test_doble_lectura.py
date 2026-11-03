@@ -33,6 +33,37 @@ def test_el_mosaico_reparte_por_el_rotulo_de_cada_renglon():
     assert mosaico._repartir_texto(texto, [1, 39, 41]) == {}
 
 
+def test_el_mosaico_que_no_cuadra_se_relee_en_mosaicos_de_la_mitad(tmp_path):
+    """INTERNADOS ROTATORIO 1978-1984 (2026-11-03): siete rótulos para ocho renglones y se perdían los ocho."""
+    import pymupdf
+
+    from resolutions.adapters.pymupdf_source import PyMuPDFPageSource
+    from resolutions.domain.historia_medicina import FRANJA_DEL_PIE
+
+    pdf = tmp_path / "notas.pdf"
+    with pymupdf.open() as documento:
+        for _ in range(4):
+            documento.new_page()
+        documento.save(pdf)
+    respuestas = iter([
+        # Las cuatro juntas: un rótulo de menos.
+        "NOMBRE ARGOTA CAICEDO GABRIEL\nNOMBRE AMADOR ARIZA MARGARITA\nNOMBRE ALTAMAR COLON OSVALDO",
+        # De a dos: cuadran.
+        "NOMBRE ARGOTA CAICEDO GABRIEL\nNOMBRE AMADOR ARIZA MARGARITA",
+        "NOMBRE ALTAMAR COLON OSVALDO\nNOMBRE CANTILLO FERRANS GREGORIO",
+    ])
+    leidas = []
+
+    def leer(imagen):
+        leidas.append(imagen)
+        return next(respuestas)
+
+    mosaico = MosaicoDeCampo(FRANJA_DEL_PIE, localizar=lambda *_: 0.9, leer=leer, tamano=4, lectores=1)
+    leidos = mosaico.leer_franjas(PyMuPDFPageSource(pdf), [1, 2, 3, 4])
+    assert len(leidas) == 3
+    assert "CANTILLO FERRANS" in leidos[4] and "AMADOR ARIZA" in leidos[2]
+
+
 def test_el_nombre_se_vota_entre_la_pagina_y_sus_dos_zonas():
     """UPD3859718: la página dice «OLEA»; el renglón del nombre y Observaciones, OLGA."""
     from resolutions.domain.doble_lectura import votar_nombre

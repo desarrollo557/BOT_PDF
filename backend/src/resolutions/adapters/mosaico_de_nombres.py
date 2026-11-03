@@ -498,8 +498,16 @@ class MosaicoDeCampo(MosaicoDeNombres):
     rótulo impreso de cada renglón, en el orden en que se apilaron.
     """
 
-    def __init__(self, franja, *, localizar: Callable | None = None, **opciones) -> None:
+    def __init__(
+        self, franja, *, localizar: Callable | None = None, por_etiqueta: bool = True, **opciones
+    ) -> None:
         super().__init__(**opciones)
+        #: Si se reparte por la etiqueta «[n]» de cada franja. Quien corta por
+        #: lo leído no se puede fiar de ella: en INTERNADOS ROTATORIO 1978-1984
+        #: (2026-11-03) el proveedor puso dos veces «[46]» y le dio a «[42]» el
+        #: nombre de la franja anterior, y un nombre corrido a la página de al
+        #: lado unió a dos estudiantes. El orden de los rótulos no se equivocó.
+        self._por_etiqueta = por_etiqueta
         self.CAMPO = franja.campo
         self.LEYENDAS = franja.leyendas
         self.ALTO = franja.alto
@@ -510,6 +518,26 @@ class MosaicoDeCampo(MosaicoDeNombres):
         #: recortaba otro renglón. Tesseract lo ubica en la imagen
         #: (``ubicar_con_tesseract``).
         self._localizar = localizar
+        #: Las páginas de los mosaicos que volvieron sin poder repartirse.
+        self._sin_repartir: list[int] = []
+
+    def leer_franjas(self, source, paginas: Sequence[int]) -> dict[int, str]:
+        """Como siempre, y lo que no se pudo repartir se vuelve a leer en mosaicos de la mitad.
+
+        Un mosaico que vuelve con un rótulo de menos no dice de quién es cada
+        renglón, y se descartaba entero: en INTERNADOS ROTATORIO 1978-1984
+        (2026-11-03) fueron ocho nombres al pie de las notas, y sin ellos una
+        ficha en blanco se unió a la estudiante anterior. Partido en dos, cada
+        mitad suele cuadrar; uno solo cuadra siempre. Se paga sólo lo que falló.
+        """
+        self._sin_repartir = []
+        encontrados = super().leer_franjas(source, paginas)
+        if self._sin_repartir and self._tamano > 1:
+            mitad = copy.copy(self)
+            mitad._tamano = max(1, self._tamano // 2)
+            logger.info("se releen %d %s en mosaicos de %d", len(self._sin_repartir), self.CAMPO, mitad._tamano)
+            encontrados.update(mitad.leer_franjas(source, list(self._sin_repartir)))
+        return encontrados
 
     def _altura_de_la_leyenda(self, source, pagina: int) -> float | None:
         if self._localizar is not None:
@@ -521,13 +549,18 @@ class MosaicoDeCampo(MosaicoDeNombres):
         return super()._altura_de_la_leyenda(source, pagina)
 
     def _repartir_texto(self, texto: str, tanda: Sequence[int]) -> dict[int, str]:
-        if (por_etiqueta := _por_etiqueta(texto, tanda)) is not None:
+        if len(tanda) == 1:
+            # Un solo renglón en la imagen: todo lo leído es suyo.
+            return {tanda[0]: texto}
+        if self._por_etiqueta and (por_etiqueta := _por_etiqueta(texto, tanda)) is not None:
             return por_etiqueta
         inicios = [hallado.start() for hallado in self._rotulo.finditer(texto)]
         if len(inicios) != len(tanda):
             # Sin saber qué renglón es de quién, nada: un dato devuelto a otro
-            # estudiante es peor que una segunda lectura que falta.
+            # estudiante es peor que una segunda lectura que falta. Se releen
+            # en mosaicos más pequeños (``leer_franjas``).
             logger.info("el mosaico de %s volvió con %d rótulos para %d franjas", self.CAMPO, len(inicios), len(tanda))
+            self._sin_repartir.extend(tanda)
             return {}
         return {
             pagina: texto[desde:hasta]

@@ -259,19 +259,23 @@ class Taller:
             lectores=max(1, int(self.settings.get("page_workers") or 8) // 2),
         )
 
-    def mosaico_de_campo(self, franja):
+    def mosaico_de_campo(self, franja, *, localizar=None, tamano: int = 3, dpi: int = 450, por_etiqueta: bool = True):
         """Quien relee un campo de muchas páginas en su renglón ampliado, con cualquier lectura de pago.
 
         La segunda lectura estándar de todas las habilidades (``domain/doble_lectura.py``):
         cada una describe su campo con una ``Franja``. Con «Solo OCR» no hay.
+        ``localizar`` dice a qué altura está el rótulo; sin él lo busca Tesseract.
+        Sin ``por_etiqueta`` se reparte sólo por el orden de los rótulos.
         """
         from ...adapters.mosaico_de_nombres import MosaicoDeCampo, ubicar_con_tesseract
 
         # Tres renglones por imagen y a 450 ppp: con diez, el proveedor reducía
         # la imagen y la letra a mano dejaba de leerse (UPD3859718, 2026-10-30).
+        # Lo escrito a máquina admite más: el nombre de Medicina, ocho a 300.
         return self._mosaico(
             lambda **opciones: MosaicoDeCampo(
-                franja, localizar=ubicar_con_tesseract, tamano=3, dpi=450, **opciones
+                franja, localizar=localizar or ubicar_con_tesseract, tamano=tamano, dpi=dpi,
+                por_etiqueta=por_etiqueta, **opciones,
             )
         )
 
@@ -370,6 +374,33 @@ class Taller:
             turnos=self.turnos_de_ia,
             instrucciones=INSTRUCCIONES_DEL_ESTUDIANTE,
             encabezado="Texto de la ficha",
+        )
+
+    def corrector_de_nombres(self):
+        """Quien corrige con la IA un nombre mal leído a la forma correcta más cercana, si se pidió la IA.
+
+        Lo pidió el operador el 2026-11-03: «si el nombre está mal escrito, que
+        la IA le coloque una aproximación correcta y muy cercana». Recibe las
+        lecturas del nombre, no la imagen: se paga por tokens. Lo que contesta
+        sólo vale si es una aproximación de lo leído
+        (``domain/historia_medicina.py``, ``aproximacion_de_la_ia``).
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_resumen import MistralResumenConfig, MistralResumidor
+        from ...domain.historia_medicina import INSTRUCCIONES_PARA_CORREGIR_EL_NOMBRE
+
+        return MistralResumidor(
+            api_key=llave,
+            config=MistralResumenConfig(max_tokens=60, temperatura=0.0),
+            consumo=self.consumo,
+            turnos=self.turnos_de_ia,
+            instrucciones=INSTRUCCIONES_PARA_CORREGIR_EL_NOMBRE,
+            encabezado="Lecturas del nombre",
         )
 
     def lector_del_acta_de_grado(self):

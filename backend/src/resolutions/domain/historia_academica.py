@@ -568,7 +568,7 @@ def _candidatos(textos: Sequence[str], ventana: tuple[int, int] | None = None) -
 
 
 def ventana_de_anios(
-    textos: Sequence[str], *, nombre: str = "", hasta: int = 2030
+    textos: Sequence[str], *, nombre: str = "", hasta: int = 2030, margen: int = MARGEN_DE_LA_VENTANA
 ) -> tuple[int, int] | None:
     """Los años posibles de un PDF, de sus hojas de notas; ``None`` si hay pocos para decirlo.
 
@@ -576,15 +576,19 @@ def ventana_de_anios(
     deja leer --, la dan los del nombre del PDF: «1974-1977» es una cohorte que
     estudió de unos ocho años antes a dos después. Sin ventana, un «1923» de la
     capa rota pasaba por el primer año de un expediente de 1974.
+
+    ``margen`` ensancha la ventana por los dos lados. Medicina, con los años
+    a máquina, usa uno mayor: el «PRIMER AÑO 1989» de Ferrer Triana quedaba
+    fuera de la de «INTERNADOS ROTATORIO 1978-1984», que acababa en 1988.
     """
     todos = sorted(anio for anio, _ in _candidatos(textos) if DESDE <= anio <= hasta)
     if len(todos) >= MINIMO_PARA_LA_VENTANA:
-        bajo = todos[int(0.05 * (len(todos) - 1))] - MARGEN_DE_LA_VENTANA
-        alto = todos[int(0.95 * (len(todos) - 1))] + MARGEN_DE_LA_VENTANA
+        bajo = todos[int(0.05 * (len(todos) - 1))] - margen
+        alto = todos[int(0.95 * (len(todos) - 1))] + margen
         return bajo, alto
     del_nombre = [int(anio) for anio in _ANIO_DEL_NOMBRE.findall(nombre or "") if DESDE <= int(anio) <= hasta]
     if del_nombre:
-        return min(del_nombre) - ANTES_DEL_NOMBRE, max(del_nombre) + MARGEN_DE_LA_VENTANA
+        return min(del_nombre) - ANTES_DEL_NOMBRE, max(del_nombre) + margen
     return None
 
 

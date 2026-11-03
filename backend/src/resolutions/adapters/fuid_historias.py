@@ -19,6 +19,11 @@ título», «cédula», «código».
 
 Lo que va antes de la primera ficha de un PDF no es de ningún estudiante y no
 lleva fila, como las hojas de la ceremonia en las actas de grado.
+
+Las hojas sueltas de Medicina -- una matrícula, un certificado o un recibo por
+estudiante (cajas 00C003267 y 00C003268) -- van por aquí también, con el tipo
+de hoja en el asunto (``clase``) y, si la hoja trae su fecha entera, esa fecha
+en los dos extremos (``fecha_exacta``).
 """
 
 from __future__ import annotations
@@ -33,6 +38,9 @@ from .fuid_actas_de_grado import NO_LEIDO, ubicacion
 
 
 def _fechas(fila: Mapping[str, object]) -> tuple[str, str]:
+    if fecha := fila.get("fecha_exacta"):
+        # Una hoja suelta de Medicina con su fecha entera: «26/03/1992» en los dos extremos.
+        return str(fecha), str(fecha)
     inicial, final = fila.get("anio_inicial"), fila.get("anio_final")
     return (
         f"01/01/{inicial}" if isinstance(inicial, int) else NO_LEIDO,
@@ -64,7 +72,9 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
     folios = folios if isinstance(folios, int) else NO_LEIDO
     return FuidRow(
         orden=0,
-        asunto=f"{nombre} - {HISTORIA_ACADEMICA}",
+        # Las hojas sueltas de Medicina dicen qué hoja son: «… - CERTIFICADO
+        # DE MATRICULA», «… - RECIBO DE CAJA» (el operador, 2026-11-03).
+        asunto=f"{nombre} - {fila.get('clase') or HISTORIA_ACADEMICA}",
         codigo_trd="",
         consecutivo_inicial=_identificacion(fila),
         consecutivo_final=str(fila.get("codigo") or "") or NO_LEIDO,
