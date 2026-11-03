@@ -481,12 +481,18 @@ def test_el_pdf_se_llama_orden_nombre_y_cedula():
     assert largo.endswith("-1047382991.pdf") and len(largo) <= 80 + len(".pdf")
 
 
-def test_la_cedula_de_la_ficha_de_los_90_aunque_este_fuera_de_su_sitio():
-    """Pájaro Martínez y Guerra Arocha (2026-10-30): el «4» leído «A» y el número bajo el renglón."""
+def test_la_cedula_de_la_ficha_de_los_90_sólo_con_su_rotulo():
+    """Pájaro Martínez y Guerra Arocha (2026-10-30): el «4» leído «A», y el número bajo el renglón.
+
+    Desde el 2026-11-03 sólo es cédula lo que trae su rótulo justo a la
+    izquierda (el operador: «que al lado izquierdo del primer número diga
+    cédula, TI o CC»). El de Guerra va renglones más abajo, sin rótulo: no se
+    toma, y la fila dice que falta para revisarla en el papel.
+    """
     pajaro = leer_ficha("Fecha de Grado. Dic 4 de 1986 Cédula No. A5.467.824 de: C/gena. Código. 549010014 Libreta Militar:")
     assert (pajaro.cedula, pajaro.codigo) == ("45467824", "549010014")
     guerra = leer_ficha("Cédula No. | de: Fundación | x 57.446.637 de Fundación | Código. 549010026 | Libreta Militar:")
-    assert (guerra.cedula, guerra.codigo) == ("57446637", "549010026")
+    assert (guerra.cedula, guerra.codigo) == (None, "549010026")
 
 
 def test_la_ficha_de_alrededor_del_2000_con_la_tarjeta_sobre_el_renglon():

@@ -201,6 +201,18 @@ def _despachar(payload: dict) -> dict:
             )
         return _kingspan_job(payload, task)
 
+    # Sin tipo declarado, lo primero: si es de la familia de las historias
+    # académicas -- Medicina, Enfermería, las hojas sueltas de matrícula --, va
+    # a esa habilidad. El reconocedor general las toma por matrículas y la ruta
+    # vieja entregaba 9 PDF donde había 60 estudiantes. Lo pidió el operador el
+    # 2026-11-03: «que sepa detectar la habilidad automáticamente».
+    if TipoPedido.parse(payload.get("tipo")) is TipoPedido.AUTO and (familia := _familia_de_historias(payload)):
+        from .historias import historias_academicas_job
+
+        _anunciar(payload, Stage.IDENTIFYING, detail=f"{familia}: se procesa con «Historias académicas»")
+        payload["reconocimiento"] = {"tipo": "historia-academica", "por": "contenido", "motivo": familia}
+        return historias_academicas_job(payload)
+
     if not task.writes_documents:
         # Sin tipo declarado, una mirada gratis al patrón antes del inventario:
         # un acta de grado reconocida allí iba al borrador roto de `acta_split`.
@@ -354,6 +366,29 @@ def _despachar(payload: dict) -> dict:
         )
 
     return _split_job(payload, task)
+
+
+#: Cuántas páginas se leen, como mucho, para saber si un PDF es de historias:
+#: la capa de texto de un libro de 340 páginas se lee en un segundo.
+PAGINAS_PARA_LA_FAMILIA = 600
+
+
+def _familia_de_historias(payload: dict) -> str | None:
+    """Si el PDF es de los que parte «Historias académicas», y cuál; por su capa de texto, gratis."""
+    from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...domain.historia_medicina import familia_de_historias
+
+    try:
+        source = PyMuPDFPageSource(Path(payload["source"]), payload.get("filename"))
+    except Exception:  # noqa: BLE001 - no poder mirarlo no es motivo para fallar: sigue lo de siempre
+        logger.debug("no se pudo abrir %s para ver si es de historias", payload.get("filename"), exc_info=True)
+        return None
+    try:
+        hasta = min(source.page_count, PAGINAS_PARA_LA_FAMILIA)
+        textos = [source.text_of(numero) or "" for numero in range(1, hasta + 1)]
+    finally:
+        source.close()
+    return familia_de_historias(textos, str(payload.get("filename") or ""))
 
 
 def _recognise(payload: dict):

@@ -228,6 +228,10 @@ def _cola_del_anio(
         if palabra in _DECENAS and base == 1900:
             usados.add(posicion)
             return _decena_y_unidad(palabras, posicion, _DECENAS[palabra], usados, trozo)
+        # «mil novecientos veintiséis (1926)»: de diez a veintinueve, una palabra.
+        if base == 1900 and palabra in _DEL_DIEZ_AL_TREINTA:
+            usados.add(posicion)
+            return _DEL_DIEZ_AL_TREINTA[palabra]
         if base == 2000 and (palabra in _UNIDADES or palabra in _DEL_DIEZ_AL_TREINTA):
             usados.add(posicion)
             return _UNIDADES.get(palabra) or _DEL_DIEZ_AL_TREINTA[palabra]
@@ -332,6 +336,8 @@ def apertura(texto: str, pagina: int = 1) -> AperturaDeGrado | None:
 #: el separador de cada ceremonia («GRADUADOS JULIO 22 DE 2005»).
 _DE_LA_CEREMONIA = re.compile(
     r"RESOLUCION\s+N|LISTADO|GRADUANDOS|GRADUADOS|CEREMONIA\s+DE\s+GRADO|ACTAS\s+DE\s+GRADO"
+    # La hoja que cierra el libro manuscrito: «Son la última acta… queda cerrado el presente libro».
+    r"|ULTIMA\s+ACTA|PRESENTE\s+LIBRO"
 )
 #: Lo que trae el cuerpo de un acta de graduado: con tres de cuatro, la hoja es
 #: un acta aunque su encabezado no se lea.
@@ -343,10 +349,24 @@ SIGUE = "sigue"
 ROTULO_DE_CEREMONIA = "CEREMONIA DE GRADO"
 
 
+#: El acta manuscrita de 1924-1946 (20. ACTAS DE GRADO 3362): «En la ciudad de
+#: Cartagena, a los veinticuatro días del mes de Febrero de mil novecientos
+#: veintiséis (1926), se constituyó … el Consejo Examinador … con el fin de
+#: practicar el quinto examen preparatorio de grado del alumno Jesús Mª Barrios
+#: J.», o «… el examen final de grado del alumno …». Una por página.
+_EXAMEN_ANTIGUO = re.compile(
+    # «En la ciudad de Cartagena», «En la cuidad…» (el OCR) o, desde 1935, «En Cartagena, a…».
+    r"EN\s+(?:LA\s+C\w{4}D\s+DE\s+)?CARTAGENA.{0,900}?(?:EXAMEN.{0,40}?(?:PREPARATORI|GRADO)"
+    r"|CONSEJO\s+EXAMINADOR|JURADO\s+DE\s+EXAMINADORES)"
+)
+
+
 def clase_de_hoja(texto: str) -> str:
     """Qué es una hoja de un libro de grados: el acta de un graduado, una hoja de
     la ceremonia, o la continuación de lo anterior (su reverso, una nota)."""
     if apertura(texto):
+        return GRADUADO
+    if _EXAMEN_ANTIGUO.search(_sin_cortes(_plano(texto))):
         return GRADUADO
     plano = _plano(texto)
     if sum(1 for marca in _CUERPO_DEL_ACTA if marca in plano) >= CUERPO_MINIMO:
@@ -510,6 +530,7 @@ def _nombre_tras(texto: str) -> str | None:
     nombre acaba antes del «y».
     """
     palabras: list[str] = []
+    tras_inicial = False
     for token in texto[:90].split():
         limpio = re.sub(r"[^A-Z]", "", token)
         # «… DE MOYA c.c.#32'617.274»: la cédula pegada acaba el nombre.
@@ -524,8 +545,19 @@ def _nombre_tras(texto: str) -> str | None:
             if not palabras or palabras[-1] not in _ENLACES_DEL_NOMBRE or "Y" in palabras[-2:]:
                 return None
             break
+        # Tras una inicial con punto el nombre sólo sigue si aún no tiene
+        # apellido o si sigue un enlace: «Jorge H. Navarro Palacio» sigue,
+        # «Miguel F. de la Espriella G. Presidió…» acaba en la G.
+        if tras_inicial and len(palabras) >= 2 and limpio not in _ENLACES_DEL_NOMBRE:
+            break
+        tras_inicial = False
         if len(limpio) >= 2 or limpio in _ENLACES_DEL_NOMBRE:
             palabras.append(limpio)
+        # La inicial con su punto, en medio, no acaba el nombre (los libros
+        # manuscritos de 1924-1946).
+        if re.fullmatch(r"[A-Z]\.", token) and palabras:
+            tras_inicial = True
+            continue
         if token == "-" or re.search(r"[.,;:]$", token):
             break
     while palabras and palabras[-1] in _ENLACES_DEL_NOMBRE:
@@ -614,6 +646,99 @@ def _con_la_constancia(acta: ActaDeConsejo, hecha: Constancia) -> ActaDeConsejo:
     )
 
 
+#: Cómo nombra el acta antigua al examinado: «del alumno Jesús Mª Barrios J.»,
+#: «al Señor Luis María Merlano,», «del postulante …».
+_EL_EXAMINADO = re.compile(
+    r"\b(?:DEL\s+ALUMN[OA]|DE\s+LA\s+ALUMNA|AL\s+SENOR|A\s+LA\s+SENORITA|DEL\s+POSTULANTE)\b\W{0,3}"
+    # «del alumno señor Rafael Ibáñez Ferrer», «de la alumna de Paulina Bengeff».
+    r"(?:SENOR(?:ITA)?\b\W{0,2}|DE\s+(?=[A-Z]{3,}\s))?"
+)
+_PREPARATORIO = re.compile(
+    # «el tercer examen preparatorio», «el examen de tercer preparatorio al grado».
+    r"\b(PRIMER|SEGUNDO|TERCER|CUARTO|QUINTO|SEXTO|SEPTIMO|OCTAVO)O?\s+(?:EXAMEN\s+)?PREPARATORI"
+)
+#: El de arriba de la hoja: «(3er Preparatorio)», «4º Preparatorio», «(3ª preparatoria)».
+_PREPARATORIO_DE_ARRIBA = re.compile(r"\b0?([1-8])\s*(?:ER|O|A)?\W{0,2}PREPARATORI")
+_ORDINALES = {
+    "1": "PRIMER", "2": "SEGUNDO", "3": "TERCER", "4": "CUARTO", "5": "QUINTO", "6": "SEXTO",
+    "7": "SEPTIMO", "8": "OCTAVO",
+}
+_TITULO_ANTIGUO = re.compile(r"TITULO\s+DE\s+(DOCTOR\s+EN\s+[A-Z ]{5,60}?)(?:\s*,|\s+(?:AL|A\s+LA)\s+SEN|\s+Y\s+LE\b)")
+
+
+def examen_antiguo(texto: str) -> tuple[str | None, str | None]:
+    """El nombre del examinado y lo que obtuvo, de un acta manuscrita de 1924-1946; ``(None, None)`` si no lo es.
+
+    El título es el del grado -- «DOCTOR EN MEDICINA Y CIRUGIA» -- o, en el
+    libro de preparatorios, cuál: «QUINTO EXAMEN PREPARATORIO DE GRADO». El
+    nombre, el de la frase -- «del alumno Mario Fernández Mendoza» -- o, si
+    no se lee, el que la hoja lleva arriba como título.
+    """
+    plano = _sin_cortes(_plano(texto))
+    if not _EXAMEN_ANTIGUO.search(plano):
+        return None, None
+    del_texto = None
+    for marca in _EL_EXAMINADO.finditer(plano):
+        del_texto = _nombre_tras(plano[marca.end() :])
+        if del_texto:
+            break
+    nombre = _nombre_confirmado(_nombre_de_arriba(texto), del_texto)
+    preparatorio = _PREPARATORIO.search(plano)
+    de_arriba = _PREPARATORIO_DE_ARRIBA.search(plano[: plano.find("CARTAGENA")])
+    grado = _TITULO_ANTIGUO.search(plano)
+    if preparatorio:
+        titulo = f"{preparatorio.group(1)} EXAMEN PREPARATORIO DE GRADO"
+    elif de_arriba and de_arriba.group(1) in _ORDINALES:
+        titulo = f"{_ORDINALES[de_arriba.group(1)]} EXAMEN PREPARATORIO DE GRADO"
+    elif grado:
+        titulo = grado.group(1).strip()
+    else:
+        titulo = None
+    return nombre, titulo
+
+
+def _nombre_confirmado(arriba: str | None, del_texto: str | None) -> str | None:
+    """El nombre entre sus dos apariciones en la hoja: arriba como título y en «del alumno …».
+
+    Las dos están escritas a mano y la IA puede leer mal una de ellas: el de
+    arriba manda en la forma; el del texto lo completa si lo dice entero
+    («RAFAEL IBANEZ» arriba, «RAFAEL IBANEZ FERRER» en el texto) y, si las dos
+    difieren en una palabra, se vota (``votar_nombre``). Con una sola, ésa.
+    """
+    if not arriba or not del_texto:
+        return arriba or del_texto
+    una, otra = arriba.split(), del_texto.split()
+    if len(otra) > len(una) and [p for p in otra if p in una] == una:
+        return del_texto
+    if len(una) >= len(otra) and [p for p in una if p in otra] == otra:
+        return arriba
+    from .doble_lectura import votar_nombre
+
+    votado, _duda = votar_nombre(arriba, [del_texto])
+    return votado or arriba
+
+
+def _sin_cortes(plano: str) -> str:
+    """El texto sin las palabras partidas al final del renglón: «EX- AMEN» es EXAMEN."""
+    return re.sub(r"(\w)-\s+(\w)", r"\1\2", plano)
+
+
+def _nombre_de_arriba(texto: str) -> str | None:
+    """El nombre que la hoja lleva arriba como título: «# Rodrigo de Vivero», «2 Mario Fernández Mendoza».
+
+    Es el primer renglón con letras antes de «En … Cartagena», sin los números
+    de página y folio ni el «(3er Preparatorio)».
+    """
+    cabeza = re.split(r"\bEn\s+(?:la\s+c\w{4}d\s+de\s+)?Cartagena", texto, maxsplit=1, flags=re.IGNORECASE)[0]
+    for renglon in cabeza.splitlines():
+        limpio = re.sub(r"\(.*?\)|\d+\S*|#|[^\wÁÉÍÓÚÜÑáéíóúüñ .]", " ", renglon)
+        limpio = re.sub(r"\b\w*PREPARATORI\w*\b", " ", limpio, flags=re.IGNORECASE)
+        candidato = _nombre_tras(_plano(limpio) + ".")
+        if candidato:
+            return candidato
+    return None
+
+
 def completar_acta(acta: ActaDeConsejo, texto: str) -> ActaDeConsejo:
     """El acta con lo que le falte leído de ``texto``; lo ya leído no se toca.
 
@@ -625,12 +750,15 @@ def completar_acta(acta: ActaDeConsejo, texto: str) -> ActaDeConsejo:
     if hecha is not None:
         acta = _con_la_constancia(acta, hecha)
     leido = graduado(texto)
+    del_examen, titulo_del_examen = examen_antiguo(texto)
     nuevo = replace(
         acta,
         numero=acta.numero or leido.numero,
         fecha=acta.fecha or fecha_de_grado(texto),
-        nombre=acta.nombre or leido.nombre,
-        titulo=acta.titulo or leido.titulo,
+        # En el acta antigua el lector moderno toma pedazos del texto corrido
+        # («HICHO LO QUE ANTECEDE» por nombre): manda lo que lee el formato antiguo.
+        nombre=acta.nombre or del_examen or leido.nombre,
+        titulo=acta.titulo or titulo_del_examen or leido.titulo,
         cedula=acta.cedula or leido.cedula,
     )
     # Las dudas son de lo que quedó: una relectura limpia las borra. La nota
@@ -758,6 +886,11 @@ INSTRUCCIONES_DEL_ACTA_DE_GRADO = (
     "CEDULA: el número de la cédula del graduado, sólo cifras\n\n"
     "- En una constancia que nombra a varios graduados, el nombre es el de quien la constancia señala; si no "
     "señala a ninguno, NINGUNO.\n"
+    "- Si es un acta manuscrita antigua de examen («se constituyó el Consejo Examinador … con el fin de practicar "
+    "el quinto examen preparatorio de grado del alumno …», o el examen final de grado), el NOMBRE es el del "
+    "alumno examinado, la FECHA la del examen, y el TITULO el que se le confirió («DOCTOR EN MEDICINA Y "
+    "CIRUGIA») o, si es un preparatorio, cuál («QUINTO EXAMEN PREPARATORIO DE GRADO»). Esas actas no tienen "
+    "número ni cédula: NINGUNO.\n"
     "- Cada palabra y cada cifra tiene que estar escrita en el texto: no corrijas ni inventes.\n"
     "- Si un dato no está, escribe NINGUNO."
 )
@@ -768,7 +901,7 @@ _DEL_GRADO = re.compile(
     r"ESPECIALIST|ENFERMER|LICENCIAD|MAGISTER|MAESTR|DOCTOR|ODONTOLOG|MEDIC|BACTERIOLOG|QUIMIC|"
     r"FARMACEUT|INGENIER|ABOGAD|ADMINISTRAD|ECONOMIST|CONTADOR|PSICOLOG|TRABAJADOR|TECNOLOG|TECNIC|"
     r"NUTRICION|FONOAUDIOLOG|BIOLOG|MATEMATIC|FISIC|HISTORIADOR|FILOSOF|COMUNICADOR|ARQUITECT|"
-    r"PROFESIONAL|NORMALISTA|SOCIOLOG|ANTROPOLOG|LINGUIST|ESTADISTIC|ZOOTECNIST|AGRONOM|VETERINARI"
+    r"PROFESIONAL|NORMALISTA|SOCIOLOG|ANTROPOLOG|LINGUIST|ESTADISTIC|ZOOTECNIST|AGRONOM|VETERINARI|PREPARATORIO"
 )
 
 
@@ -840,3 +973,80 @@ MESES_EN_LETRAS = {
     1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL", 5: "MAYO", 6: "JUNIO", 7: "JULIO",
     8: "AGOSTO", 9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE", 12: "DICIEMBRE",
 }
+
+
+# -- el nombre manuscrito, leído tres veces --------------------------------------
+
+#: Cuánto se parecen dos lecturas de una palabra para ser la misma palabra mal leída.
+PARECIDO_DE_UNA_LECTURA = 0.6
+
+
+def lecturas_del_nombre(texto: str) -> tuple[str | None, str | None]:
+    """Las dos veces que un acta manuscrita escribe el nombre: arriba como título, y en «del alumno …»."""
+    plano = _sin_cortes(_plano(texto))
+    del_texto = None
+    for marca in _EL_EXAMINADO.finditer(plano):
+        del_texto = _nombre_tras(plano[marca.end() :])
+        if del_texto:
+            break
+    return _nombre_de_arriba(texto), del_texto
+
+
+def nombre_de_tres_lecturas(
+    arriba: str | None, del_texto: str | None, ampliado: str | None, conocidas: Collection[str] = ()
+) -> tuple[str | None, str | None]:
+    """El nombre que confirman las lecturas de un acta manuscrita, y por qué revisarlo si no lo confirman.
+
+    Palabra por palabra, la del renglón ampliado vale por dos -- se lee sola y
+    más grande -- y las de la página, una cada una. Una palabra queda si suma
+    más que las demás grafías; en empate, la que está en la lista de nombres
+    conocidos, y si ninguna lo está, la de arriba, y el nombre va a revisión con
+    las tres lecturas: «Espiulla», «Espinella» o Espriella (UPD3860000, 1925)
+    no lo decide nadie sin el papel delante. Lo que no se confirma no se da
+    por seguro.
+    """
+    base = _nombre_confirmado(arriba, del_texto) or ampliado
+    if not base:
+        return None, None
+    lecturas = [(arriba, 1.0), (del_texto, 1.0), (ampliado, 2.0)]
+    elegidas: list[str] = []
+    dudosas: list[str] = []
+    for palabra in base.split():
+        votos: dict[str, float] = {}
+        for lectura, peso in lecturas:
+            if not lectura:
+                continue
+            parecida = max(
+                lectura.split(), key=lambda otra: difflib.SequenceMatcher(None, palabra, otra).ratio(), default=None
+            )
+            # En las de dos letras -- «Mª», leída «ME» o «MA» -- basta la primera.
+            if parecida and (
+                difflib.SequenceMatcher(None, palabra, parecida).ratio() >= PARECIDO_DE_UNA_LECTURA
+                or (len(palabra) <= 2 and len(parecida) <= 2 and palabra[0] == parecida[0])
+            ):
+                votos[parecida] = votos.get(parecida, 0.0) + peso
+        if not votos:
+            elegidas.append(palabra)
+            continue
+        maximo = max(votos.values())
+        empatadas = [grafia for grafia, peso in votos.items() if peso == maximo]
+        if len(empatadas) == 1:
+            elegidas.append(empatadas[0])
+            continue
+        conocida = [grafia for grafia in empatadas if grafia in conocidas]
+        if len(conocida) == 1:
+            elegidas.append(conocida[0])
+            continue
+        elegidas.append(palabra)
+        dudosas.append("/".join(sorted(empatadas)))
+    nombre = " ".join(elegidas)
+    if not dudosas:
+        return nombre, None
+    leidas = "; ".join(
+        f"{donde}: {lectura}"
+        for donde, lectura in (("arriba", arriba), ("en el texto", del_texto), ("ampliado", ampliado))
+        if lectura
+    )
+    return nombre, (
+        f"nombre por confirmar en el papel ({', '.join(dudosas)}): la letra a mano se leyó distinto — {leidas}"
+    )

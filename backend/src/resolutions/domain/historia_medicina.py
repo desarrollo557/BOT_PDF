@@ -38,6 +38,7 @@ from difflib import SequenceMatcher
 
 from .doble_lectura import Franja
 from .historia_academica import Expediente, Ficha, plano
+from .rotulo_de_cedula import tiene_rotulo
 from .text_distance import damerau_levenshtein
 
 #: Qué es cada página de una historia de Medicina.
@@ -139,9 +140,20 @@ FRANJA_DEL_PIE = Franja(
     # pegaba al nombre («OROZCO CABEZA JAIRO MEDICINA LEGAL», UPD0077293).
     margen=0.008,
 )
+#: El renglón de la cédula de la ficha -- «Cédula - Tarjeta No.» de 1941 a 1965,
+#: «C. de C. No.» después --, para el último intento de leerla: ampliado y por
+#: la IA, cuando ni la capa, ni la ficha leída entera, ni Tesseract la dieron.
+#: Con margen por arriba: a veces va escrita encima del renglón («39' 693.597»).
+FRANJA_DE_LA_CEDULA = Franja(
+    campo="la cédula de la ficha",
+    leyendas=("CEDULA", "C. DE C", "TARJETA"),
+    rotulo=r"C[EÉ]DULA|\bC\.?\s?(?:DE|de)\s?C\b",
+    alto=0.035,
+    margen=0.022,
+)
 #: Desde qué altura se busca cada rótulo: la mitad de arriba de la ficha es el
 #: «Registro de actividades», impreso al revés, y el pie va abajo del todo.
-DESDE_LA_ALTURA = {FRANJA_DEL_ALUMNO.campo: 0.35, FRANJA_DEL_PIE.campo: 0.75}
+DESDE_LA_ALTURA = {FRANJA_DEL_ALUMNO.campo: 0.35, FRANJA_DEL_PIE.campo: 0.75, FRANJA_DE_LA_CEDULA.campo: 0.5}
 
 _ROTULO_DEL_NOMBRE = re.compile(r"\bNOMBRE\b(?:\W+DEL\W+ALUMNO)?(?!\W+DE(?:L\W+PADRE|\W+LA\W+MADRE))")
 #: Lo que acompaña al nombre en su renglón y no es nombre. «DE» y «DEL» no:
@@ -166,6 +178,11 @@ def _plenas(palabras: Sequence[str]) -> list[str]:
 def _solo_el_nombre(renglon: str) -> str | None:
     """Las palabras del renglón sin rótulos ni cifras, si son por lo menos dos con vocales."""
     palabras = [p for p in re.findall(r"[A-Z]+", renglon) if p not in _NO_SON_NOMBRE]
+    if len(palabras) > 2 and palabras[0] in ("DEL", "DE") and _a_medias(palabras[1], "ALUMNO"):
+        # El rótulo mal leído que se cuela delante: «DEL ALMO RAJMUN
+        # VILLALOBOS» por «del alumno RAMON VILLALOBOS» (Tesseract, UPD
+        # 3859597, pág. 60).
+        palabras = palabras[2:]
     if corte := next((i for i, p in enumerate(palabras) if p in _DE_ASIGNATURA), None):
         palabras = palabras[:corte]
     while palabras and palabras[-1] in _CONECTORES:
@@ -216,29 +233,54 @@ def _otro_nombre_completo(renglones: Sequence[str], nombre: str) -> bool:
 
 # -- la cédula de la ficha -----------------------------------------------------------
 
-#: El número de una cédula como se escribe en la ficha: «877851», «39' 693.597».
-_NUMERO = r"(\d{1,3}(?:\s?[.,'’]\s?\d{3}){1,2}|\d{6,10})(?![\d\-])"
-#: «Cédula - Tarjeta No. 877851» (de 1941 a 1965) y «C. de C. No. 8'748.124» (de los 70 en adelante).
-_CEDULA_TRAS_EL_ROTULO = re.compile(r"(?:CEDULA\W+TARJETA|\bC\.?\s?DE\s?C\.?)\s*N[O0]?\.?\s*" + _NUMERO)
-#: La cédula escrita a mano encima del renglón «C. de C. No.»: en el texto queda delante.
-_CEDULA_ANTES_DEL_ROTULO = re.compile(_NUMERO + r"[^\d]{0,30}?\bC\.?\s?DE\s?C\.?\s*N[O0]?\b")
-_CIFRAS_DE_CEDULA = range(6, 9)
+#: El número de una cédula como se escribe en la ficha: «877851», «8'748.124».
+#: Detrás de «Cédula - Tarjeta No.» (de 1941 a 1965) o de «C. de C. No.» (de los
+#: 70 en adelante), que comprueba ``tiene_rotulo``.
+_NUMERO = r"(?<![\d.,'’])(\d{1,3}(?:\s?[.,'’]\s?\d{3}){1,2}|\d{5,10})(?![\d\-])"
+#: De cinco cifras también: las cédulas de los 40 y 50 -- «Cédula - Tarjeta No.
+#: 77975» (Castillo), «79921» (Carrasquilla), UPD 3859597 -- salían sin cédula
+#: aun leídas por la IA.
+_CIFRAS_TRAS_EL_ROTULO = range(5, 9)
 
 
 def cedula_de_la_ficha(texto: str) -> str | None:
     """La cédula que escribe la ficha de Medicina, sin puntos; ``None`` si no la trae o no parece una.
 
-    Detrás de su rótulo, o delante si se escribió encima del renglón («39'
-    693.597» sobre «C. de C. No.», INTERNADOS ROTATORIO 1978-1984, pág. 1). De
-    6 a 8 cifras, o 10 si empieza por 1; la tarjeta de identidad la lee
-    ``leer_ficha``.
+    **Sólo con su rótulo justo a la izquierda** -- «Cédula - Tarjeta No.», «C.
+    de C. No.», «C.C.», «T.I.» (``rotulo_de_cedula``) --, como dictó el
+    operador el 2026-11-03: el número escrito encima del renglón, que en el
+    texto queda delante del rótulo («39' 693.597 / C. de C. No.»), ya no se
+    toma. De 5 a 8 cifras (las de los 40 y 50 tienen cinco), o 10 si empieza
+    por 1; la tarjeta de identidad la lee ``leer_ficha``.
     """
     p = plano(texto)
-    for patron in (_CEDULA_TRAS_EL_ROTULO, _CEDULA_ANTES_DEL_ROTULO):
-        if hallado := patron.search(p):
-            cifras = re.sub(r"\D", "", hallado.group(1))
-            if len(cifras) in _CIFRAS_DE_CEDULA or (len(cifras) == 10 and cifras.startswith("1")):
-                return cifras
+    for hallado in re.finditer(_NUMERO, p):
+        if not tiene_rotulo(p[: hallado.start()]):
+            continue
+        cifras = re.sub(r"\D", "", hallado.group(1))
+        if len(cifras) in _CIFRAS_TRAS_EL_ROTULO or (len(cifras) == 10 and cifras.startswith("1")):
+            return cifras
+    return None
+
+
+def cedula_del_expediente(textos: Sequence[str]) -> str | None:
+    """La cédula del estudiante, buscada en todas las páginas de su expediente.
+
+    El operador (2026-11-03): «siempre que un documento tenga cédula y nombre
+    de una persona, y después de haber buscado la cédula la encuentres, va en
+    el nombre». Primero en cada ficha -- «Cédula - Tarjeta No. 4312325», la de
+    RAMON VILLALOBOS LOPEZ (UPD 3859597, pág. 58), salía sin ella --, y si no,
+    la que traiga cualquier otra hoja con su rótulo («C.C. 45.474.260»). Sin
+    rótulo no: un número suelto puede ser un folio o un teléfono.
+    """
+    from .historia_academica import leer_ficha
+
+    for texto in textos:
+        if cedula := cedula_de_la_ficha(texto):
+            return cedula
+    for texto in textos:
+        if cedula := leer_ficha(texto).cedula:
+            return cedula
     return None
 
 
@@ -735,6 +777,27 @@ def expedientes_de_medicina(
         if igual is False:
             abrir(numero, quien, ficha_en)
             continue
+        if en_blanco and quien is None and del_expediente[-1] and _cartulina_completa(actual, clases):
+            # Una cartulina nueva que no dice de quién es -- ni su ficha ni el
+            # pie de sus notas se dejan leer -- detrás de la cartulina entera
+            # de otro estudiante: no se le pega. Unida, la de VELASQUEZ CANO
+            # RAFAEL quedaba dentro del PDF de RAMON VILLALOBOS LOPEZ (UPD
+            # 3859597, págs. 58 a 63; el operador, 2026-11-03: «te fijas que
+            # no tiene el mismo nombre?»). Se separa y se anota.
+            abrir(numero, None, ficha_en)
+            resultado[-1].dudas.append(
+                f"la ficha de la página {numero} y su reverso no dejan leer el nombre: se separó de "
+                f"{del_expediente[-2]}; revise si es suyo"
+            )
+            continue
+        if clase == FICHA_DE_MEDICINA and nombre and del_expediente[-1] is None and _cartulina_completa(actual, clases):
+            # Y al revés: la ficha con nombre que llega detrás de una cartulina
+            # entera que no dijo de quién es abre la suya. Unidas, la de
+            # Velásquez -- su pie no se dejó leer -- se llevaba la de FABIO
+            # VELASCO REYES (UPD 3859597, págs. 62 a 65, con «Solo OCR»).
+            actual.dudas.append(f"no deja leer el nombre; la ficha siguiente es de {nombre}: revise si es suya")
+            abrir(numero, nombre, ficha_en)
+            continue
         actual.paginas.append(numero)
         if del_expediente[-1] is None and quien:
             del_expediente[-1] = quien
@@ -748,8 +811,13 @@ def expedientes_de_medicina(
     for expediente in resultado:
         if expediente.ficha is not None:
             expediente.ficha = Ficha(nombre=_nombre_del_expediente(expediente, clases, nombres))
-    _avisar_los_tramos(resultado)
-    return resultado
+    return _unir_los_tramos(resultado, nombres)
+
+
+def _cartulina_completa(expediente: Expediente, clases: Sequence[str | None]) -> bool:
+    """Si el expediente ya tiene una cartulina entera: una ficha y una hoja de notas."""
+    suyas = {clases[numero - 1] for numero in expediente.paginas}
+    return FICHA_DE_MEDICINA in suyas and NOTAS_DE_MEDICINA in suyas
 
 
 def _nombre_del_expediente(expediente: Expediente, clases: Sequence[str | None], nombres: Mapping[int, str]) -> str | None:
@@ -761,16 +829,113 @@ def _nombre_del_expediente(expediente: Expediente, clases: Sequence[str | None],
     return None
 
 
-def _avisar_los_tramos(expedientes: Sequence[Expediente]) -> None:
-    """El mismo estudiante en dos tramos separados: cada uno dice dónde está el otro.
+def _unir_los_tramos(
+    expedientes: list[Expediente], nombres: Mapping[int, str]
+) -> list[Expediente]:
+    """El mismo estudiante en dos tramos separados del escaneo: un solo expediente.
 
-    El operador prefirió no reordenar el escaneo (2026-11-03): un PDF por
-    tramo, cada uno con su fila, y la nota que lo avisa.
+    El operador (2026-11-03): «no puede existir 2 PDF con el mismo nombre, ya
+    que obviamente cada diploma, estudiante es único». Antes salía un PDF por
+    tramo -- Baleta, Ballestas y otra vez Baleta (UPD 3859613, págs. 1 a 6) --;
+    ahora el segundo tramo se suma al primero, sus páginas en orden, y la
+    ficha que manda es la que dice el nombre (``_con_la_ficha_primero`` la
+    pone delante al escribir el PDF). Sólo por el nombre bien leído: lo que no
+    dice de quién es no se une a nadie.
     """
-    con_nombre = [e for e in expedientes if e.ficha is not None and e.ficha.nombre]
-    for uno in con_nombre:
-        for otro in con_nombre:
-            if otro is not uno and mismo_estudiante(uno.ficha.nombre, otro.ficha.nombre):
-                uno.dudas.append(
-                    f"el mismo estudiante aparece también en las páginas {otro.paginas[0]} a {otro.paginas[-1]}"
-                )
+    resultado: list[Expediente] = []
+    for expediente in expedientes:
+        nombre = expediente.ficha.nombre if expediente.ficha is not None else None
+        suyo = next(
+            (
+                otro
+                for otro in resultado
+                if nombre and otro.ficha is not None and mismo_estudiante(otro.ficha.nombre, nombre)
+            ),
+            None,
+        )
+        if suyo is None:
+            resultado.append(expediente)
+            continue
+        suyo.dudas.append(
+            f"se unieron las páginas {expediente.paginas[0]} a {expediente.paginas[-1]}, del mismo estudiante, "
+            "que estaban separadas en el escaneo"
+        )
+        suyo.dudas.extend(expediente.dudas)
+        suyo.paginas = sorted({*suyo.paginas, *expediente.paginas})
+        ficha_suya = suyo.pagina_de_la_ficha
+        if expediente.pagina_de_la_ficha and not (ficha_suya and nombres.get(ficha_suya)):
+            suyo.pagina_de_la_ficha = expediente.pagina_de_la_ficha
+    return resultado
+
+
+# -- qué habilidad le toca -------------------------------------------------------------
+#
+# El operador (2026-11-03): «que cuando yo suba esta ruta o cualquiera, sepa
+# detectar la habilidad automáticamente». Con «Detectar automáticamente» el
+# despachador pregunta esto a cada PDF antes que nada: si es de la familia de
+# las historias académicas, va a esa habilidad. Antes el reconocedor general
+# las tomaba por matrículas y las mandaba a la ruta vieja, que entregaba 9 PDF
+# donde había 60 estudiantes.
+
+HISTORIAS_DE_MEDICINA = "historias académicas de Medicina"
+HOJAS_DE_MATRICULA = "matrículas, certificados o recibos, una hoja por estudiante"
+HISTORIAS_DE_FICHA = "historias académicas, una ficha por estudiante"
+
+#: Lo que dice que una hoja suelta es de la Universidad: las matrículas, los
+#: certificados y los recibos de caja que no traen su membrete en la capa.
+_DE_LA_UNIVERSIDAD = ("UNIVERSIDAD DE CARTAGENA", "ADMISIONES", "MEDICINA")
+#: Lo que dice el nombre de un legajo de hojas sueltas de la Universidad.
+_NOMBRE_DE_LEGAJO = re.compile(r"MATRICUL|RECIBOS? DE CAJA|EXONERAD|CERTIFICAD")
+#: Lo que dice el nombre de un PDF de historias, cuando no se puede abrir para
+#: mirarlo: los de más de 25 MB de una carpeta de red no se bajan para sugerir.
+NOMBRE_DE_HISTORIAS = re.compile(
+    r"HISTORIA\w*\s+ACAD|INTERNADO|MATRICUL|RECIBOS? DE CAJA|EXONERAD|\b(?:PRIMER|SEGUNDO|TERCER|CUARTO|QUINTO|SEXTO)\s+ANO\b"
+)
+#: Cuántas fichas de Enfermería -- con dos rótulos de datos personales o más --
+#: hacen falta para tomar el PDF por unas historias, y qué parte de las páginas
+#: tienen que ser fichas u hojas de notas.
+MINIMO_DE_FICHAS = 2
+PARTE_DE_FICHAS_Y_NOTAS = 0.3
+
+
+def familia_de_historias(textos: Sequence[str], nombre: str = "") -> str | None:
+    """Si el PDF es de los que parte «Historias académicas», cuál de ellos; ``None`` si no.
+
+    Sólo con la capa de texto, sin pagar nada:
+
+    * **Historias de Medicina**: la ficha «REGISTRO DE MATRICULA · Nombre del
+      alumno» y el «REGISTRO DE ESTUDIOS» (``es_de_medicina``).
+    * **Hojas sueltas**: la mitad de las páginas son matrículas, certificados o
+      recibos (``es_de_hojas_sueltas``), y son de la Universidad -- su membrete,
+      o el nombre del legajo --: un recibo de caja de otra empresa no es esto.
+    * **Historias de Enfermería**: dos fichas de ingreso por lo menos, con dos
+      rótulos de datos personales cada una o la ficha de 2003 o la de
+      alrededor del 2000, y fichas y notas en un tercio de las páginas.
+      «Nombre del estudiante» solo no basta: lo dicen también los recibos.
+    """
+    from .historia_academica import (
+        FICHA,
+        es_de_notas,
+        leyendas_de_la_ficha,
+        plantilla_de_apertura,
+    )
+
+    if not textos:
+        return None
+    if es_de_medicina(textos):
+        return HISTORIAS_DE_MEDICINA
+    if es_de_hojas_sueltas(textos) and (
+        any(marca in plano(texto) for texto in textos for marca in _DE_LA_UNIVERSIDAD)
+        or _NOMBRE_DE_LEGAJO.search(plano(nombre))
+    ):
+        return HOJAS_DE_MATRICULA
+    fichas = notas = 0
+    for texto in textos:
+        plantilla = plantilla_de_apertura(texto)
+        if plantilla is not None and (plantilla != FICHA or leyendas_de_la_ficha(texto) >= 2):
+            fichas += 1
+        elif es_de_notas(texto):
+            notas += 1
+    if fichas >= MINIMO_DE_FICHAS and fichas + notas >= PARTE_DE_FICHAS_Y_NOTAS * len(textos):
+        return HISTORIAS_DE_FICHA
+    return None

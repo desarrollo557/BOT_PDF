@@ -38,13 +38,38 @@ router = APIRouter()
 MAXIMO_DE_LA_CARPETA = 400
 
 
+#: Las historias académicas no son un tipo del reconocedor general -- las toma
+#: por matrículas --: la sugerencia las dice con su nombre, que es el de la
+#: habilidad que las parte (2026-11-03).
+HISTORIA_ACADEMICA = "historia-academica"
+_ETIQUETAS = {HISTORIA_ACADEMICA: "Historias académicas"}
+#: Cuántas páginas se leen para saber si un PDF es de historias: sobra para
+#: ver sus fichas y sus notas, y un libro de 300 no deja esperando la pantalla.
+PAGINAS_PARA_LA_FAMILIA = 60
+
+
+def _etiqueta(tipo: str) -> str:
+    return _ETIQUETAS.get(tipo) or DocumentType(tipo).label
+
+
 def _sugerencia(ruta: Path, nombre: str) -> dict[str, object]:
     from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...domain.historia_medicina import familia_de_historias
 
     source = PyMuPDFPageSource(ruta, nombre)
     try:
-        resultado = sugerir(source, nombre)
         paginas = source.page_count
+        textos = [source.text_of(numero) or "" for numero in range(1, min(paginas, PAGINAS_PARA_LA_FAMILIA) + 1)]
+        # Lo mismo que hará «Detectar automáticamente» al procesarlo.
+        if familia := familia_de_historias(textos, nombre):
+            return {
+                "tipo": HISTORIA_ACADEMICA,
+                "etiqueta": _etiqueta(HISTORIA_ACADEMICA),
+                "por": "contenido",
+                "motivo": f"trae {familia}",
+                "paginas": paginas,
+            }
+        resultado = sugerir(source, nombre)
     finally:
         source.close()
     return {
@@ -195,10 +220,31 @@ def _reconocer_en_la_red(ruta: str) -> dict[str, object]:
 
 
 def _muy_grande(relativa: str, tamano: int) -> dict[str, object]:
-    """Un PDF de la red que no se baja sólo para sugerir el tipo."""
+    """Un PDF de la red que no se baja sólo para sugerir el tipo: se dice por su nombre, si lo dice.
+
+    En «17. FACULTAD DE MEDICINA 3261- 3268 P» casi todos pesan de 30 a 216 MB,
+    y la sugerencia salía vacía (2026-11-03). Su nombre -- «HISTORIAS
+    ACADEMICAS 1948-1960», «INTERNADOS ROTATORIO» -- sí lo dice; el tipo
+    verdadero lo comprueba la corrida al procesarlo.
+    """
+    from ...domain.historia_academica import plano
+    from ...domain.historia_medicina import NOMBRE_DE_HISTORIAS
+    from ...domain.patrones import pista_del_nombre
+
+    pesa = f"pesa {tamano // (1024 * 1024)} MB"
+    if NOMBRE_DE_HISTORIAS.search(plano(relativa)):
+        tipo, etiqueta = HISTORIA_ACADEMICA, _etiqueta(HISTORIA_ACADEMICA)
+    elif pista := pista_del_nombre(relativa):
+        tipo, etiqueta = str(pista), pista.label
+    else:
+        return {**_sin_abrir(relativa, Exception()), "motivo": f"no se bajó para sugerir el tipo: {pesa}"}
     return {
-        **_sin_abrir(relativa, Exception()),
-        "motivo": f"no se bajó para sugerir el tipo: pesa {tamano // (1024 * 1024)} MB",
+        "ruta": relativa,
+        "tipo": tipo,
+        "etiqueta": etiqueta,
+        "por": "nombre",
+        "motivo": f"no se bajó para sugerir el tipo ({pesa}); lo dice su nombre",
+        "paginas": 0,
     }
 
 
@@ -221,7 +267,7 @@ def _resumen(
         "total_exacto": exacto,
         "mirados": len(archivos),
         "por_tipo": [
-            {"tipo": tipo, "etiqueta": DocumentType(tipo).label, "cantidad": cantidad}
+            {"tipo": tipo, "etiqueta": _etiqueta(str(tipo)), "cantidad": cantidad}
             for tipo, cantidad in cuenta.most_common()
         ],
         "archivos": archivos,

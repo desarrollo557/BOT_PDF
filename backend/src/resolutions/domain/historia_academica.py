@@ -40,6 +40,7 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 
 from .doble_lectura import Franja
+from .rotulo_de_cedula import tiene_rotulo
 
 #: La clase de las filas de esta habilidad en el inventario, y la de las páginas
 #: que no son de ningún estudiante (las de antes de la primera ficha).
@@ -406,10 +407,12 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
             # El código del estudiante, escrito junto al rótulo de la cédula:
             # «549310006» no es una cédula (EGRESADOS 1996, 2026-10-30).
             codigo = cifras
-    if cedula is None and (hallado := _CEDULA_CON_PUNTOS.search(zona)):
-        # El número escrito fuera de su sitio -- debajo del renglón, tras «de:
-        # Fundación» -- y con la forma de una cédula, con sus puntos: el código
-        # va sin ellos (UPD de los 90, 2026-10-30).
+    if cedula is None and (hallado := _CEDULA_CON_PUNTOS.search(zona)) and tiene_rotulo(zona[: hallado.start()]):
+        # La cédula con sus puntos y su primer grupo con una letra por cifra
+        # («A5.467.824»), con su rótulo a la izquierda. Sin él ya no: un número
+        # escrito fuera de su sitio -- debajo del renglón, tras «de: Fundación»
+        # -- puede ser el del acudiente o un teléfono, y sólo es cédula si a su
+        # izquierda dice cédula, C.C. o T.I. (el operador, 2026-11-03).
         cifras = hallado.group(1).translate(_LETRA_POR_CIFRA) + hallado.group(2) + hallado.group(3)
         if cifras.isdigit() and _parece_cedula(cifras) and not (tarjeta and tarjeta.startswith(cifras[:6])):
             cedula = cifras

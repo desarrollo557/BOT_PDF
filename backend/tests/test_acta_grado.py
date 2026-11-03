@@ -848,7 +848,10 @@ class TestElNombreYElTituloLimpios:
         # Sin cambiar el género al unificar.
         assert titulos_unificados(["INGENIERO CIVIL", "INGENIERO CIVIL", "INGENIERA CIVIL"])[2] == "INGENIERA CIVIL"
 
-    def test_el_pdf_del_graduado_se_llama_nombre_y_titulo(self):
+    def test_el_pdf_del_graduado_se_llama_nombre_cedula_y_titulo(self):
+        """El operador (2026-11-03): «nombre, cédula, título, obligatoriamente»."""
+        from dataclasses import replace
+
         from resolutions.application.acta_consejo import (
             TIPO_DE_GRADO,
             FilaDeActa,
@@ -860,7 +863,13 @@ class TestElNombreYElTituloLimpios:
             folios=1, resumen="", tipo=TIPO_DE_GRADO, nombre="MARTHA LUCIA HERRERA VILLAMIZAR",
             titulo="ESPECIALISTA EN GESTION DE LA CALIDAD", cedula="39692338",
         )
-        assert nombre_de_la_sesion(fila) == "MARTHA LUCIA HERRERA VILLAMIZAR - ESPECIALISTA EN GESTION DE LA CALIDAD"
+        assert nombre_de_la_sesion(fila) == (
+            "MARTHA LUCIA HERRERA VILLAMIZAR - 39692338 - ESPECIALISTA EN GESTION DE LA CALIDAD"
+        )
+        # Sin cédula leída, el nombre y el título.
+        assert nombre_de_la_sesion(replace(fila, cedula=None)) == (
+            "MARTHA LUCIA HERRERA VILLAMIZAR - ESPECIALISTA EN GESTION DE LA CALIDAD"
+        )
 
 
 def test_el_dia_no_sale_del_numero_del_acta():

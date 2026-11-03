@@ -383,6 +383,8 @@ class PyMuPDFPageSource:
         band: Band | None = None,
         dpi: int = 200,
         formato: str = "png",
+        *,
+        girar: bool = False,
     ) -> bytes:
         """La página, o una banda de ella, rasterizada en gris.
 
@@ -392,12 +394,15 @@ class PyMuPDFPageSource:
         veces menos y, sobre todo, se codifica cinco veces más rápido: sobre
         una cara de 300 ppp, escribir el PNG cuesta un cuarto de segundo del
         hilo que rasteriza, y ese hilo es el único que puede rasterizar.
+
+        ``girar`` da la banda tal cual, girada media vuelta: el renglón de un
+        acta escaneada de cabeza (``render_girada``).
         """
         page = self._document[page_number - 1]
-        al_reves = page_number in self._al_reves
+        al_reves = (page_number in self._al_reves) != girar
         clip = None
         if band is not None:
-            if al_reves:
+            if al_reves and not girar:
                 band = Band(1 - band.x1, 1 - band.y1, 1 - band.x0, 1 - band.y0)
             rect = page.rect
             clip = pymupdf.Rect(
@@ -427,6 +432,15 @@ class PyMuPDFPageSource:
             ).save(salida, "JPEG", quality=CALIDAD_JPEG)
             return salida.getvalue()
         return pixmap.tobytes("png")
+
+    def render_girada(self, page_number: int, band: Band | None = None, dpi: int = 200) -> bytes:
+        """La banda de la página girada media vuelta: el renglón de una hoja escaneada de cabeza.
+
+        Gira MuPDF al rasterizar, sin PIL: la aplicación lo pedía girando la
+        imagen ella misma, y el núcleo no depende de librerías de imagen
+        (``scripts/check_layers.py``).
+        """
+        return self.render(page_number, band, dpi, girar=True)
 
     def imagen_escaneada(self, page_number: int) -> bytes | None:
         """El JPEG con que se escaneó esta cara, tal cual está dentro del PDF.

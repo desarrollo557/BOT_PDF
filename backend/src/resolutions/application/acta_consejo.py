@@ -39,6 +39,7 @@ import logging
 import math
 import re
 import time
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
@@ -79,10 +80,13 @@ from ..domain.acta_grado import (
     con_la_franja,
     datos_de_la_ia,
     es_un_titulo,
+    fecha_de_grado,
     folios_de_la_foliacion,
     le_falta_algo,
+    lecturas_del_nombre,
     leer_acta_de_grado,
     mejor_lectura,
+    nombre_de_tres_lecturas,
 )
 from ..domain.acta_grado import (
     ROTULO as ROTULO_DE_GRADO,
@@ -151,6 +155,30 @@ TIPO_DE_GRADO = "ACTA DE GRADO"
 #: A qué resolución se pasa por OCR una página sin capa de texto. La misma que
 #: usa `inventory_file`: el acta es mecanografiada y a 200 ppp se lee entera.
 DPI_DE_LECTURA = 200
+#: A cuánto lee la IA un libro escrito a mano: la letra pide más que la máquina.
+DPI_DEL_MANUSCRITO = 300
+def _renglon(source: PageSource, pagina: int, banda: Band, dpi: int, girar: bool) -> bytes:
+    """La banda de la página, girada media vuelta si ``girar``: la hoja escaneada de cabeza.
+
+    Gira la fuente al rasterizar (``render_girada``): aquí no se toca la
+    imagen, porque el núcleo no depende de librerías de imagen. Una fuente que
+    no sabe girar da la banda como está.
+    """
+    if girar and (render_girada := getattr(source, "render_girada", None)) is not None:
+        return render_girada(pagina, banda, dpi)
+    return source.render(pagina, banda, dpi)
+
+
+#: Y el renglón del nombre, solo y más grande, para la tercera lectura.
+DPI_DEL_RENGLON_DEL_NOMBRE = 500
+#: Las palabras que deja en la capa cualquier acta impresa o a máquina.
+_PALABRAS_DE_UN_ACTA_IMPRESA = (
+    "UNIVERSIDAD", "CIUDAD", "CARTAGENA", "GRADO", "ACTA", "TITULO", "CEDULA", "PORTADOR", "ESTUDIANTE",
+)
+#: Un libro a máquina las trae en casi todas sus hojas; uno a mano, en sus
+#: portadas impresas y nada más.
+PARTE_IMPRESA_DE_UN_LIBRO_A_MAQUINA = 0.3
+PAGINAS_PARA_JUZGAR_LA_LETRA = 5
 #: A cuánto se rasteriza el recuadro de un dato: es pequeño, y las cifras a
 #: máquina necesitan altura para que el OCR las distinga.
 DPI_DE_RECUADRO = 400
@@ -409,8 +437,16 @@ def nombre_de_la_sesion(fila: FilaDeActa) -> str:
         nombre = " ".join(
             palabra for palabra in (fila.nombre or "").split() if parece_palabra_de_nombre(clave(palabra))
         )
+        # Y la cédula entre los dos, si se leyó: «… VILLAMIZAR - 39692338 -
+        # ESPECIALISTA…». Obligatoria si el acta la trae (el operador,
+        # 2026-11-03: «nombre, cédula, título, obligatoriamente»).
+        cedula = fila.cedula if fila.cedula and fila.cedula != NO_APLICA else None
         if nombre:
-            partes = [nombre] + ([fila.titulo] if fila.titulo and fila.titulo != NO_APLICA else [])
+            partes = (
+                [nombre]
+                + ([cedula] if cedula else [])
+                + ([fila.titulo] if fila.titulo and fila.titulo != NO_APLICA else [])
+            )
         else:
             # Ningún archivo sin nombre que lo referencie: el acta y la cédula.
             partes = [fila.acta if fila.acta != NO_APLICA else "ACTA DE GRADO SIN NUMERO"]
@@ -703,7 +739,20 @@ class InventariarActa:
         total = source.page_count
         self._report(ProgressEvent(stage=Stage.OPENED, page_count=total))
 
-        paginas, con_ocr, ilegibles = self._leer(source)
+        self._textos_de_la_ia: dict[int, str] = {}
+        if self._perfil.reparte_con_folios and self._relector_de_pago is not None and self._es_manuscrito(source):
+            # Un libro escrito a mano -- los exámenes de grado de 1924-1946 (20.
+            # ACTAS DE GRADO 3362) --: ni la capa ni Tesseract leen la letra, y
+            # pasarlo por Tesseract eran minutos para nada. Lo lee la IA
+            # directamente, cada página, a más resolución (lo pidió el operador
+            # el 2026-10-31: «para ese tipo de documentos, la IA directamente»).
+            self._textos_de_la_ia = self._leer_el_libro_con_la_ia(source, total)
+        if self._textos_de_la_ia:
+            paginas = [self._textos_de_la_ia.get(numero) or self._capa(source, numero) for numero in range(1, total + 1)]
+            con_ocr = len(self._textos_de_la_ia)
+            ilegibles = [numero for numero, texto in enumerate(paginas, 1) if not texto.strip()]
+        else:
+            paginas, con_ocr, ilegibles = self._leer(source)
         if self._perfil.lee_formulario:
             paginas = self._por_formulario(source, paginas)
         foliadas = _paginas_foliadas(source)
@@ -711,6 +760,19 @@ class InventariarActa:
             reparto = self._perfil.repartir(paginas, foliadas)
         else:
             reparto = self._perfil.repartir(paginas)
+        if (
+            self._perfil.reparte_con_folios
+            and not self._textos_de_la_ia
+            and not any(not tramo.ceremonia for tramo in reparto.tramos)
+        ):
+            # Un libro manuscrito -- los exámenes de grado de 1924-1946 (20.
+            # ACTAS DE GRADO 3362) --: ni la capa ni Tesseract leen la letra a
+            # mano y no se encontró ningún acta. Con la IA se lee cada página, y
+            # se reparte con lo que dice.
+            self._textos_de_la_ia = self._leer_el_libro_con_la_ia(source, total)
+            if self._textos_de_la_ia:
+                paginas = [self._textos_de_la_ia.get(numero) or texto for numero, texto in enumerate(paginas, 1)]
+                reparto = self._perfil.repartir(paginas, foliadas)
         declarada = acta_del_nombre(document_name) if self._perfil.respeta_el_nombre else None
         if declarada and reparto.es_libro:
             reparto = sin_anexos_anteriores(reparto, paginas, *declarada)
@@ -751,7 +813,12 @@ class InventariarActa:
         for lectura in lecturas:
             if lectura.acta.rotulo == ROTULO_DE_GRADO and not lectura.tramo.ceremonia:
                 hoja = lectura.tramo.desde + (lectura.acta.pagina or 1) - 1
-                lectura.textos.append((paginas[hoja - 1], PESO_DE_UNA_LECTURA))
+                if hoja in self._textos_de_la_ia:
+                    # Ya la leyó la IA para repartir el libro: no se paga dos veces.
+                    lectura.texto_de_la_ia = self._textos_de_la_ia[hoja]
+                    lectura.textos.append((paginas[hoja - 1], PESO_DE_LA_IA))
+                else:
+                    lectura.textos.append((paginas[hoja - 1], PESO_DE_UNA_LECTURA))
         # Los folios de la IA se piden ya, con el reparto hecho, y se recogen
         # al final: mientras el proveedor contesta por la red, Tesseract relee
         # las franjas en la CPU. Uno detrás del otro eran dos esperas.
@@ -765,9 +832,12 @@ class InventariarActa:
             self._verificar_con_la_ia(source, lecturas)
             if declarada and len(lecturas) == 1:
                 _contrastar_con_el_nombre(lecturas[0], paginas, *declarada)
-            _descartar_fechas_fuera_de_lugar(lecturas)
+            if not self._manuscrito:  # la IA leyó la fecha; la regla es contra el OCR gratis
+                _descartar_fechas_fuera_de_lugar(lecturas)
             self._razonar_lo_que_falta(source, paginas, lecturas)
             self._nombres_por_consenso(source, paginas, lecturas)
+            self._nombres_manuscritos(source, lecturas)
+            self._fechas_manuscritas(source, lecturas)
             self._report(
                 ProgressEvent(
                     stage=Stage.IDENTIFYING,
@@ -1125,7 +1195,8 @@ class InventariarActa:
             # El de grado ya releyó con tinta clara, antes de la IA.
             self._releer_con_tinta_clara(source, lecturas)
         # Lo releído puede traer una fecha que tampoco cuadra.
-        _descartar_fechas_fuera_de_lugar(lecturas)
+        if not self._manuscrito:  # la IA leyó la fecha; la regla es contra el OCR gratis
+            _descartar_fechas_fuera_de_lugar(lecturas)
         _corregir_anios(lecturas)
         _por_la_ceremonia(lecturas)
         _por_la_resolucion_de_la_ceremonia(lecturas)
@@ -1409,12 +1480,12 @@ class InventariarActa:
         self._de_pila, self._apellidos = _nombres_del_archivo()
         for lectura in graduados:
             self._decidir_nombre(lectura, conocidas)
-        dudosos = [lectura for lectura in graduados if not lectura.nombre_confirmado]
+        dudosos = [lectura for lectura in graduados if not lectura.nombre_confirmado and not self._manuscrito]
         if dudosos:
             self._releer_franjas_del_nombre(source, dudosos)
             for lectura in dudosos:
                 self._decidir_nombre(lectura, conocidas)
-        dudosos = [lectura for lectura in graduados if not lectura.nombre_confirmado]
+        dudosos = [lectura for lectura in graduados if not lectura.nombre_confirmado and not self._manuscrito]
         if dudosos:
             self._nombres_con_la_ia(source, dudosos)
             for lectura in dudosos:
@@ -1629,7 +1700,10 @@ class InventariarActa:
         """
         falta = self._perfil.le_falta_algo
         completar = self._perfil.completar
-        if falta is None or completar is None:
+        if falta is None or completar is None or self._manuscrito:
+            # Un libro manuscrito ya lo leyó la IA entero: Tesseract no lee la
+            # letra a mano, y a sus actas les «falta» siempre lo que el papel no
+            # trae -- número, cédula --; releerlas era pagar dos veces por nada.
             return
         self._leer_franjas(source, lecturas)
         _unificar_titulos(lecturas)
@@ -1743,8 +1817,8 @@ class InventariarActa:
         lector = self._relector_de_pago
         trozos_de = getattr(source, "trozos_of", None)
         medida_de = getattr(source, "size_of", None)
-        if lector is None or trozos_de is None or medida_de is None:
-            return
+        if lector is None or trozos_de is None or medida_de is None or self._manuscrito:
+            return  # las actas manuscritas de 1924-1946 no llevan cédula
         sin_cedula = [
             lectura
             for lectura in lecturas
@@ -1771,6 +1845,171 @@ class InventariarActa:
                     "la cédula se leyó con la IA en su zona ampliada (la máquina la escribió "
                     "encima del texto impreso): revísela en el papel"
                 )
+
+    @property
+    def _manuscrito(self) -> bool:
+        """Si el libro que se lee es manuscrito y ya lo leyó entero la IA."""
+        return bool(getattr(self, "_textos_de_la_ia", None))
+
+    def _es_manuscrito(self, source: PageSource) -> bool:
+        """Si el libro está escrito a mano: casi ninguna página trae en su capa las palabras de un acta impresa.
+
+        Un acta a máquina o impresa, por mal escaneada que esté, deja en la capa
+        «UNIVERSIDAD», «CIUDAD», «GRADO»… La letra a mano de 1924-1946 deja
+        basura («•V- ) 'ñ (P i*!?»). Cuesta milésimas: es la capa.
+        """
+        total = source.page_count
+        if total < PAGINAS_PARA_JUZGAR_LA_LETRA:
+            return False
+        impresas = 0
+        for numero in range(1, total + 1):
+            plano = unicodedata.normalize("NFD", self._capa(source, numero)).encode("ascii", "ignore").decode().upper()
+            if sum(1 for palabra in _PALABRAS_DE_UN_ACTA_IMPRESA if palabra in plano) >= 2:
+                impresas += 1
+        return impresas < total * PARTE_IMPRESA_DE_UN_LIBRO_A_MAQUINA
+
+    def _nombres_manuscritos(self, source: PageSource, lecturas: list[_Lectura]) -> None:
+        """El nombre de cada acta manuscrita, confirmado entre tres lecturas o mandado a revisión.
+
+        El acta lo escribe dos veces a mano -- arriba como título y en «del
+        alumno …» --; si las dos coinciden y el diccionario conoce cada
+        palabra, está confirmado. Si no, se lee una tercera vez el renglón de
+        arriba, recortado y ampliado, y se vota (``nombre_de_tres_lecturas``).
+        Lo que no se confirma va a revisión con las tres lecturas: el operador
+        pidió cero errores, y con letra de 1925 eso es no dar por seguro lo que
+        no lo es (UPD3860000: «Espiulla», «Espinella», en el papel Espriella).
+        """
+        if not self._manuscrito or self._relector_de_pago is None:
+            return
+        conocidas = nombres_conocidos()
+        pendientes: list[tuple[_Lectura, str | None, str | None]] = []
+        for lectura in lecturas:
+            if lectura.tramo.ceremonia or lectura.acta.rotulo != ROTULO_DE_GRADO or not lectura.texto_de_la_ia:
+                continue
+            arriba, del_texto = lecturas_del_nombre(lectura.texto_de_la_ia)
+            if not (arriba or del_texto):
+                continue
+            # Las notas del voto general no valen aquí: éste decide el nombre.
+            lectura.razonado = [
+                r for r in lectura.razonado if not r.startswith(("el nombre:", "nombre dudoso"))
+            ]
+            if arriba and arriba == del_texto and all(clave(p) in conocidas for p in arriba.split()):
+                lectura.acta = replace(lectura.acta, nombre=arriba)
+                lectura.nombre_dudoso = False
+                continue
+            pendientes.append((lectura, arriba, del_texto))
+        with hilos(LECTURAS_A_LA_VEZ) as proveedor:
+            vuelo = [
+                (lectura, arriba, del_texto, proveedor.submit(self._renglon_del_nombre, source, lectura, arriba or del_texto))
+                for lectura, arriba, del_texto in pendientes
+            ]
+            for hechas, (lectura, arriba, del_texto, futuro) in enumerate(vuelo, start=1):
+                aguardar(futuro, self._control)
+                try:
+                    ampliado = futuro.result()
+                except Exception:  # noqa: BLE001 - se vota con las dos que hay
+                    logger.warning("no se pudo leer ampliado el nombre de un acta", exc_info=True)
+                    ampliado = None
+                nombre, duda = nombre_de_tres_lecturas(arriba, del_texto, ampliado, conocidas)
+                if nombre:
+                    lectura.acta = replace(lectura.acta, nombre=nombre)
+                lectura.nombre_dudoso = False
+                if duda:
+                    lectura.razonado.append(duda)
+                self._report(
+                    ProgressEvent(
+                        stage=Stage.VERIFYING,
+                        done=hechas,
+                        total=len(vuelo),
+                        detail=f"confirmando el nombre de {len(vuelo)} acta(s) manuscrita(s)",
+                    )
+                )
+
+    def _fechas_manuscritas(self, source: PageSource, lecturas: list[_Lectura]) -> None:
+        """La fecha de un acta manuscrita que la página entera no dejó leer, en sus renglones ampliados.
+
+        «a ter de Septiembre de 1935», «a parte de setiembre» (UPD3859999): el
+        día escrito a mano no se entiende a página entera. Se leen ampliados
+        los primeros renglones del acta, sólo de las que siguen sin fecha; si
+        tampoco así, queda N/A: no se inventa el día.
+        """
+        if not self._manuscrito or self._relector_de_pago is None:
+            return
+        sin_fecha = [
+            lectura
+            for lectura in lecturas
+            if not lectura.tramo.ceremonia and lectura.acta.rotulo == ROTULO_DE_GRADO and lectura.acta.fecha is None
+        ]
+        for lectura in sin_fecha:
+            self._control.check()
+            pagina = lectura.tramo.desde + (lectura.acta.pagina or 1) - 1
+            for banda, girar in ((Band(0.0, 0.05, 1.0, 0.25), False), (Band(0.0, 0.75, 1.0, 0.95), True)):
+                try:
+                    texto = self._relector_de_pago.read(_renglon(source, pagina, banda, DPI_DEL_RENGLON_DEL_NOMBRE, girar)).text or ""
+                except Exception:  # noqa: BLE001 - se queda sin fecha, y lo dice
+                    logger.warning("no se pudo leer ampliada la fecha de la página %s", pagina, exc_info=True)
+                    break
+                fecha = fecha_de_grado(texto)
+                if fecha is not None:
+                    lectura.acta = replace(lectura.acta, fecha=fecha)
+                    lectura.razonado.append(
+                        "la fecha se leyó en los renglones ampliados del acta (a página entera no se entendía): "
+                        "revísela en el papel"
+                    )
+                    break
+
+    def _renglon_del_nombre(self, source: PageSource, lectura: _Lectura, referencia: str) -> str | None:
+        """El nombre del renglón de arriba del acta, recortado, ampliado y leído por la IA.
+
+        Arriba; y si ahí no está -- la hoja escaneada de cabeza --, abajo, con
+        la imagen girada. Vale si comparte alguna palabra con lo leído en la página.
+        """
+        from ..domain.acta_grado import _nombre_de_arriba
+
+        pagina = lectura.tramo.desde + (lectura.acta.pagina or 1) - 1
+        palabras = set(referencia.split())
+        for banda, girar in ((Band(0.1, 0.0, 0.9, 0.1), False), (Band(0.1, 0.9, 0.9, 1.0), True)):
+            imagen = _renglon(source, pagina, banda, DPI_DEL_RENGLON_DEL_NOMBRE, girar)
+            leido = _nombre_de_arriba(self._relector_de_pago.read(imagen).text or "")
+            if leido and palabras & set(leido.split()):
+                return leido
+        return None
+
+    def _leer_el_libro_con_la_ia(self, source: PageSource, total: int) -> dict[int, str]:
+        """Cada página del libro leída por la IA: lo que dice, por número de página.
+
+        Sólo con «OCR + IA». La IA lee la letra a mano de los años 20 y 40, y
+        también la hoja escaneada de cabeza. Una página facturada por página.
+        """
+        lector = self._relector_de_pago
+        if lector is None:
+            return {}
+        leidas: dict[int, str] = {}
+        with hilos(self._workers) as lectores:
+            vuelo: list[tuple[int, Future]] = []
+            for numero in range(1, total + 1):
+                self._control.check()
+                try:
+                    imagen = source.render(numero, None, DPI_DEL_MANUSCRITO)
+                except Exception:  # noqa: BLE001 - esa página se queda como estaba
+                    logger.warning("no se pudo rasterizar la página %s", numero, exc_info=True)
+                    continue
+                vuelo.append((numero, lectores.submit(lector.read, imagen)))
+            for hechas, (numero, futuro) in enumerate(vuelo, start=1):
+                aguardar(futuro, self._control)
+                try:
+                    leidas[numero] = futuro.result().text or ""
+                except Exception:  # noqa: BLE001 - esa página se queda como estaba
+                    logger.warning("la IA no pudo leer la página %s", numero, exc_info=True)
+                self._report(
+                    ProgressEvent(
+                        stage=Stage.VERIFYING,
+                        done=hechas,
+                        total=len(vuelo),
+                        detail=f"leyendo con la IA el libro manuscrito ({len(vuelo)} páginas)",
+                    )
+                )
+        return leidas
 
     def _leer_los_datos_con_la_ia(self, lecturas: list[_Lectura]) -> None:
         """Número, fecha, título, nombre y cédula de cada graduado, leídos por la IA como una persona.

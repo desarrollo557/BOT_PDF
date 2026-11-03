@@ -28,6 +28,8 @@ import unicodedata
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
+from .rotulo_de_cedula import tiene_rotulo
+
 
 @dataclass(frozen=True, slots=True)
 class Graduado:
@@ -122,12 +124,40 @@ def cedula(texto: str) -> str | None:
     for match in [*detras, *reversed(delante)]:
         if _NO_ES_CEDULA.search(clave[max(0, match.start() - 20) : match.start()]):
             continue
+        if not _del_renglon_de_la_cedula(clave, match):
+            # Sólo con su rótulo: un número con puntos unos renglones más allá
+            # puede ser de otra persona (el operador, 2026-11-03).
+            continue
         limpias = re.sub(r"[.,\s]", "", match.group("cifras")).translate(_CIFRAS_DE_CEDULA)
         minimo, maximo = CIFRAS_DE_UNA_CEDULA
         sin_ceros = limpias.lstrip("0")
         if limpias.isdigit() and minimo <= len(sin_ceros) <= maximo:
             return sin_ceros
     return None
+
+
+#: El «N°» del renglón de la cédula, a la izquierda del número: «Nq 50.847.263».
+_NUMERO_DEL_RENGLON = re.compile(r"\bN[OQ0°º]?\W{0,3}$")
+#: Lo que sigue a la cédula en el formulario: «1.047.473.026 expedida en».
+_EXPEDIDA = re.compile(r"\W{0,3}EXPEDIDA\b")
+
+
+def _del_renglon_de_la_cedula(clave: str, match: re.Match) -> bool:
+    """Si el número es el del renglón «cédula de ciudadanía N° … expedida en», con su rótulo.
+
+    En el papel el rótulo va a la izquierda del número, como pide el operador
+    (2026-11-03: «que al lado izquierdo del primer número diga cédula, TI o
+    CC»), pero la capa de texto del formulario desordena sus renglones: deja
+    «cédula de ciudadanía» renglones arriba y el «N°» o el «expedida en» pegados
+    al número («Nq 50.847.263», FORMULARIO 1989; «1.047.473.026 expedida en»).
+    Vale cualquiera de las tres marcas; un número sin ninguna, no.
+    """
+    izquierda = clave[: match.start()]
+    return bool(
+        tiene_rotulo(izquierda)
+        or _NUMERO_DEL_RENGLON.search(izquierda[-8:])
+        or _EXPEDIDA.match(clave, match.end())
+    )
 
 
 def _cedula_pegada(clave: str) -> str | None:

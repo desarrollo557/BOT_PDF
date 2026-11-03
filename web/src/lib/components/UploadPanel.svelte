@@ -536,6 +536,7 @@
                   archivos={sugerencias}
                   cargando={reconociendo && !sugerencias.length}
                   error={errorDeReconocer}
+                  {lectura}
                   onusar={usarSugerencia}
                 />
               </div>

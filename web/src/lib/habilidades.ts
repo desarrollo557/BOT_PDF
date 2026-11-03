@@ -385,14 +385,15 @@ export const HABILIDADES: Habilidad[] = [
     escribeFuid: true,
     titulo: 'Historias académicas',
     papel:
-      'Expedientes de estudiantes: la ficha de cada uno (nombre, cédula, código) seguida de sus notas y de lo que se le archivó detrás.',
+      'Expedientes de estudiantes —Enfermería, Medicina—: la ficha de cada uno seguida de sus notas y de lo que se le archivó detrás. También los legajos de matrículas, certificados y recibos de caja, una hoja por estudiante.',
     corta:
-      'Si lo pides, un PDF por estudiante: cada ficha abre su expediente —también la «Ficha historia académica»— hasta la ficha siguiente; su certificado de matrícula y sus recibos van con ella. Lo de antes de la primera ficha sale aparte. Un PDF sin ninguna ficha reconocible se entrega entero, con su fila.',
+      'Si lo pides, un PDF por estudiante: cada ficha abre su expediente hasta la ficha siguiente, y su certificado de matrícula y sus recibos van con ella. En Medicina las páginas se unen por el nombre del estudiante, en la ficha y al pie de las notas; el mismo estudiante en dos tramos sale en un PDF por tramo. Las matrículas, certificados y recibos sueltos, un PDF por hoja. Lo de antes de la primera ficha sale aparte. Un PDF sin nada reconocible se entrega entero, con su fila.',
     nombra:
-      'El inventario es el FUID oficial (FO-GD-008), como las actas de grado: una fila por estudiante con «NOMBRE - HISTORIA ACADEMICA», la cédula (o la tarjeta de identidad), el primer y el último año de sus notas, la caja, la carpeta y sus folios. Lo que no se pudo leer va en NOTAS.',
-    nombraConIa: 'Y el nombre y la cédula, que en la ficha van escritos a mano, leídos por la IA.',
+      'El inventario es el FUID oficial (FO-GD-008): una fila por estudiante con «NOMBRE - HISTORIA ACADEMICA» —o el tipo de hoja: «NOMBRE - CERTIFICADO DE MATRICULA», «… - RECIBO DE CAJA»—, la cédula (o la tarjeta de identidad), el primer y el último año de sus notas o la fecha de la hoja, la caja, la carpeta y sus folios. Lo que no se pudo leer, o el nombre que se corrigió, va en NOTAS.',
+    nombraConIa:
+      'Y el nombre y la cédula leídos por la IA; el nombre mal leído se corrige a lo más cercano de lo que dice el renglón.',
     aportaIa:
-      'Lee con la IA la ficha y la hoja de notas de cada estudiante y concilia su nombre entre todo lo leído: dos páginas facturadas por estudiante.',
+      'Lee con la IA el nombre de cada ficha y de cada hoja de notas (ocho renglones por página facturada), la ficha de cada estudiante y cada hoja suelta.',
     tipo: 'historia-academica',
     task: null,
     acciones: [
@@ -411,7 +412,7 @@ export const HABILIDADES: Habilidad[] = [
     pideLectura: {
       id: 'mistral',
       porque:
-        'El nombre y la cédula de la ficha van escritos a mano y el OCR de casa no los lee: con «OCR + IA» se lee sólo la ficha de cada estudiante. Con «Solo OCR» el corte sale igual y la fila dice en NOTAS qué no se pudo leer.'
+        'El nombre de cada estudiante une sus páginas y nombra su PDF, y el OCR de casa lo lee mal: con «OCR + IA» lo lee la IA. Con «Solo OCR» se corta igual, con nombres peores, y la fila dice en NOTAS qué no se pudo leer.'
     }
   },
   {
@@ -426,13 +427,19 @@ export const HABILIDADES: Habilidad[] = [
     task: 'inventory_file'
   },
   {
+    // Lo pidió el operador el 2026-11-03: «que cuando yo suba esta ruta o
+    // cualquiera, sepa detectar la habilidad automáticamente». Al pegar la ruta
+    // la pantalla dice qué detectó, y al procesar cada PDF va a su habilidad:
+    // historias académicas (Medicina, Enfermería, hojas de matrícula), actas
+    // de consejo o de grado, diplomas, resoluciones.
     id: 'auto',
     escribeFuid: true,
-    titulo: 'No estoy seguro',
-    papel: 'Cuando la caja trae de todo o no se sabe qué hay dentro.',
-    corta: 'Lo decide el sistema leyendo una muestra de doce páginas.',
-    nombra: 'Según lo que reconozca.',
-    aportaIa: 'Lo que corresponda a la habilidad que acabe atendiendo la caja.',
+    titulo: 'Detectar automáticamente',
+    papel: 'Cuando no se sabe qué hay, o la caja trae de todo: el bot detecta la habilidad de cada PDF.',
+    corta:
+      'Cada PDF va a su habilidad: historias académicas, actas de consejo o de grado, diplomas o resoluciones; lo demás, por continuidad.',
+    nombra: 'Como lo nombra la habilidad que le toque.',
+    aportaIa: 'Lo que corresponda a la habilidad que atienda cada PDF; las historias leen el nombre de cada estudiante.',
     tipo: 'auto',
     task: null
   }
@@ -512,7 +519,7 @@ export function motivoNoDisponible(habilidad: Habilidad, health: Health | null):
   if (!habilidad.requiereTipo) return null;
   const declarados = health?.document_types;
   if (!declarados) {
-    return 'El servicio no informó qué tipos sabe atender. Puede usarse «No estoy seguro».';
+    return 'El servicio no informó qué tipos sabe atender. Puede usarse «Detectar automáticamente».';
   }
   const existe = declarados.some((tipo) => tipo.id === habilidad.requiereTipo);
   return existe ? null : 'Este servicio no atiende todavía este tipo de documento.';

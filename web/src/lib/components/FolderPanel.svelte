@@ -350,6 +350,7 @@
         carpeta={analisis}
         cargando={analizando}
         error={errorDeAnalisis}
+        {lectura}
         onusar={(id) => onusarHabilidad?.(id)}
       />
       {#if analisis && analisis.total_exacto === false}

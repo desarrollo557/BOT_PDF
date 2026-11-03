@@ -204,6 +204,12 @@ def historias_academicas_job(payload: dict) -> dict:
             if not de_medicina:
                 _segunda_lectura(payload, taller, source, unidades, conocidas)
 
+        # La cédula de Medicina, buscada en todo el expediente, con IA o sin
+        # ella: «siempre que un documento tenga cédula y nombre de una persona,
+        # y la encuentres, va en el nombre» (el operador, 2026-11-03).
+        if de_medicina:
+            _buscar_las_cedulas(payload, taller, unidades, textos, textos_de_la_ficha, source)
+
         # El nombre de Medicina, votado entre sus lecturas y corregido a lo más
         # cercano de lo que dice el renglón (el operador, 2026-11-03).
         notas_del_nombre: dict[int, str] = {}
@@ -241,7 +247,11 @@ def historias_academicas_job(payload: dict) -> dict:
                 )
                 if pidio_dividir:
                     with pymupdf.open() as nuevo:
-                        nuevo.insert_pdf(original, from_page=unidad.paginas[0] - 1, to_page=unidad.paginas[-1] - 1)
+                        # La ficha principal primero, con su reverso: «la
+                        # primera página del PDF dividido debe ser la página
+                        # principal del estudiante» (el operador, 2026-11-03).
+                        for numero in _con_la_ficha_primero(unidad, textos, de_medicina):
+                            nuevo.insert_pdf(original, from_page=numero - 1, to_page=numero - 1)
                         nuevo.save(carpeta_de_salida / archivo, garbage=3, deflate=True)
                     salidas.append((carpeta_de_salida / archivo).relative_to(taller.destination).as_posix())
                 hoja = hojas.get(unidad.paginas[0])
@@ -425,6 +435,16 @@ def _expedientes_de_medicina(payload, taller, source, local, textos, nombre):
         for numero in paginas:
             if leido := nombre_del_renglon(leidos.get(numero, "")):
                 nombres[numero] = leido
+        # Lo que no se leyó se vuelve a mirar antes de cortar, con otro recorte
+        # y más zoom: un pie sin leer dejaba pegada la cartulina de VELASQUEZ
+        # CANO RAFAEL a la de RAMON VILLALOBOS LOPEZ (UPD 3859597, 2026-11-03).
+        # Las fichas en blanco no traen nombre y se vuelven a mirar igual: es
+        # una franja por cada una, y no se sabe cuáles lo están.
+        if sin_leer := [numero for numero in paginas if numero not in nombres]:
+            releidos = mosaico.otra_mirada().leer_franjas(source, sin_leer)
+            for numero in sin_leer:
+                if leido := nombre_del_renglon(releidos.get(numero, "")):
+                    nombres[numero] = leido
         logger.info("%s: %s leído en %d de %d páginas", nombre, franja.campo, sum(1 for n in paginas if n in nombres), len(paginas))
     unidades = expedientes_de_medicina(clases, nombres)
     # Las lecturas del nombre de cada estudiante: primero las del pie, con los
@@ -448,6 +468,88 @@ def _expedientes_de_medicina(payload, taller, source, local, textos, nombre):
             if de_cada[clase]
         ]
     return unidades, lecturas, renglones
+
+
+def _con_la_ficha_primero(unidad, textos, de_medicina: bool) -> list[int]:
+    """Las páginas del PDF del estudiante, con su ficha principal primero.
+
+    El operador (2026-11-03): «la primera página del PDF dividido debe ser la
+    página principal del estudiante». En Medicina el escaneo pone a veces las
+    notas antes que la ficha (Ferrer Triana, internados, págs. 3 y 4) o una
+    ficha en blanco delante (Castillo, UPD 3859597, pág. 1): la ficha con su
+    nombre va primero, con su reverso -- la hoja de notas que la sigue --, y
+    luego lo demás en el orden del escaneo. Sin ficha, como venía.
+    """
+    from ...domain.historia_medicina import NOTAS_DE_MEDICINA, clase_de_pagina
+
+    ficha = unidad.pagina_de_la_ficha
+    if not ficha or ficha not in unidad.paginas or ficha == unidad.paginas[0]:
+        return list(unidad.paginas)
+    primero = [ficha]
+    reverso = ficha + 1
+    if de_medicina and reverso in unidad.paginas and clase_de_pagina(textos[reverso - 1]) == NOTAS_DE_MEDICINA:
+        primero.append(reverso)
+    return primero + [numero for numero in unidad.paginas if numero not in primero]
+
+
+def _buscar_las_cedulas(payload, taller, unidades, textos, textos_de_la_ficha, source) -> None:
+    """La cédula de cada estudiante de Medicina que todavía no la tiene, buscada en todo su expediente.
+
+    Primero lo que ya se leyó, gratis: la capa de texto de cada página suya y
+    la ficha que leyó la IA (``cedula_del_expediente``). Y si se pidió la IA,
+    el último intento: el renglón de la cédula de sus fichas, ampliado
+    (``FRANJA_DE_LA_CEDULA``). El OCR de casa no: cambia cifras. Antes la
+    cédula de Medicina sólo salía de la ficha leída por la IA (el operador,
+    2026-11-03: «si un diploma, una historia académica debería llevar cédula…
+    obligatoriamente; si no la lleva, déjalo así»).
+    """
+    from dataclasses import replace
+
+    from ...domain.historia_medicina import (
+        DESDE_LA_ALTURA,
+        FICHA_DE_MEDICINA,
+        FRANJA_DE_LA_CEDULA,
+        cedula_de_la_ficha,
+        cedula_del_expediente,
+        clase_de_pagina,
+    )
+
+    sin_cedula = [unidad for unidad in unidades if unidad.ficha is not None and not unidad.ficha.cedula]
+    for hecho, unidad in enumerate(sin_cedula, start=1):
+        _anunciar(payload, Stage.IDENTIFYING, detail="buscando la cédula de cada estudiante", done=hecho, total=len(sin_cedula))
+        leidos = [textos[numero - 1] for numero in unidad.paginas]
+        leidos += [textos_de_la_ficha[numero] for numero in unidad.paginas if numero in textos_de_la_ficha]
+        # Sin Tesseract: cambia cifras de la cédula -- «377851» por 877851,
+        # «312325» por 4312325 (UPD 3859597, págs. 5 y 58) --, y una cédula
+        # equivocada en el nombre del archivo es peor que ninguna.
+        if cedula := cedula_del_expediente(leidos):
+            unidad.ficha = replace(unidad.ficha, cedula=cedula)
+
+    # El último intento, con la IA: el renglón de la cédula de cada ficha de
+    # quien sigue sin ella, ampliado, tres por imagen.
+    faltan = [unidad for unidad in sin_cedula if not unidad.ficha.cedula]
+    fichas = {
+        numero: unidad
+        for unidad in faltan
+        for numero in unidad.paginas
+        if clase_de_pagina(textos[numero - 1]) == FICHA_DE_MEDICINA
+    }
+    mosaico = (
+        taller.mosaico_de_campo(
+            FRANJA_DE_LA_CEDULA,
+            localizar=_ubicar_en_la_capa(DESDE_LA_ALTURA[FRANJA_DE_LA_CEDULA.campo]),
+            por_etiqueta=False,
+        )
+        if fichas
+        else None
+    )
+    if mosaico is None:
+        return
+    _anunciar(payload, Stage.IDENTIFYING, detail="leyendo con la IA el renglón de la cédula que falta")
+    for numero, leido in mosaico.leer_franjas(source, sorted(fichas)).items():
+        unidad = fichas[numero]
+        if not unidad.ficha.cedula and (cedula := cedula_de_la_ficha(leido)):
+            unidad.ficha = replace(unidad.ficha, cedula=cedula)
 
 
 #: Cuántos renglones van por imagen al volver a mirarlos: menos que la primera

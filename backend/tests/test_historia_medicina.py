@@ -8,11 +8,16 @@ Los renglones son los que devolvió la IA sobre «INTERNADOS ROTATORIO 1978-1984
 
 from __future__ import annotations
 
+from resolutions.domain.historia_academica import plano
 from resolutions.domain.historia_medicina import (
     CERTIFICADO_DE_MATRICULA,
     CERTIFICADO_DE_NOTAS,
     FICHA_DE_MEDICINA,
+    HISTORIAS_DE_FICHA,
+    HISTORIAS_DE_MEDICINA,
+    HOJAS_DE_MATRICULA,
     MATRICULA_ACADEMICA,
+    NOMBRE_DE_HISTORIAS,
     NOTAS_DE_MEDICINA,
     RECIBO_DE_CAJA,
     Hoja,
@@ -20,11 +25,13 @@ from resolutions.domain.historia_medicina import (
     anios_del_legajo,
     aproximacion_de_la_ia,
     cedula_de_la_ficha,
+    cedula_del_expediente,
     clase_de_pagina,
     corregir_con_la_ia,
     es_de_hojas_sueltas,
     es_de_medicina,
     expedientes_de_medicina,
+    familia_de_historias,
     hojas_sueltas,
     leer_hoja,
     mismo_estudiante,
@@ -146,8 +153,12 @@ def test_la_cedula_de_la_ficha():
     assert cedula_de_la_ficha("Cédula - Tarjeta No. 877851\n\nExpedida en Cartagena.-") == "877851"
     # De los 70 en adelante, detrás del rótulo.
     assert cedula_de_la_ficha("C. de C. No. 8'748.124 B/quilla Tde. Identi. No.") == "8748124"
-    # Escrita encima del renglón: en el texto va delante (internados, pág. 1).
-    assert cedula_de_la_ficha("Firma\n\n39' 693.597\n\nC. de C. No. de\n\nBogotá") == "39693597"
+    # Escrita encima del renglón, en el texto va delante de su rótulo
+    # (internados, pág. 1): sin el rótulo a su izquierda no se toma (el
+    # operador, 2026-11-03: «que al lado izquierdo diga cédula, TI o CC»).
+    assert cedula_de_la_ficha("Firma\n\n39' 693.597\n\nC. de C. No. de\n\nBogotá") is None
+    assert cedula_de_la_ficha("C.C. 45.474.260 Cartagena") == "45474260"
+    assert cedula_de_la_ficha("T.I. 66263544 de Turbaco") == "66263544"
     # Sólo la tarjeta de identidad (pág. 7): no es una cédula.
     assert cedula_de_la_ficha("C. de C. No. de Tde. Identi. No. de 571117-05188 B/quilla.") is None
     assert cedula_de_la_ficha("Cédula - Tarjeta No. Mil.") is None
@@ -377,6 +388,38 @@ def test_los_anios_del_legajo():
     assert ventana_del_legajo("UPD0077175 - RECIBOS DE CAJA.pdf") == (1950, 2030)
 
 
+def test_que_habilidad_le_toca_a_cada_pdf():
+    """El operador (2026-11-03): «que sepa detectar la habilidad automáticamente»."""
+    assert familia_de_historias([PORTADA, FICHA_1957, NOTAS_1960, CARTA]) == HISTORIAS_DE_MEDICINA
+    assert familia_de_historias([PORTADA, CERTIFICADO_1992, CERTIFICADO_1992, MATRICULA_1991]) == HOJAS_DE_MATRICULA
+    # Los recibos de caja, que no traen membrete en la capa: por el nombre del legajo.
+    assert familia_de_historias([PORTADA, RECIBO, RECIBO], "UPD0077175 - RECIBOS DE CAJA.pdf") == HOJAS_DE_MATRICULA
+    otro_recibo = "RECIBO DE CAJA No. 88 CIUDAD Y FECHA Barranquilla RECIBIDO DE Ferretería El Tornillo LA SUMA DE"
+    assert familia_de_historias([otro_recibo, otro_recibo], "factura_proveedor.pdf") is None
+    # Enfermería: dos fichas de ingreso con sus notas.
+    ficha = "Nombre del estudiante Dirección Actual Lugar de Nacimiento Estado Civil Cédula No."
+    notas = "REGISTRO ACADEMICO ASIGNATURA NOTA DEFINITIVA AÑO: 93"
+    assert familia_de_historias([ficha, notas, ficha, notas]) == HISTORIAS_DE_FICHA
+    # «Nombre del estudiante» suelto no basta (recibos, certificados de otra cosa).
+    assert familia_de_historias(["Nombre del estudiante Pago", CARTA, CARTA, CARTA]) is None
+    # Un acta o una resolución no son historias.
+    assert familia_de_historias(["RESOLUCION No. 0123 POR LA CUAL SE", "CONSIDERANDO", "RESUELVE"]) is None
+    assert familia_de_historias([]) is None
+
+
+def test_el_nombre_de_un_pdf_de_historias():
+    """Lo que se mira de un PDF de red de más de 25 MB, que no se baja para sugerir."""
+    for nombre in (
+        "UPD 3859597 HISTORIAS ACADEMICAS 1948-1960.pdf",
+        "INTERNADOS ROTATORIO 1978-1984.pdf",
+        "UPD0077193 - PRIMER AÑO 1992.pdf",
+        "UPD0077185 - EXONERADOS 1991.pdf",
+        "UPD0077175 - RECIBOS DE CAJA.pdf",
+    ):
+        assert NOMBRE_DE_HISTORIAS.search(plano(nombre)), nombre
+    assert not NOMBRE_DE_HISTORIAS.search(plano("RESOLUCIONES DE RECTORIA 3220.pdf"))
+
+
 def _rangos(unidades):
     return [(u.paginas[0], u.paginas[-1], u.ficha.nombre if u.ficha else None) for u in unidades]
 
@@ -422,7 +465,11 @@ def test_la_segunda_cartulina_va_con_su_estudiante():
 
 
 def test_el_mismo_estudiante_en_dos_tramos():
-    """UPD 3859613, págs. 1 a 6: Baleta, Ballestas y otra vez Baleta. Un PDF por tramo, con su nota."""
+    """UPD 3859613, págs. 1 a 6: Baleta, Ballestas y otra vez Baleta. Un solo PDF de Baleta, con su nota.
+
+    El operador (2026-11-03): «no puede existir 2 PDF con el mismo nombre, cada
+    estudiante es único».
+    """
     clases = [F, N, F, N, F, N]
     nombres = {
         1: "FREDDY DE JESUS BALETA CASTILLA",
@@ -433,9 +480,10 @@ def test_el_mismo_estudiante_en_dos_tramos():
         6: "BALETA CASTILLA FREDDY DE JESUS",
     }
     unidades = expedientes_de_medicina(clases, nombres)
-    assert [(u.paginas[0], u.paginas[-1]) for u in unidades] == [(1, 2), (3, 4), (5, 6)]
-    assert unidades[0].dudas == ["el mismo estudiante aparece también en las páginas 5 a 6"]
-    assert unidades[2].dudas == ["el mismo estudiante aparece también en las páginas 1 a 2"]
+    assert [u.paginas for u in unidades] == [[1, 2, 5, 6], [3, 4]]
+    assert unidades[0].dudas == [
+        "se unieron las páginas 5 a 6, del mismo estudiante, que estaban separadas en el escaneo"
+    ]
     assert unidades[1].dudas == []
 
 
@@ -445,10 +493,62 @@ def test_la_portada_no_es_de_nadie():
     assert not unidades[0].es_de_un_estudiante
 
 
-def test_sin_nombre_se_une_y_se_avisa():
-    """Ante la duda, une: una ficha ilegible y sin reverso legible va con el estudiante en curso."""
-    unidades = expedientes_de_medicina([F, N, F, N], {1: "DURAN RIZO PEDRO", 2: "DURAN RIZO PEDRO"})
-    assert _rangos(unidades) == [(1, 4, "DURAN RIZO PEDRO")]
-    assert unidades[0].dudas == [
-        "la ficha de la página 3 no deja leer el nombre: va con el estudiante de la página anterior"
+def test_una_cartulina_sin_nombre_no_se_pega_a_otro_estudiante():
+    """UPD 3859597, págs. 58 a 63 (el operador, 2026-11-03: «te fijas que no tiene el mismo nombre?»).
+
+    Villalobos trae sus dos cartulinas; la 62 es la ficha en blanco de Velásquez
+    y la 63 sus notas. Si el pie de la 63 no se deja leer, no se sabe de quién
+    es: se separa y se anota, en vez de quedar dentro del PDF de Villalobos.
+    """
+    clases = [F, N, F, N, F, N]
+    nombres = {
+        1: "RAMON VILLALOBOS LOPEZ",
+        2: "VILLALOBOS LOPEZ RAMON",
+        3: "RAMON VILLALOBOS LOPEZ",
+        4: "VILLALOBOS LOPEZ RAMON",
+    }
+    unidades = expedientes_de_medicina(clases, nombres)
+    assert _rangos(unidades) == [(1, 4, "VILLALOBOS LOPEZ RAMON"), (5, 6, None)]
+    assert unidades[1].dudas == [
+        "la ficha de la página 5 y su reverso no dejan leer el nombre: se separó de "
+        "RAMON VILLALOBOS LOPEZ; revise si es suyo"
     ]
+    # Con el pie leído, Velásquez sale con su nombre.
+    unidades = expedientes_de_medicina(clases, {**nombres, 6: "VELASQUEZ CANO RAFAEL"})
+    assert _rangos(unidades) == [(1, 4, "VILLALOBOS LOPEZ RAMON"), (5, 6, "VELASQUEZ CANO RAFAEL")]
+
+
+def test_una_cartulina_sin_nombre_no_se_lleva_la_ficha_siguiente():
+    """UPD 3859597, págs. 62 a 65, con «Solo OCR»: Velásquez sin nombre se llevaba la ficha de Velasco Reyes."""
+    clases = [F, N, F, N, F, N]
+    nombres = {1: "RAMON VILLALOBOS LOPEZ", 2: "VILLALOBOS LOPEZ RAMON", 5: "FABIO VELASCO REYES"}
+    unidades = expedientes_de_medicina(clases, nombres)
+    assert _rangos(unidades) == [(1, 2, "VILLALOBOS LOPEZ RAMON"), (3, 4, None), (5, 6, "FABIO VELASCO REYES")]
+    assert unidades[1].dudas[-1] == "no deja leer el nombre; la ficha siguiente es de FABIO VELASCO REYES: revise si es suya"
+
+
+def test_el_rotulo_mal_leido_no_va_en_el_nombre():
+    assert nombre_del_renglon("Nombre DEL ALMO RAJMUN VILLALOBOS LOPNA") == "RAJMUN VILLALOBOS LOPNA"
+
+
+def test_la_cedula_de_cinco_cifras_detras_de_su_rotulo():
+    """Las de los 40 y 50: «Cédula - Tarjeta No. 77975» (Castillo, UPD 3859597, pág. 3, leída por la IA)."""
+    assert cedula_de_la_ficha("Cédula - Tarjeta No. 77975 Expedida en Cartagena") == "77975"
+    # Suelta, sin rótulo, no.
+    assert cedula_de_la_ficha("Firma 77975 Bogotá") is None
+
+
+def test_la_segunda_cartulina_sin_nombre_sigue_a_la_primera_si_esta_no_esta_completa():
+    """Una ficha sin hojas detrás todavía no es una cartulina entera: lo que sigue va con ella."""
+    unidades = expedientes_de_medicina([F, F, N], {1: "DURAN RIZO PEDRO"})
+    assert _rangos(unidades) == [(1, 3, "DURAN RIZO PEDRO")]
+
+
+def test_la_cedula_se_busca_en_todo_el_expediente():
+    """RAMON VILLALOBOS LOPEZ salía sin cédula: la ficha dice «Cédula - Tarjeta No. 4312325»."""
+    ficha = "REGISTRO DE MATRICULA Nombre del alumno RAMON VILLALOBOS LOPEZ Cédula - Tarjeta No. 4312325 Expedida en"
+    assert cedula_del_expediente([NOTAS_1960, ficha]) == "4312325"
+    # La de una hoja de notas, con su rótulo.
+    assert cedula_del_expediente([FICHA_ROTA, "REGISTRO DE ESTUDIOS C.C. 45.474.260 Cartagena"]) == "45474260"
+    # Un número suelto no es una cédula.
+    assert cedula_del_expediente([NOTAS_1960, "Matrícula No. 271 Tel. 31-21"]) is None

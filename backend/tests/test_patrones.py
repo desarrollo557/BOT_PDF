@@ -156,3 +156,57 @@ class TestLaSugerenciaAntesDeProcesar:
 
     def test_una_carpeta_que_no_existe(self, client, tmp_path):
         assert client.post("/api/reconocer-carpeta", json={"ruta": str(tmp_path / "no")}).status_code == 404
+
+    def test_las_historias_de_medicina_se_sugieren_con_su_habilidad(self, client, tmp_path):
+        """«17. FACULTAD DE MEDICINA 3261- 3268 P» (2026-11-03): historias y hojas sueltas."""
+        (tmp_path / "CAJA00C003261").mkdir()
+        (tmp_path / "CAJA00C003268").mkdir()
+        _pdf(tmp_path / "CAJA00C003261" / "UPD 3859597 HISTORIAS ACADEMICAS.pdf", [FICHA_DE_MEDICINA, NOTAS_DE_MEDICINA] * 2)
+        _pdf(tmp_path / "CAJA00C003268" / "UPD0077193 - PRIMER AÑO 1992.pdf", ["Primer Año 1992", *[CERTIFICADO] * 3])
+
+        datos = client.post("/api/reconocer-carpeta", json={"ruta": str(tmp_path)}).json()
+
+        assert datos["por_tipo"] == [
+            {"tipo": "historia-academica", "etiqueta": "Historias académicas", "cantidad": 2}
+        ]
+
+    def test_un_pdf_de_red_muy_grande_se_dice_por_su_nombre(self):
+        from resolutions.api.routers.reconocer import _muy_grande
+
+        grande = _muy_grande("CAJA00C003263/INTERNADOS ROTATORIO 1978-1984.pdf", 77 * 1024 * 1024)
+        assert (grande["tipo"], grande["por"]) == ("historia-academica", "nombre")
+        assert "77 MB" in grande["motivo"]
+        assert _muy_grande("CAJA/sin pista.pdf", 30 * 1024 * 1024)["tipo"] == "desconocido"
+
+
+#: La ficha y la hoja de notas de Medicina, y un certificado de matrícula de 1992.
+FICHA_DE_MEDICINA = "UNIVERSIDAD DE CARTAGENA Facultad de Medicina REGISTRO DE MATRICULA Nombre del alumno Nombre del padre"
+NOTAS_DE_MEDICINA = "REGISTRO DE ESTUDIOS ASIGNATURAS Calificación Definitiva PRIMER AÑO 1.957 Nombre CASTILLO"
+CERTIFICADO = "UNIVERSIDAD DE CARTAGENA CERTIFICADO DE MATRICULA ACADEMICA CODIGO NOMBRE DEL ESTUDIANTE"
+
+
+class TestDetectarAutomaticamente:
+    """Con «Detectar automáticamente», cada PDF de historias va a su habilidad (2026-11-03)."""
+
+    def test_las_historias_se_detectan_por_su_capa(self, tmp_path):
+        from resolutions.api.worker import _familia_de_historias
+        from resolutions.domain.historia_medicina import (
+            HISTORIAS_DE_MEDICINA,
+            HOJAS_DE_MATRICULA,
+        )
+
+        historias = _pdf(tmp_path / "historias.pdf", [FICHA_DE_MEDICINA, NOTAS_DE_MEDICINA] * 3)
+        legajo = _pdf(tmp_path / "legajo.pdf", ["Primer Año 1992", *[CERTIFICADO] * 4])
+
+        assert _familia_de_historias({"source": str(historias), "filename": "historias.pdf"}) == HISTORIAS_DE_MEDICINA
+        assert _familia_de_historias({"source": str(legajo), "filename": "legajo.pdf"}) == HOJAS_DE_MATRICULA
+
+    def test_lo_demas_sigue_su_camino(self, tmp_path):
+        from resolutions.api.worker import _familia_de_historias
+
+        consejo = _pdf(tmp_path / "consejo.pdf", [ACTA_DE_CONSEJO, SESION, SESION])
+        grado = _pdf(tmp_path / "grado.pdf", [ACTA_DE_GRADO] * 3)
+
+        assert _familia_de_historias({"source": str(consejo)}) is None
+        assert _familia_de_historias({"source": str(grado)}) is None
+        assert _familia_de_historias({"source": str(tmp_path / "no-existe.pdf")}) is None

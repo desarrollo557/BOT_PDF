@@ -9,6 +9,7 @@
    */
   import type { Sugerencia, SugerenciaDeCarpeta } from '$lib/api';
   import { HABILIDADES, habilidadDelTipo } from '$lib/habilidades';
+  import type { LecturaChoice } from '$lib/lectura';
   import Callout from './Callout.svelte';
 
   interface Props {
@@ -19,11 +20,20 @@
     carpeta?: SugerenciaDeCarpeta | null;
     cargando?: boolean;
     error?: string | null;
+    /** La lectura elegida: si lo detectado pide la IA y va «Solo OCR», se dice. */
+    lectura?: LecturaChoice;
     onusar: (habilidadId: string) => void;
   }
 
-  let { habilidadId, archivos = [], carpeta = null, cargando = false, error = null, onusar }: Props =
-    $props();
+  let {
+    habilidadId,
+    archivos = [],
+    carpeta = null,
+    cargando = false,
+    error = null,
+    lectura,
+    onusar
+  }: Props = $props();
 
   const DESCONOCIDO = 'desconocido';
 
@@ -45,11 +55,25 @@
 
   const actual = $derived(HABILIDADES.find((habilidad) => habilidad.id === habilidadId) ?? null);
   const sugerida = $derived(dominante ? habilidadDelTipo(dominante.tipo) : null);
+  /**
+   * «Detectar automáticamente»: no hay nada que cambiar, el bot manda cada PDF a
+   * su habilidad. Se dice cuál detectó (el operador, 2026-11-03: «que sepa
+   * detectar la habilidad automáticamente»).
+   */
+  const automatico = $derived(habilidadId === 'auto');
   /** Lo elegido ya atiende lo que hay: su tipo es el reconocido, o decide solo. */
   const coincide = $derived(
-    !sugerida || sugerida.id === habilidadId || actual?.tipo === dominante?.tipo
+    automatico || !sugerida || sugerida.id === habilidadId || actual?.tipo === dominante?.tipo
   );
-  const porNombre = $derived(archivos.filter((archivo) => archivo.por === 'nombre').length);
+  const porNombre = $derived(
+    carpeta
+      ? carpeta.archivos.filter((archivo) => archivo.por === 'nombre').length
+      : archivos.filter((archivo) => archivo.por === 'nombre').length
+  );
+  /** Lo detectado lee mejor con la IA -- los nombres de las historias -- y va «Solo OCR». */
+  const conviene = $derived(
+    automatico && lectura === 'local' && sugerida?.pideLectura ? sugerida.pideLectura : null
+  );
 </script>
 
 {#if cargando}
@@ -65,6 +89,15 @@
       <p class="titulo">
         {#if !dominante}
           El bot no reconoce de qué tipo {total === 1 ? 'es este documento' : 'son estos documentos'}.
+          {#if automatico}Al procesarlo leerá cada PDF y lo mandará a la habilidad que le toque.{/if}
+        {:else if automatico && sugerida}
+          Habilidad detectada: <b>{sugerida.titulo}</b>
+          ({dominante.cantidad === total
+            ? total === 1
+              ? 'el documento es'
+              : `los ${total} son`
+            : `${dominante.cantidad} de ${total} son`}
+          {dominante.etiqueta}).
         {:else if coincide}
           Coincide con lo elegido: {dominante.cantidad === total ? (total === 1 ? 'es' : 'todos son') : `${dominante.cantidad} de ${total} son`}
           <b>{dominante.etiqueta}</b>.
@@ -87,8 +120,18 @@
 
       {#if mezcla}
         <p class="nota">
-          Mezcla tipos. Cada PDF se comprueba al procesarlo, y el que no sea lo declarado va a la
-          habilidad que le toca, con un aviso en el informe.
+          {#if automatico}
+            Mezcla tipos: al procesar, cada PDF va a la habilidad que le toca.
+          {:else}
+            Mezcla tipos. Cada PDF se comprueba al procesarlo, y el que no sea lo declarado va a la
+            habilidad que le toca, con un aviso en el informe.
+          {/if}
+        </p>
+      {/if}
+      {#if conviene}
+        <p class="nota">
+          Va con «Solo OCR»: {conviene.porque} Para eso conviene volver al paso de lectura y elegir
+          la IA.
         </p>
       {/if}
       {#if porNombre}
