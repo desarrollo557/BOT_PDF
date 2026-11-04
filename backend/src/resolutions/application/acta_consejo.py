@@ -79,17 +79,29 @@ from ..domain.acta_grado import (
     completar_acta,
     con_la_franja,
     datos_de_la_ia,
+    es_acta_de_examen,
     es_un_titulo,
     fecha_de_grado,
+    folio_del_texto,
     folios_de_la_foliacion,
     le_falta_algo,
     lecturas_del_nombre,
     leer_acta_de_grado,
     mejor_lectura,
     nombre_de_tres_lecturas,
+    titulo_del_examen,
+)
+from ..domain.acta_grado import (
+    FINAL as EXAMEN_FINAL,
+)
+from ..domain.acta_grado import (
+    PREPARATORIO as EXAMEN_PREPARATORIO,
 )
 from ..domain.acta_grado import (
     ROTULO as ROTULO_DE_GRADO,
+)
+from ..domain.acta_grado import (
+    SIN_DECIR as EXAMEN_SIN_DECIR,
 )
 from ..domain.doble_lectura import decidir_con_la_ia
 from ..domain.fechas import fechas_de
@@ -823,9 +835,11 @@ class InventariarActa:
         # al final: mientras el proveedor contesta por la red, Tesseract relee
         # las franjas en la CPU. Uno detrás del otro eran dos esperas.
         with hilos(LECTURAS_A_LA_VEZ) as proveedor:
+            # El libro manuscrito ya trae el folio en el texto que leyó la IA
+            # (``_folios_del_texto``): no se paga otra lectura de las esquinas.
             pedido = (
                 self._pedir_folios(source, lecturas, foliadas, proveedor)
-                if self._perfil.folio_por_hoja
+                if self._perfil.folio_por_hoja and not self._manuscrito
                 else None
             )
             self._releer_lo_que_falta(source, lecturas)
@@ -838,6 +852,7 @@ class InventariarActa:
             self._nombres_por_consenso(source, paginas, lecturas)
             self._nombres_manuscritos(source, lecturas)
             self._fechas_manuscritas(source, lecturas)
+            _los_examenes(lecturas)
             self._report(
                 ProgressEvent(
                     stage=Stage.IDENTIFYING,
@@ -854,6 +869,8 @@ class InventariarActa:
             self._leer_folios_y_resumenes(source, paginas, lecturas)
             if pedido is not None:
                 self._recoger_folios(pedido, lecturas)
+            elif self._perfil.folio_por_hoja and self._manuscrito:
+                self._folios_del_texto(lecturas, total)
         if reparto.es_libro:
             _encadenar_folios(lecturas)
         self._folios_hoja_por_hoja(source, lecturas)
@@ -1089,6 +1106,42 @@ class InventariarActa:
                 lectura.deducido = (
                     f"en la esquina se leyó el folio {leido}, pero por la foliación seguida "
                     f"es el {folio}: revíselo en el papel"
+                )
+            elif como == DEDUCIDO:
+                lectura.deducido = (
+                    "el folio no se pudo leer y se dedujo de la foliación seguida de las hojas vecinas"
+                )
+
+    def _folios_del_texto(self, lecturas: list[_Lectura], total: int) -> None:
+        """El folio de cada acta de un libro manuscrito, del número que la IA ya leyó en sus páginas.
+
+        En los libros de exámenes de 1924-1946 la esquina trae dos números, el
+        impreso del libro y la foliación del archivista («1» y «1/V»), y el
+        lector de esquinas tomaba uno en unas hojas y el otro en otras: las diez
+        primeras actas de UPD3860000 salían sin folio. La IA lee la página
+        entera y trae arriba el impreso (``folio_del_texto``). Cada página lleva
+        el suyo, así que el acta va del folio de su primera página al de la
+        última, y la foliación seguida confirma, corrige o deduce cada uno.
+        """
+        leidos = {
+            pagina: folio
+            for pagina, texto in self._textos_de_la_ia.items()
+            if (folio := folio_del_texto(texto)) is not None
+        }
+        folios = folios_de_la_foliacion(leidos, {pagina: pagina for pagina in range(1, total + 1)})
+        for lectura in lecturas:
+            if lectura.tramo.ceremonia:
+                continue
+            desde, hasta = lectura.tramo.desde, lectura.tramo.hasta
+            if desde not in folios:
+                continue
+            inicial, como, leido = folios[desde]
+            final = folios[hasta][0] if hasta in folios else inicial + hasta - desde
+            lectura.folios = FoliosDelActa(inicial=inicial, final=max(inicial, final), foliadas=len(lectura.foliadas))
+            if como == CORREGIDO:
+                lectura.deducido = (
+                    f"en la esquina se leyó el folio {leido}, pero por la foliación seguida "
+                    f"es el {inicial}: revíselo en el papel"
                 )
             elif como == DEDUCIDO:
                 lectura.deducido = (
@@ -2582,6 +2635,133 @@ def _corregir_anios(lecturas: list[_Lectura]) -> None:
         fechas[orden] = corregida
 
 
+#: Cuántos años lejos de todas sus vecinas tiene que estar la fecha de un acta
+#: manuscrita para corregirla: a uno, puede ser de verdad de otro año.
+SALTO_DE_ANIO_DE_UN_EXAMEN = 2
+#: Cuántas actas finales del libro tienen que decir el mismo título para dárselo
+#: a la que no se dejó leer.
+TITULOS_PARA_EL_LIBRO = 3
+
+
+def _fecha_suelta(fechas: Sequence[date | None], orden: int) -> bool:
+    """Si la fecha está a dos años o más de la anterior y de la siguiente que se leyeron.
+
+    La primera y la última del libro no lo son: con una sola vecina mal leída
+    no se sabe cuál de las dos es la suelta, y dejaban sin vecina a la otra.
+    """
+    leida = fechas[orden]
+    anterior = next((fecha for fecha in reversed(fechas[:orden]) if fecha is not None), None)
+    siguiente = next((fecha for fecha in fechas[orden + 1 :] if fecha is not None), None)
+    if leida is None or anterior is None or siguiente is None:
+        return False
+    return all(abs(vecina.year - leida.year) >= SALTO_DE_ANIO_DE_UN_EXAMEN for vecina in (anterior, siguiente))
+
+
+def _con_el_anio_de_las_vecinas(leida: date, anterior: date, siguiente: date) -> date | None:
+    """La fecha con el año de una vecina, si con él cae entre las dos; o con el de las dos, si es el mismo."""
+    entre = []
+    for anio in sorted({anterior.year, siguiente.year}):
+        try:
+            candidata = leida.replace(year=anio)
+        except ValueError:  # un 29 de febrero
+            continue
+        if anterior <= candidata <= siguiente:
+            entre.append(candidata)
+    if len(entre) == 1:
+        return entre[0]
+    if anterior.year == siguiente.year:
+        try:
+            return leida.replace(year=anterior.year)
+        except ValueError:
+            return None
+    return None
+
+
+def _los_examenes(lecturas: list[_Lectura]) -> None:
+    """Las actas manuscritas de examen (1924-1946), con el título completo y el año que corrigen sus vecinas.
+
+    La IA lee la cifra a mano y a veces la cambia: «21-03-1921» entre actas del
+    20 y el 25 de marzo de 1926 es el 21-03-1926 (UPD3859999). En un libro
+    manuscrito no se descarta ninguna fecha -- la leyó la IA, y la regla de las
+    fuera de lugar es contra el OCR gratis --: sólo se corrige la que sus
+    vecinas corrigen sin dudas, y se dice.
+
+    Sin dudas es: la leída está a dos años o más de la anterior y de la
+    siguiente, y con el año de una de ellas cae entre las dos; o las dos son
+    del mismo año, y es ése -- en el libro van casi en orden, el 22, el 21, el
+    25 de marzo --. A un año, el acta puede ser de verdad del año de al lado; y
+    la primera del libro no tiene anterior: el 04-07-1924 que abre UPD3860000
+    va antes de las de 1925, y corregido a 1925 quedaba mal. Una fecha suelta
+    no sirve de vecina de otra: 05-08-1916 y 16-08-1906 seguidas, entre
+    octubre de 1925 y septiembre de 1926 (UPD3860000), son agosto de 1926.
+    """
+    posiciones = [
+        indice
+        for indice, lectura in enumerate(lecturas)
+        if not lectura.tramo.ceremonia and lectura.acta.examen is not None
+    ]
+    # El examen que la hoja no dice -- «Preparatorio» ilegible -- es el de sus
+    # vecinas, si las dos dicen el mismo: el libro va por tramos, los finales y
+    # después los preparatorios. Si discrepan, queda «ACTA DE EXAMEN DE GRADO».
+    dichos = [lecturas[indice].acta.examen for indice in posiciones]
+    for orden, indice in enumerate(posiciones):
+        if dichos[orden] != EXAMEN_SIN_DECIR:
+            continue
+        anterior = next((examen for examen in reversed(dichos[:orden]) if examen), None)
+        siguiente = next((examen for examen in dichos[orden + 1 :] if examen), None)
+        examen = anterior if siguiente is None or anterior == siguiente else siguiente if anterior is None else None
+        if examen is None:
+            continue
+        lectura = lecturas[indice]
+        lectura.acta = replace(lectura.acta, examen=examen)
+        lectura.razonado.append(
+            f"la hoja no deja leer qué examen fue; se tomó {examen.lower()}, como las actas vecinas: revíselo en el papel"
+        )
+    for indice in posiciones:
+        acta = lecturas[indice].acta
+        titulo = titulo_del_examen(acta.examen, acta.titulo)
+        if titulo != acta.titulo:
+            # Las dudas del título leído se van con él; las del nombre se quedan.
+            viejas, nuevas = dudas_de(acta.nombre, acta.titulo), dudas_de(acta.nombre, titulo)
+            dudas = tuple(d for d in acta.dudas if d not in viejas or d in nuevas)
+            lecturas[indice].acta = replace(
+                acta, titulo=titulo, dudas=(*dudas, *(d for d in nuevas if d not in dudas))
+            )
+    # El título del final que no se leyó es el que confieren todas las demás
+    # actas finales del libro, si todas dicen el mismo: DOCTOR EN MEDICINA Y
+    # CIRUGIA en las 136 de UPD3860000 que se leyeron. Se dice.
+    finales = [lecturas[indice] for indice in posiciones if lecturas[indice].acta.examen == EXAMEN_FINAL]
+    conferidos = {lectura.acta.titulo for lectura in finales if lectura.acta.titulo}
+    if len(conferidos) == 1 and sum(1 for lectura in finales if lectura.acta.titulo) >= TITULOS_PARA_EL_LIBRO:
+        (conferido,) = conferidos
+        for lectura in finales:
+            if not lectura.acta.titulo:
+                lectura.acta = replace(lectura.acta, titulo=conferido)
+                lectura.razonado.append(
+                    f"el título no se pudo leer; es el que confieren todas las actas finales del libro, "
+                    f"{conferido}: revíselo en el papel"
+                )
+    fechas = [lecturas[indice].acta.fecha for indice in posiciones]
+    sueltas = {orden for orden in range(len(fechas)) if _fecha_suelta(fechas, orden)}
+    for orden in sorted(sueltas):
+        leida = fechas[orden]
+        anterior = next((fechas[otro] for otro in range(orden - 1, -1, -1) if fechas[otro] and otro not in sueltas), None)
+        siguiente = next((fechas[otro] for otro in range(orden + 1, len(fechas)) if fechas[otro] and otro not in sueltas), None)
+        if leida is None or anterior is None or siguiente is None:
+            continue
+        corregida = _con_el_anio_de_las_vecinas(leida, anterior, siguiente)
+        if corregida is None or corregida == leida:
+            continue
+        indice = posiciones[orden]
+        lectura = lecturas[indice]
+        lectura.acta = replace(lectura.acta, fecha=corregida)
+        lectura.razonado.append(
+            f"en el papel se leyó {leida.strftime('%d-%m-%Y')}; la fecha se corrigió a "
+            f"{corregida.strftime('%d-%m-%Y')} por las actas vecinas: revísela en el papel"
+        )
+        fechas[orden] = corregida
+
+
 def _por_la_resolucion_de_la_ceremonia(lecturas: list[_Lectura]) -> None:
     """La fecha de un acta de grado que no se leyó: la de las hojas de su ceremonia.
 
@@ -2961,7 +3141,20 @@ def _fila_de_grado(
     acta, tramo = lectura.acta, lectura.tramo
     ceremonia = acta.rotulo == ROTULO_DE_CEREMONIA
     avisos: list[str] = []
-    if not ceremonia:
+    if not ceremonia and acta.examen is not None:
+        # El acta manuscrita de examen no trae número ni cédula: no es una falta.
+        for valor, falta in (
+            (acta.nombre, "no se pudo leer el nombre del alumno"),
+            (
+                acta.titulo,
+                "no se pudo leer el título: cuál preparatorio fue"
+                if acta.examen == EXAMEN_PREPARATORIO
+                else "no se pudo leer el título conferido",
+            ),
+        ):
+            if not valor:
+                avisos.append(falta)
+    elif not ceremonia:
         for valor, falta in (
             (acta.numero, "no se pudo leer el número del acta"),
             (acta.nombre, "no se pudo leer el nombre del graduado"),
@@ -2976,10 +3169,11 @@ def _fila_de_grado(
         ):
             if not valor:
                 avisos.append(falta)
+    if not ceremonia:
         if lectura.fecha_descartada:
             avisos.append(lectura.fecha_descartada)
         elif acta.fecha is None:
-            avisos.append("no se pudo leer la fecha del grado")
+            avisos.append(f"no se pudo leer la fecha del {'examen' if acta.examen else 'grado'}")
         avisos.extend(acta.dudas)
         avisos.extend(lectura.razonado)
         if lectura.deducido:
@@ -3113,6 +3307,8 @@ _DATOS_DE_GRADO = (
     ("titulo", "el título"),
     ("cedula", "la cédula"),
 )
+#: El acta manuscrita de examen (1924-1946) no trae número ni cédula.
+_DATOS_DEL_EXAMEN = (("fecha", "la fecha"), ("nombre", "el nombre"), ("titulo", "el título"))
 #: Con qué palabra la nota de una fila ya habla de cada dato.
 _YA_DICHO = {
     "acta": "número",
@@ -3137,6 +3333,8 @@ def _datos_de(fila: Mapping[str, object]) -> tuple[tuple[str, str], ...]:
     # Lo que no es un acta dice en su nota lo que le falta, con sus campos.
     if tipo == ROTULO_DE_CEREMONIA or not es_de_actas(fila):
         return ()
+    if tipo == TIPO_DE_GRADO and es_acta_de_examen(fila.get("acta")):
+        return _DATOS_DEL_EXAMEN
     return _DATOS_DE_GRADO if tipo == TIPO_DE_GRADO else _DATOS_DE_CONSEJO
 
 

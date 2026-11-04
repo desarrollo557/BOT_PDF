@@ -21,6 +21,11 @@ rellenado así:
 Las hojas de la ceremonia que no son de ningún graduado -- listado,
 resolución, portada -- no llevan fila: en el modelo no la tienen.
 
+Las actas manuscritas de examen de 1924-1946 (caja 00C003362) no traen número
+ni cédula: su asunto es el examen y el alumno -- «ACTA DE EXAMEN PREPARATORIO
+DE GRADO - QUINTO PREPARATORIO - NOMBRE» -- y desde y hasta, el folio del libro
+(lo eligió el operador el 2026-11-04).
+
 La cabecera -- entidad, unidad administrativa, oficina productora, objeto -- es
 la de la plantilla y no se toca: el operador la dio por fija.
 """
@@ -34,6 +39,7 @@ from pathlib import Path
 
 from ..application.fuid import FuidRow
 from ..application.inventory_document import template_for
+from ..domain.acta_grado import es_acta_de_examen
 from ..domain.doctype import DocumentType
 from .fuid_inventory import FuidInventory
 
@@ -92,6 +98,23 @@ def _folio(inicial: object, final: object) -> int | str:
     return inicial
 
 
+#: «QUINTO EXAMEN PREPARATORIO DE GRADO»: cuál preparatorio, para el asunto.
+_CUAL_PREPARATORIO = re.compile(r"^(\w+) EXAMEN PREPARATORIO")
+
+
+def _asunto_del_examen(acta: str, nombre: str, titulo: str) -> str:
+    """El asunto de un acta manuscrita de examen, como lo eligió el operador el 2026-11-04.
+
+    «ACTA DE EXAMEN PREPARATORIO DE GRADO - QUINTO PREPARATORIO - JESUS MARIA
+    BARRIOS» y «ACTA DE EXAMEN FINAL DE GRADO - LUIS MARIA MERLANO - DOCTOR EN
+    MEDICINA Y CIRUGIA»: qué examen y de quién.
+    """
+    if "PREPARATORIO" in acta:
+        cual = _CUAL_PREPARATORIO.match(titulo)
+        return f"{acta} - {cual.group(1) + ' PREPARATORIO' if cual else NO_LEIDO} - {nombre}"
+    return f"{acta} - {nombre} - {titulo}"
+
+
 def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
     """La fila del FUID de un graduado, o ``None`` para las hojas de su ceremonia.
 
@@ -101,6 +124,7 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
         return None
     caja, upd = ubicacion(str(fila.get("carpeta") or ""), str(fila.get("archivo") or ""))
     acta = str(fila.get("acta") or NO_LEIDO)
+    examen = es_acta_de_examen(acta)
     if acta == NO_LEIDO:
         # Sin el número, el asunto conserva su forma: «ACTA DE GRADO No. N/A
         # - NOMBRE - TÍTULO», que es por donde se lee y se filtra.
@@ -119,15 +143,24 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
         folios = final - inicial + 1
     else:
         folios = max(1, (paginas + 1) // 2)
+    # La cédula sólo en la columna D: el acta no trae otro número. El acta de
+    # examen no trae número ni cédula: desde y hasta, el folio del libro en que
+    # está (lo eligió el operador el 2026-11-04).
+    desde_hasta = (cedula, NO_LEIDO)
+    if examen:
+        desde_hasta = (
+            str(inicial) if _es_numero(inicial) else NO_LEIDO,
+            str(final) if _es_numero(final) else NO_LEIDO,
+        )
     return FuidRow(
         orden=0,
         # Primero el nombre y luego el tipo, en todos los inventarios de la
-        # Universidad (lo pidió el operador el 2026-10-30).
-        asunto=f"{nombre} - {acta} - {titulo}",
+        # Universidad (lo pidió el operador el 2026-10-30); el acta de examen,
+        # primero el examen.
+        asunto=_asunto_del_examen(acta, nombre, titulo) if examen else f"{nombre} - {acta} - {titulo}",
         codigo_trd="",
-        # La cédula sólo en la columna D: el acta no trae otro número.
-        consecutivo_inicial=cedula,
-        consecutivo_final=NO_LEIDO,
+        consecutivo_inicial=desde_hasta[0],
+        consecutivo_final=desde_hasta[1],
         fecha_inicial=fecha,
         fecha_final=fecha,
         caja=caja,

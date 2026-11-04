@@ -1001,3 +1001,276 @@ class TestLaIaLeeElActaComoUnaPersona:
 
         assert _lo_completa("LUZ FELFLE CASTILLA", "FAIMA LUZ FELFLE CASTILLA")
         assert not _lo_completa("ROSE MARY GUERRA", "CON ENFASIS EN PERINATOLOGIA")
+
+
+class TestLasActasManuscritasDeExamen:
+    """Los libros de exámenes de grado de 1924-1946 (caja 00C003362, Medicina).
+
+    Un acta por alumno y por hoja, sin número ni cédula. El operador eligió el
+    2026-11-04 el asunto «ACTA DE EXAMEN PREPARATORIO DE GRADO - QUINTO
+    PREPARATORIO - NOMBRE» y, en desde y hasta, el folio del libro.
+    """
+
+    PREPARATORIO = (
+        "Jesús Me Barrios S.\n(5º Preparatorio)\n\n1\n\n1/V\n\n"
+        "En la ciudad de Cartagena, a los veinticuatro (24) días del mes de Febrero de mil "
+        "novecientos veintiséis (1926), se constituyó en la Sala de Conferencias del Hospital Santa "
+        "Clara el Consejo Examinador designado por el Rectorado de la Facultad, con el fin de "
+        "practicar el quinto examen preparatorio de grado del alumno Jesús Me Barrios S.\n"
+        "El Consejo, en sesión privada, acordó la calificación: Tres (3)."
+    )
+    FINAL = (
+        "# Luis Maria Merlano.\n\n1\n\n1/V\n\n"
+        "En la ciudad de Cartagena a los cuatro dias del mes de Julio de 1924 se constituyó el "
+        "Jurado de examinadores, en el Salón de Grados de la Universidad, con el fin de verificar el "
+        "examen final de grado del alumno Luis Maria Merlano.\n"
+        "Siguiamente la Presidencia confirió en nombre de la República, y en el de la Universidad, "
+        "el título de Doctor en Medicina y Cirugia al Señor Luis Maria Merlano, y al hacerle entrega"
+    )
+
+    def test_cual_examen_es(self):
+        from resolutions.domain.acta_grado import FINAL, PREPARATORIO, examen_de_grado
+
+        assert examen_de_grado(self.PREPARATORIO) == PREPARATORIO
+        assert examen_de_grado(self.FINAL) == FINAL
+
+    def test_el_acta_de_grado_con_numero_y_la_constancia_no_son_examenes(self):
+        from resolutions.domain.acta_grado import examen_de_grado
+
+        assert examen_de_grado(ANTIGUA.format(numero="03") + " se reunió el Consejo Examinador") is None
+        copia = (
+            "LA SUSCRITA SECRETARIA ACADEMICA\nHACE CONSTAR:\nQue en el Libro de Actas de Grado aparece el "
+            "Acta Nº 55 que a la letra dice: En la ciudad de Cartagena a los 23 días del mes de Marzo de "
+            "1,961 se reunió el Consejo Examinador ... a la Señorita ESPERANZA VIANA SILVA."
+        )
+        assert examen_de_grado(copia) is None
+
+    def test_el_acta_dice_su_examen_en_el_encabezado(self):
+        acta = leer_acta_de_grado([self.PREPARATORIO])
+        assert acta.encabezado == "ACTA DE EXAMEN PREPARATORIO DE GRADO"
+        assert acta.titulo == "QUINTO EXAMEN PREPARATORIO DE GRADO"
+        assert acta.fecha == date(1926, 2, 24)
+        final = leer_acta_de_grado([self.FINAL])
+        assert (final.encabezado, final.titulo) == ("ACTA DE EXAMEN FINAL DE GRADO", "DOCTOR EN MEDICINA Y CIRUGIA")
+
+    def test_el_titulo_del_examen(self):
+        from resolutions.domain.acta_grado import FINAL, PREPARATORIO, titulo_del_examen
+
+        # Sin decir cuál preparatorio no es un título: queda por leer.
+        assert titulo_del_examen(PREPARATORIO, "EXAMEN PREPARATORIO DE GRADO") is None
+        assert titulo_del_examen(PREPARATORIO, "5º PREPARATORIO") == "QUINTO EXAMEN PREPARATORIO DE GRADO"
+        # La última palabra que la IA lee mal de la letra a mano.
+        for leido in ("DOCTOR EN MEDICINA Y GEOGRAFIA", "PODER EN MEDICINA Y CIRUGIA?", "DOCTORES EN MEDICINA Y CIRUGIA"):
+            assert titulo_del_examen(FINAL, leido) == "DOCTOR EN MEDICINA Y CIRUGIA"
+        # Fuera de un examen, el título no se toca.
+        assert titulo_del_examen(None, "DOCTOR EN MEDICINA Y GEOGRAFIA") == "DOCTOR EN MEDICINA Y GEOGRAFIA"
+
+    def test_sin_numero_ni_cedula_no_le_falta_nada(self):
+        from resolutions.domain.acta_grado import le_falta_algo
+
+        acta = leer_acta_de_grado([self.FINAL])
+        assert acta.numero is None and acta.cedula is None
+        assert not le_falta_algo(acta)
+
+    def test_la_ia_no_deja_el_preparatorio_sin_decir_cual(self):
+        from resolutions.domain.acta_grado import datos_de_la_ia
+
+        datos = datos_de_la_ia("TITULO: EXAMEN PREPARATORIO DE GRADO\nNOMBRE: Jesús Me Barrios", self.PREPARATORIO)
+        assert "titulo" not in datos
+        final = datos_de_la_ia("TITULO: DOCTOR EN MEDICINA Y CIRUGIA", self.FINAL)
+        assert final["titulo"] == "DOCTOR EN MEDICINA Y CIRUGIA"
+
+    def test_la_fila_no_pide_numero_ni_cedula(self):
+        from resolutions.application.acta_consejo import (
+            TIPO_DE_GRADO,
+            explicar_lo_que_falta,
+        )
+
+        fila = {
+            "tipo": TIPO_DE_GRADO, "acta": "ACTA DE EXAMEN FINAL DE GRADO", "fecha": "04-07-1924",
+            "nombre": "LUIS MARIA MERLANO", "titulo": "DOCTOR EN MEDICINA Y CIRUGIA", "numero": "", "cedula": "",
+            "observaciones": "", "pagina_inicial": 4, "pagina_final": 4,
+        }
+        assert explicar_lo_que_falta(dict(fila))["observaciones"] == ""
+
+    def test_el_anio_lejos_de_sus_vecinas_se_corrige_y_el_de_al_lado_no(self):
+        from resolutions.application.acta_consejo import _Lectura, _los_examenes
+        from resolutions.domain.acta_consejo import ActaDeConsejo, TramoDeActa
+
+        def lectura(pagina: int, fecha: date) -> _Lectura:
+            acta = ActaDeConsejo(rotulo="ACTA DE GRADO", fecha=fecha, examen="FINAL", titulo="DOCTOR EN MEDICINA Y CIRUGIA")
+            return _Lectura(tramo=TramoDeActa(pagina, pagina), acta=acta, foliadas=[pagina])
+
+        # El libro abre el 04-07-1924 y sigue en 1925: es de verdad de 1924.
+        # El 21-03-1921 entre actas de marzo de 1926 es el 1926 mal leído.
+        lecturas = [
+            lectura(1, date(1924, 7, 4)),
+            lectura(2, date(1925, 4, 24)),
+            lectura(3, date(1925, 4, 30)),
+            lectura(4, date(1926, 3, 20)),
+            lectura(5, date(1921, 3, 21)),
+            lectura(6, date(1926, 3, 25)),
+        ]
+        _los_examenes(lecturas)
+        assert [x.acta.fecha for x in lecturas] == [
+            date(1924, 7, 4), date(1925, 4, 24), date(1925, 4, 30), date(1926, 3, 20), date(1926, 3, 21), date(1926, 3, 25),
+        ]
+        assert "se corrigió a 21-03-1926" in lecturas[4].razonado[0]
+
+    def test_dos_fechas_sueltas_seguidas_no_se_corrigen_una_con_otra(self):
+        """05-08-1916 y 16-08-1906 seguidas, entre octubre de 1925 y septiembre de 1926 (UPD3860000)."""
+        from resolutions.application.acta_consejo import _Lectura, _los_examenes
+        from resolutions.domain.acta_consejo import ActaDeConsejo, TramoDeActa
+
+        fechas = [date(1925, 10, 22), date(1916, 8, 5), date(1906, 8, 16), date(1926, 9, 18), date(1926, 10, 5)]
+        lecturas = [
+            _Lectura(tramo=TramoDeActa(n, n), acta=ActaDeConsejo(rotulo="ACTA DE GRADO", fecha=f, examen="FINAL"), foliadas=[n])
+            for n, f in enumerate(fechas, 1)
+        ]
+        _los_examenes(lecturas)
+        assert [x.acta.fecha for x in lecturas] == [
+            date(1925, 10, 22), date(1926, 8, 5), date(1926, 8, 16), date(1926, 9, 18), date(1926, 10, 5),
+        ]
+
+    def test_los_titulos_de_los_anios_cuarenta(self):
+        """«En el Paraninfo de la Universidad de Cartagena…», el «Jurado Examinador» y «el grado de Opción en Medicina»."""
+        hoja = (
+            "# Gabriel Grau Moeña\n\nEn Cartagena, a los veinte y seis días del mes de Junio de 1943, se constituyó "
+            "en el Paradinjo de la Universidad, el Jurado Examinador Integrado por los Dres. … en virtud del cual el "
+            "Presidente en nombre de la República y de la Universidad de Cartagena, por Ministerio de la Ley, le "
+            "definió el grado de Opción en Medicina y Cinéja y le entregó el Diploma que lo acredita como tal."
+        )
+        acta = leer_acta_de_grado([hoja])
+        assert (acta.examen, acta.titulo, acta.fecha) == ("FINAL", "DOCTOR EN MEDICINA Y CIRUGIA", date(1943, 6, 26))
+        paraninfo = (
+            "# Luis P. Barraza Ospino\n\nEn el Paraninfo de la Universidad de Cartagena, a los veinte y tres (23) días "
+            "del mes de Octubre se constituyó el Jurado Examinador de Grado integrado por los Profesores, con el objeto "
+            "de practicar el examen final de Grado del alumno Luis P. Barraza Ospino."
+        )
+        assert leer_acta_de_grado([paraninfo]).examen == "FINAL"
+
+    def test_el_folio_es_el_numero_impreso_y_no_el_del_archivista(self):
+        from resolutions.domain.acta_grado import folio_del_texto
+
+        assert folio_del_texto(self.PREPARATORIO) == 1  # «1» y después «1/V»
+        assert folio_del_texto("# H. aroldo Dabo Urinez\n\n3\n\n82\nV\n\n2º Preparatorio\n\nEn Cartagena a los dos") == 3
+        assert folio_del_texto("Lázan Valdelamar\n3º Preparatorio\n\n297\n\n149\n\nEn Cartagena, a trece") == 297
+        assert folio_del_texto("Sin número\n\nEn la ciudad de Cartagena, a los 4 días") is None
+
+    def test_el_libro_que_vuelve_a_empezar_no_se_corrige(self):
+        """Los preparatorios de 1945 van cosidos detrás de los finales y empiezan en el folio 1 (UPD3860000)."""
+        from resolutions.domain.acta_grado import LEIDO, folios_de_la_foliacion
+
+        leidos = {pagina: pagina - 3 for pagina in range(150, 163)} | {pagina: pagina - 162 for pagina in range(163, 175)}
+        folios = folios_de_la_foliacion(leidos, {pagina: pagina for pagina in range(150, 175)})
+        assert folios[162] == (159, LEIDO, None)
+        assert folios[163] == (1, LEIDO, None)
+        assert folios[164] == (2, LEIDO, None)
+
+    def test_el_titulo_que_no_se_leyo_es_el_de_todas_las_finales(self):
+        from resolutions.application.acta_consejo import _Lectura, _los_examenes
+        from resolutions.domain.acta_consejo import ActaDeConsejo, TramoDeActa
+        from resolutions.domain.acta_grado import titulo_del_examen
+
+        assert titulo_del_examen("FINAL", "DOCTOREN") == "DOCTOR EN MEDICINA Y CIRUGIA"
+        titulos = ["DOCTOR EN MEDICINA Y CIRUGIA"] * 3 + [None]
+        lecturas = [
+            _Lectura(tramo=TramoDeActa(n, n), acta=ActaDeConsejo(rotulo="ACTA DE GRADO", titulo=t, examen="FINAL"), foliadas=[n])
+            for n, t in enumerate(titulos, 1)
+        ]
+        _los_examenes(lecturas)
+        assert lecturas[3].acta.titulo == "DOCTOR EN MEDICINA Y CIRUGIA"
+        assert "todas las actas finales del libro" in lecturas[3].razonado[0]
+
+    def test_el_preparatorio_mal_leido_detras_del_ordinal(self):
+        """«1ª furiporatorio», «examen de tercer fuejaroztor»: la IA lee mal la palabra (UPD3859999)."""
+        hoja = (
+            "# Ricardo Pérez Toro\n## 1ª furiporatorio\n\n191\n\nEn la ciudad de Cartagena a los veintisiete (27) "
+            "días del mes de Mayo de 1933, se constituyó en el Laboratorio de la facultad de Medicina, el Consejo "
+            "Examinador designado para verificar el 1º exá-\nmen furiporatorio de grado del alumno Ricardo Pérez Toro."
+        )
+        acta = leer_acta_de_grado([hoja])
+        assert (acta.examen, acta.titulo, acta.nombre) == (
+            "PREPARATORIO", "PRIMER EXAMEN PREPARATORIO DE GRADO", "RICARDO PEREZ TORO",
+        )
+
+    def test_la_fecha_y_el_nombre_de_1935(self):
+        """«En Cartagena, a trece de Julio de …», sin «a los … días»; el nombre acaba antes de «Del Consejo»."""
+        hoja = (
+            "Lázan Valdelamar\n3º Preparatorio\n\nEn Cartagena, a trece de Julio de mil novecientos treinta y cinco, "
+            "se constituyó el Consejo Examinador designado para practicar el examen de tercer preparatorio al grado "
+            "del alumno señor Lázan Valdelamar\n\nDel Consejo fué integrado por los Profesores doctores"
+        )
+        acta = leer_acta_de_grado([hoja])
+        assert (acta.fecha, acta.nombre) == (date(1935, 7, 13), "LAZAN VALDELAMAR")
+
+    def test_sin_decir_cual_examen_no_se_adivina_y_lo_dicen_las_vecinas(self):
+        from resolutions.application.acta_consejo import _Lectura, _los_examenes
+        from resolutions.domain.acta_consejo import ActaDeConsejo, TramoDeActa
+        from resolutions.domain.acta_grado import SIN_DECIR, examen_de_grado
+
+        hoja = (
+            "Manuel Cassiani\n\nEn Cartagena, a cinco de Agosto de 1935, se constituyó el Consejo Examinador "
+            "del alumno señor Manuel Cassiani."
+        )
+        assert examen_de_grado(hoja) == SIN_DECIR
+        assert leer_acta_de_grado([hoja]).encabezado == "ACTA DE EXAMEN DE GRADO"
+
+        def lectura(pagina: int, examen: str) -> _Lectura:
+            return _Lectura(tramo=TramoDeActa(pagina, pagina), acta=ActaDeConsejo(rotulo="ACTA DE GRADO", examen=examen), foliadas=[pagina])
+
+        lecturas = [lectura(1, "PREPARATORIO"), lectura(2, SIN_DECIR), lectura(3, "PREPARATORIO"), lectura(4, SIN_DECIR), lectura(5, "FINAL")]
+        _los_examenes(lecturas)
+        # Entre dos preparatorios, preparatorio; entre un preparatorio y un final, no se sabe.
+        assert [x.acta.examen for x in lecturas] == ["PREPARATORIO", "PREPARATORIO", "PREPARATORIO", SIN_DECIR, "FINAL"]
+        assert "como las actas vecinas" in lecturas[1].razonado[0]
+
+
+class TestElFuidDeLosExamenes:
+    """El asunto que eligió el operador y el folio del libro en desde y hasta (2026-11-04)."""
+
+    def fila(self, **cambios):
+        fila = {
+            "tipo": "ACTA DE GRADO", "acta": "ACTA DE EXAMEN PREPARATORIO DE GRADO",
+            "archivo": "UPD3859999-EXAMENES PREPARATORIOS DE GRADO 1926-1395.pdf", "carpeta": "20.ACTAS DE GRADO 3362",
+            "nombre": "JESUS MA BARRIOS", "titulo": "QUINTO EXAMEN PREPARATORIO DE GRADO", "cedula": "",
+            "fecha": "24-02-1926", "folio_inicial": 1, "folio_final": 1, "pagina_inicial": 4, "pagina_final": 4,
+        }
+        fila.update(cambios)
+        return fila
+
+    def test_el_preparatorio(self):
+        from resolutions.adapters.fuid_actas_de_grado import fila_del_fuid
+
+        fila = fila_del_fuid(self.fila())
+        assert fila.asunto == "ACTA DE EXAMEN PREPARATORIO DE GRADO - QUINTO PREPARATORIO - JESUS MA BARRIOS"
+        assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("1", "1")
+        assert (fila.fecha_inicial, fila.fecha_final, fila.carpeta) == ("24/02/1926", "24/02/1926", "UPD3859999")
+
+    def test_el_final_y_un_acta_de_dos_folios(self):
+        from resolutions.adapters.fuid_actas_de_grado import fila_del_fuid
+
+        fila = fila_del_fuid(
+            self.fila(
+                acta="ACTA DE EXAMEN FINAL DE GRADO", nombre="RAMON BENITO PEROLFO VIANA",
+                titulo="DOCTOR EN MEDICINA Y CIRUGIA", folio_inicial=44, folio_final=45, pagina_final=5,
+            )
+        )
+        assert fila.asunto == "ACTA DE EXAMEN FINAL DE GRADO - RAMON BENITO PEROLFO VIANA - DOCTOR EN MEDICINA Y CIRUGIA"
+        assert (fila.consecutivo_inicial, fila.consecutivo_final, fila.folios) == ("44", "45", 2)
+
+    def test_sin_cual_preparatorio_ni_folio(self):
+        from resolutions.adapters.fuid_actas_de_grado import fila_del_fuid
+
+        fila = fila_del_fuid(self.fila(titulo="", folio_inicial="N/A", folio_final="N/A"))
+        assert fila.asunto == "ACTA DE EXAMEN PREPARATORIO DE GRADO - N/A - JESUS MA BARRIOS"
+        assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("N/A", "N/A")
+
+    def test_el_acta_de_grado_sigue_igual(self):
+        from resolutions.adapters.fuid_actas_de_grado import fila_del_fuid
+
+        fila = fila_del_fuid(
+            self.fila(acta="ACTA DE GRADO No. 01/05", nombre="MARTHA LUCIA HERRERA", titulo="ENFERMERA", cedula="123456")
+        )
+        assert fila.asunto == "MARTHA LUCIA HERRERA - ACTA DE GRADO No. 01/05 - ENFERMERA"
+        assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("123456", "N/A")

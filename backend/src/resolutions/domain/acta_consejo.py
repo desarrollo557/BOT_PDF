@@ -210,10 +210,20 @@ class ActaDeConsejo:
     constancia: bool = False
     #: «ACTA No. 15 BIS»: otra sesión con el número de la anterior.
     bis: bool = False
+    #: De un acta manuscrita de examen de grado de 1924-1946 (caja 00C003362):
+    #: «PREPARATORIO», «FINAL», o vacío si no dice cuál. No trae número ni cédula.
+    examen: str | None = None
 
     @property
     def encabezado(self) -> str | None:
-        """«ACTA ORDINARIA No. 022», o ``None`` si no se leyó el número."""
+        """«ACTA ORDINARIA No. 022», o ``None`` si no se leyó el número.
+
+        El acta de examen no lleva número: su encabezado es cuál examen,
+        «ACTA DE EXAMEN PREPARATORIO DE GRADO».
+        """
+        if self.examen is not None:
+            # El que no dice cuál: «ACTA DE EXAMEN DE GRADO».
+            return " ".join(parte for parte in ("ACTA DE EXAMEN", self.examen, "DE GRADO") if parte)
         if self.numero is None:
             return None
         clase = f" {self.sesion}" if self.sesion else ""

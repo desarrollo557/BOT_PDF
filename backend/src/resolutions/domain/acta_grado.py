@@ -32,7 +32,7 @@ from datetime import date
 
 from .acta_consejo import ActaDeConsejo, ActasDelPdf, TramoDeActa
 from .fechas import MESES, fecha_de_la_pagina
-from .graduado import cuanto_dice, dudas_de, graduado
+from .graduado import cuanto_dice, dudas_de, graduado, titulo_limpio
 
 ROTULO = "ACTA DE GRADO"
 
@@ -272,6 +272,11 @@ def _decena_y_unidad(
     return None
 
 
+#: «En Cartagena, a trece de Julio de …»: la fecha de las actas manuscritas de
+#: examen desde 1934, sin «a los … días del mes».
+_EN_CARTAGENA_A = re.compile(r"EN\s+(?:LA\s+C\w{4}D\s+DE\s+)?CARTAGENA\W{0,3}\s+A\s+(?!LOS\b)")
+
+
 def fecha_de_grado(texto: str) -> date | None:
     """La fecha de la ceremonia escrita en el cuerpo del acta, o ``None``."""
     plano = _plano(texto)
@@ -284,7 +289,10 @@ def fecha_de_grado(texto: str) -> date | None:
     # «Diez y siete ( J días del mes de» antes de «En la ciudad» --, la frase
     # entera desde el encabezado del acta.
     inicio = plano.find("A LOS", max(0, plano.find("EN LA CIUDAD")))
-    for desde in (inicio, plano.find("ACTA DE GRADO")):
+    # Y el acta manuscrita de 1934-1946 sin «a los … días»: «En Cartagena, a
+    # trece de Julio de mil novecientos treinta y cinco» (UPD3859999).
+    sin_dias = _EN_CARTAGENA_A.search(plano)
+    for desde in (inicio, plano.find("ACTA DE GRADO"), sin_dias.start() if sin_dias else -1):
         if desde < 0:
             continue
         frase = plano[desde : desde + LARGO_DE_LA_FRASE + 120]
@@ -355,9 +363,11 @@ ROTULO_DE_CEREMONIA = "CEREMONIA DE GRADO"
 #: practicar el quinto examen preparatorio de grado del alumno Jesús Mª Barrios
 #: J.», o «… el examen final de grado del alumno …». Una por página.
 _EXAMEN_ANTIGUO = re.compile(
-    # «En la ciudad de Cartagena», «En la cuidad…» (el OCR) o, desde 1935, «En Cartagena, a…».
-    r"EN\s+(?:LA\s+C\w{4}D\s+DE\s+)?CARTAGENA.{0,900}?(?:EXAMEN.{0,40}?(?:PREPARATORI|GRADO)"
-    r"|CONSEJO\s+EXAMINADOR|JURADO\s+DE\s+EXAMINADORES)"
+    # «En la ciudad de Cartagena», «En la cuidad…» (el OCR) o, desde 1935, «En Cartagena, a…»;
+    # desde 1943, «En el Paraninfo de la Universidad de Cartagena, a…» y el «Jurado Examinador».
+    r"EN\s+(?:LA\s+C\w{4}D\s+DE\s+|EL\s+\w{6,10}\s+DE\s+LA\s+UNIVERSIDAD\s+DE\s+)?CARTAGENA"
+    r".{0,900}?(?:EXAMEN.{0,40}?(?:PREPARATORI|GRADO)"
+    r"|CONSEJO\s+EXAMINADOR|JURADO\s+(?:DE\s+)?EXAMINADOR)"
 )
 
 
@@ -493,8 +503,14 @@ _CARGO = re.compile(
 )
 _ENLACES_DEL_NOMBRE = {"DE", "DEL", "LA", "LAS", "LOS", "Y"}
 #: Lo que nunca es parte de un nombre aunque vaya en mayúsculas detrás: también
-#: «… y otras», «… (hoy Sra. de Vela)», «… quienes cumplieron» (UPD3859800).
-_NO_ES_NOMBRE = {"ESTE", "QUIEN", "CON", "PARA", "POR", "EL", "SE", "QUE", "OTRAS", "OTROS", "HOY", "QUIENES"}
+#: «… y otras», «… (hoy Sra. de Vela)», «… quienes cumplieron» (UPD3859800), y
+#: «… José Miguel Méndez Méndez Presidió el Consejo…» sin el punto, que la IA
+#: lee también «Precedio» (UPD3860000, 1946), y «… Lázan Valdelamar Del Consejo
+#: fué integrado…» (UPD3859999, 1935).
+_NO_ES_NOMBRE = {
+    "ESTE", "QUIEN", "CON", "PARA", "POR", "EL", "SE", "QUE", "OTRAS", "OTROS", "HOY", "QUIENES",
+    "PRESIDIO", "PRECEDIO", "CONSEJO", "FUE",
+}
 #: «Licenciada en Enfermería a: MARTHA PEÑALOZA DIAZ (hoy Sra. de Vela) y otras»:
 #: la graduada a quien se expide la constancia, nombrada tras los dos puntos.
 #: También sin ellos: «Licenciadas en Enfermería a ENYS GUTIERREZ DE MOYA c.c.…».
@@ -663,7 +679,12 @@ _ORDINALES = {
     "1": "PRIMER", "2": "SEGUNDO", "3": "TERCER", "4": "CUARTO", "5": "QUINTO", "6": "SEXTO",
     "7": "SEPTIMO", "8": "OCTAVO",
 }
-_TITULO_ANTIGUO = re.compile(r"TITULO\s+DE\s+(DOCTOR\s+EN\s+[A-Z ]{5,60}?)(?:\s*,|\s+(?:AL|A\s+LA)\s+SEN|\s+Y\s+LE\b)")
+#: «le confirió el título de Doctor en Medicina y Cirugía», y en los años
+#: cuarenta «el grado de Doctor en …», que la IA lee «Sr. en …» u «Opción en …».
+_TITULO_ANTIGUO = re.compile(
+    r"(?:TITULO|GRADO)\s+DE\s+(\w{2,8}\.?\s+EN\s+[A-Z ]{5,60}?)"
+    r"(?:\s*[,.]|\s+(?:AL|A\s+LA)\s+SEN|\s+Y\s+LE\b)"
+)
 
 
 def examen_antiguo(texto: str) -> tuple[str | None, str | None]:
@@ -674,7 +695,7 @@ def examen_antiguo(texto: str) -> tuple[str | None, str | None]:
     nombre, el de la frase -- «del alumno Mario Fernández Mendoza» -- o, si
     no se lee, el que la hoja lleva arriba como título.
     """
-    plano = _sin_cortes(_plano(texto))
+    plano = _plano_del_examen(texto)
     if not _EXAMEN_ANTIGUO.search(plano):
         return None, None
     del_texto = None
@@ -695,6 +716,142 @@ def examen_antiguo(texto: str) -> tuple[str | None, str | None]:
     else:
         titulo = None
     return nombre, titulo
+
+
+#: Cuál examen es un acta manuscrita: lo que abre su fila y su asunto en el FUID
+#: («ACTA DE EXAMEN PREPARATORIO DE GRADO - QUINTO PREPARATORIO - …», lo eligió
+#: el operador el 2026-11-04).
+PREPARATORIO = "PREPARATORIO"
+FINAL = "FINAL"
+#: Un acta de examen que no dice cuál: la decide `_los_examenes` por sus vecinas.
+SIN_DECIR = ""
+#: Cuánto de la frase que abre el acta se mira para saber cuál examen es: el
+#: propósito, «con el fin de practicar el quinto examen preparatorio de grado».
+LARGO_DEL_PROPOSITO = 300
+#: El examen en que se confiere el título: «el examen final de grado», «el
+#: examen general de grado», «el título de Doctor en …».
+_EXAMEN_FINAL = re.compile(
+    r"EXAMEN\s+(?:DE\s+GRADO\s+)?(?:FINAL|GENERAL)|FINAL\s+DE\s+GRADO|(?:TITULO|GRADO)\s+DE\s+DOCTOR"
+    r"|MINISTERIO\s+DE\s+LA\s+LEY"
+)
+#: «DOCTOR EN MEDICINA Y GEOGRAFIA», «PODER EN MEDICINA Y CIRUGIA», «ACTO SIN
+#: MEDICINA Y CUMBRE», «DOCTOR EN MECANICA Y CIENCIA»: la IA lee mal la letra a
+#: mano, y el título que confiere el examen final de la Facultad de Medicina es
+#: uno solo, «en Medicina y Cirugía».
+_EN_MEDICINA_Y = re.compile(r"^(?:\w+\s+){0,2}MEDICINA\s+Y\s+\w+$|^(?:\w+\s+)?EN\s+\w+\s+Y\s+\w+$")
+DOCTOR_EN_MEDICINA = "DOCTOR EN MEDICINA Y CIRUGIA"
+
+
+def examen_de_grado(texto: str) -> str | None:
+    """Cuál examen es un acta manuscrita de 1924-1946: «PREPARATORIO», «FINAL», o ``None`` si no lo es.
+
+    Lo dice la frase que abre el acta -- «con el fin de practicar el quinto
+    examen preparatorio», «… el examen final de grado» -- o el renglón de
+    arriba, «(5º Preparatorio)». Se mira primero el comienzo: un acta final
+    puede nombrar los preparatorios más abajo.
+
+    Un acta de grado con su número -- «ACTA DE GRADO No. 03 … se reunió el
+    Consejo Examinador» -- y la constancia que copia una de 1961 hablan igual,
+    y no son actas de examen: conservan su número.
+    """
+    plano = _plano_del_examen(texto)
+    abre = _EXAMEN_ANTIGUO.search(plano)
+    if not abre or apertura(texto) is not None or constancia(texto) is not None:
+        return None
+    if "PREPARATORI" in plano[: abre.end() + LARGO_DEL_PROPOSITO]:
+        return PREPARATORIO
+    if _EXAMEN_FINAL.search(plano) or _TITULO_ANTIGUO.search(plano):
+        return FINAL
+    # Sin nada que lo diga no se adivina: «final» por descarte ponía siete
+    # preparatorios de UPD3859999 entre los finales.
+    return PREPARATORIO if "PREPARATORI" in plano else SIN_DECIR
+
+
+#: «1ª furiporatorio», «examen de tercer fuejaroztor al grado»: la IA lee mal
+#: «Preparatorio» en algunas manos (UPD3859999). Detrás de un ordinal o de
+#: «examen», una palabra con «TOR» que se le parece lo es. Sola no:
+#: «Laboratorio» se le parece igual.
+_PREPARATORIO_MAL_LEIDO = re.compile(
+    r"\b((?:PRIMER|SEGUNDO|TERCER|CUARTO|QUINTO|SEXTO|SEPTIMO|OCTAVO)O?|EXAMEN|[1-8]\s?(?:ER|O|A)?)"
+    r"(\W{1,3})([A-Z]{7,14})\b"
+)
+PARECIDO_DEL_PREPARATORIO = 0.5
+
+
+def _plano_del_examen(texto: str) -> str:
+    """El texto del acta manuscrita en mayúsculas, sin palabras partidas y con «PREPARATORIO» legible."""
+
+    def legible(hallado: re.Match[str]) -> str:
+        palabra = hallado.group(3)
+        if (
+            palabra.startswith("PREPARATORI")
+            or "TOR" not in palabra
+            or difflib.SequenceMatcher(None, palabra, "PREPARATORIO").ratio() < PARECIDO_DEL_PREPARATORIO
+        ):
+            return hallado.group(0)
+        return f"{hallado.group(1)}{hallado.group(2)}PREPARATORIO"
+
+    return _PREPARATORIO_MAL_LEIDO.sub(legible, _sin_cortes(_plano(texto)))
+
+
+def titulo_del_examen(examen: str | None, titulo: str | None) -> str | None:
+    """El título de un acta de examen como va al FUID; fuera de un examen, el mismo.
+
+    Del preparatorio, cuál: «QUINTO EXAMEN PREPARATORIO DE GRADO», también de
+    «5º PREPARATORIO». Sin el ordinal no dice cuál, y queda por leer: la IA
+    devolvía «EXAMEN PREPARATORIO DE GRADO» y le ganaba a la regla, que sí
+    leía «PRIMER». Del final, el que se confirió, con la última palabra que la
+    IA lee mal llevada a DOCTOR EN MEDICINA Y CIRUGIA.
+    """
+    if not titulo or examen is None:
+        return titulo
+    plano = " ".join(re.sub(r"[^A-Z0-9 ]", " ", _plano(titulo)).split())
+    if examen == PREPARATORIO and "PREPARATORI" in plano:
+        cual = _PREPARATORIO.search(plano)
+        if cual:
+            return f"{cual.group(1)} EXAMEN PREPARATORIO DE GRADO"
+        de_arriba = _PREPARATORIO_DE_ARRIBA.search(plano)
+        if de_arriba and de_arriba.group(1) in _ORDINALES:
+            return f"{_ORDINALES[de_arriba.group(1)]} EXAMEN PREPARATORIO DE GRADO"
+        return None
+    # Sin la cola de la frase ni los signos que el OCR no supo leer: «PODER EN
+    # MEDICINA Y CIRUGIA? al Señor…».
+    limpio = " ".join(re.sub(r"[^A-Z ]", " ", _plano(titulo_limpio(titulo) or titulo)).split())
+    if _EN_MEDICINA_Y.match(limpio) or "MEDICINA" in limpio or limpio.startswith("DOCTOR"):
+        # «DOCTOREN», «MEDICINA», «DOCTOR EN MEDICINA»: el título cortado.
+        # Siempre «DOCTOR»: la IA leyó «Doctora» en el acta de Gabriel R. Lago
+        # Arroyo (UPD3860000, 1944), y el título es el mismo.
+        return DOCTOR_EN_MEDICINA
+    return titulo
+
+
+#: Un renglón que es sólo un número: «1», «297», «# 44».
+_NUMERO_SOLO = re.compile(r"^\W{0,3}(\d{1,3})\W{0,2}$")
+#: Donde empieza el acta manuscrita, en el texto con sus mayúsculas y renglones.
+_COMIENZO_DEL_ACTA = re.compile(
+    r"\bEn\s+(?:la\s+c\w{4}d\s+de\s+|el\s+\w{6,10}\s+de\s+la\s+Universidad\s+de\s+)?Cartagena", re.IGNORECASE
+)
+
+
+def folio_del_texto(texto: str) -> int | None:
+    """El número impreso del libro manuscrito en la esquina de la hoja, del texto que leyó la IA.
+
+    La IA lee la página entera y arriba, antes de «En la ciudad de Cartagena»,
+    trae el número del libro -- «1», «297» -- y después la foliación del
+    archivista -- «1/V», «149», «82 / V» --. Es el primero que va solo en su
+    renglón. El folio que eligió el operador para desde y hasta (2026-11-04).
+    """
+    cabeza = _COMIENZO_DEL_ACTA.split(texto, maxsplit=1)[0]
+    for renglon in cabeza.splitlines():
+        numero = _NUMERO_SOLO.match(renglon.strip())
+        if numero and "/" not in renglon and int(numero.group(1)) > 0:
+            return int(numero.group(1))
+    return None
+
+
+def es_acta_de_examen(acta: object) -> bool:
+    """Si el encabezado de una fila es el de un acta de examen: «ACTA DE EXAMEN … DE GRADO»."""
+    return str(acta or "").startswith("ACTA DE EXAMEN ")
 
 
 def _nombre_confirmado(arriba: str | None, del_texto: str | None) -> str | None:
@@ -750,7 +907,9 @@ def completar_acta(acta: ActaDeConsejo, texto: str) -> ActaDeConsejo:
     if hecha is not None:
         acta = _con_la_constancia(acta, hecha)
     leido = graduado(texto)
-    del_examen, titulo_del_examen = examen_antiguo(texto)
+    del_examen, titulo_antiguo = examen_antiguo(texto)
+    # Un acta con número es de grado, no de examen: las de examen no lo traen.
+    examen = acta.examen or (None if acta.numero else examen_de_grado(texto))
     nuevo = replace(
         acta,
         numero=acta.numero or leido.numero,
@@ -758,8 +917,17 @@ def completar_acta(acta: ActaDeConsejo, texto: str) -> ActaDeConsejo:
         # En el acta antigua el lector moderno toma pedazos del texto corrido
         # («HICHO LO QUE ANTECEDE» por nombre): manda lo que lee el formato antiguo.
         nombre=acta.nombre or del_examen or leido.nombre,
-        titulo=acta.titulo or titulo_del_examen or leido.titulo,
+        # El de un examen, completo: un preparatorio sin el ordinal no lo es.
+        titulo=next(
+            (
+                titulo
+                for titulo in (titulo_del_examen(examen, otro) for otro in (acta.titulo, titulo_antiguo, leido.titulo))
+                if titulo
+            ),
+            None,
+        ),
         cedula=acta.cedula or leido.cedula,
+        examen=examen,
     )
     # Las dudas son de lo que quedó: una relectura limpia las borra. La nota
     # de la constancia no es una duda y se queda.
@@ -813,7 +981,11 @@ def folios_de_la_foliacion(
         leido = leidos.get(pagina)
         if leido is not None:
             propio = leido - puesto
-            if comun is None or propio == comun or veces < 2:
+            # La que comparten dos vecinas o más tampoco se corrige: donde el
+            # libro vuelve a empezar -- el de preparatorios de 1945 cosido detrás
+            # de los finales, que empieza en 1 (UPD3860000 pág. 163) -- a cada
+            # lado hay ocho vecinas con otro desfase.
+            if comun is None or propio == comun or veces < 2 or cerca.count(propio) >= 2:
                 resultado[pagina] = (leido, LEIDO, None)
             else:
                 resultado[pagina] = (puesto + comun, CORREGIDO, leido)
@@ -850,6 +1022,10 @@ def le_falta_algo(acta: ActaDeConsejo) -> bool:
     """Si a un acta de graduado le falta algo que el FUID pide, o trae algo dudoso."""
     if acta.rotulo != ROTULO:
         return False
+    if acta.examen is not None:
+        # El acta de examen no trae número ni cédula: pedirlos sería pagar por
+        # releer cada hoja manuscrita del libro.
+        return bool(acta.dudas or not all((acta.fecha, acta.nombre, acta.titulo)))
     if acta.constancia:
         # Una constancia no trae cédula ni título: pedirlos sería pagar por
         # releer una y otra vez una hoja que no los tiene.
@@ -918,6 +1094,7 @@ def datos_de_la_ia(respuesta: str, texto: str) -> dict[str, object]:
     """
     palabras_del_texto = set(re.findall(r"[A-Z]+", _plano(texto)))
     cifras_del_texto = re.sub(r"\D", "", texto)
+    examen = examen_de_grado(texto)
     datos: dict[str, object] = {}
     for linea in (respuesta or "").splitlines():
         campo, _, valor = linea.partition(":")
@@ -931,7 +1108,11 @@ def datos_de_la_ia(respuesta: str, texto: str) -> dict[str, object]:
             if campo == "NOMBRE" and dice_la_hoja and len(palabras) >= 2:
                 datos["nombre"] = " ".join(palabras)
             elif campo == "TITULO" and dice_la_hoja and es_un_titulo(valor):
-                datos["titulo"] = " ".join(palabras)
+                # El de un examen, completo y con su última palabra bien: la IA
+                # devolvía «PREPARATORIO» a secas, o «… EN MEDICINA Y GEOGRAFIA».
+                titulo = titulo_del_examen(examen, " ".join(palabras))
+                if titulo:
+                    datos["titulo"] = titulo
         elif campo == "CEDULA":
             cifras = re.sub(r"\D", "", valor)
             if 6 <= len(cifras) <= 11 and cifras in cifras_del_texto:
