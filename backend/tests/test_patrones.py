@@ -233,3 +233,16 @@ class TestLasResolucionesInternas:
         assert reconocer(veredicto, Counter({T.ACTA: 5}), nombre).tipo is T.RESOLUCION
         # Sin ese nombre, el veto sigue como antes.
         assert reconocer(veredicto, Counter({T.ACTA: 5}), "UPD1.pdf").tipo is T.ACTA
+
+
+class TestLosExamenesManuscritos:
+    """Caja 00C003362 (2026-11-04): la capa de texto es basura y sólo queda el nombre."""
+
+    def test_el_nombre_los_manda_a_actas_de_grado(self):
+        for nombre in (
+            "UPD3859999-EXAMENES PREPARATORIOS DE GRADO 1926-1395.pdf",
+            "UPD3860000-EXAMENES PREPARATORIOS DE GRADO 1924-46.pdf",
+        ):
+            assert pista_del_nombre(nombre) is T.ACTA
+            sin_marcadores = TypeVerdict(document_type=T.DESCONOCIDO, confidence=0.0)
+            assert reconocer(sin_marcadores, Counter(), nombre).tipo is T.ACTA

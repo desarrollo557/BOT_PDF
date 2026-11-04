@@ -91,8 +91,15 @@ _NUCLEOS = {
 #: pregunta: «ACTAS DE GRADO» antes que «ACTA», que también la nombra.
 NOMBRES: tuple[tuple[DocumentType, str], ...] = (
     # «GRADUADOS POSTGRADO Y PREGRADO … ACTAS» sí; «ALUMNOS NO GRADUADOS» no: es
-    # una lista de quienes justamente no tienen acta de grado.
-    (DocumentType.ACTA, r"ACTAS? DE GRADO|(?<!NO )GRADUADOS|ACTAS? DE (?:PRE|POS)T?GRADO"),
+    # una lista de quienes justamente no tienen acta de grado. Y los libros
+    # manuscritos de 1924-1946, «EXAMENES PREPARATORIOS DE GRADO 1924-46»: su
+    # capa de texto es basura, nadie los reconocía, e iban por resoluciones
+    # (el libro entero en un «RESOLUCION_023», caja 00C003362, 2026-11-04).
+    (
+        DocumentType.ACTA,
+        r"ACTAS? DE GRADO|(?<!NO )GRADUADOS|ACTAS? DE (?:PRE|POS)T?GRADO"
+        r"|EXAMEN(?:ES)? (?:PREPARATORIOS? |FINAL(?:ES)? )?DE GRADO",
+    ),
     (DocumentType.ACTA_CONSEJO, r"SESION|CONSEJO DE FACULTAD|ACTAS? DE CONSEJO"),
     (DocumentType.DIPLOMA, r"DIPLOMA"),
     (DocumentType.RESOLUCION, r"RESOLUCION"),
