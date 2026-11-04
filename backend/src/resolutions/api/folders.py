@@ -3524,9 +3524,11 @@ class FolderRunner:
         - Los PDF de todos sus UPD entregados, por el orden de su ruta, se
           numeran seguidos: «01_…», «02_…», «03_…» (renombrando en dos pasos,
           para que ningún nombre pise a otro mientras se mueve).
-        - Un solo «00.INDICE ELECTRONICO.xlsx», con las filas de todos en ese
-          mismo orden; las de cada UPD están en su constancia, así que también
-          cuenta el que se entregó en una corrida anterior.
+        - Un solo «00.INDICE ELECTRONICO.xlsx», con las filas de todos por la
+          fecha de cada documento, lo antiguo primero, y el NIC también como
+          «Nombre del Expediente» (lo dictó el operador el 2026-11-04); las de
+          cada UPD están en su constancia, así que también cuenta el que se
+          entregó en una corrida anterior.
         - Lo que se entregaba hasta el 2026-10-21 -- el UPD delante del nombre y
           un índice por UPD -- queda así también: el índice suelto de cada UPD se
           aparta a ``_reemplazados``.
@@ -3538,6 +3540,7 @@ class FolderRunner:
         from ..adapters.indice_electronico import (
             NOMBRE_DEL_INDICE,
             FilaDelIndice,
+            en_orden_cronologico,
             escribir_indice,
             leer_indice,
         )
@@ -3660,9 +3663,17 @@ class FolderRunner:
                             )
                         )
                 if any(constancia.indice for _, constancia in leidas):
-                    # «Nombre del Expediente», vacía: sin UPD (lo dictó el
-                    # operador el 2026-10-22).
-                    indice = escribir_indice(carpeta, filas, nic=nic, territorial=territorial)
+                    # Por la fecha de cada documento, lo antiguo primero, y
+                    # «Nombre del Expediente» = el NIC (lo dictó el operador el
+                    # 2026-11-04). Nunca el UPD (2026-10-22). Los PDF conservan
+                    # su número, el del orden de sus UPD y sus hojas.
+                    indice = escribir_indice(
+                        carpeta,
+                        en_orden_cronologico(filas),
+                        nic=nic,
+                        territorial=territorial,
+                        nombre_del_expediente=nic,
+                    )
                     # En el libro general, una hoja por NIC y no una por UPD.
                     for _, constancia in leidas:
                         run.indices.pop(Path(constancia.origen).stem, None)

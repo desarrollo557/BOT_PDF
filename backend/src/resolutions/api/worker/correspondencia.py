@@ -208,6 +208,70 @@ def _completar_las_fechas(piezas: list[dict], textos: dict, ruta_pdf, taller) ->
     return halladas
 
 
+def _poner_el_re_en_el_nombre(grupos, anexos: dict, *, textos: dict, sellos: dict, sin_re: set, abren: set):
+    """El RE del reclamo y de la constancia de su contenido, en su código, para su nombre.
+
+    Lo dictó el operador el 2026-11-04: «que los reclamos o constancias de
+    reclamación lleven su RE», como los dejaba ``scripts/renombrar_reclamaciones.py``
+    en las cajas ya entregadas: «03_RECLAMO-RE2310202405234.pdf». Sólo esos dos
+    tipos; los demás siguen número-título.
+
+    De lo más cierto a lo menos, y sin volver a leer nada ni gastar IA:
+
+    1. **El RE de su trámite**, que ya está en el código: el de su sello, el
+       que cita su texto o el que le cita después la respuesta de la empresa.
+    2. **El de sus hojas**, como lo reconoce el trámite: el de su sello si la
+       hoja lo trae -- el que cita el texto de una hoja con sello es el de otro
+       trámite (UPD2326324 p8) --, si no el que cita su texto. Sin las hojas de
+       ``sin_re`` -- las copias aportadas como prueba, el acuerdo de pago -- ni
+       los anexos que no abren documento.
+
+    Lo que nada de eso da se queda sin RE en el nombre: no se adivina. Devuelve
+    los grupos, los anexos con sus códigos nuevos y, por su primera hoja, de
+    dónde salió cada RE.
+    """
+    from dataclasses import replace
+
+    from ...domain.nombre_oficial import es_re, lleva_re_en_el_nombre
+    from ...domain.tramites import radicado_de
+
+    de_anexo = {p for paginas in anexos.values() for p in paginas if p not in abren}
+    salida = []
+    renombrados: dict[str, str] = {}
+    hallados: dict[str, str] = {}
+    for grupo in grupos.groups:
+        if not lleva_re_en_el_nombre(grupo.kind):
+            salida.append(grupo)
+            continue
+        numero, _, resto = grupo.code.value.partition(" ")
+        primera = str(grupo.page_numbers[0])
+        del_tramite = next((pieza.upper() for pieza in resto.split() if es_re(pieza)), None)
+        if del_tramite:
+            hallados[primera] = f"{del_tramite}: el de su trámite"
+            salida.append(grupo)
+            continue
+        radicado = como = None
+        for pagina in grupo.page_numbers if numero.isdigit() else ():
+            if pagina in sin_re or pagina in de_anexo:
+                continue
+            if pagina in sellos:
+                leido, de_donde = sellos[pagina].radicado, f"del sello de la pág. {pagina}"
+            else:
+                leido, de_donde = radicado_de(textos.get(pagina, "") or ""), f"del texto de la pág. {pagina}"
+            if es_re(leido):
+                radicado, como = leido.upper(), de_donde
+                break
+        if radicado is None:
+            salida.append(grupo)
+            continue
+        nuevo = f"{numero} {radicado}"
+        renombrados[grupo.code.value] = nuevo
+        hallados[primera] = f"{radicado}: {como}"
+        salida.append(replace(grupo, code=type(grupo.code)(value=nuevo, raw=radicado)))
+    anexos = {renombrados.get(codigo, codigo): paginas for codigo, paginas in anexos.items()}
+    return replace(grupos, groups=salida), anexos, hallados
+
+
 def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     """Un PDF por unidad documental, cortando costura por costura.
 
@@ -279,7 +343,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     from ...domain.carta import abre_carta, asunto_de_la_carta
     from ...domain.fingerprint import nic_de_la_caja
     from ...domain.naming import DOCUMENT_PREFIX, document_folder
-    from ...domain.nombre_oficial import nombre_oficial
+    from ...domain.nombre_oficial import CON_RE_EN_EL_NOMBRE, nombre_oficial
     from ...domain.segmentation import Verdict
     from ...domain.sello import (
         claves_del_envio,
@@ -1117,6 +1181,19 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # un reclamo y trae una cédula detrás es el reclamo, no un «DOCUMENTO DE
     # IDENTIDAD».
     grupos = nombrar_sin_soporte(grupos, textos)
+    # F6b. El reclamo y la constancia de su contenido llevan su RE en el
+    # nombre (lo dictó el operador el 2026-11-04). Por mes no: el archivo es un
+    # mes, no un documento.
+    re_en_el_nombre: dict[str, str] = {}
+    if entregado_por is not Agrupacion.MES:
+        grupos, anexos, re_en_el_nombre = _poner_el_re_en_el_nombre(
+            grupos,
+            anexos,
+            textos=textos,
+            sellos=sellos,
+            sin_re=set(cartas.copias) | set(de_prueba) | set(del_acuerdo),
+            abren=set(sellos_que_abren),
+        )
     piezas = describir_piezas(grupos.groups)
     # F7. Ningún documento sin fecha (lo dictó el operador el 2026-10-20: «que
     # el bot en todos los casos tome la fecha»): el agente la busca en el texto,
@@ -1171,8 +1248,11 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             mayusculas=True,
             nombre=taller.name,
             # «Número-título», sin el RE (lo dictó el operador el 2026-10-21:
-            # «quita el RE del título, ya no es necesario»): 01_RECLAMO.pdf.
+            # «quita el RE del título, ya no es necesario»): 01_DERECHO-DE-PETICION.pdf.
             sin_radicado=True,
+            # Salvo el reclamo y la constancia de su contenido, que lo llevan
+            # detrás (2026-11-04): 03_RECLAMO-RE2310202405234.pdf.
+            radicado_en=CON_RE_EN_EL_NOMBRE,
         ),
         en_revision=[boundary.right for boundary in costuras_en_revision]
         + [pagina.page for pagina in sin_fecha_en_revision]
@@ -1262,6 +1342,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # Las fechas que no estaban a la vista y de dónde salieron: el índice
         # lleva sólo la fecha; aquí queda cómo se obtuvo, para auditarla.
         "fechas_halladas": fechas_halladas,
+        # Y el RE de cada reclamo y constancia, por su primera hoja, con de
+        # dónde salió: «RE2310…: del sello de la pág. 8».
+        "re_en_el_nombre": re_en_el_nombre,
         # Sólo el PDF, sin la subcarpeta de la caja: «UPD2998266», no
         # «910349 UPD2998266» (la caja va en «Identificación / Nic»).
         "expediente": document_folder(nombre_del_expediente(taller.name)),

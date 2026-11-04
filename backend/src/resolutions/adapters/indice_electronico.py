@@ -75,6 +75,21 @@ def _fecha(valor: date | None) -> str:
     return valor.strftime("%d/%m/%Y") if valor else "S.F."
 
 
+def en_orden_cronologico(filas: list[FilaDelIndice]) -> list[FilaDelIndice]:
+    """Las filas por su «Fecha Creación Documento», con «Orden Documento» 1, 2, 3… de nuevo.
+
+    Lo antiguo primero, lo que no trae fecha al final y, a igual fecha, el orden
+    de las hojas (ver :mod:`~resolutions.domain.orden_del_indice`). Sólo el
+    índice: el número de cada PDF no cambia.
+    """
+    from dataclasses import replace
+
+    from ..domain.orden_del_indice import orden_cronologico
+
+    puestos = orden_cronologico([fila.fecha_creacion for fila in filas])
+    return [replace(filas[puesto], orden=orden) for orden, puesto in enumerate(puestos, start=1)]
+
+
 def escribir_indice(
     destino: Path,
     filas: list[FilaDelIndice],
@@ -251,9 +266,13 @@ def _llenar(
     """Escribe el encabezado y las filas en una hoja que es copia de la plantilla."""
     from openpyxl.styles import Alignment
 
-    # Vacía si no se da: lo dictó el operador el 2026-10-22, «esta celda déjala
-    # vacía, sin UPD; en esa celda no ingreses nada».
-    hoja[CELDA_NOMBRE_DEL_EXPEDIENTE] = nombre_del_expediente or None
+    # Vacía si no se da. La caja de correspondencia da su NIC (lo dictó el
+    # operador el 2026-11-04: «el mismo número de Identificación / Nic… en
+    # Nombre del Expediente»); hasta entonces iba vacía, sin UPD (2026-10-22).
+    # Como el NIC, en número si lo es.
+    hoja[CELDA_NOMBRE_DEL_EXPEDIENTE] = (
+        int(nombre_del_expediente) if nombre_del_expediente and nombre_del_expediente.isdigit() else (nombre_del_expediente or None)
+    )
     # Sin NIC la celda queda vacía, no con raya: se llena a mano.
     hoja[CELDA_NIC] = int(nic) if nic and nic.isdigit() else (nic or None)
     hoja[CELDA_TERRITORIAL] = territorial or SIN_DATO

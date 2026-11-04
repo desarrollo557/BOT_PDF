@@ -120,10 +120,38 @@ class TestLaEntregaPlana:
         # Un solo índice, con las filas de los dos en ese mismo orden.
         indice = leer_indice(caja / INDICE)
         assert [(f.orden, f.nombre) for f in indice.filas] == [(1, "RECLAMO DE UPD1"), (2, "RECLAMO DE UPD2")]
-        # «Nombre del Expediente», vacía: sin UPD (el operador, 2026-10-22).
-        assert indice.nombre_del_expediente is None
+        # «Nombre del Expediente» = el NIC (el operador, 2026-11-04); nunca el
+        # UPD (2026-10-22).
+        assert indice.nombre_del_expediente == "1000265"
         assert indice.nic == "1000265"
         assert _nombres(tmp_path / "destino" / "210847") == [".bot-entrega-UPD3.json", INDICE, "01_RECLAMO.pdf"]
+
+    def test_el_indice_del_nic_va_por_fecha_y_los_pdf_conservan_su_numero(self, ajustes, tmp_path):
+        """Lo dictó el operador el 2026-11-04: lo antiguo primero, sólo en el índice."""
+        _caja(tmp_path / "origen", "1000265", "UPD1", "UPD2")
+        fechas = {"UPD1": date(2024, 3, 1), "UPD2": date(2024, 1, 15)}
+        registro = JobRegistry()
+
+        async def run_job(job):
+            upd = Path(job.filename).stem
+            salida = ajustes.output_dir / job.id / upd
+            salida.mkdir(parents=True, exist_ok=True)
+            (salida / "01_RECLAMO.pdf").write_bytes(b"%PDF-1.4 " + job.filename.encode())
+            fila = FilaDelIndice(f"RECLAMO DE {upd}", fechas[upd], date(2026, 11, 4), 1, 3)
+            escribir_indice(salida, [fila], nic="1000265", territorial="MAGANGUE", nombre_del_expediente="1000265")
+            registro.mark_done(job, {"groups": [{"code": "01"}], "review_queue": [], "indice_electronico": INDICE})
+
+        motor = FolderRunner(registro, ajustes, run_job, watch_interval=0.01)
+        _correr(motor, tmp_path / "origen", tmp_path / "destino", task="segment")
+
+        caja = tmp_path / "destino" / "1000265"
+        # Los PDF, por el orden de sus UPD: no se renumeran por fecha.
+        assert (caja / "01_RECLAMO.pdf").read_bytes().endswith(b"UPD1.pdf")
+        assert (caja / "02_RECLAMO.pdf").read_bytes().endswith(b"UPD2.pdf")
+        # El índice, por fecha: el de UPD2 (enero) antes que el de UPD1 (marzo).
+        indice = leer_indice(caja / INDICE)
+        assert [(f.orden, f.nombre) for f in indice.filas] == [(1, "RECLAMO DE UPD2"), (2, "RECLAMO DE UPD1")]
+        assert indice.nombre_del_expediente == indice.nic == "1000265"
 
     def test_relanzarla_no_repite_nada(self, ajustes, tmp_path):
         _caja(tmp_path / "origen", "1000265", "UPD1", "UPD2")

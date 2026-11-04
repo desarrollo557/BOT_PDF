@@ -49,6 +49,18 @@ _MOTIVO = re.compile(
     r"\s(?:POR|EN|CONTRA|PARA|SOBRE|CON|A|AL|QUE|SEGUN|MEDIANTE|ANTE|NIC|N[O0]|RADICAD[OA])\b"
     r"|[,.;:()\[\]\-–—]"
 )
+#: Los únicos documentos que llevan su RE en el nombre del archivo y en su fila
+#: del índice: «01_RECLAMO-RE2310202405234.pdf». Lo dictó el operador el
+#: 2026-11-04: «que los reclamos o constancias de reclamación lleven su RE»,
+#: sólo estos dos y con su nombre exacto (no «RECLAMO POR CONSUMO ESTIMADO» ni
+#: «RESPUESTA A RECLAMACION»). Los demás siguen número-título, sin el RE (lo
+#: dictó el 2026-10-21).
+CON_RE_EN_EL_NOMBRE = frozenset({"RECLAMO", "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION"})
+#: Un RE como va en el nombre: «RE» y trece cifras. El «P…» de una solicitud
+#: de servicio no es un RE.
+_RE_COMPLETO = re.compile(r"RE\d{13}")
+#: El RE al final de un nombre de archivo: «03_RECLAMO-RE2310202405234.pdf».
+_RE_DEL_ARCHIVO = re.compile(r"-(RE\d{13})(?:\.pdf)?$", re.IGNORECASE)
 #: Lo más largo que se deja ser al nombre.
 MAX_NOMBRE = 80
 #: Lo que no puede cerrar un nombre.
@@ -58,6 +70,22 @@ _COLGANDO = frozenset({"DE", "DEL", "LA", "EL", "LOS", "LAS", "Y", "O", "E"})
 def _plano(texto: str) -> str:
     sin_tildes = unicodedata.normalize("NFD", texto or "").encode("ascii", "ignore").decode()
     return re.sub(r"\s+", " ", sin_tildes.upper()).strip()
+
+
+def lleva_re_en_el_nombre(nombre: str | None) -> bool:
+    """Si el documento lleva su RE en el nombre: sólo el reclamo y la constancia de su contenido."""
+    return _plano(nombre or "") in CON_RE_EN_EL_NOMBRE
+
+
+def es_re(radicado: str | None) -> bool:
+    """Si es un RE entero, «RE» y trece cifras, como va en el nombre."""
+    return bool(radicado) and _RE_COMPLETO.fullmatch(radicado.strip().upper()) is not None
+
+
+def re_del_archivo(nombre: str | None) -> str | None:
+    """El RE con que termina el nombre de un archivo, o ``None``: «…-RE2310202405234.pdf»."""
+    hallado = _RE_DEL_ARCHIVO.search((nombre or "").strip())
+    return hallado.group(1).upper() if hallado else None
 
 
 def nombre_del_asunto(asunto: str | None) -> str | None:

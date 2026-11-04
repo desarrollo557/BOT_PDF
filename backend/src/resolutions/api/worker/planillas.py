@@ -13,6 +13,7 @@ from pathlib import Path
 
 from ...application.progress import Stage
 from ...domain.naming import DOCUMENT_PREFIX
+from ...domain.nombre_oficial import lleva_re_en_el_nombre, re_del_archivo
 from ..errores import explicar_fallo
 from .taller import _anunciar, _reportero
 
@@ -235,11 +236,14 @@ def _escribir_indice(report: dict, destination: Path, payload: dict) -> None:
 
     Es el inventario de toda caja de correspondencia, en el formato que el
     archivo de Afinia hacía a mano -- «00.INDICE ELECTRONICO.xlsx» -- y en lugar
-    de la planilla de las otras rutas: una fila por archivo entregado, en el
-    orden en que venían las hojas. Cada columna sale de donde se acordó:
+    de la planilla de las otras rutas: una fila por archivo entregado, por la
+    fecha de cada documento, lo antiguo primero (lo dictó el operador el
+    2026-11-04; los PDF conservan su número). Cada columna sale de donde se
+    acordó:
 
-    - el nombre es el tipo documental del catálogo, y en un trámite con su
-      número RE: «RECLAMO RE3110202138312»;
+    - el nombre es el tipo documental del catálogo, como su archivo; el
+      reclamo y la constancia de su contenido, con el RE de su archivo:
+      «RECLAMO-RE2310202405234»;
     - la creación, la fecha que se ve en el documento: la de su sello de
       radicación, la marcada en su guía de envío, o la de su primera hoja
       (S.F. si no trae ninguna);
@@ -250,12 +254,16 @@ def _escribir_indice(report: dict, destination: Path, payload: dict) -> None:
 
     El NIC es la carpeta de la caja si es un número -- «…\\210847\\UPD….pdf» --;
     si no, la celda queda vacía y se llena a mano (el de los papeles no se
-    extrae). El nombre del expediente es el del PDF: «UPD2326399».
+    extrae). El nombre del expediente es ese mismo NIC (2026-11-04).
 
     Que falle no invalida nada, igual que la planilla: se anota y se sigue.
     """
     try:
-        from ...adapters.indice_electronico import FilaDelIndice, escribir_indice
+        from ...adapters.indice_electronico import (
+            FilaDelIndice,
+            en_orden_cronologico,
+            escribir_indice,
+        )
     except ImportError:
         return
     _anunciar(payload, Stage.INVENTORYING, detail="escribiendo el índice electrónico")
@@ -285,13 +293,16 @@ def _escribir_indice(report: dict, destination: Path, payload: dict) -> None:
         from ...domain.territorial import nic_de_la_ruta, territorial_de_la_ruta
 
         de_una_carpeta = bool(payload.get("destination"))
+        # La carpeta de la caja («…\MAGANGUE\210847\UPD….pdf» → 210847). No el
+        # NIC leído en los papeles: el operador pidió no extraerlo (2026-10-13);
+        # la carpeta no es una lectura, la puso el archivo.
+        nic = nic_de_la_ruta(str(payload.get("source") or "")) if de_una_carpeta else None
         escrito = escribir_indice(
             destination,
-            filas,
-            # La carpeta de la caja («…\MAGANGUE\210847\UPD….pdf» → 210847). No
-            # el NIC leído en los papeles: el operador pidió no extraerlo
-            # (2026-10-13); la carpeta no es una lectura, la puso el archivo.
-            nic=nic_de_la_ruta(str(payload.get("source") or "")) if de_una_carpeta else None,
+            # Por la fecha de cada documento, lo antiguo primero (lo dictó el
+            # operador el 2026-11-04): «Orden Documento» 1, 2, 3… en ese orden.
+            en_orden_cronologico(filas),
+            nic=nic,
             # El municipio, la carpeta que contiene la caja («…\COMERCIAL\
             # MAGANGUE\210847\UPD….pdf»). Sólo en una corrida de carpeta (con
             # destino): un archivo subido vive en la carpeta de subidas, cuya
@@ -303,9 +314,10 @@ def _escribir_indice(report: dict, destination: Path, payload: dict) -> None:
             )
             or (payload.get("territorial") or "").strip()
             or None,
-            # Vacía (lo dictó el operador el 2026-10-22: «esta celda déjala
-            # vacía, sin UPD»). El UPD sigue en el informe, en «expediente».
-            nombre_del_expediente=None,
+            # El mismo NIC (lo dictó el operador el 2026-11-04: «el mismo
+            # número de Identificación / Nic… en Nombre del Expediente»); vacía
+            # si no hay NIC. Nunca el UPD (2026-10-22), que sigue en el informe.
+            nombre_del_expediente=nic,
         )
         report["indice_electronico"] = escrito.name
     except Exception as error:  # noqa: BLE001 - la entrega ya está en el disco
@@ -359,6 +371,12 @@ def _nombre_de_la_fila(item: dict, report: dict) -> str:
     if not titulo or titulo == DOCUMENT_PREFIX:
         titulo = item.get("type") or DOCUMENT_PREFIX
     # Sólo el título (lo dictó el operador el 2026-10-20: «quita la fecha al
-    # lado del título, que solo salga el título»). La fecha ya tiene su columna
-    # y el RE va en el nombre del PDF.
-    return str(titulo).upper()
+    # lado del título, que solo salga el título»). La fecha ya tiene su columna.
+    # El reclamo y la constancia de su contenido, con el RE de su archivo
+    # detrás (lo dictó el operador el 2026-11-04): el archivo y su fila dicen
+    # lo mismo, «RECLAMO-RE2310202405234».
+    titulo = str(titulo).upper()
+    radicado = re_del_archivo(str(item.get("file_name") or ""))
+    if radicado and lleva_re_en_el_nombre(titulo):
+        return f"{titulo}-{radicado}"
+    return titulo

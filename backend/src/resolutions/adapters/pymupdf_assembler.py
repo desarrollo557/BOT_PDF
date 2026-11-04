@@ -5,7 +5,7 @@ import errno
 import logging
 import os
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
 
 import pymupdf
@@ -336,6 +336,8 @@ class PyMuPDFAssembler:
         # Sin el RE del trámite en el nombre: «01_RECLAMO.pdf» (la caja de
         # correspondencia, ver ``output_filename``).
         sin_radicado: bool = False,
+        # Salvo estos tipos, que lo llevan detrás: «01_RECLAMO-RE2310….pdf».
+        radicado_en: Collection[str] = (),
     ) -> None:
         #: Escribir cuatrocientos archivos tarda tanto como leerlos. Sin un punto
         #: de parada aquí, una cancelación pedida durante la escritura se
@@ -353,6 +355,7 @@ class PyMuPDFAssembler:
         self._con_titulo = con_titulo
         self._mayusculas = mayusculas
         self._sin_radicado = sin_radicado
+        self._radicado_en = frozenset(radicado_en)
         #: Cómo llamó el operador al documento de origen. Las subidas se guardan
         #: con un nombre generado, y un aviso sobre "6ea93142663d.pdf" no dice
         #: de qué archivo se está hablando.
@@ -399,6 +402,7 @@ class PyMuPDFAssembler:
                     mayusculas=self._mayusculas,
                     kind=group.kind,
                     sin_radicado=self._sin_radicado,
+                    radicado_en=self._radicado_en,
                 )
                 # Dos unidades distintas nunca comparten archivo. El nombre se
                 # recorta para caber en la ruta, y dos graduados leídos con el

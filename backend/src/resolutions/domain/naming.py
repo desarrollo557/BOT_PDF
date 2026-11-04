@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 
 from .anchor import strip_accents
 from .resolution_code import ResolutionCode
@@ -56,6 +57,11 @@ MIN_DOCUMENT_STEM = 8
 #: con la ruta de trabajo y el nombre del archivo detrás, eso se come el límite
 #: de Windows y la entrega no se escribe.
 MAX_FOLDER_NAME = 60
+
+
+def _plano_del_tipo(tipo: str) -> str:
+    """El tipo para compararlo: sin tildes, en mayúsculas y con un espacio entre palabras."""
+    return re.sub(r"[^A-Z0-9]+", " ", strip_accents(tipo).upper()).strip()
 
 
 def _sin_extension(nombre: str) -> str:
@@ -147,6 +153,7 @@ def output_filename(
     con_titulo: bool = False,
     mayusculas: bool = False,
     sin_radicado: bool = False,
+    radicado_en: Collection[str] = (),
 ) -> str:
     """Nombrar un archivo generado por lo que es y por su número.
 
@@ -180,11 +187,22 @@ def output_filename(
     2026-10-21: «quita el RE del título, que vaya número-título»): sólo el
     número y el tipo -- ``01_DERECHO-DE-PETICION.pdf`` --, aunque el código
     del trámite traiga su RE, que sigue en el informe y agrupando.
+
+    ``radicado_en`` son los tipos que, aun así, llevan su RE detrás del tipo
+    -- ``01_RECLAMO-RE2310202405234.pdf`` -- (lo dictó el operador el
+    2026-11-04 para el reclamo y la constancia de su contenido). Sólo un RE
+    entero, «RE» y trece cifras; al apretar el nombre, el RE tampoco se toca:
+    se recorta el tipo.
     """
     fragment = code_fragment(code)
+    radicado = ""
     if sin_radicado and kind is not None and (
         partido := re.match(r"^(\d+)-(?:RE|P)\d", fragment, re.IGNORECASE)
     ):
+        if _plano_del_tipo(kind) in {_plano_del_tipo(tipo) for tipo in radicado_en} and (
+            con_re := re.match(r"^\d+-(RE\d{13})(?![0-9])", fragment, re.IGNORECASE)
+        ):
+            radicado = con_re.group(1).upper()
         fragment = partido.group(1)
 
     if prefix:
@@ -204,10 +222,13 @@ def output_filename(
             quien = quien[len(fragment) :].strip("-_")
         if budget is not None:
             room = budget - len(fragment) - len(PREFIX_SEPARATOR) - len(extension)
+            room -= len(radicado) + 1 if radicado else 0
             if room < MIN_KIND_FRAGMENT:
                 # No cabe ni recortado. El número sí, y un archivo nombrado
                 # sólo con su número se encuentra; uno que no se llegó a
-                # escribir no.
+                # escribir no. Con su RE, si lo lleva.
+                if radicado:
+                    return f"{fragment}{PREFIX_SEPARATOR}{radicado}{extension}"
                 return f"{fragment}{extension}"
             # Se aprieta el nombre de la persona antes que el tipo: aquél es
             # largo y el archivo se busca por el otro.
@@ -218,7 +239,7 @@ def output_filename(
                 quien = slugify(quien, max_length=sobra)
             if len(etiqueta) > room:
                 etiqueta = etiqueta[:room].rstrip("-")
-        piezas = [fragment, *([quien] if quien else []), etiqueta]
+        piezas = [fragment, *([quien] if quien else []), f"{etiqueta}-{radicado}" if radicado else etiqueta]
         if mayusculas:
             piezas = [pieza.upper() for pieza in piezas]
         return PREFIX_SEPARATOR.join(piezas) + extension
