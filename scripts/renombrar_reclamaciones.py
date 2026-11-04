@@ -85,9 +85,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 from copy import copy
 from datetime import date, datetime
 from pathlib import Path
@@ -102,6 +103,16 @@ SIMULACION = "00.RE Y ORDEN - SIMULACION.csv"
 #: fecha. Leer el RE con OCR es lo que más tarda (unos 30 s un PDF sin él): la
 #: simulación lo hace una vez y --aplicar y las corridas siguientes lo reutilizan.
 LECTURAS = "00.RE Y ORDEN - LECTURAS.jsonl"
+#: La evidencia de cada cambio, en vivo: lo mismo que sale en pantalla, con su hora.
+#: Lo pidió el operador el 2026-11-04: «necesito evidencia de cada cosa que va
+#: haciendo, de las 2 fases, en tiempo real».
+EVIDENCIA = "00.RE Y ORDEN - EVIDENCIA.txt"
+#: Tope del OCR de un PDF, y de cada llamada a Tesseract: un PDF dañado o enorme
+#: no frena su caja («agrégale validaciones para que no se detenga»).
+TIEMPO_MAXIMO_DE_OCR = 150
+TIEMPO_MAXIMO_DE_TESSERACT = 90
+#: Cada cuántos segundos se avisa que sigue trabajando, si no hubo nada que mostrar.
+LATIDO = 15
 SIN_RE = "00.RECLAMACIONES SIN RE.csv"
 POR_REVISAR = "00.INDICES POR REVISAR.csv"
 #: La carpeta del respaldo, al lado de la que se trabaja: así el bot no la ve.
@@ -342,12 +353,16 @@ def buscar_tesseract() -> tuple[str | None, str]:
     """(ejecutable, idioma) de Tesseract, o ``(None, "")`` si no está instalado.
 
     En Windows el instalador no siempre lo pone en el PATH: se mira también donde
-    lo deja. Sin el español, el inglés lee igual «RE» y las cifras.
+    lo deja, para todos los usuarios (Program Files) o sólo para el que lo instaló
+    (AppData\\Local\\Programs). Sin el español, el inglés lee igual «RE» y las cifras.
     """
+    del_usuario = os.environ.get("LOCALAPPDATA") or ""
     candidatos = [
         shutil.which("tesseract"),
         r"C:\Program Files\Tesseract-OCR\tesseract.exe",
         r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        os.path.join(del_usuario, "Programs", "Tesseract-OCR", "tesseract.exe") if del_usuario else None,
+        os.path.join(del_usuario, "Tesseract-OCR", "tesseract.exe") if del_usuario else None,
     ]
     for ruta in candidatos:
         if not ruta or not Path(ruta).exists():
@@ -397,7 +412,7 @@ def _ocr(pagina, dpi: int, modo: str, giro: int, tesseract: str, idioma: str) ->
         # leído se pierde: el RE no aparecía aunque estuviera (2026-11-04).
         salida = subprocess.run(
             [tesseract, str(ruta), "stdout", "-l", idioma, "--psm", modo],
-            capture_output=True, encoding="utf-8", errors="replace", timeout=180, check=False,
+            capture_output=True, encoding="utf-8", errors="replace", timeout=TIEMPO_MAXIMO_DE_TESSERACT, check=False,
             env={**os.environ, "OMP_THREAD_LIMIT": "1"},
         )
     return salida.stdout or ""
@@ -431,8 +446,12 @@ def leer_el_re(pdf: Path, tesseract: str | None, idioma: str) -> tuple[str | Non
         if not tesseract:
             return (None, "el texto del PDF no trae el RE y este equipo no tiene Tesseract para leer la imagen",
                     _avisos_del_pdf(), paginas)
+        inicio = time.monotonic()
         for dpi, modo, giro in PASADAS:
             for numero in range(min(PAGINAS_CON_OCR, paginas)):
+                if time.monotonic() - inicio > TIEMPO_MAXIMO_DE_OCR:
+                    return (None, f"se agotó el tiempo del OCR ({TIEMPO_MAXIMO_DE_OCR} s) sin encontrar el RE",
+                            _avisos_del_pdf(), paginas)
                 try:
                     leido = _ocr(documento[numero], dpi, modo, giro, tesseract, idioma)
                 except Exception as error:  # noqa: BLE001 - se prueba la siguiente pasada
@@ -609,6 +628,67 @@ def _leer_constancias(carpeta: Path) -> list[tuple[Path, dict]]:
     return leidas
 
 
+def _comprobar_el_renombre(carpeta: Path, antes: str, despues: str, bytes_antes: int) -> str:
+    """Lo que dice el disco después de renombrar: la evidencia de que el cambio se hizo."""
+    nuevo = carpeta / despues
+    if not nuevo.exists():
+        return "FALLA: el archivo con el nombre nuevo no está en el disco"
+    if (carpeta / antes).exists():
+        return "FALLA: el archivo con el nombre viejo sigue en el disco"
+    if nuevo.stat().st_size != bytes_antes:
+        return f"FALLA: el archivo cambió de tamaño ({bytes_antes} → {nuevo.stat().st_size} bytes)"
+    return f"archivo OK (en el disco está el nombre nuevo y ya no el viejo, mismos {bytes_antes} bytes)"
+
+
+def _comprobar_la_constancia(ruta: Path, despues: str) -> str:
+    try:
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        return f"FALLA: la constancia no se pudo releer ({error})"
+    if any(Path(str(a.get("ruta") or "")).name == despues for a in datos.get("archivos") or []):
+        return "constancia OK"
+    return "FALLA: la constancia releída no tiene el nombre nuevo"
+
+
+def _releer_el_indice(ruta: Path) -> tuple[list[tuple], dict] | None:
+    """(filas de documentos, cabecera) del índice tal como quedó en el disco."""
+    from openpyxl import load_workbook
+
+    libro = load_workbook(ruta, read_only=True)
+    try:
+        hoja = libro.active
+        hoja.reset_dimensions()
+        valores = _valores(hoja)
+    finally:
+        libro.close()
+    tabla = _tabla(valores)
+    if tabla is None:
+        return None
+    return valores[tabla[0] - 1:tabla[1] - 1], _cabecera(valores)
+
+
+def _comprobar_el_indice(ruta: Path, nombres: list, expediente) -> str:
+    """Se vuelve a abrir el Excel ya guardado y se mira que diga lo que se quiso escribir."""
+    try:
+        releido = _releer_el_indice(ruta)
+    except Exception as error:  # noqa: BLE001
+        return f"FALLA: el índice no se pudo releer ({error})"
+    if releido is None:
+        return "FALLA: el índice releído ya no tiene la forma de la plantilla"
+    documentos, cabecera = releido
+    if [_texto(fila[0]) for fila in documentos] != [_texto(nombre) for nombre in nombres]:
+        return "FALLA: en el índice releído las filas no quedaron en el orden esperado"
+    if any(_entero(fila[3]) != k + 1 for k, fila in enumerate(documentos)):
+        return "FALLA: en el índice releído «Orden Documento» no va 1, 2, 3…"
+    fechas = [_fecha(fila[1]) for fila in documentos]
+    if orden_cronologico(fechas) != list(range(len(fechas))):
+        return "FALLA: en el índice releído las fechas no van de la más antigua a la más nueva"
+    if expediente is not None and _texto(cabecera.get("expediente", (None, None))[1]) != _texto(expediente):
+        return "FALLA: en el índice releído «Nombre del Expediente» no es el NIC"
+    return ("OK: releído el Excel del disco, quedó en ese orden" + (" y con el expediente = NIC"
+                                                                   if expediente is not None else ""))
+
+
 def _pdfs_de(carpeta: Path) -> list[Path]:
     return sorted(
         (ruta for ruta in carpeta.iterdir() if ruta.is_file() and ruta.suffix.lower() == ".pdf"),
@@ -629,6 +709,7 @@ def _leer_o_recordar(pdf: Path, caja: str, lecturas: dict[str, dict], nuevas: li
         and previa.get("bytes") == datos.st_size
         and previa.get("mtime_ns") == datos.st_mtime_ns
         and (previa.get("re") or previa.get("con_tesseract") or not tesseract)
+        and not str(previa.get("origen") or "").startswith("se agotó")
     ):
         return (previa.get("re"), f"{previa.get('origen') or ''} (leído en una corrida anterior)".strip(),
                 previa.get("avisos") or "", int(previa.get("paginas") or 0))
@@ -811,6 +892,7 @@ def paso_re(carpeta: str, raiz: str, raiz_en_windows: str, respaldo: str, aplica
 
         # 4. Aplicar: el PDF y, en seguida, su constancia; si la constancia no se
         # deja escribir, el PDF vuelve a su nombre (que nunca queden desparejos).
+        bytes_antes = (carpeta_p / en_disco).stat().st_size
         if renombrar:
             try:
                 _con_reintentos(lambda a=antes, d=despues: (carpeta_p / a).rename(carpeta_p / d))
@@ -852,6 +934,11 @@ def paso_re(carpeta: str, raiz: str, raiz_en_windows: str, respaldo: str, aplica
         anotar(archivo_antes=antes if renombrar else despues, archivo_despues=despues, re=numero_re,
                leido_de=origen, estado="renombrado" if renombrar else "ya tenía RE",
                indice_antes=indice_antes, indice_despues=indice_despues, detalle="; ".join(detalle))
+        # La evidencia: lo que dice el disco, no lo que se quiso hacer.
+        pruebas = [_comprobar_el_renombre(carpeta_p, antes, despues, bytes_antes)] if renombrar else []
+        if suya:
+            pruebas.append(_comprobar_la_constancia(suya[0], despues))
+        filas[-1]["comprobado"] = " · ".join(pruebas)
 
     if cambio_el_indice and libro is not None:
         try:
@@ -862,6 +949,24 @@ def paso_re(carpeta: str, raiz: str, raiz_en_windows: str, respaldo: str, aplica
                     fila["estado"] = "error"
                     fila["detalle"] = (f"el PDF y su constancia quedaron con el RE pero no se pudo guardar el "
                                        f"índice ({error}); vuelva a correr para completarlo")
+    if aplicar:
+        # El índice, releído del disco después de guardarlo.
+        nombres_releidos: set[str] = set()
+        if cambio_el_indice:
+            try:
+                releido = _releer_el_indice(ruta_del_indice)
+                nombres_releidos = {_texto(fila[0]) for fila in releido[0]} if releido else set()
+            except Exception:  # noqa: BLE001 - queda como FALLA en su fila
+                nombres_releidos = set()
+        for fila in filas:
+            if "comprobado" not in fila:
+                continue
+            if fila["indice_despues"]:
+                prueba = ("índice OK" if fila["indice_despues"] in nombres_releidos
+                          else "FALLA: el índice releído no tiene el nombre nuevo")
+            else:
+                prueba = "índice sin cambiar (ver el detalle)"
+            fila["comprobado"] = " · ".join(x for x in (fila["comprobado"], prueba) if x)
     return filas
 
 
@@ -878,7 +983,8 @@ def paso_indice(carpeta: str, raiz: str, respaldo: str, aplicar: bool) -> dict:
 
     carpeta_p, raiz_p = Path(carpeta), Path(raiz)
     caja = _caja(carpeta_p, raiz_p)
-    resultado = {"caja": caja, "estado": "", "filas": [], "indice": None, "ordenado": False, "expediente": False}
+    resultado = {"caja": caja, "estado": "", "filas": [], "indice": None, "ordenado": False, "expediente": False,
+                 "antes": [], "despues": [], "expediente_antes": "", "nic": "", "comprobado": ""}
 
     def terminar(estado: str, detalle: str = "", anotar: bool = True) -> dict:
         resultado["estado"] = estado
@@ -915,6 +1021,9 @@ def paso_indice(carpeta: str, raiz: str, respaldo: str, aplicar: bool) -> dict:
     fila_del_expediente, expediente = cabecera.get("expediente", (None, None))
     poner_expediente = fila_del_expediente is not None and bool(_texto(nic)) and _texto(expediente) != _texto(nic)
     resultado["indice"] = {"nic": nic, "documentos": finales}
+    resultado["antes"] = [(_texto(fila[0]), _texto(fila[1]) or "sin fecha") for fila in documentos]
+    resultado["despues"] = [(_texto(documentos[i][0]), _texto(documentos[i][1]) or "sin fecha") for i in puestos]
+    resultado["expediente_antes"], resultado["nic"] = _texto(expediente), _texto(nic)
 
     avisos = []
     if not _texto(nic):
@@ -956,6 +1065,9 @@ def paso_indice(carpeta: str, raiz: str, respaldo: str, aplicar: bool) -> dict:
     except OSError as error:
         resultado["ordenado"] = resultado["expediente"] = False
         return terminar("error", f"no se pudo guardar el índice: {error}")
+    resultado["comprobado"] = _comprobar_el_indice(ruta, [fila[0] for fila in finales],
+                                                   nic if poner_expediente else None)
+    detalle.append(f"comprobado: {resultado['comprobado']}")
     return terminar("cambiado", "; ".join(detalle)[:2000])
 
 
@@ -972,15 +1084,20 @@ def _clave_de_la_fila(fila: tuple) -> tuple:
     return (_base(fila[0]),) + tuple(_texto(valor) for valor in (fila[1], fila[2], *fila[4:ANCHO_DEL_INDICE]))
 
 
-def paso_general(raiz: Path, respaldo: Path, aplicar: bool, indices: dict[str, dict]) -> tuple[list[dict], dict]:
+def paso_general(raiz: Path, respaldo: Path, aplicar: bool, indices: dict[str, dict], informar=None,
+                 evidencias: list | None = None) -> tuple[list[dict], dict]:
     """Paso 3: la hoja de cada caja en el índice general, igual que el índice de su caja.
 
     Sólo se cambian los nombres (su RE), el orden de las filas, «Orden Documento» y
     el expediente. Una hoja que no tiene los mismos documentos que su caja, o con
-    otro NIC, no se toca y queda anotada.
+    otro NIC, no se toca y queda anotada. ``informar`` recibe en qué va (el libro
+    puede tener treinta mil hojas y tardar minutos); ``evidencias``, (caja, qué se
+    hizo en su hoja).
     """
     from openpyxl import load_workbook
 
+    informar = informar or (lambda texto: None)
+    evidencias = evidencias if evidencias is not None else []
     filas: list[dict] = []
     cuentas = {"hojas": 0, "cambiadas": 0, "iguales": 0, "no cuadran": 0}
 
@@ -997,9 +1114,13 @@ def paso_general(raiz: Path, respaldo: Path, aplicar: bool, indices: dict[str, d
     if aplicar and (motivo := _bloqueado(ruta)):
         anotar(".", "error", f"«{INDICE}» de la raíz está abierto o bloqueado ({motivo}); ciérrelo y vuelva a correr")
         return filas, cuentas
+    informar(f"abriendo el índice general ({ruta.stat().st_size / 1e6:.0f} MB; con miles de hojas tarda minutos)")
     libro = load_workbook(ruta, read_only=not aplicar)
     try:
-        for titulo in libro.sheetnames:
+        total = len(libro.sheetnames)
+        for numero, titulo in enumerate(libro.sheetnames, start=1):
+            if numero % 200 == 0:
+                informar(f"revisando las hojas del índice general: {numero}/{total}")
             cajas = por_hoja.get(titulo.lower())
             if not cajas:
                 continue
@@ -1055,8 +1176,13 @@ def paso_general(raiz: Path, respaldo: Path, aplicar: bool, indices: dict[str, d
                                               "no se tocó")
                     cuentas["no cuadran"] += 1
                     continue
+            que = ", ".join(x for x in (
+                "las filas como en el índice de su caja (nombres con RE y orden por fecha)" if not iguales else "",
+                f"«Nombre del Expediente» «{_texto(expediente)}» -> «{_texto(nic)}»" if poner_expediente else "",
+            ) if x)
             if not aplicar:
                 cuentas["cambiadas"] += 1
+                evidencias.append((caja, f"hoja «{titulo}»: se cambiaría {que}"))
                 continue
             if not iguales:
                 if _combinadas_en(hoja, primera, fin):
@@ -1069,12 +1195,17 @@ def paso_general(raiz: Path, respaldo: Path, aplicar: bool, indices: dict[str, d
             if poner_expediente:
                 hoja.cell(fila_del_expediente, 2).value = nic
             cuentas["cambiadas"] += 1
+            evidencias.append((caja, f"hoja «{titulo}»: {que}"))
         if aplicar and cuentas["cambiadas"]:
             try:
+                informar("copiando el índice general al respaldo")
                 _respaldar(ruta, raiz, respaldo)
+                informar(f"guardando el índice general ({cuentas['cambiadas']} hojas cambiadas)")
                 _guardar_libro(libro, ruta)
             except OSError as error:
                 anotar(".", "error", f"no se pudo guardar el índice general: {error}; vuelva a correr")
+                evidencias.clear()
+                evidencias.append((".", f"FALLA: no se pudo guardar el índice general: {error}"))
                 cuentas["cambiadas"] = 0
     finally:
         if not aplicar:
@@ -1167,21 +1298,31 @@ def paso_revision(carpeta: str, raiz: str, motivos: dict[str, str], se_cambiaria
     return resultado
 
 
-def revisar_el_general(raiz: Path, indices: dict[str, dict]) -> list[tuple[str, str, str]]:
-    """Que la hoja de cada caja en el índice general diga lo mismo que el índice de su caja."""
+def revisar_el_general(raiz: Path, indices: dict[str, dict], informar=None) -> tuple[list[tuple[str, str, str]], int]:
+    """Que la hoja de cada caja en el índice general diga lo mismo que el índice de su caja.
+
+    Devuelve los problemas y cuántas hojas se releyeron y compararon.
+    """
     from openpyxl import load_workbook
 
+    informar = informar or (lambda texto: None)
     ruta = raiz / INDICE
     if not ruta.exists():
-        return []
+        return [], 0
     por_hoja = {nombre_de_hoja(Path(caja).name).lower(): caja for caja in indices if caja != "."}
     problemas = []
+    comparadas = 0
+    informar("releyendo el índice general del disco")
     libro = load_workbook(ruta, read_only=True)
     try:
-        for titulo in libro.sheetnames:
+        total = len(libro.sheetnames)
+        for numero, titulo in enumerate(libro.sheetnames, start=1):
+            if numero % 200 == 0:
+                informar(f"releyendo las hojas del índice general: {numero}/{total}")
             caja = por_hoja.get(titulo.lower())
             if caja is None:
                 continue
+            comparadas += 1
             hoja = libro[titulo]
             hoja.reset_dimensions()
             valores = _valores(hoja)
@@ -1199,7 +1340,7 @@ def revisar_el_general(raiz: Path, indices: dict[str, dict]) -> list[tuple[str, 
                                   f"«Nombre del Expediente» ({expediente or 'vacío'}) no es el NIC ({indices[caja]['nic']})"))
     finally:
         libro.close()
-    return problemas
+    return problemas, comparadas
 
 
 # -- deshacer ------------------------------------------------------------------------------
@@ -1274,9 +1415,11 @@ def deshacer(raiz: Path, respaldo: Path) -> int:
 # -- la carpeta --------------------------------------------------------------------------------
 
 
-def cajas_de(raiz: Path):
+def cajas_de(raiz: Path, contador: dict | None = None):
     """Cada carpeta del destino con PDF: la raíz y sus subcarpetas, sin lo apartado."""
     for actual, carpetas, archivos in os.walk(raiz):
+        if contador is not None:
+            contador["carpetas"] = contador.get("carpetas", 0) + 1
         carpetas[:] = sorted(c for c in carpetas if c.lower() not in SALTAR and not c.startswith("."))
         if any(a.lower().endswith(".pdf") for a in archivos):
             yield Path(actual)
@@ -1322,23 +1465,77 @@ def _duracion(segundos: float) -> str:
     return f"{horas} h {resto // 60:02d} min" if horas else f"{resto // 60} min {resto % 60:02d} s"
 
 
-class Avance:
-    """Las cifras de un paso mientras corre: cajas hechas, ritmo, lo que falta y sus cuentas.
+class Voz:
+    """Lo que sale en pantalla, con su hora, y a la vez al archivo de evidencia.
 
-    Lo pidió el operador el 2026-10-28: «necesito ver un análisis estadístico del
-    progreso en tiempo real». Sale en la misma consola cada ``CADA`` segundos.
+    El operador (2026-11-04): «necesito evidencia de cada cosa que va haciendo, de
+    las 2 fases, en tiempo real». Cada cambio sale apenas su caja termina, y queda en
+    «00.RE Y ORDEN - EVIDENCIA.txt» para revisarlo después.
     """
 
-    def __init__(self, paso: str, total: int) -> None:
-        self.paso, self.total = paso, total
+    def __init__(self, ruta: Path | None, *, agregar: bool) -> None:
+        self.cerrojo = threading.Lock()
+        self.ultimo = time.monotonic()
+        self.archivo = ruta.open("a" if agregar else "w", encoding="utf-8") if ruta is not None else None
+
+    def __call__(self, texto: str, *, al_archivo: bool = True) -> None:
+        ahora = datetime.now()
+        linea = f"[{ahora:%H:%M:%S}] {texto}"
+        with self.cerrojo:
+            print(linea, flush=True)
+            if al_archivo and self.archivo is not None:
+                self.archivo.write(f"{ahora:%Y-%m-%d} {linea}\n")
+                self.archivo.flush()
+            self.ultimo = time.monotonic()
+
+    def cerrar(self) -> None:
+        with self.cerrojo:
+            if self.archivo is not None:
+                self.archivo.close()
+                self.archivo = None
+
+
+class Latido(threading.Thread):
+    """Cada ``LATIDO`` segundos sin nada nuevo en pantalla, dice qué está haciendo y cuánto lleva.
+
+    Para que una espera larga -- el OCR de una caja grande, el índice general con
+    treinta mil hojas -- no parezca que el programa se detuvo.
+    """
+
+    def __init__(self, voz: Voz) -> None:
+        super().__init__(daemon=True)
+        self.voz = voz
+        self.estado = "empezando"
+        self.desde = time.monotonic()
+        self.parar = threading.Event()
+
+    def cambiar(self, estado) -> None:
+        self.estado, self.desde = estado, time.monotonic()
+
+    def run(self) -> None:
+        while not self.parar.wait(LATIDO):
+            if time.monotonic() - self.voz.ultimo >= LATIDO:
+                try:
+                    estado = self.estado() if callable(self.estado) else self.estado
+                except Exception:  # noqa: BLE001 - el latido nunca tumba la corrida
+                    estado = "trabajando"
+                self.voz(f"… sigue trabajando: {estado} (lleva {_duracion(time.monotonic() - self.desde)})",
+                         al_archivo=False)
+
+
+class Avance:
+    """Las cifras mientras corre: cajas hechas, ritmo, lo que falta y sus cuentas.
+
+    Lo pidió el operador el 2026-10-28: «necesito ver un análisis estadístico del
+    progreso en tiempo real». Sale cada ``CADA`` segundos.
+    """
+
+    def __init__(self, paso: str, total: int, voz: Voz) -> None:
+        self.paso, self.total, self.voz = paso, total, voz
         self.hechas = 0
         self.inicio = time.monotonic()
         self.ultimo = 0.0
         self.cuentas: dict[str, int] = {}
-
-    def sumar(self, clave: str, cuanto: int = 1) -> None:
-        if cuanto:
-            self.cuentas[clave] = self.cuentas.get(clave, 0) + cuanto
 
     def caja(self) -> None:
         self.hechas += 1
@@ -1354,9 +1551,32 @@ class Avance:
         falta = (self.total - self.hechas) / (self.hechas / transcurrido) if self.hechas and transcurrido > 0 else 0
         porcentaje = self.hechas / self.total * 100 if self.total else 100
         cuentas = " · ".join(f"{clave} {_cifra(valor)}" for clave, valor in self.cuentas.items())
-        print(f"[{datetime.now():%H:%M:%S}] {self.paso}: {_cifra(self.hechas)}/{_cifra(self.total)} cajas "
-              f"({porcentaje:.1f} %) · {ritmo:.0f} cajas/min · lleva {_duracion(transcurrido)} · "
-              f"falta ~{_duracion(falta)}" + (f"\n           {cuentas}" if cuentas else ""), flush=True)
+        self.voz(f"AVANCE {self.paso}: {_cifra(self.hechas)}/{_cifra(self.total)} cajas ({porcentaje:.1f} %) · "
+                 f"{ritmo:.0f} cajas/min · lleva {_duracion(transcurrido)} · falta ~{_duracion(falta)}"
+                 + (f" · {cuentas}" if cuentas else ""))
+
+
+def _sin_pausa_al_hacer_clic():
+    """Apaga la «edición rápida» de la consola de Windows; devuelve cómo dejarla como estaba.
+
+    Con ella, un clic dentro de la ventana de CMD pausa el programa hasta que se
+    pulsa Enter, y parece que se detuvo («agrégale validaciones para que no se detenga»).
+    """
+    if os.name != "nt":
+        return lambda: None
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        entrada = kernel32.GetStdHandle(-10)
+        modo = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(entrada, ctypes.byref(modo)):
+            return lambda: None
+        original = modo.value
+        kernel32.SetConsoleMode(entrada, (original | 0x80) & ~0x40)
+        return lambda: kernel32.SetConsoleMode(entrada, original)
+    except Exception:  # noqa: BLE001 - sin consola de Windows, nada que apagar
+        return lambda: None
 
 
 def _escribir_csv(ruta: Path, columnas: list[str], filas: list[tuple]) -> None:
@@ -1379,6 +1599,9 @@ def procesar_la_caja(carpeta: str, raiz: str, raiz_en_windows: str, respaldo: st
     que falla se anota y no impide los siguientes.
     """
     caja = _caja(Path(carpeta), Path(raiz))
+    if os.environ.get("RE_Y_ORDEN_CAIDA_DE_PRUEBA") == caja:
+        # Sólo para probar que una caja que tumba su proceso no detiene la corrida.
+        os._exit(3)
     resultado: dict = {"caja": caja, "re": [], "indice": None, "revision": None, "lecturas": []}
     if not solo_revisar:
         try:
@@ -1402,6 +1625,88 @@ def procesar_la_caja(carpeta: str, raiz: str, raiz_en_windows: str, respaldo: st
         resultado["revision"] = {"caja": caja, "sin_re": [], "indice": None, "con_re": 0,
                                  "por_revisar": [("", f"falló la revisión: {error}")]}
     return resultado
+
+
+def _correr_en_paralelo(cajas: list[Path], procesos: int, tarea, al_terminar, al_fallar, latido: Latido,
+                        voz: Voz) -> None:
+    """Reparte las cajas entre ``procesos`` procesos, con pocas en espera a la vez.
+
+    Si un proceso se cae -- un PDF tan dañado que tumba la librería --, el pool se
+    rehace y las cajas que estaban en curso se repiten de a una: la que lo vuelve a
+    tumbar se anota y se salta, y la corrida sigue con las demás.
+    """
+    from collections import deque
+    from concurrent.futures import FIRST_COMPLETED, wait
+    from concurrent.futures.process import BrokenProcessPool
+
+    def entregar(caja: Path, resultado=None, fallo: str | None = None) -> None:
+        try:
+            if fallo is None:
+                al_terminar(caja, resultado)
+            else:
+                al_fallar(caja, fallo)
+        except Exception as error:  # noqa: BLE001 - anotar una caja nunca para la corrida
+            voz(f"{_caja(caja, caja.parent)} | ERROR al anotar la caja: {type(error).__name__}: {error}")
+
+    pendientes = deque(cajas)
+    sospechosas: deque = deque()
+    total, hechas = len(cajas), 0
+    ventana = max(1, procesos) * 3
+    while pendientes or sospechosas:
+        if sospechosas:
+            caja = sospechosas.popleft()
+            latido.estado = f"repitiendo sola la caja {caja.name}, cuyo proceso se cayó"
+            pool = ProcessPoolExecutor(max_workers=1)
+            try:
+                entregar(caja, pool.submit(*tarea(caja)).result())
+            except BrokenProcessPool:
+                entregar(caja, fallo="el proceso que la trabajaba se cayó dos veces (¿un PDF dañado?): se saltó")
+            except Exception as error:  # noqa: BLE001
+                entregar(caja, fallo=f"{type(error).__name__}: {error}")
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+            hechas += 1
+            continue
+        pool = ProcessPoolExecutor(max_workers=procesos)
+        en_curso: dict = {}
+        roto = False
+        try:
+            while (pendientes or en_curso) and not roto:
+                while pendientes and len(en_curso) < ventana:
+                    caja = pendientes.popleft()
+                    try:
+                        en_curso[pool.submit(*tarea(caja))] = caja
+                    except BrokenProcessPool:
+                        pendientes.appendleft(caja)
+                        roto = True
+                        break
+                if roto:
+                    break
+                listos, _ = wait(list(en_curso), timeout=LATIDO, return_when=FIRST_COMPLETED)
+                for futuro in listos:
+                    caja = en_curso.pop(futuro)
+                    try:
+                        resultado = futuro.result()
+                    except BrokenProcessPool:
+                        sospechosas.append(caja)
+                        roto = True
+                        continue
+                    except Exception as error:  # noqa: BLE001
+                        entregar(caja, fallo=f"{type(error).__name__}: {error}")
+                    else:
+                        entregar(caja, resultado)
+                    hechas += 1
+                latido.estado = f"{_cifra(hechas)}/{_cifra(total)} cajas hechas, {len(en_curso)} en curso"
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        if roto:
+            sospechosas.extend(en_curso.values())
+            voz(f"AVISO: se cayó un proceso (¿un PDF dañado?). Se rehace y se repiten de a una las "
+                f"{len(sospechosas)} cajas que estaban en curso; la corrida sigue.")
+
+
+def _lista(pares: list[tuple[str, str]]) -> str:
+    return " · ".join(f"{numero}. {nombre} ({fecha})" for numero, (nombre, fecha) in enumerate(pares, start=1))
 
 
 def main() -> int:
@@ -1434,8 +1739,7 @@ def main() -> int:
         print(f"No encuentro la carpeta: {args.carpeta} (vista como {raiz})")
         return 2
     respaldo = raiz.parent / f"{raiz.name}{SUFIJO_DEL_RESPALDO}"
-    aplicar, solo_revisar = args.aplicar, args.revisar
-    if aplicar or args.deshacer:
+    if args.aplicar or args.deshacer:
         en_marcha = corridas_del_bot_sobre(args.carpeta)
         if en_marcha is None:
             print("Aviso: no se pudo preguntar al bot si está trabajando en esta carpeta. "
@@ -1446,125 +1750,202 @@ def main() -> int:
             return 3
     if args.deshacer:
         return deshacer(raiz, respaldo)
-
-    print(f"Buscando las cajas de {raiz} …", flush=True)
-    cajas = list(cajas_de(raiz))
-    nombre_del_modo = "REVISIÓN" if solo_revisar else "APLICAR" if aplicar else "SIMULACIÓN (no cambia nada)"
-    print(f"{_cifra(len(cajas))} cajas · {nombre_del_modo} · {args.procesos} cajas a la vez, en paralelo")
-    tesseract, idioma = (None, "") if solo_revisar else buscar_tesseract()
-    if not solo_revisar:
-        print(f"Tesseract: {tesseract} ({idioma})" if tesseract else
-              "Aviso: este equipo no tiene Tesseract. Sólo se leerá el RE del texto de los PDF; los escaneados sin "
-              "texto quedarán en la lista de los que siguen sin RE.")
-    if aplicar:
-        print(f"Respaldo de lo que se cambie: {respaldo}")
-    lecturas: dict[str, dict[str, dict]] = {}
-    ruta_de_lecturas = raiz / LECTURAS
-    if not solo_revisar and not args.releer and ruta_de_lecturas.exists():
-        with ruta_de_lecturas.open(encoding="utf-8") as leido:
-            for linea in leido:
-                try:
-                    datos = json.loads(linea)
-                except ValueError:
-                    continue  # una línea cortada por un Ctrl+C
-                lecturas.setdefault(str(datos.get("caja")), {})[str(datos.get("archivo"))] = datos
-        print(f"Ya leídos en corridas anteriores: {_cifra(sum(len(v) for v in lecturas.values()))} PDF; se "
-              "reutilizan si el archivo no cambió (--releer para leerlos todos otra vez).")
-    print(f"Se puede cortar con Ctrl+C y volver a correr: lo hecho se salta. Avance cada {CADA} s.\n", flush=True)
-
-    sufijo = "" if aplicar or solo_revisar else " (SIMULACION)"
-    indices_de_las_cajas: dict[str, dict] = {}
-    indices_revisados: dict[str, dict] = {}
-    sin_re: list[tuple] = []
-    por_revisar: list[tuple] = []
-    salida = None if solo_revisar else raiz / (REGISTRO if aplicar else SIMULACION)
-    archivo = None
-    escritor = None
-    archivo_de_lecturas = None if solo_revisar else ruta_de_lecturas.open("a", encoding="utf-8")
-    if salida is not None:
-        nueva = not salida.exists() or not aplicar
-        archivo = salida.open("a" if aplicar else "w", encoding="utf-8-sig", newline="")
-        escritor = csv.DictWriter(archivo, fieldnames=COLUMNAS, delimiter=";")
-        if nueva:
-            escritor.writeheader()
-
-    pasos = "4 (revisión)" if solo_revisar else "1 (RE), 2 (índice de la caja) y 4 (revisión)"
-    print(f"PASOS {pasos}: cada caja de principio a fin, {args.procesos} a la vez", flush=True)
-    avance = Avance("Cajas", len(cajas))
-    cuentas_re: dict[str, int] = {}
-    cuentas_indice: dict[str, int] = {}
-    cuentas_revision: dict[str, int] = {}
-
-    def contar(cuentas: dict[str, int], clave: str, cuanto: int = 1) -> None:
-        if cuanto:
-            cuentas[clave] = cuentas.get(clave, 0) + cuanto
-
-    def al_terminar(resultado: dict) -> None:
-        caja = resultado["caja"]
-        for fila in resultado["re"]:
-            escritor.writerow(fila)
-            contar(cuentas_re, fila["estado"])
-        indice = resultado["indice"]
-        if indice is not None:
-            for fila in indice["filas"]:
-                escritor.writerow(fila)
-            contar(cuentas_indice, indice["estado"])
-            contar(cuentas_indice, "filas reordenadas" if aplicar else "se reordenarían", int(indice["ordenado"]))
-            contar(cuentas_indice, "expediente = NIC" if aplicar else "expediente por poner", int(indice["expediente"]))
-            if indice["indice"] is not None:
-                indices_de_las_cajas[caja] = indice["indice"]
-        revision = resultado["revision"]
-        sin_re.extend((caja, nombre, motivo) for nombre, motivo in revision["sin_re"])
-        por_revisar.extend((caja, que, problema) for que, problema in revision["por_revisar"])
-        contar(cuentas_revision, "con RE", revision["con_re"])
-        contar(cuentas_revision, "sin RE", len(revision["sin_re"]))
-        contar(cuentas_revision, "por revisar", len(revision["por_revisar"]))
-        if revision["indice"] is not None:
-            indices_revisados[caja] = revision["indice"]
-        if archivo is not None:
-            archivo.flush()
-        if archivo_de_lecturas is not None and resultado["lecturas"]:
-            for lectura in resultado["lecturas"]:
-                archivo_de_lecturas.write(json.dumps(lectura, ensure_ascii=False) + "\n")
-            archivo_de_lecturas.flush()
-
-    def mostrar() -> dict[str, int]:
-        avance.cuentas = {**{f"RE {k}": v for k, v in cuentas_re.items()},
-                          **{f"índice {k}": v for k, v in cuentas_indice.items()},
-                          **{f"revisión {k}": v for k, v in cuentas_revision.items()}}
-        return avance.cuentas
-
+    restaurar_la_consola = _sin_pausa_al_hacer_clic()
     try:
-        with ProcessPoolExecutor(max_workers=args.procesos) as pool:
-            futuros = {
-                pool.submit(procesar_la_caja, str(caja), str(raiz), args.carpeta, str(respaldo), aplicar,
-                            solo_revisar, tesseract, idioma, lecturas.get(_caja(caja, raiz), {})): caja
-                for caja in cajas
-            }
-            for futuro in as_completed(futuros):
-                try:
-                    al_terminar(futuro.result())
-                except Exception as error:  # noqa: BLE001 - una caja que falla no para las demás
-                    caja = _caja(futuros[futuro], raiz)
-                    por_revisar.append((caja, "", f"no se pudo trabajar la caja: {error}"))
-                    if escritor is not None:
-                        escritor.writerow(_fila_vacia("-", caja, estado="error", detalle=str(error)))
-                mostrar()
-                avance.caja()
+        return _correr(args, raiz, respaldo)
+    except KeyboardInterrupt:
+        print("\nCortado con Ctrl+C. Lo hecho quedó hecho y anotado: vuelva a correr el mismo comando para "
+              "seguir donde iba.", flush=True)
+        return 130
+    finally:
+        restaurar_la_consola()
 
-        # Paso 3: el índice general es un solo archivo y lo escribe un solo proceso,
-        # cuando todas las cajas terminaron.
+
+def _correr(args, raiz: Path, respaldo: Path) -> int:
+    aplicar, solo_revisar = args.aplicar, args.revisar
+    sufijo = "" if aplicar or solo_revisar else " (SIMULACION)"
+    nombre_del_modo = "REVISIÓN" if solo_revisar else "APLICAR" if aplicar else "SIMULACIÓN (no cambia nada)"
+    voz = Voz(raiz / EVIDENCIA.replace(".txt", f"{sufijo}.txt"), agregar=bool(sufijo == ""))
+    latido = Latido(voz)
+    latido.start()
+    archivo = archivo_de_lecturas = None
+    try:
+        voz("=" * 70, al_archivo=True)
+        voz(f"PIPELINE · {nombre_del_modo} · {raiz}")
+        contador = {"carpetas": 0}
+        latido.cambiar(lambda: f"buscando las cajas: {_cifra(contador['carpetas'])} carpetas recorridas")
+        voz(f"Buscando las cajas de {raiz} …")
+        cajas = list(cajas_de(raiz, contador))
+        voz(f"{_cifra(len(cajas))} cajas · {nombre_del_modo} · {args.procesos} cajas a la vez, en paralelo")
+        tesseract, idioma = (None, "") if solo_revisar else buscar_tesseract()
+        if not solo_revisar:
+            voz(f"Tesseract: {tesseract} ({idioma})" if tesseract else
+                "Aviso: este equipo no tiene Tesseract. Sólo se leerá el RE del texto de los PDF; los escaneados "
+                "sin texto quedarán en la lista de los que siguen sin RE.")
+        if aplicar:
+            voz(f"Respaldo de lo que se cambie: {respaldo}")
+        voz(f"Evidencia de cada cambio, en pantalla y en: {raiz / EVIDENCIA.replace('.txt', f'{sufijo}.txt')}")
+
+        lecturas: dict[str, dict[str, dict]] = {}
+        ruta_de_lecturas = raiz / LECTURAS
+        if not solo_revisar and not args.releer and ruta_de_lecturas.exists():
+            with ruta_de_lecturas.open(encoding="utf-8") as leido:
+                for linea in leido:
+                    try:
+                        datos = json.loads(linea)
+                    except ValueError:
+                        continue  # una línea cortada por un Ctrl+C
+                    lecturas.setdefault(str(datos.get("caja")), {})[str(datos.get("archivo"))] = datos
+            voz(f"Ya leídos en corridas anteriores: {_cifra(sum(len(v) for v in lecturas.values()))} PDF; se "
+                "reutilizan si el archivo no cambió (--releer para leerlos todos otra vez).")
+        voz("Se puede cortar con Ctrl+C y volver a correr: lo hecho se salta. Un clic en la ventana ya no la pausa.")
+
+        indices_de_las_cajas: dict[str, dict] = {}
+        indices_revisados: dict[str, dict] = {}
+        sin_re: list[tuple] = []
+        por_revisar: list[tuple] = []
+        salida = None if solo_revisar else raiz / (REGISTRO if aplicar else SIMULACION)
+        escritor = None
+        if salida is not None:
+            nueva = not salida.exists() or not aplicar
+            archivo = salida.open("a" if aplicar else "w", encoding="utf-8-sig", newline="")
+            escritor = csv.DictWriter(archivo, fieldnames=COLUMNAS, delimiter=";", extrasaction="ignore")
+            if nueva:
+                escritor.writeheader()
+        if not solo_revisar:
+            archivo_de_lecturas = ruta_de_lecturas.open("a", encoding="utf-8")
+
+        cuentas_re: dict[str, int] = {}
+        cuentas_indice: dict[str, int] = {}
+        cuentas_revision: dict[str, int] = {}
+        evidencia: dict[str, int] = {}
+        avance = Avance("cajas", len(cajas), voz)
+
+        def contar(cuentas: dict[str, int], clave: str, cuanto: int = 1) -> None:
+            if cuanto:
+                cuentas[clave] = cuentas.get(clave, 0) + cuanto
+
+        def anotar_en_el_registro(fila: dict) -> None:
+            if escritor is None:
+                return
+            comprobado = fila.get("comprobado") or ""
+            escritor.writerow({**fila, "detalle": "; ".join(
+                x for x in (fila.get("detalle") or "", f"comprobado: {comprobado}" if comprobado else "") if x)})
+
+        def evidencia_de(comprobado: str) -> None:
+            if comprobado:
+                contar(evidencia, "FALLA" if "FALLA" in comprobado else "comprobados OK")
+
+        def al_terminar(_caja: Path, resultado: dict) -> None:
+            caja = resultado["caja"]
+            # Paso 1: cada archivo, antes -> después, y lo que dice el disco.
+            for fila in resultado["re"]:
+                anotar_en_el_registro(fila)
+                estado, comprobado = fila["estado"], fila.get("comprobado") or ""
+                contar(cuentas_re, estado)
+                evidencia_de(comprobado)
+                if estado in ("renombrado", "se cambiaría"):
+                    voz(f"{caja} | PASO 1 RE | {fila['archivo_antes']} -> {fila['archivo_despues']} | RE leído de: "
+                        f"{fila['leido_de']} | " + (comprobado if aplicar else "simulación: no se cambió nada"))
+                elif estado == "ya tenía RE" and "complet" in (fila.get("detalle") or ""):
+                    voz(f"{caja} | PASO 1 COMPLETADO | {fila['archivo_antes']} | {fila['detalle']}"
+                        + (f" | {comprobado}" if comprobado else ""))
+                elif estado in MIRAR or estado == "error":
+                    voz(f"{caja} | PASO 1 {estado.upper()} | {fila['archivo_antes']} | {(fila['detalle'] or '')[:220]}")
+            # Paso 2: el índice antes y ahora, y lo que dice el Excel releído.
+            indice = resultado["indice"]
+            if indice is not None:
+                for fila in indice["filas"]:
+                    anotar_en_el_registro(fila)
+                contar(cuentas_indice, indice["estado"])
+                contar(cuentas_indice, "filas reordenadas" if aplicar else "se reordenarían", int(indice["ordenado"]))
+                contar(cuentas_indice, "expediente = NIC" if aplicar else "expediente por poner",
+                       int(indice["expediente"]))
+                if indice["estado"] in ("cambiado", "se cambiaría"):
+                    if indice["ordenado"]:
+                        voz(f"{caja} | PASO 2 ÍNDICE ANTES | {_lista(indice.get('antes') or [])}")
+                        voz(f"{caja} | PASO 2 ÍNDICE AHORA | {_lista(indice.get('despues') or [])}")
+                    if indice["expediente"]:
+                        voz(f"{caja} | PASO 2 EXPEDIENTE | «{indice.get('expediente_antes') or ''}» -> "
+                            f"«{indice.get('nic') or ''}»")
+                    comprobado = indice.get("comprobado") or ""
+                    evidencia_de(comprobado)
+                    voz(f"{caja} | PASO 2 " + (f"COMPROBADO | {comprobado}" if aplicar
+                                               else "SIMULACIÓN | no se cambió nada"))
+                elif indice["estado"] == "error":
+                    voz(f"{caja} | PASO 2 ERROR | {indice['filas'][0]['detalle'] if indice['filas'] else ''}")
+                if indice.get("indice") is not None:
+                    indices_de_las_cajas[caja] = indice["indice"]
+            # Paso 4: lo que quedó, mirado otra vez en el disco.
+            revision = resultado["revision"]
+            sin_re.extend((caja, nombre, motivo) for nombre, motivo in revision["sin_re"])
+            for que, problema in revision["por_revisar"]:
+                por_revisar.append((caja, que, problema))
+                voz(f"{caja} | REVISIÓN | {que} | {problema}")
+            contar(cuentas_revision, "con RE", revision["con_re"])
+            contar(cuentas_revision, "sin RE", len(revision["sin_re"]))
+            contar(cuentas_revision, "por revisar", len(revision["por_revisar"]))
+            if revision["indice"] is not None:
+                indices_revisados[caja] = revision["indice"]
+            if archivo is not None:
+                archivo.flush()
+            if archivo_de_lecturas is not None and resultado["lecturas"]:
+                for lectura in resultado["lecturas"]:
+                    archivo_de_lecturas.write(json.dumps(lectura, ensure_ascii=False) + "\n")
+                archivo_de_lecturas.flush()
+            avance.cuentas = {"RE cambiados" if aplicar else "RE por cambiar":
+                              cuentas_re.get("renombrado", 0) + cuentas_re.get("se cambiaría", 0),
+                              "sin RE": cuentas_re.get("sin RE", 0),
+                              "índices ordenados" if aplicar else "índices por ordenar":
+                              cuentas_indice.get("filas reordenadas", 0) + cuentas_indice.get("se reordenarían", 0),
+                              **({"comprobados OK": evidencia.get("comprobados OK", 0),
+                                  "FALLAS": evidencia.get("FALLA", 0)} if aplicar else {})}
+            avance.caja()
+
+        def al_fallar(caja_p: Path, motivo: str) -> None:
+            caja = _caja(caja_p, raiz)
+            por_revisar.append((caja, "", f"no se pudo trabajar la caja: {motivo}"))
+            if escritor is not None:
+                escritor.writerow(_fila_vacia("-", caja, estado="error", detalle=motivo))
+            contar(evidencia, "FALLA")
+            voz(f"{caja} | ERROR | no se pudo trabajar la caja: {motivo}")
+            avance.caja()
+
+        pasos = "4 (revisión)" if solo_revisar else "1 (RE), 2 (índice de la caja) y 4 (revisión)"
+        voz(f"PASOS {pasos}: cada caja de principio a fin, {args.procesos} a la vez")
+        latido.cambiar("empezando las cajas")
+        _correr_en_paralelo(
+            cajas, args.procesos,
+            lambda caja: (procesar_la_caja, str(caja), str(raiz), args.carpeta, str(respaldo), aplicar,
+                          solo_revisar, tesseract, idioma, lecturas.get(_caja(caja, raiz), {})),
+            al_terminar, al_fallar, latido, voz,
+        )
+        avance.imprimir(siempre=True)
+
+        # Paso 3: el índice general es un solo archivo; lo escribe un solo proceso al final.
         resumen_general = ""
         if not solo_revisar:
-            print("\nPASO 3 · el índice general de la raíz", flush=True)
+            voz("PASO 3 · el índice general de la raíz")
+            latido.cambiar("paso 3, el índice general")
             inicio = time.monotonic()
+            evidencias_del_general: list = []
+
+            def informar(texto: str) -> None:
+                latido.estado = f"paso 3: {texto}"
+
             try:
-                filas, cuentas = paso_general(raiz, respaldo, aplicar, indices_de_las_cajas)
+                filas, cuentas = paso_general(raiz, respaldo, aplicar, indices_de_las_cajas, informar,
+                                              evidencias_del_general)
             except Exception as error:  # noqa: BLE001 - las cajas ya están hechas
-                filas = [_fila_vacia("3 GENERAL", ".", estado="error", detalle=str(error))]
+                filas = [_fila_vacia("3 GENERAL", ".", estado="error", detalle=f"{type(error).__name__}: {error}")]
                 cuentas = {"error": 1}
+            for caja, texto in evidencias_del_general:
+                voz(f"{caja} | PASO 3 GENERAL | {texto}")
             for fila in filas:
-                escritor.writerow(fila)
+                anotar_en_el_registro(fila)
+                if fila["estado"] in ("error", "no cuadra"):
+                    por_revisar.append((fila["caja"], f"{INDICE} (raíz)", fila["detalle"]))
+                    voz(f"{fila['caja']} | PASO 3 {fila['estado'].upper()} | {fila['detalle']}")
             if cuentas.get("error"):
                 resumen_general = f"error: {filas[0]['detalle']}"
             elif cuentas.get("sin general"):
@@ -1575,51 +1956,64 @@ def main() -> int:
                     f"{'actualizadas' if aplicar else 'se actualizarían'} {_cifra(cuentas.get('cambiadas', 0))} · "
                     f"ya iguales {_cifra(cuentas.get('iguales', 0))} · no cuadran {_cifra(cuentas.get('no cuadran', 0))}"
                 )
-            print(f"[{datetime.now():%H:%M:%S}] Paso 3: {resumen_general} ({_duracion(time.monotonic() - inicio)})")
-            for fila in filas:
-                if fila["estado"] in ("error", "no cuadra"):
-                    por_revisar.append((fila["caja"], f"{INDICE} (raíz)", fila["detalle"]))
+            voz(f"PASO 3 · {resumen_general} ({_duracion(time.monotonic() - inicio)})")
+            if archivo is not None:
+                archivo.flush()
+
+        # La comprobación del índice general: releído del disco, hoja por hoja.
+        if aplicar or solo_revisar:
+            latido.cambiar("comprobando el índice general")
+            try:
+                problemas, comparadas = revisar_el_general(
+                    raiz, indices_revisados, lambda texto: setattr(latido, "estado", texto))
+                por_revisar.extend(problemas)
+                for caja, que, problema in problemas:
+                    voz(f"{caja} | PASO 3 FALLA | {que} | {problema}")
+                voz(f"PASO 3 COMPROBADO | releídas del disco {_cifra(comparadas)} hojas del índice general: "
+                    + ("todas dicen lo mismo que el índice de su caja" if not problemas
+                       else f"{_cifra(len(problemas))} problemas (ver 00.INDICES POR REVISAR.csv)"))
+                if comparadas:
+                    contar(evidencia, "FALLA" if problemas else "comprobados OK", len(problemas) or 1)
+            except Exception as error:  # noqa: BLE001
+                por_revisar.append((".", INDICE, f"no se pudo revisar el índice general: {error}"))
+                voz(f"PASO 3 FALLA | no se pudo releer el índice general: {error}")
+
+        sin_re.sort()
+        por_revisar.sort()
+        ruta_sin_re = raiz / SIN_RE.replace(".csv", f"{sufijo}.csv")
+        ruta_por_revisar = raiz / POR_REVISAR.replace(".csv", f"{sufijo}.csv")
+        _escribir_csv(ruta_sin_re, ["caja", "archivo", "motivo"], sin_re)
+        _escribir_csv(ruta_por_revisar, ["caja", "archivo o índice", "qué pasa"], por_revisar)
+
+        voz("=" * 70)
+        voz(f"RESUMEN · {nombre_del_modo} · {_cifra(len(cajas))} cajas · {_duracion(time.monotonic() - avance.inicio)}")
+        if not solo_revisar:
+            voz("Paso 1, el RE:                " + (" · ".join(f"{k} {_cifra(v)}" for k, v in cuentas_re.items()) or "nada"))
+            voz("Paso 2, índices de las cajas: " + (" · ".join(f"{k} {_cifra(v)}" for k, v in cuentas_indice.items()) or "nada"))
+            voz(f"Paso 3, índice general:       {resumen_general}")
+        voz("Paso 4, revisión:             " + (" · ".join(f"{k} {_cifra(v)}" for k, v in cuentas_revision.items()) or "nada"))
+        if aplicar or solo_revisar:
+            voz(f"EVIDENCIA: cambios comprobados en el disco {_cifra(evidencia.get('comprobados OK', 0))} · "
+                f"FALLAS {_cifra(evidencia.get('FALLA', 0))}"
+                + (" (búsquelas con la palabra FALLA en el archivo de evidencia)" if evidencia.get("FALLA") else ""))
+        if sin_re:
+            voz(f"Los {_cifra(len(sin_re))} RECLAMO y CONSTANCIA que "
+                f"{'quedaron' if aplicar or solo_revisar else 'quedarían'} sin RE están en {ruta_sin_re.name}")
+        if salida is not None:
+            voz(f"Registro de cada cambio: {salida}")
+        voz(f"Evidencia en vivo:        {raiz / EVIDENCIA.replace('.txt', f'{sufijo}.txt')}")
+        voz(f"Sin RE:                   {ruta_sin_re} ({_cifra(len(sin_re))})")
+        voz(f"Por revisar:              {ruta_por_revisar} ({_cifra(len(por_revisar))})")
+        if not aplicar and not solo_revisar:
+            voz("No se cambió nada. Revise la evidencia y los CSV y, si está bien, vuelva a correrlo con --aplicar.")
+        return 0
     finally:
+        latido.parar.set()
         if archivo is not None:
             archivo.close()
         if archivo_de_lecturas is not None:
             archivo_de_lecturas.close()
-
-    # La revisión del índice general, después del paso 3.
-    if aplicar or solo_revisar:
-        try:
-            por_revisar.extend(revisar_el_general(raiz, indices_revisados))
-        except Exception as error:  # noqa: BLE001
-            por_revisar.append((".", INDICE, f"no se pudo revisar el índice general: {error}"))
-
-    sin_re.sort()
-    por_revisar.sort()
-    ruta_sin_re = raiz / SIN_RE.replace(".csv", f"{sufijo}.csv")
-    ruta_por_revisar = raiz / POR_REVISAR.replace(".csv", f"{sufijo}.csv")
-    _escribir_csv(ruta_sin_re, ["caja", "archivo", "motivo"], sin_re)
-    _escribir_csv(ruta_por_revisar, ["caja", "archivo o índice", "qué pasa"], por_revisar)
-
-    print("\n" + "=" * 78)
-    print(f"RESUMEN · {nombre_del_modo} · {_cifra(len(cajas))} cajas · {_duracion(time.monotonic() - avance.inicio)}")
-    print("=" * 78)
-    if not solo_revisar:
-        print("Paso 1, el RE:               " + (" · ".join(f"{k} {_cifra(v)}" for k, v in cuentas_re.items()) or "nada"))
-        print("Paso 2, índices de las cajas: " + (" · ".join(f"{k} {_cifra(v)}" for k, v in cuentas_indice.items()) or "nada"))
-        print(f"Paso 3, índice general:       {resumen_general}")
-    print("Paso 4, revisión:             " + (" · ".join(f"{k} {_cifra(v)}" for k, v in cuentas_revision.items()) or "nada"))
-    if sin_re:
-        print(f"\nLos {_cifra(len(sin_re))} RECLAMO y CONSTANCIA que {'quedaron' if aplicar or solo_revisar else 'quedarían'} sin RE:")
-        for caja, nombre, motivo in sin_re[:MOSTRAR_PENDIENTES]:
-            print(f"  {caja}\\{nombre} · {motivo[:120]}")
-        if len(sin_re) > MOSTRAR_PENDIENTES:
-            print(f"  … y {_cifra(len(sin_re) - MOSTRAR_PENDIENTES)} más: están todos en el CSV.")
-    if salida is not None:
-        print(f"\nRegistro de cada cambio: {salida}")
-    print(f"Sin RE:                  {ruta_sin_re} ({_cifra(len(sin_re))})")
-    print(f"Por revisar:             {ruta_por_revisar} ({_cifra(len(por_revisar))})")
-    if not aplicar and not solo_revisar:
-        print("\nNo se cambió nada. Revise los CSV y, si está bien, vuelva a correrlo con --aplicar.")
-    return 0
+        voz.cerrar()
 
 
 if __name__ == "__main__":
