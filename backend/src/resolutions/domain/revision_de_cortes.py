@@ -282,9 +282,16 @@ def revisar_costuras(
             bloque.append(siguiente)
         return tuple(bloque)
 
-    def salta(pagina: int) -> bool:
-        """Si la hoja abre un tramo de su documento separado del grueso por otro documento."""
-        if pagina in cruces:
+    def salta(pagina: int, *, sigue_a_la_de_delante: bool = False) -> bool:
+        """Si la hoja abre un tramo de su documento separado del grueso por otro documento.
+
+        El cruce que manda una regla -- la Habeas Data con su acuerdo -- no
+        cuenta, salvo que la hoja siga por su numeración a la de delante: una
+        pieza suelta del acuerdo no continúa la cláusula de otro documento. Sin
+        esto, el título mal puesto que causó el error de 1004569 lo tapaba
+        también aquí, porque «cruces» sale de los títulos.
+        """
+        if pagina in cruces and not sigue_a_la_de_delante:
             return False
         tramos = tramos_de[de[pagina]]
         if len(tramos) < 2:
@@ -299,7 +306,7 @@ def revisar_costuras(
             continue
         if de[izquierda] != de[derecha]:
             pruebas = _pruebas_de_continuidad(texto(izquierda), texto(derecha))
-            if salta(derecha):
+            if salta(derecha, sigue_a_la_de_delante=any(p.fuerte for p in pruebas)):
                 grueso = max(tramos_de[de[derecha]], key=len)
                 pruebas.append(
                     Prueba(

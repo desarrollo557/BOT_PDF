@@ -197,6 +197,16 @@ class TestLaCajaDel27DeOctubre:
         revision = revisar_los_cortes(_grupos(*CORTE_DEL_27_OCT), TEXTOS, Patrones(abren=ABREN))
         assert [g.code.value for g in revision.grupos.groups] == ["01", "02", "03", "04"]
 
+    def test_aunque_el_titulo_mal_puesto_la_de_por_cruce_del_acuerdo(self):
+        """Medido con el bot del 27-oct de vuelta: la hoja 4 se titulaba CARTA DE
+        INSTRUCCIONES y por eso contaba como pieza que cruza. Como sigue por su
+        cláusula a la hoja 3, su salto vuelve a ser prueba: dos pruebas, corregida."""
+        revision = revisar_los_cortes(
+            _grupos(*CORTE_DEL_27_OCT), TEXTOS, Patrones(abren=ABREN, cruces=frozenset({4, 8, 9, 10}))
+        )
+        assert _paginas(revision) == sorted(CORTE_BUENO)
+        assert revision.movimientos[0].por == "dos pruebas del papel"
+
 
 class TestFueraDelMargenDecideLaIa:
     """El contrato partido sin salto: una sola prueba fuerte."""
@@ -208,6 +218,8 @@ class TestFueraDelMargenDecideLaIa:
         assert _paginas(revision) == sorted(self.PARTIDO)
         assert [p for p, _ in revision.en_revision] == [4]
         assert "OCR + IA" in revision.en_revision[0][1]
+        # Sin IA no se le preguntó nada: la pantalla no puede decir lo contrario.
+        assert revision.preguntadas == 0
 
     def test_la_ia_decide_y_se_corrige(self):
         juez = _Juez("continua")
@@ -560,6 +572,98 @@ class TestElJuezDeMistral:
         monkeypatch.setattr(mistral_revisor.time, "sleep", lambda _s: None)
         assert mistral_revisor.MistralJuezDeCosturas(api_key="k").decidir([{"p": 1}], [(1, 2)], "") is None
         assert len(llamadas) == 3
+
+
+class TestLoQueVeLaPantalla:
+    """Lo que el informe le da a la pantalla para dibujar el trabajo del agente."""
+
+    def test_cada_costura_fuera_del_margen_con_su_resultado(self):
+        revision = revisar_los_cortes(_grupos(*CORTE_DEL_27_OCT), TEXTOS, Patrones(abren=ABREN))
+        fuera = revision.as_dict()["fuera_del_margen"]
+        assert fuera == [
+            {
+                "izq": 3,
+                "der": 4,
+                "decision": "corte",
+                "confianza": 0.05,
+                "resultado": "corregida",
+                "motivo": revision.movimientos[0].motivo,
+            }
+        ]
+        assert revision.as_dict()["movimientos"][0]["costura"] == [3, 4]
+
+    def test_la_confirmada_por_la_ia_y_la_de_revision(self):
+        partido = TestFueraDelMargenDecideLaIa.PARTIDO
+        confirmada = revisar_los_cortes(_grupos(*partido), TEXTOS, Patrones(abren=ABREN), juez=_Juez("abre"))
+        assert [c["resultado"] for c in confirmada.as_dict()["fuera_del_margen"]] == ["confirmada"]
+        sin_ia = revisar_los_cortes(_grupos(*partido), TEXTOS, Patrones(abren=ABREN))
+        assert [c["resultado"] for c in sin_ia.as_dict()["fuera_del_margen"]] == ["revision"]
+
+    def test_la_caja_validada_no_trae_costuras_fuera(self):
+        revision = revisar_los_cortes(_grupos(*CORTE_BUENO), TEXTOS, Patrones(abren=ABREN))
+        assert revision.as_dict()["fuera_del_margen"] == []
+
+
+class TestElAgenteDeLaCorrida:
+    """La suma de lo que hizo el agente en una corrida de carpeta, para el monitor en vivo."""
+
+    def _informe(self, revision, problemas=()):
+        return {
+            "revision_de_cortes": revision.as_dict(),
+            "comprobacion_de_la_entrega": {"hojas": 11, "problemas": list(problemas), "resumen": "x"},
+        }
+
+    def test_suma_cada_pdf_y_cuenta_lo_que_paso(self):
+        from resolutions.application.revisor_de_cortes import AgenteDeLaCorrida
+
+        agente = AgenteDeLaCorrida()
+        bueno = revisar_los_cortes(_grupos(*CORTE_BUENO), TEXTOS, Patrones(abren=ABREN))
+        malo = revisar_los_cortes(_grupos(*CORTE_DEL_27_OCT), TEXTOS, Patrones(abren=ABREN))
+        agente.sumar("UPD1.pdf", self._informe(bueno))
+        agente.sumar("UPD2437853.pdf", self._informe(malo))
+        datos = agente.as_dict()
+        assert (datos["pdf"], datos["validados"], datos["corregidos"]) == (2, 1, 1)
+        assert datos["costuras"] == 20
+        assert datos["dentro_del_margen"] == 19
+        assert datos["correcciones"] == 1
+        assert datos["hojas_comprobadas"] == 22
+        # Sólo lo que merece contarse llega al registro en vivo: la corrección.
+        assert [s["pdf"] for s in datos["sucesos"]] == ["UPD2437853.pdf"]
+        assert datos["sucesos"][0]["texto"] == "hojas 4-5 con las hojas 2-3, por dos pruebas del papel"
+
+    def test_un_problema_en_el_disco_se_cuenta_y_se_dice(self):
+        from resolutions.application.revisor_de_cortes import AgenteDeLaCorrida
+
+        agente = AgenteDeLaCorrida()
+        bueno = revisar_los_cortes(_grupos(*CORTE_BUENO), TEXTOS, Patrones(abren=ABREN))
+        agente.sumar("UPD9.pdf", self._informe(bueno, [{"texto": "la hoja 2 de 01.pdf no es la hoja 2 del original"}]))
+        datos = agente.as_dict()
+        assert datos["problemas_de_entrega"] == 1
+        assert datos["sucesos"][0]["estado"] == "problema"
+
+    def test_lo_que_no_parte_pdf_no_cuenta_y_el_que_no_corrio_si(self):
+        from resolutions.application.revisor_de_cortes import AgenteDeLaCorrida
+
+        agente = AgenteDeLaCorrida()
+        agente.sumar("inventario.pdf", {"document_type": "diploma"})
+        assert agente.as_dict()["pdf"] == 0
+        agente.sumar("roto.pdf", {"revision_de_cortes": {"estado": "no corrió", "resumen": "El revisor falló"}})
+        assert agente.as_dict()["sin_revisar"] == 1
+        assert agente.as_dict()["sucesos"][0]["texto"] == "El revisor falló"
+
+    def test_el_registro_en_vivo_guarda_los_ultimos(self):
+        from resolutions.application.revisor_de_cortes import (
+            SUCESOS_EN_VIVO,
+            AgenteDeLaCorrida,
+        )
+
+        agente = AgenteDeLaCorrida()
+        malo = revisar_los_cortes(_grupos(*CORTE_DEL_27_OCT), TEXTOS, Patrones(abren=ABREN))
+        for numero in range(SUCESOS_EN_VIVO + 3):
+            agente.sumar(f"UPD{numero}.pdf", self._informe(malo))
+        sucesos = agente.as_dict()["sucesos"]
+        assert len(sucesos) == SUCESOS_EN_VIVO
+        assert sucesos[0]["pdf"] == f"UPD{SUCESOS_EN_VIVO + 2}.pdf"
 
 
 class TestElAcuerdoTrasElRevisor:

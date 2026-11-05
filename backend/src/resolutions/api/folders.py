@@ -23,6 +23,7 @@ from ..adapters.excel_inventory import (
     NOMBRE_DEL_CONTROL_DE_ENTREGA,
     NOMBRE_DEL_INVENTARIO_DE_PROCESOS,
 )
+from ..application.revisor_de_cortes import AgenteDeLaCorrida
 from ..domain.ritmo import Ritmo
 from . import constancia as constancias
 from .constancia import Constancia, EstadoDeEntrega, Vigencia
@@ -402,6 +403,10 @@ class FolderRun:
     #: Lo medido de cada PDF -- su descarga y su entrega, bytes y segundos --,
     #: para su fila del inventario general de procesos.
     medidas_del_pdf: dict[str, dict[str, tuple[int, float]]] = field(default_factory=dict, repr=False)
+    #: Lo que hizo el revisor de cortes con cada PDF de la corrida, sumado, y lo
+    #: último que corrigió o mandó a revisión (2026-11-05: «que se muestre el
+    #: trabajo del agente revisando todo en el front»).
+    agente: AgenteDeLaCorrida = field(default_factory=AgenteDeLaCorrida, repr=False)
     #: Los PDF que hay que rehacer y por qué: ruta -> (vigencia, constancia).
     a_rehacer: dict[str, tuple] = field(default_factory=dict, repr=False)
     #: La fila del inventario general de procesos de cada PDF, por su ruta
@@ -571,6 +576,9 @@ class FolderRun:
             "inventario_validacion": self.inventario_validacion,
             # Red o local, la velocidad medida y lo que falta (2026-11-05).
             "red": self.resumen_de_la_red(),
+            # Lo que el revisor de cortes lleva hecho en la corrida (2026-11-05);
+            # nada hasta que revisa el primer PDF.
+            "agente": self.agente.as_dict() if self.agente.pdf else None,
             # Newest first: the live view reads from the top.
             "deliveries": [item.as_dict() for item in reversed(self.deliveries)],
         }
@@ -2335,6 +2343,13 @@ class FolderRunner:
         from .indices import con_la_red, fila_de_proceso
 
         medidas = run.medidas_del_pdf.pop(relativa, {})
+        if str(job.state) == "done":
+            # Lo que el revisor de cortes hizo con este PDF, a la cuenta de la
+            # corrida. Nunca tumba la anotación: es para la pantalla.
+            try:
+                run.agente.sumar(Path(relativa).name, job.report or {})
+            except Exception:  # noqa: BLE001 - la cuenta del agente no es la entrega
+                logger.debug("no se pudo sumar el revisor de %s", relativa, exc_info=True)
         if str(job.state) in ("done", "failed", "cancelled"):
             # Con el acceso de cada lado y la velocidad con que se bajó y se
             # entregó este PDF; si no se movió por la red -- un origen local, o

@@ -594,16 +594,20 @@
       align-items: start;
       grid-template-columns: minmax(0, 26rem) minmax(0, 1fr);
     }
+    /* Fijo sólo en dos columnas, al lado de los monitores. En una sola columna
+       los tapaba al desplazarse: la franja de los pasos es transparente y lo
+       animado de debajo -- el registro del agente revisor -- se pintaba encima
+       (visto el 2026-11-05). */
+    .busy .intake {
+      position: sticky;
+      top: 5.75rem;
+    }
   }
 
   .intake {
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-  }
-  .busy .intake {
-    position: sticky;
-    top: 5.75rem;
   }
 
   /* Lo que salta a un monitor desde la cola queda debajo de la barra fija. */

@@ -11,6 +11,7 @@
   import StatTile from '$lib/components/StatTile.svelte';
   import { pageRange, unitFor } from '$lib/format';
   import { SILENCE_THRESHOLD_SECONDS, STAGE_LABELS, STATE_LABELS, stageActivity } from '$lib/rungs';
+  import { ESTADOS, type Tono } from '$lib/agente';
   import type { Job } from '$lib/types';
 
   interface Props {
@@ -84,6 +85,18 @@
     cancelled: 'pill pill-neutral'
   };
 
+  /** Cómo quedó el PDF a ojos del agente revisor, si lo revisó. */
+  const revisor = $derived(report?.revision_de_cortes ? ESTADOS[report.revision_de_cortes.estado] : null);
+  /** La píldora común de cada tono del agente. */
+  const PILDORA: Record<Tono, string> = {
+    good: 'pill-good',
+    accent: '',
+    warn: 'pill-warn',
+    bad: 'pill-bad',
+    ia: '',
+    neutral: 'pill-neutral'
+  };
+
   /** Maps a group to the file the assembler actually wrote. */
   function fileFor(code: string): string | undefined {
     return inventory?.items.find((item) => item.code === code)?.file_name;
@@ -112,6 +125,13 @@
       <span class={BADGE[job.state] ?? 'pill pill-neutral'}>
         {STATE_LABELS[job.state] ?? job.state}
       </span>
+      {#if revisor}
+        <!-- Lo que dijo el agente revisor de este PDF; el detalle, en su ficha. -->
+        <span class="pill pill-sm {PILDORA[revisor.tono]}" title={report?.revision_de_cortes?.resumen ?? undefined}>
+          <Icono nombre="escudo" />
+          Agente: {revisor.etiqueta}
+        </span>
+      {/if}
       <RunControls jobId={job.id} runState={job.state} />
     </div>
   </header>
@@ -152,7 +172,7 @@
     <div class="mt-5 flex flex-wrap gap-8">
       <StatTile label="Páginas" value={report.page_count} />
       <StatTile label={unitTitle} value={groups.length} />
-      {#if stats}
+      {#if stats?.by_provenance}
         <StatTile
           label="Enviado al modelo"
           value={`${(stats.vision_page_ratio * 100).toFixed(1)}%`}
@@ -206,7 +226,10 @@
     {/if}
 
     <div class="mt-6 grid gap-7 md:grid-cols-2">
-      {#if stats}
+      <!-- Sólo con el reparto por peldaños: la caja de correspondencia cuenta
+           costuras y sellos, no peldaños, y leerlos a pelo reventaba su ficha
+           («reading 'text_layer'», visto el 2026-11-05). -->
+      {#if stats?.by_provenance}
         <ProvenanceBar {stats} pageCount={report.page_count} />
       {/if}
       <GroupsChart {groups} />

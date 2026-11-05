@@ -7,6 +7,7 @@
     origenInventarioUrl,
     origenProcesosUrl
   } from '$lib/api';
+  import AgenteDeLaCorrida from '$lib/components/AgenteDeLaCorrida.svelte';
   import Descargas, { type GrupoDeDescargas } from '$lib/components/Descargas.svelte';
   import { confirmar } from '$lib/confirmar.svelte';
   import FolderTree from '$lib/components/FolderTree.svelte';
@@ -473,6 +474,12 @@
         <span class="falta">Midiendo la red…</span>
       {/if}
     </div>
+  {/if}
+
+  {#if run.agente}
+    <!-- El agente revisor, en vivo: cómo van quedando los PDF y lo último
+         que corrigió (2026-11-05). -->
+    <AgenteDeLaCorrida agente={run.agente} activo={active} />
   {/if}
 
   <RunStats

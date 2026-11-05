@@ -11,6 +11,7 @@
     type ArchivedDocument
   } from '$lib/api';
   import { formatBytes } from '$lib/format';
+  import AgenteRevisor from '$lib/components/AgenteRevisor.svelte';
   import EncabezadoDePagina from '$lib/components/EncabezadoDePagina.svelte';
   import FuidViewer from '$lib/components/FuidViewer.svelte';
   import Icono from '$lib/components/Icono.svelte';
@@ -248,6 +249,18 @@
   {#if job.state === 'done' && job.report?.validation}
     <div class="seccion">
       <ValidationPanel validation={job.report.validation} issues={job.report.issues} />
+    </div>
+  {/if}
+
+  {#if job.state === 'done' && job.report && (job.report.revision_de_cortes || job.report.comprobacion_de_la_entrega)}
+    <!-- El agente revisor: cada costura del PDF y lo que hizo con ella, y la
+         comprobación en el disco de lo que se escribió (2026-11-05). -->
+    <div class="seccion">
+      <AgenteRevisor
+        revision={job.report.revision_de_cortes}
+        comprobacion={job.report.comprobacion_de_la_entrega}
+        paginas={job.report.page_count}
+      />
     </div>
   {/if}
 

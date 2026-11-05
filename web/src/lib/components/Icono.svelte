@@ -34,7 +34,8 @@
     | 'portapapeles'
     | 'birrete'
     | 'buscar'
-    | 'hoja';
+    | 'hoja'
+    | 'escudo';
 
   const TRAZOS: Record<NombreDeIcono, string[]> = {
     descargar: [
@@ -49,6 +50,8 @@
     editar: ['M10.5 3.5l2 2L6 12H4v-2z'],
     borrar: ['M3.5 4.5h9', 'M6.5 4.5V3h3v1.5', 'M5 4.5l.6 8h4.8l.6-8'],
     hecho: ['m3.5 8.5 3 3 6-7'],
+    // El agente revisor: un escudo con su marca de validado.
+    escudo: ['M8 1.75 13 3.6v4.1c0 3-2.1 5.4-5 6.55-2.9-1.15-5-3.55-5-6.55V3.6Z', 'm5.6 7.9 1.7 1.7 3.2-3.5'],
     mas: ['M8 3v10M3 8h10'],
     carpeta: [
       'M2 4.2A1.2 1.2 0 0 1 3.2 3h3l1.4 1.6h5.2A1.2 1.2 0 0 1 14 5.8v6A1.2 1.2 0 0 1 12.8 13H3.2A1.2 1.2 0 0 1 2 11.8V4.2Z'

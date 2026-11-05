@@ -196,6 +196,86 @@ export interface Report {
   }[];
   /** Lo que costó producir este documento. Ausente en los informes anteriores. */
   consumo?: Consumo | null;
+  /** Lo que hizo el agente revisor con cada costura (2026-11-05). Ausente en los anteriores. */
+  revision_de_cortes?: RevisionDeCortes | null;
+  /** Cada PDF escrito, vuelto a abrir y casado hoja por hoja con el original. */
+  comprobacion_de_la_entrega?: ComprobacionDeLaEntrega | null;
+}
+
+/** Cómo quedó un PDF a ojos del agente revisor. */
+export type EstadoDelRevisor = 'validado' | 'corregido' | 'en revisión' | 'no corrió';
+
+/** Una costura -- dos hojas seguidas del original -- que salió del margen de error. */
+export interface CosturaFuera {
+  izq: number;
+  der: number;
+  /** Lo que había hecho el bot con esas dos hojas. */
+  decision: 'corte' | 'union';
+  /** Cuánto se fiaba el agente de lo que hizo el bot, de 0 a 1. */
+  confianza: number;
+  /** «confirmada»: la IA le dio la razón al bot. */
+  resultado: 'corregida' | 'confirmada' | 'revision';
+  motivo: string;
+}
+
+/** Una corrección del agente: qué hojas movió, de dónde a dónde y por qué. */
+export interface MovimientoDelRevisor {
+  paginas: number[];
+  desde: number[];
+  /** Las hojas del documento al que fueron; `null` si abrieron el suyo. */
+  hacia: number[] | null;
+  /** «dos pruebas del papel» o «la IA». */
+  por: string;
+  motivo: string;
+  costura?: [number, number] | null;
+}
+
+/**
+ * El agente revisor de un PDF (lo pidió el operador el 2026-11-05): cada costura
+ * dentro del margen de error se valida, dos pruebas del papel corrigen, y lo de
+ * fuera lo decide la IA o va a revisión.
+ */
+export interface RevisionDeCortes {
+  estado: EstadoDelRevisor;
+  resumen: string | null;
+  costuras?: number;
+  dentro_del_margen?: number;
+  preguntadas_a_la_ia?: number;
+  confirmadas_por_la_ia?: number;
+  ia_no_respondio?: boolean;
+  releidas?: number[];
+  movimientos?: MovimientoDelRevisor[];
+  en_revision?: ReviewItem[];
+  /** Los PDF que salen, con sus hojas y su estado. */
+  documentos?: { paginas: number[]; estado: EstadoDelRevisor }[];
+  /** Sólo las costuras que salieron del margen; las demás se validaron. */
+  fuera_del_margen?: CosturaFuera[];
+}
+
+export interface ComprobacionDeLaEntrega {
+  comprobada: boolean;
+  archivos?: number;
+  hojas?: number;
+  problemas: { archivo?: string; pagina?: number | null; texto: string }[];
+  resumen: string;
+}
+
+/** Lo que el agente revisor lleva hecho en una corrida de carpeta. */
+export interface AgenteDeLaCorrida {
+  pdf: number;
+  validados: number;
+  corregidos: number;
+  en_revision: number;
+  sin_revisar: number;
+  costuras: number;
+  dentro_del_margen: number;
+  preguntadas_a_la_ia: number;
+  confirmadas_por_la_ia: number;
+  correcciones: number;
+  hojas_comprobadas: number;
+  problemas_de_entrega: number;
+  /** Lo último que corrigió, mandó a revisión o no cuadró en el disco; lo más nuevo primero. */
+  sucesos: { pdf: string; estado: EstadoDelRevisor | 'problema'; texto: string }[];
 }
 
 /** Una fila del inventario de actas de consejo: lo que se ve de cada PDF. */
@@ -569,6 +649,8 @@ export interface FolderRun {
   controles?: ControlDeLibro[];
   /** Red o local, la velocidad medida y lo que falta (2026-11-05). Ausente en un servicio anterior. */
   red?: RedDeLaCorrida;
+  /** Lo que el agente revisor lleva hecho; `null` hasta que revisa el primer PDF. */
+  agente?: AgenteDeLaCorrida | null;
 }
 
 /** Un lado de la corrida -- el origen que se lee o el destino en que se escribe --. */

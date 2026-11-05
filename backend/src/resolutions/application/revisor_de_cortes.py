@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 
@@ -92,6 +94,8 @@ class Movimiento:
     hacia: tuple[int, ...] | None
     por: str
     motivo: str
+    #: La costura que lo decidió: (izquierda, derecha).
+    costura: tuple[int, int] | None = None
 
     def texto(self) -> str:
         bloque = _rango(self.paginas)
@@ -105,6 +109,7 @@ class Movimiento:
             "hacia": list(self.hacia) if self.hacia else None,
             "por": self.por,
             "motivo": self.motivo,
+            "costura": list(self.costura) if self.costura else None,
         }
 
 
@@ -124,6 +129,11 @@ class RevisionDeCortes:
     ia_no_respondio: bool = False
     #: Las páginas que se releyeron con el OCR de pago para que la IA las viera.
     releidas: tuple[int, ...] = field(default=())
+    #: Las costuras que salieron del margen, con lo que se hizo de cada una:
+    #: «corregida», «confirmada» (la IA le dio la razón al bot) o «revision».
+    #: Sólo ésas: las demás están dentro del margen y se deducen de los
+    #: documentos, así el informe no crece con la caja.
+    fuera: tuple[dict[str, object], ...] = ()
 
     @property
     def estado(self) -> str:
@@ -169,6 +179,7 @@ class RevisionDeCortes:
             "movimientos": [m.as_dict() for m in self.movimientos],
             "en_revision": [{"page": p, "reason": motivo} for p, motivo in self.en_revision],
             "documentos": self.documentos(),
+            "fuera_del_margen": [dict(costura) for costura in self.fuera],
         }
 
 
@@ -210,6 +221,9 @@ def revisar_los_cortes(
             preguntar.append(costura)
 
     confirmadas = 0
+    confirmadas_en: set[int] = set()
+    #: Las costuras que de verdad se le mandaron a la IA (sin ella, ninguna).
+    preguntadas = 0
     ia_no_respondio = False
     releidas: list[int] = []
     if preguntar and juez is None:
@@ -243,6 +257,7 @@ def revisar_los_cortes(
                         vistas[q] = nuevo
                         releidas.append(q)
             huellas = [huella_para_la_ia(q, vistas[q], clase(vistas[q])) for q in ventana]
+            preguntadas += len(tanda)
             respuesta = _preguntar(juez, huellas, tanda, patrones.reglas)
             # La costura que la IA dejó sin contestar se le pregunta otra vez,
             # sola: medido con 1004569, la misma pregunta volvió una vez con la
@@ -265,6 +280,7 @@ def revisar_los_cortes(
                     decididas.append((costura, "la IA", f"«{veredicto.cita.strip()[:160]}»; {costura.motivo}"))
                 elif veredicto and veredicto.decision == confirma:
                     confirmadas += 1
+                    confirmadas_en.add(costura.derecha)
                 else:
                     en_revision.append(
                         (costura.derecha, f"fuera del margen de error ({costura.motivo}) y la IA no lo pudo decidir")
@@ -281,10 +297,29 @@ def revisar_los_cortes(
     if despues != antes:
         logger.error("el revisor de cortes iba a perder o repetir hojas; se descarta su corrección")
         en_revision.extend(
-            (m.paginas[0], f"no se corrigió: la corrección perdía o repetía hojas ({m.motivo})") for m in movimientos
+            (c.derecha, f"no se corrigió: la corrección perdía o repetía hojas ({motivo})")
+            for c, _por, motivo in decididas
         )
         salida, anexos_salida, movimientos = grupos, anexos, []
+    else:
+        # La decidida que ya no se pudo aplicar -- otra corrección se llevó
+        # su bloque -- se dice: no se corrigió.
+        aplicadas = {m.costura for m in movimientos}
+        en_revision.extend(
+            (c.derecha, f"la corrección no se pudo aplicar ({motivo})")
+            for c, _por, motivo in decididas
+            if (c.izquierda, c.derecha) not in aplicadas
+        )
     anexos = anexos_salida
+    corregidas_en = {m.costura[1] for m in movimientos if m.costura}
+
+    def resultado(costura: Costura) -> str:
+        if costura.derecha in corregidas_en:
+            return "corregida"
+        if costura.derecha in confirmadas_en:
+            return "confirmada"
+        return "revision"
+
     return RevisionDeCortes(
         grupos=salida,
         anexos=anexos,
@@ -293,10 +328,123 @@ def revisar_los_cortes(
         costuras=len(costuras),
         dentro_del_margen=len(costuras) - len(fuera),
         confirmadas_por_la_ia=confirmadas,
-        preguntadas=len(preguntar),
+        preguntadas=preguntadas,
         ia_no_respondio=ia_no_respondio,
         releidas=tuple(releidas),
+        fuera=tuple(
+            {
+                "izq": c.izquierda,
+                "der": c.derecha,
+                "decision": str(c.decision),
+                "confianza": round(c.confianza, 2),
+                "resultado": resultado(c),
+                "motivo": c.motivo,
+            }
+            for c in fuera
+        ),
     )
+
+
+#: Cuántos sucesos recuerda el registro en vivo de una corrida.
+SUCESOS_EN_VIVO = 8
+
+
+@dataclass
+class AgenteDeLaCorrida:
+    """Lo que hizo el revisor de cortes en una corrida de carpeta, PDF a PDF.
+
+    Lo pidió el operador el 2026-11-05: ver en la pantalla «el trabajo del agente
+    revisando todo». La corrida lo suma al terminar cada PDF, desde el hilo que
+    lo terminó, y la pantalla lo lee desde el suyo: por eso el cerrojo.
+    """
+
+    pdf: int = 0
+    validados: int = 0
+    corregidos: int = 0
+    en_revision: int = 0
+    #: Los que el revisor no pudo revisar: falló, o la habilidad no lo tiene.
+    sin_revisar: int = 0
+    costuras: int = 0
+    dentro_del_margen: int = 0
+    preguntadas_a_la_ia: int = 0
+    confirmadas_por_la_ia: int = 0
+    correcciones: int = 0
+    hojas_comprobadas: int = 0
+    problemas_de_entrega: int = 0
+    #: Lo último que merece contarse -- una corrección, una revisión, un
+    #: problema en el disco --, lo más nuevo primero.
+    sucesos: deque = field(default_factory=lambda: deque(maxlen=SUCESOS_EN_VIVO))
+    _candado: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
+    def sumar(self, pdf: str, informe: Mapping[str, object]) -> None:
+        """Suma lo que dijeron el revisor y la comprobación del disco de un PDF terminado."""
+        revision = informe.get("revision_de_cortes") or {}
+        comprobacion = informe.get("comprobacion_de_la_entrega") or {}
+        if not revision and not comprobacion:
+            # Una habilidad que no parte PDF -- un inventario sin dividir --
+            # no tiene costuras que revisar: no cuenta.
+            return
+        estado = str(revision.get("estado") or "no corrió")
+        problemas = list(comprobacion.get("problemas") or [])
+        with self._candado:
+            self.pdf += 1
+            if estado == "validado":
+                self.validados += 1
+            elif estado == "corregido":
+                self.corregidos += 1
+            elif estado == "en revisión":
+                self.en_revision += 1
+            else:
+                self.sin_revisar += 1
+            self.costuras += int(revision.get("costuras") or 0)
+            self.dentro_del_margen += int(revision.get("dentro_del_margen") or 0)
+            self.preguntadas_a_la_ia += int(revision.get("preguntadas_a_la_ia") or 0)
+            self.confirmadas_por_la_ia += int(revision.get("confirmadas_por_la_ia") or 0)
+            movimientos = list(revision.get("movimientos") or [])
+            self.correcciones += len(movimientos)
+            self.hojas_comprobadas += int(comprobacion.get("hojas") or 0)
+            self.problemas_de_entrega += len(problemas)
+            texto = _lo_que_paso(estado, revision, movimientos, problemas)
+            if texto:
+                self.sucesos.appendleft(
+                    {"pdf": pdf, "estado": "problema" if problemas else estado, "texto": texto}
+                )
+
+    def as_dict(self) -> dict[str, object]:
+        with self._candado:
+            return {
+                "pdf": self.pdf,
+                "validados": self.validados,
+                "corregidos": self.corregidos,
+                "en_revision": self.en_revision,
+                "sin_revisar": self.sin_revisar,
+                "costuras": self.costuras,
+                "dentro_del_margen": self.dentro_del_margen,
+                "preguntadas_a_la_ia": self.preguntadas_a_la_ia,
+                "confirmadas_por_la_ia": self.confirmadas_por_la_ia,
+                "correcciones": self.correcciones,
+                "hojas_comprobadas": self.hojas_comprobadas,
+                "problemas_de_entrega": self.problemas_de_entrega,
+                "sucesos": list(self.sucesos),
+            }
+
+
+def _lo_que_paso(estado: str, revision: Mapping, movimientos: list, problemas: list) -> str | None:
+    """Una línea para el registro en vivo, o nada si el PDF salió validado y en su sitio."""
+    if problemas:
+        return str(problemas[0].get("texto") or "la entrega no cuadra")
+    if movimientos:
+        primero = movimientos[0]
+        bloque = _rango(primero.get("paginas") or ())
+        destino = f"con las hojas {_rango(primero['hacia'])}" if primero.get("hacia") else "a su propio documento"
+        mas = f" (y {len(movimientos) - 1} más)" if len(movimientos) > 1 else ""
+        return f"hojas {bloque} {destino}, por {primero.get('por')}{mas}"
+    if estado == "en revisión":
+        primera = (revision.get("en_revision") or [{}])[0]
+        return f"hoja {primera.get('page')}: {primera.get('reason', 'para mirar')}"
+    if estado == "no corrió":
+        return str(revision.get("resumen") or "el revisor no pudo revisar este PDF")
+    return None
 
 
 def _preguntar(juez: JuezDeCosturas, huellas, costuras: list[Costura], reglas: str):
@@ -407,7 +555,9 @@ def _aplicar(
         codigo = entradas[origen][2].code.value
         if codigo in anexos:
             anexos[codigo] = [p for p in anexos[codigo] if p not in bloque]
-        movimientos.append(Movimiento(tuple(bloque), desde, hacia, por, motivo))
+        movimientos.append(
+            Movimiento(tuple(bloque), desde, hacia, por, motivo, costura=(costura.izquierda, costura.derecha))
+        )
 
     nuevos = [
         replace(base, page_numbers=sorted(paginas))
