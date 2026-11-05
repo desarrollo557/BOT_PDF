@@ -17,7 +17,7 @@
   import type { OracleChoice } from '$lib/oracles';
   import { formatBytes } from '$lib/format';
   import { jobStore } from '$lib/jobs.svelte';
-  import { reports, summarise } from '$lib/report.svelte';
+  import { auditoriaDelInforme, reports, summarise } from '$lib/report.svelte';
   import type { TaskKind } from '$lib/types';
 
   /**
@@ -317,6 +317,15 @@
       }
     ];
     completion.operator = completion.operator ?? run.operator;
+    // La auditoría de cierre va en el informe: el informe se abre encima del
+    // monitor y, al cerrarlo, la pantalla se limpia (2026-11-05).
+    completion.auditoria = auditoriaDelInforme(
+      nombre,
+      run.auditoria,
+      run.comparacion,
+      run.etapa,
+      run.etapa_detalle
+    );
     // The run is the authority on its own totals; the jobs are only richer
     // while they are still around.
     completion.documents = run.processed + run.failed;

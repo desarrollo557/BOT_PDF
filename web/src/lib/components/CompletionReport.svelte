@@ -4,7 +4,9 @@
   import { consoleLog } from '$lib/console.svelte';
   import { formatBytes, formatDuration } from '$lib/format';
   import { jobStore } from '$lib/jobs.svelte';
-  import { reports, type Completion } from '$lib/report.svelte';
+  import AuditoriaDeCierre from '$lib/components/AuditoriaDeCierre.svelte';
+  import { DICTAMENES, porCiento, tonoDeLaEtapa } from '$lib/auditoria';
+  import { auditoriasDe, reports, type Completion } from '$lib/report.svelte';
   import { RUNGS, UNREADABLE } from '$lib/rungs';
 
   interface Props {
@@ -184,9 +186,15 @@
    * it vertically buries the four numbers anyone actually opens this for, so
    * the totals stay pinned at the top and everything else waits behind a tab.
    */
+  /** La auditoría de cierre de la carpeta, o la de cada una si son varias. */
+  const auditorias = $derived(auditoriasDe(completion));
+
   const tabs = $derived(
     [
       { id: 'resumen', label: 'Resumen', count: 0 },
+      // La auditoría, en su pestaña: el resultado del proceso y el de la
+      // auditoría en el mismo informe (2026-11-05).
+      { id: 'auditoria', label: 'Auditoría', count: auditorias.length },
       { id: 'unidades', label: 'Unidades', count: completion.parts?.length ?? 0 },
       { id: 'documentos', label: 'Documentos', count: completion.items.length },
       { id: 'resoluciones', label: Unidades, count: completion.codes.length }
@@ -393,6 +401,37 @@
       aria-labelledby={tabs.length > 1 ? `informe-tab-${tab}` : undefined}
     >
       {#if tab === 'resumen'}
+        {#each auditorias as auditoria (auditoria.nombre)}
+          {@const muestra = auditoria.auditoria.muestra}
+          {@const dictamen = muestra ? DICTAMENES[muestra.margen.dictamen] : null}
+          <!-- Lo primero del resumen: cómo salió la auditoría de cierre, y el
+               camino a su detalle. -->
+          <section class="auditoria-aviso" data-tono={tonoDeLaEtapa(auditoria.etapa)}>
+            <span class="auditoria-marca" aria-hidden="true"><Icono nombre="escudo" /></span>
+            <div class="auditoria-texto">
+              <b>
+                Auditoría de cierre{auditorias.length > 1 ? ` · ${auditoria.nombre}` : ''}:
+                {auditoria.auditoria.estado === 'no se pudo'
+                  ? `no se pudo hacer (${auditoria.auditoria.error})`
+                  : (auditoria.etapa ?? 'terminada')}
+              </b>
+              <span>
+                {#if auditoria.comparacion}
+                  {auditoria.comparacion.pdf_entregados} de {auditoria.comparacion.pdf_origen} PDF entregados enteros
+                {/if}
+                {#if muestra}
+                  · muestra: {muestra.bien} de {muestra.revisados} bien
+                  {#if dictamen}
+                    · error {muestra.margen.errores
+                      ? porCiento(muestra.margen.tasa)
+                      : `< ${porCiento(muestra.margen.hasta)}`}, {dictamen.etiqueta.toLowerCase()}
+                  {/if}
+                {/if}
+              </span>
+            </div>
+            <button class="btn btn-sm btn-tonal" onclick={() => (tab = 'auditoria')}>Ver la auditoría</button>
+          </section>
+        {/each}
         {#if completion.entregas.length}
           <section>
             <h3>Entrega</h3>
@@ -553,6 +592,20 @@
             {/each}
           </tbody>
         </table>
+      {:else if tab === 'auditoria'}
+        {#each auditorias as auditoria (auditoria.nombre)}
+          {#if auditorias.length > 1}<h3>Carpeta {auditoria.nombre}</h3>{/if}
+          <AuditoriaDeCierre
+            auditoria={auditoria.auditoria}
+            comparacion={auditoria.comparacion}
+            etapa={auditoria.etapa}
+            detalle={auditoria.detalle}
+          />
+        {/each}
+        <p class="auditoria-nota">
+          El detalle completo queda también en «00.ANALISIS DE LA ENTREGA.xlsx», en la raíz del destino: hojas
+          «Origen y destino» y «Muestra auditada».
+        </p>
       {:else if tab === 'resoluciones'}
         <input
           class="input input-sm"
@@ -700,6 +753,58 @@
     overflow-y: auto;
     border-top: 1px solid var(--hairline);
     padding: 1.25rem;
+  }
+
+  /* El aviso de la auditoría de cierre, lo primero del resumen. */
+  .auditoria-aviso {
+    --tono: var(--good);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+    padding: var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--tono) 30%, var(--hairline));
+    border-left: 3px solid var(--tono);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--tono) 7%, var(--surface-2));
+  }
+  .auditoria-aviso[data-tono='accent'] {
+    --tono: var(--accent);
+  }
+  .auditoria-aviso[data-tono='warn'] {
+    --tono: var(--warning);
+  }
+  .auditoria-aviso[data-tono='bad'] {
+    --tono: var(--critical);
+  }
+  .auditoria-marca {
+    --icono: 1.1rem;
+    display: grid;
+    width: 32px;
+    height: 32px;
+    flex: none;
+    place-items: center;
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--tono) 14%, transparent);
+    color: var(--tono);
+  }
+  .auditoria-texto {
+    display: flex;
+    min-width: 0;
+    flex: 1 1 16rem;
+    flex-direction: column;
+    gap: 2px;
+    font-size: var(--text-sm);
+    color: var(--ink-2);
+  }
+  .auditoria-texto b {
+    color: var(--ink);
+  }
+  .auditoria-nota {
+    margin: var(--space-3) 0 0;
+    font-size: var(--text-xs);
+    color: var(--muted);
   }
 
   .entregas {

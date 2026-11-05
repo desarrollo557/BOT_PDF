@@ -1,5 +1,5 @@
 import { unitFor } from './format';
-import type { Consumo, Job } from './types';
+import type { AuditoriaDeCierre, ComparacionDeLaEntrega, Consumo, Job } from './types';
 
 /**
  * A finished unit of work, summarised from what actually happened.
@@ -85,9 +85,54 @@ export interface Completion {
   /** Only for a folder run. */
   destination?: string;
   delivered?: number;
+  /**
+   * La auditoría de cierre de la corrida (2026-11-05), guardada en el informe:
+   * salía en el monitor, el informe se abría encima y al cerrarlo la pantalla
+   * se limpiaba, así que nadie alcanzaba a verla.
+   */
+  auditoria?: AuditoriaDelInforme | null;
 
   /** The units this report folds together. Only on a 'tanda'. */
   parts?: Completion[];
+}
+
+/** La auditoría de cierre de una carpeta, como la lleva su informe. */
+export interface AuditoriaDelInforme {
+  /** El nombre de la carpeta, para cuando el informe junta varias. */
+  nombre: string;
+  auditoria: AuditoriaDeCierre;
+  comparacion: ComparacionDeLaEntrega | null;
+  etapa: string | null;
+  detalle: string;
+}
+
+/**
+ * Las auditorías de un informe: la suya o, si junta varias carpetas, la de
+ * cada una.
+ */
+export function auditoriasDe(completion: Completion): AuditoriaDelInforme[] {
+  if (completion.auditoria) return [completion.auditoria];
+  return (completion.parts ?? []).flatMap((parte) => (parte.auditoria ? [parte.auditoria] : []));
+}
+
+/**
+ * La auditoría de una corrida para su informe. La que quedó a medias -- se
+ * detuvo la corrida mientras se hacía -- se dice como tal y no como si
+ * siguiera en marcha.
+ */
+export function auditoriaDelInforme(
+  nombre: string,
+  auditoria: AuditoriaDeCierre | null | undefined,
+  comparacion: ComparacionDeLaEntrega | null | undefined,
+  etapa: string | null | undefined,
+  detalle: string | undefined
+): AuditoriaDelInforme | null {
+  if (!auditoria) return null;
+  const terminada =
+    auditoria.estado === 'auditando'
+      ? { ...auditoria, estado: 'no se pudo' as const, error: 'la corrida se detuvo antes de terminarla' }
+      : auditoria;
+  return { nombre, auditoria: terminada, comparacion: comparacion ?? null, etapa: etapa ?? null, detalle: detalle ?? '' };
 }
 
 export interface Entrega {

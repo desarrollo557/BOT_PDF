@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { merge, Reports, summarise, type Completion } from './report.svelte';
+import {
+  auditoriaDelInforme,
+  auditoriasDe,
+  merge,
+  Reports,
+  summarise,
+  type Completion
+} from './report.svelte';
 import { jobStore, mergeReviewable, pendingReview } from './jobs.svelte';
 import type { FolderRun } from './types';
 import type { Job } from './types';
@@ -391,5 +398,28 @@ describe('el reinicio de la mesa de trabajo', () => {
     jobStore.resetWorkspace();
     jobStore.resetWorkspace();
     expect(jobStore.resetSignal).toBe(antes + 2);
+  });
+});
+
+describe('la auditoría de cierre en el informe', () => {
+  const hecha = { estado: 'hecha' as const, semilla: 7 };
+
+  it('el informe de una carpeta lleva su auditoría, y se ve aunque la pantalla se limpie', () => {
+    const auditoria = auditoriaDelInforme('MAGANGUE', hecha, null, 'Terminado', 'muestra: 100 de 100 bien');
+    const informe = { ...summarise('carpeta:1', 'carpeta', 'MAGANGUE', []), auditoria };
+    expect(auditoriasDe(informe)).toEqual([auditoria]);
+  });
+
+  it('el que junta varias carpetas lleva la de cada una', () => {
+    const una = { ...summarise('carpeta:1', 'carpeta', 'A', []), auditoria: auditoriaDelInforme('A', hecha, null, 'Terminado', '') };
+    const otra = { ...summarise('carpeta:2', 'carpeta', 'B', []), auditoria: auditoriaDelInforme('B', hecha, null, 'Terminado', '') };
+    expect(auditoriasDe(merge([una, otra])).map((a) => a.nombre)).toEqual(['A', 'B']);
+  });
+
+  it('sin auditoría no hay nada, y la que quedó a medias no se dice en marcha', () => {
+    expect(auditoriaDelInforme('A', null, null, null, undefined)).toBeNull();
+    const cortada = auditoriaDelInforme('A', { estado: 'auditando', fase: 'muestra', hechos: 3, total: 100 }, null, null, undefined);
+    expect(cortada?.auditoria.estado).toBe('no se pudo');
+    expect(cortada?.auditoria.error).toContain('se detuvo');
   });
 });
