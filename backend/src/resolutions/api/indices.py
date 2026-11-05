@@ -165,6 +165,14 @@ def fila_de_proceso(job, destino: str | Path | None = None):
         else "—"
     )
     avisos = [] if estado == "Listo" else [job.error or estado]
+    # Lo que dijeron el revisor de cortes y la comprobación del disco, si no
+    # salió todo validado (2026-11-05). Este Excel es del bot, no del cliente.
+    revisor = informe.get("revision_de_cortes") or {}
+    if revisor.get("estado") not in (None, "validado"):
+        avisos.append(revisor.get("resumen"))
+    comprobada = informe.get("comprobacion_de_la_entrega") or {}
+    if comprobada.get("problemas"):
+        avisos.append(comprobada.get("resumen"))
     return FilaDeProceso(
         pdf=Path(job.filename).name,
         habilidad=habilidad_del_proceso(job),

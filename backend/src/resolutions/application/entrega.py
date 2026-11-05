@@ -23,15 +23,19 @@ Cada arreglo había que acordarse de hacerlo cuatro veces.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..domain.conciliacion import Huella, comprobar_lo_escrito
 from ..domain.grouping import GroupingResult
 from .clasificacion import describir
 from .inventory import Inventory, build_inventory
 from .ports import AssemblyResult, DocumentAssembler
 from .segment_split import ES_PROCEDENCIA, procedencia
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +54,9 @@ class Entregado:
     #: no sobrevive a la agrupación -- un grupo es una lista de páginas y no
     #: distingue el acta de sus fotografías.
     anexos: dict[str, list[int]] = field(default_factory=dict)
+    #: Lo escrito, vuelto a abrir y casado hoja por hoja con el original: vacío
+    #: si la ruta no pidió comprobarlo. Ver ``comprobar_lo_escrito``.
+    comprobacion: dict[str, object] = field(default_factory=dict)
 
     @property
     def salidas(self) -> list[str]:
@@ -120,6 +127,7 @@ def entregar(
     anexos: dict[str, list[int]] | None = None,
     heredar_tipo: bool = True,
     paginas_leidas: Sequence[int] | None = None,
+    huellas: Callable[[Path], list[Huella]] | None = None,
 ) -> Entregado:
     """Describe, comprueba, escribe e inventaría una agrupación ya decidida.
 
@@ -134,6 +142,10 @@ def entregar(
     3. **Escribir.** Un PDF por unidad. Lo que no se pueda escribir se nombra.
     4. **Inventariar.** Una fila por archivo que existe, con el nombre real que
        el escritor puso en el disco.
+    5. **Comprobar en el disco**, si la ruta da con qué leer ``huellas``: cada
+       PDF escrito se vuelve a abrir y cada hoja se casa con la del original que
+       le tocaba (lo pidió el operador el 2026-11-05: «validados de extremo a
+       extremo»). No tumba la entrega: lo que no cuadra se declara.
     """
     descrita = describir(agrupacion, texto_de, heredar=heredar_tipo)
     # Al retomar una entrega a medias sólo se leyeron las páginas que faltaban,
@@ -162,7 +174,63 @@ def entregar(
         assembly=assembly,
         inventario=inventario,
         anexos={code: list(pages) for code, pages in (anexos or {}).items()},
+        comprobacion=(
+            comprobar_en_el_disco(origen, descrita, assembly, destino.directorio, huellas)
+            if huellas is not None
+            else {}
+        ),
     )
+
+
+def comprobar_en_el_disco(
+    origen: Path,
+    agrupacion: GroupingResult,
+    assembly: AssemblyResult,
+    directorio: Path,
+    huellas: Callable[[Path], list[Huella]],
+) -> dict[str, object]:
+    """Cada PDF escrito, vuelto a abrir y casado hoja por hoja con el original.
+
+    Nunca lanza: una comprobación que no se pudo hacer se dice como tal, y la
+    entrega sigue siendo la que se escribió.
+    """
+    if not Path(origen).is_file():
+        return {"comprobada": False, "resumen": "Entrega sin comprobar: el origen no es un PDF", "problemas": []}
+    try:
+        del_origen = huellas(Path(origen))
+    except Exception as error:  # noqa: BLE001 - sin el original no hay con qué casar
+        logger.warning("no se pudo leer el original para comprobar la entrega", exc_info=True)
+        return {
+            "comprobada": False,
+            "resumen": f"Entrega sin comprobar: el original no se dejó leer ({type(error).__name__})",
+            "problemas": [],
+        }
+    esperado: dict[str, list[int]] = {}
+    for grupo in agrupacion.groups:
+        nombre = assembly.written.get(grupo.code.value)
+        if nombre:
+            esperado[nombre] = [p for p in grupo.page_numbers if p not in assembly.unwritable_pages]
+    escritos: dict[str, list[Huella] | None] = {}
+    for nombre in esperado:
+        try:
+            escritos[nombre] = huellas(Path(directorio) / nombre)
+        except Exception:  # noqa: BLE001 - el archivo que no se abre es el problema
+            logger.warning("no se pudo abrir %s para comprobarlo", nombre, exc_info=True)
+            escritos[nombre] = None
+    problemas = comprobar_lo_escrito(del_origen, escritos, esperado)
+    hojas = sum(len(p) for p in esperado.values())
+    resumen = (
+        f"Entrega comprobada: {len(esperado)} PDF y {hojas} hojas, cada una en su sitio"
+        if not problemas
+        else f"Entrega comprobada con {len(problemas)} problema(s): {problemas[0]['texto']}"
+    )
+    return {
+        "comprobada": True,
+        "archivos": len(esperado),
+        "hojas": hojas,
+        "problemas": problemas,
+        "resumen": resumen,
+    }
 
 
 def _titulo(grupo) -> str | None:

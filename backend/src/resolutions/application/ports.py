@@ -185,6 +185,37 @@ class BoundaryOracle(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class VeredictoDeCostura:
+    """Lo que la IA decidió de una costura que el revisor no pudo validar.
+
+    ``decision`` es «continua» -- la hoja derecha sigue el documento de la
+    izquierda --, «abre» -- empieza otro -- o «no_se». ``cita`` es el texto del
+    papel en que se apoya: sin cita no se mueve nada.
+    """
+
+    decision: str
+    cita: str = ""
+
+
+@runtime_checkable
+class JuezDeCosturas(Protocol):
+    """Decide las costuras que salieron del margen de error del revisor.
+
+    Una sola pregunta por PDF, con todas sus costuras dudosas y la huella de las
+    hojas de alrededor -- cómo empieza y cómo termina cada una --, no la caja
+    entera: lo pidió el operador, «consumiendo pocos tokens». Lo que no conteste
+    va a revisión; ``None`` es que no respondió.
+    """
+
+    def decidir(
+        self,
+        hojas: list[dict[str, object]],
+        costuras: list[tuple[int, int]],
+        reglas: str,
+    ) -> dict[tuple[int, int], VeredictoDeCostura] | None: ...
+
+
+@dataclass(frozen=True, slots=True)
 class AssemblyResult:
     """What was written, and which pages could not be.
 

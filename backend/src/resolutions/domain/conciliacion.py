@@ -170,6 +170,63 @@ def conciliar(
     )
 
 
+def misma_pagina(una: Huella, otra: Huella) -> bool:
+    """Si dos huellas son de la misma hoja: por su texto o, sin él, por su imagen."""
+    return bool((una.texto and una.texto == otra.texto) or (una.imagen and una.imagen == otra.imagen))
+
+
+def comprobar_lo_escrito(
+    origen: Sequence[Huella],
+    escritos: Mapping[str, Sequence[Huella] | None],
+    esperado: Mapping[str, Sequence[int]],
+) -> list[dict[str, object]]:
+    """Lo que no cuadra entre lo que se quiso escribir y lo que hay en el disco.
+
+    Lo pidió el operador el 2026-11-05 («¿tendremos todos los PDF validados de
+    extremo a extremo?»): después de escribir, cada PDF se vuelve a abrir y cada
+    una de sus hojas se casa con la hoja del original que le tocaba, en su
+    puesto. ``esperado`` dice qué hojas del original lleva cada archivo, en
+    orden; ``escritos``, las huellas de lo que se leyó de cada uno (``None`` si
+    no se dejó abrir). La hoja sin huella -- en blanco, sin capa ni imagen -- no
+    se puede comprobar y no se cuenta como problema.
+
+    Devuelve un problema por cosa que no cuadra, con el archivo, la hoja del
+    original y el texto para el operador. Vacía es que todo está en su sitio.
+    """
+    problemas: list[dict[str, object]] = []
+    for archivo, paginas in esperado.items():
+        leidas = escritos.get(archivo)
+        if leidas is None:
+            problemas.append(
+                {"archivo": archivo, "pagina": paginas[0] if paginas else None, "texto": f"{archivo} no se dejó abrir después de escribirlo"}
+            )
+            continue
+        if len(leidas) != len(paginas):
+            problemas.append(
+                {
+                    "archivo": archivo,
+                    "pagina": paginas[0] if paginas else None,
+                    "texto": f"{archivo} tiene {len(leidas)} hojas y debía tener {len(paginas)} ({rangos(paginas)})",
+                }
+            )
+            continue
+        for puesto, (pagina, huella) in enumerate(zip(paginas, leidas, strict=True), start=1):
+            if not 1 <= pagina <= len(origen):
+                continue
+            original = origen[pagina - 1]
+            if original.vacia or huella.vacia:
+                continue
+            if not misma_pagina(original, huella):
+                problemas.append(
+                    {
+                        "archivo": archivo,
+                        "pagina": pagina,
+                        "texto": f"la hoja {puesto} de {archivo} no es la hoja {pagina} del original",
+                    }
+                )
+    return problemas
+
+
 def rangos(paginas: Iterable[int]) -> str:
     """«1-206, 210, 215-399»: cómo lo diría una persona."""
     ordenadas = sorted(set(paginas))

@@ -272,6 +272,148 @@ def _poner_el_re_en_el_nombre(grupos, anexos: dict, *, textos: dict, sellos: dic
     return replace(grupos, groups=salida), anexos, hallados
 
 
+#: Las reglas de la caja de correspondencia, dichas a la IA del revisor de
+#: cortes en pocas líneas: son las que el operador dictó y mandan sobre lo que
+#: la IA crea ver en el papel.
+REGLAS_DE_LA_CORRESPONDENCIA = (
+    "Caja de correspondencia de Afinia (expediente de un suscriptor). "
+    "Cada sello de radicación nuevo abre documento; la carta del cliente con fecha y asunto también. "
+    "La constancia de reclamación y la notificación personal van solas, sólo con un anexo evidente detrás "
+    "(cédula, factura). La cédula y la factura van con la hoja de delante. "
+    "El acuerdo de pago es un documento: reconocimiento de deuda, pagarés, cartas de instrucciones, cédulas "
+    "y la Ley Habeas Data, aunque haya otros papeles en medio. "
+    "El contrato de transacción va completo, con sus cláusulas y sus firmas. "
+    "Cada acta de suspensión es su documento."
+)
+
+
+def _revisar_los_cortes(
+    grupos,
+    anexos: dict,
+    *,
+    textos: dict,
+    taller,
+    pdf,
+    abren: set,
+    delanteras: set,
+    del_acuerdo: set,
+    fijas: set,
+    cortados: list,
+):
+    """F5e: el revisor de cortes sobre los documentos de la caja.
+
+    Devuelve la revisión y los documentos del corte con lo que se movió, que
+    son los que el índice describe. ``del_acuerdo`` se corrige en su sitio: una
+    hoja que sale del acuerdo deja de nombrarse y fecharse como él.
+    """
+    from dataclasses import replace
+
+    from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...application.anexos_declarados import SOPORTES
+    from ...application.ports import Band
+    from ...application.revisor_de_cortes import Patrones, revisar_los_cortes
+    from ...domain.anexos_declarados import HOJA_MUDA, clase_de_la_hoja
+    from ...domain.asunto_del_documento import (
+        LEY_HABEAS_DATA,
+        PIEZAS_DEL_ACUERDO,
+        titulo_del_documento,
+    )
+
+    # La cabeza de un documento al que la caja le puso delante su Habeas Data
+    # ya no abre: la regla la dejó dentro a propósito.
+    tras_la_habeas = {
+        min(p for p in g.page_numbers if p not in delanteras)
+        for g in grupos.groups
+        if set(g.page_numbers) & delanteras and any(p not in delanteras for p in g.page_numbers)
+    }
+    # Lo que por regla cruza: las piezas del acuerdo y su Habeas Data, por su
+    # propio título -- no por estar en el acuerdo: estar ahí por un título mal
+    # puesto es justo el error que hay que ver --.
+    cruces = {
+        p
+        for p in del_acuerdo
+        if titulo_del_documento(textos.get(p, "") or "") in (*PIEZAS_DEL_ACUERDO, LEY_HABEAS_DATA)
+    }
+
+    def clase(texto: str) -> str | None:
+        hallada = clase_de_la_hoja(texto)
+        return hallada if hallada in SOPORTES or hallada == HOJA_MUDA else None
+
+    lector_de_pago = taller.lector_de_pago()
+    fuente: list = []
+
+    def releer(pagina: int) -> str | None:
+        # La hoja que la IA tiene que juzgar y que Tesseract dejó muda: una
+        # página con el OCR de pago, sólo ésa, y sólo si se eligió.
+        if lector_de_pago is None:
+            return None
+        try:
+            if not fuente:
+                fuente.append(PyMuPDFPageSource(pdf, taller.name))
+            return lector_de_pago.read(fuente[0].render(pagina, Band(), 200)).text
+        except Exception:  # noqa: BLE001 - sin relectura, la IA ve lo que había
+            return None
+
+    try:
+        revision = revisar_los_cortes(
+            grupos,
+            textos,
+            Patrones(
+                abren=frozenset(abren - tras_la_habeas),
+                cruces=frozenset(cruces | delanteras),
+                fijas=frozenset(fijas),
+                reglas=REGLAS_DE_LA_CORRESPONDENCIA,
+                clase=clase,
+            ),
+            juez=taller.juez_de_costuras(),
+            anexos=anexos,
+            releer=releer,
+        )
+    finally:
+        for abierta in fuente:
+            abierta.close()
+
+    for movimiento in revision.movimientos:
+        movidas = set(movimiento.paginas)
+        # Los documentos del corte, con el bloque en el suyo nuevo: de ellos
+        # salen el título y la fecha de cada fila del índice.
+        cortados = [
+            replace(c, page_numbers=[p for p in c.page_numbers if p not in movidas])
+            for c in cortados
+            if [p for p in c.page_numbers if p not in movidas]
+        ]
+        if movimiento.hacia:
+            ancla = movimiento.hacia[0]
+            cortados = [
+                replace(c, page_numbers=sorted([*c.page_numbers, *movidas])) if ancla in c.page_numbers else c
+                for c in cortados
+            ]
+        else:
+            from ...domain.grouping import PageGroup
+
+            base = cortados[0]
+            cortados = sorted(
+                [*cortados, PageGroup(code=base.code, page_numbers=sorted(movidas))],
+                key=lambda c: c.page_numbers[0],
+            )
+    return revision, cortados
+
+
+def revisados_del_acuerdo(del_acuerdo: set, revision) -> set:
+    """Las hojas del acuerdo de pago después de lo que movió el revisor.
+
+    La que sale del acuerdo deja de nombrarse y fecharse como él; la que entra
+    en él, se nombra como él.
+    """
+    resultado = set(del_acuerdo)
+    for movimiento in revision.movimientos:
+        movidas = set(movimiento.paginas)
+        resultado -= movidas
+        if movimiento.hacia and set(movimiento.hacia) & set(del_acuerdo):
+            resultado |= movidas
+    return resultado
+
+
 def _segment_job(payload: dict, task, *, avisos: Sequence[str] = ()) -> dict:
     """Un PDF por unidad documental, cortando costura por costura.
 
@@ -297,6 +439,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     from dataclasses import replace
 
     from ...adapters.casillas_de_la_guia import fecha_de_la_guia
+    from ...adapters.huellas_pdf import huellas_de
     from ...adapters.pymupdf_assembler import PyMuPDFAssembler
     from ...adapters.pymupdf_source import PyMuPDFPageSource
     from ...adapters.tesseract_ocr import (
@@ -1016,6 +1159,36 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             anexos[unido.code.value] = sorted(set(suyos))
             restantes, anexos = _renumerar([unido, *grupos.groups[2:]], anexos)
             grupos = replace(grupos, groups=restantes)
+    # F5e. El revisor de cortes (lo pidió el operador el 2026-11-05 ante
+    # 1004569, donde el acuerdo de pago se llevó la última hoja del contrato de
+    # transacción saltando una constancia): cada costura de lo que va a salir,
+    # validada dentro del margen de error, corregida si dos pruebas del papel
+    # coinciden, decidida por la IA si se eligió y si no a revisión. Antes de
+    # nombrar y fechar, para que lo corregido se nombre y se feche bien. Por mes
+    # no: ahí un archivo es un mes, no un documento.
+    revisados = None
+    revisor_roto = None
+    if entregado_por is not Agrupacion.MES:
+        try:
+            revisados, cortados_revisados = _revisar_los_cortes(
+                grupos,
+                anexos,
+                textos=textos,
+                taller=taller,
+                pdf=tmp_path,
+                abren=set(abren_el_tramite if entregado_por is Agrupacion.TRAMITE else abren),
+                delanteras=delanteras,
+                del_acuerdo=set(del_acuerdo),
+                fijas=set(sellos_que_abren) | etiquetas | guias,
+                cortados=cortados,
+            )
+        except Exception as error:  # noqa: BLE001 - el revisor nunca tumba la caja
+            # Sale como la cortaron las reglas, y se dice.
+            logger.exception("el revisor de cortes falló en %s", taller.name)
+            revisor_roto = f"El revisor de cortes no pudo revisar esta caja ({type(error).__name__}); sale como la cortaron las reglas"
+        else:
+            grupos, anexos, cortados = revisados.grupos, revisados.anexos, cortados_revisados
+            del_acuerdo = revisados_del_acuerdo(del_acuerdo, revisados)
     # La lista de ANEXOS de cada escrito, verificada contra su PDF final: los
     # soportes, los folios y lo que no abría nada ya se le unieron.
     escritos = verificar_en_el_documento(retencion.escritos, grupos, textos, abren=abren)
@@ -1256,9 +1429,13 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         ),
         en_revision=[boundary.right for boundary in costuras_en_revision]
         + [pagina.page for pagina in sin_fecha_en_revision]
-        + sin_titulo,
+        + sin_titulo
+        + [pagina for pagina, _ in (revisados.en_revision if revisados else ())],
         estadisticas=estadisticas,
         anexos=anexos,
+        # Cada PDF escrito, vuelto a abrir y casado hoja por hoja con el
+        # original (2026-11-05: «validados de extremo a extremo»).
+        huellas=huellas_de,
     )
     # 3. El informe, con lo que sólo esta ruta sabe: el NIC, los avisos y cómo
     #    se decidió cada costura.
@@ -1349,6 +1526,12 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # «910349 UPD2998266» (la caja va en «Identificación / Nic»).
         "expediente": document_folder(nombre_del_expediente(taller.name)),
     }
+    # Lo que dijeron el revisor de cortes y la comprobación del disco: lo que
+    # hay que mirar a la cola, el resumen a los avisos y el detalle aparte.
+    # Es lo mismo en todas las habilidades.
+    from ...application.revisor_de_cortes import anotar_en_el_informe
+
+    anotar_en_el_informe(report, revisados, revisor_roto, entregado.comprobacion)
     # 4. El Índice Electrónico del cliente, junto a los PDF de la caja y sin
     #    que nadie lo pida. Es el inventario de toda caja de correspondencia y
     #    ocupa el lugar de la planilla de las otras rutas: el archivo recibe un

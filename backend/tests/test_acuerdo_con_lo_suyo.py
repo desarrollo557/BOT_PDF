@@ -167,6 +167,59 @@ class TestElAcuerdoConLoSuyo:
         assert [g.page_numbers for g in grupos.groups] == [[1], [2, 3]]
 
 
+class TestLaCartaDeInstruccionesEsSuTitulo:
+    """1004569/UPD2437853 (2026-11-05): la tercera hoja del contrato de
+    transacción nombra la carta de instrucciones en su cláusula TERCERO, y el
+    acuerdo se la llevaba con la cédula de detrás, saltando una constancia."""
+
+    TERCERA_DEL_CONTRATO = (
+        "arinia\nGrupo*epno\n"
+        "TERCERO: Para garantizar el pago de las cuotas mensuales de que trata la cláusula segunda, EL\n"
+        "CLIENTE suscribe a favor de CARIBEMAR DE LA COSTA S.A.S E.S.P. un pagaré en blanco con\n"
+        "carta de instrucciones. En el evento en que EL CLIENTE incurra en mora en el pago de alguna de\n"
+        "CUARTO: La presente transacción pone fin al Procedimiento.\n"
+    )
+
+    def test_la_clausula_que_la_nombra_no_es_la_carta(self):
+        from resolutions.domain.asunto_del_documento import (
+            formulario_que_abre,
+            titulo_del_documento,
+        )
+
+        assert titulo_del_documento(self.TERCERA_DEL_CONTRATO) != "CARTA DE INSTRUCCIONES"
+        assert formulario_que_abre(self.TERCERA_DEL_CONTRATO) is None
+
+    def test_la_carta_con_la_tilde_del_escaner(self):
+        """UPD2326357 pág. 2: «CARTA DÉ INSTRUCCIONES»."""
+        from resolutions.domain.asunto_del_documento import titulo_del_documento
+
+        texto = "CARIBEMAR DE LA COSTA S.A.S ESP\nCARTA DÉ INSTRUCCIONES ANEXA AL PAGARE Ho.S2élQj3\n"
+        assert titulo_del_documento(texto) == "CARTA DE INSTRUCCIONES"
+
+    def test_la_carta_con_la_caja_cambiada_por_la_ocr(self):
+        from resolutions.domain.asunto_del_documento import titulo_del_documento
+
+        assert titulo_del_documento("Carta de instrucciones anexa a pagaré No. 1004569 3\n") == "CARTA DE INSTRUCCIONES"
+        assert titulo_del_documento(CARTA) == "CARTA DE INSTRUCCIONES"
+
+    def test_el_acuerdo_ya_no_se_lleva_la_hoja_del_contrato(self):
+        textos = {
+            1: _constancia("11/01/2023", "Información general"),
+            2: "CONTRATO DE TRANSACCIÓN\nCARIBEMAR DE LA COSTA S.A.S. ESP\n",
+            3: "PRIMERO: EL CLIENTE cancelará.\nSEGUNDO: El CLIENTE pagará.\n",
+            4: self.TERCERA_DEL_CONTRATO,
+            5: _constancia("12/01/2023", "Gestionar financiación"),
+            6: RECONOCIMIENTO,
+            7: PAGARE,
+            8: CARTA,
+        }
+        grupos, _, del_acuerdo = unir_el_acuerdo_de_pago(
+            _grupos([1], [2, 3, 4], [5], [6], [7], [8]), textos, abren={1, 5}, cruzan={1, 5}
+        )
+        assert [g.page_numbers for g in grupos.groups] == [[1], [2, 3, 4], [5], [6, 7, 8]]
+        assert 4 not in del_acuerdo
+
+
 class TestLaFranjaDelTitulo:
     """UPD2998726: con el equipo ocupado, Tesseract se agotaba y el documento salía sin nombre."""
 

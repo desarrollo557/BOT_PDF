@@ -198,6 +198,21 @@ class Taller:
             return NullBoundaryOracle()
         return _boundary_oracle(self.settings, self.oracle_choice, consumo=self.consumo)
 
+    def juez_de_costuras(self):
+        """Quién decide lo que el revisor de cortes dejó fuera del margen, o nadie.
+
+        Mistral, la llave que eligió el operador el 2026-11-05. Con «Solo OCR»,
+        nadie: el revisor corrige sólo lo seguro y el resto va a revisión.
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+        from ...adapters.mistral_revisor import MistralJuezDeCosturas
+
+        return MistralJuezDeCosturas(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
+
     def con_ia(self) -> bool:
         """Si el operador pidió la ayuda de pago para este trabajo."""
         return self._con_ia()

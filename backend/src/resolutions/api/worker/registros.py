@@ -27,11 +27,17 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
     reconocido por el despachador --, para que la lectura no vuelva a
     muestrearlo. ``None`` es no saber nada, y entonces se reconoce.
     """
+    from ...adapters.huellas_pdf import huellas_de
     from ...adapters.pymupdf_assembler import PyMuPDFAssembler
     from ...adapters.pymupdf_source import PyMuPDFPageSource
     from ...application.diploma_fuid import con_los_archivos
     from ...application.entrega import Destino, entregar
     from ...application.inventory_document import InventoryDocument
+    from ...application.revisor_de_cortes import (
+        Patrones,
+        anotar_en_el_informe,
+        revisar_sin_romper,
+    )
 
     taller = Taller.desde(payload)
 
@@ -85,6 +91,14 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
     report = outcome.as_dict()
     report["task"] = str(task)
     _dejar_las_lecturas(outcome, taller.destination)
+    # El revisor de cortes (2026-11-05): una persona por PDF -- dos cédulas
+    # distintas en un folio o un expediente son dos personas --. Aquí señala y
+    # no mueve: cada fila del FUID sale de leer su documento.
+    revision, aviso_del_revisor = (
+        revisar_sin_romper(agrupacion, textos, Patrones(una_persona_por_pdf=True, puede_mover=False))
+        if agrupacion is not None and task.writes_documents
+        else (None, None)
+    )
     # Las filas del inventario tal como salieron de la lectura. Si además se
     # escriben los archivos, más abajo se les añade el nombre de cada uno.
     filas = outcome.rows
@@ -128,12 +142,16 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
             ),
             en_revision=[
                 int(item["page"]) for item in outcome.review_queue if item.get("page")
-            ],
+            ]
+            + [p for p, _ in (revision.en_revision if revision else ())],
             estadisticas=report.get("stats") or {},
             texto_de=textos.get,
             heredar_tipo=False,
             paginas_leidas=outcome.paginas,
+            # Cada PDF escrito, vuelto a abrir y casado con el original.
+            huellas=huellas_de,
         )
+        anotar_en_el_informe(report, revision, aviso_del_revisor, entregado.comprobacion)
         report["inventory"] = entregado.inventario.as_dict()
         report["outputs"] = entregado.salidas
         report["unwritable_pages"] = entregado.ilegibles

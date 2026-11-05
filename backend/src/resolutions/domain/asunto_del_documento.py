@@ -516,6 +516,32 @@ def formulario_que_abre(texto: str) -> str | None:
     return None
 
 
+#: La carta de instrucciones escrita como título: en mayúsculas, como la
+#: imprime el formato -- «CARTA DE INSTRUCCIONES ANEXA A PAGARE No.» --, o con
+#: el «ANEXA» que la sigue aunque la OCR le cambie la caja.
+_CARTA_COMO_TITULO = re.compile(r"CARTA\s+DE\s+INSTRUCCIONES")
+_CARTA_ANEXA = re.compile(r"CARTA\s+DE\s+INSTRUCCIONES\s+ANEX", re.IGNORECASE)
+
+
+def _carta_en_su_titulo(renglones: Sequence[str]) -> bool:
+    """Si la hoja ES una carta de instrucciones, y no la nombra de pasada.
+
+    La tercera hoja del contrato de transacción de 2023 empieza «TERCERO: Para
+    garantizar el pago… EL CLIENTE suscribe… un pagaré en blanco con carta de
+    instrucciones», y se llamaba CARTA DE INSTRUCCIONES: el acuerdo de pago se
+    la llevaba con la cédula de detrás, saltando la constancia de en medio, y el
+    contrato quedaba sin sus firmas (1004569/UPD2437853 pág. 4, 2026-11-05).
+    Las tildes se quitan sin cambiar la caja: el escáner lee «CARTA DÉ
+    INSTRUCCIONES ANEXA» (UPD2326357 pág. 2). Medido sobre 365 PDF: de 231
+    cartas sólo deja de serlo esa hoja del contrato.
+    """
+    cabeza = " ".join(renglones)
+    sin_tildes = "".join(
+        c for c in unicodedata.normalize("NFKD", cabeza) if not unicodedata.combining(c)
+    )
+    return bool(_CARTA_COMO_TITULO.search(sin_tildes) or _CARTA_ANEXA.search(" ".join(sin_tildes.split())))
+
+
 def _titulo_del_escrito(texto: str) -> str | None:
     for nombre, patron in _TITULOS_DEL_ESCRITO:
         if patron.search(texto):
@@ -588,6 +614,8 @@ def titulo_del_documento(primera_pagina: str, tipo: str | None = None) -> str:
                 return nombre
     for nombre, patron in _FORMATOS:
         if patron.search(cabeza[:CABEZA_DEL_FORMATO]):
+            if nombre == "CARTA DE INSTRUCCIONES" and not _carta_en_su_titulo(originales):
+                continue
             return nombre
     # El REF o el ASUNTO que ya es un tipo del catálogo: «REFERENCIA:
     # DECLARACION BAJO GRAVEDAD DE JURAMENTO» (1000265, salía «SOLICITUD» por

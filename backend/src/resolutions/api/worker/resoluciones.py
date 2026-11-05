@@ -16,6 +16,7 @@ from .taller import Taller, _anunciar
 def _split_job(payload: dict, task) -> dict:
     """Partir el documento en uno por resolución, y dejar su FUID si se pidió."""
     from ...adapters.file_inventory import FileInventoryStore
+    from ...adapters.huellas_pdf import huellas_de
     from ...adapters.pymupdf_assembler import PyMuPDFAssembler
     from ...adapters.pymupdf_source import PyMuPDFDocumentStore
     from ...application.process_document import ProcessDocument
@@ -33,6 +34,8 @@ def _split_job(payload: dict, task) -> dict:
         inventory=FileInventoryStore(),
         progress=taller.progress,
         control=taller.control,
+        # Cada PDF escrito, vuelto a abrir y casado con el original.
+        huellas=huellas_de,
     )
     resultado = use_case.execute(taller.source, taller.destination, source_name=taller.name)
     report = resultado.as_dict()

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from ..domain.conciliacion import Huella
 from ..domain.fechas import fecha_de_expedicion
 from ..domain.grouping import GroupingEngine, GroupingResult
 from ..domain.page import PageClassification
@@ -16,6 +18,12 @@ from .inventory import Inventory
 from .pipeline import ClassificationPipeline, PipelineStats
 from .ports import DocumentAssembler, DocumentStore, InventoryStore
 from .progress import NullProgressReporter, ProgressEvent, ProgressReporter, Stage
+from .revisor_de_cortes import (
+    Patrones,
+    RevisionDeCortes,
+    anotar_en_el_informe,
+    revisar_sin_romper,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,12 +68,22 @@ class ProcessingReport:
     stats: dict[str, object] = field(default_factory=dict)
     inventory: Inventory | None = None
     inventory_path: Path | None = None
+    #: Lo que dijo el revisor de cortes, o el aviso de que no pudo revisar.
+    revision: RevisionDeCortes | None = None
+    aviso_del_revisor: str | None = None
+    #: Lo escrito, vuelto a abrir y casado hoja por hoja con el original.
+    comprobacion: dict[str, object] = field(default_factory=dict)
 
     @property
     def issues(self):
         return validate_resolutions(self.classifications, self.grouping)
 
     def as_dict(self) -> dict[str, object]:
+        informe = self._as_dict()
+        anotar_en_el_informe(informe, self.revision, self.aviso_del_revisor, self.comprobacion)
+        return informe
+
+    def _as_dict(self) -> dict[str, object]:
         return {
             "document": self.document_name or self.document.name,
             "page_count": self.page_count,
@@ -115,6 +133,7 @@ class ProcessDocument:
         inventory: InventoryStore | None = None,
         progress: ProgressReporter | None = None,
         control: RunControl | None = None,
+        huellas: Callable[[Path], list[Huella]] | None = None,
     ) -> None:
         self._store = store
         self._pipeline = pipeline
@@ -123,6 +142,9 @@ class ProcessDocument:
         self._inventory = inventory
         self._progress = progress or NullProgressReporter()
         self._control = control or NullRunControl()
+        #: Con qué leer las huellas de un PDF para comprobar en el disco lo
+        #: escrito; sin él no se comprueba.
+        self._huellas = huellas
 
     def execute(
         self,
@@ -169,6 +191,15 @@ class ProcessDocument:
             # comprueba `entregar` antes de tocar el disco -- y el tipo de cada
             # unidad no cambia cómo se llama el archivo: una resolución se
             # nombra por su número, que es con lo que se la busca.
+            # El revisor de cortes (2026-11-05): cada costura del legajo contra
+            # lo que dice el papel -- el ARTÍCULO SEGUNDO que sigue al PRIMERO
+            # en otra resolución --. Aquí señala y no mueve: cada resolución se
+            # nombra por su número, que se leyó de su hoja.
+            revision, aviso_del_revisor = revisar_sin_romper(
+                result,
+                {p: source.text_of(p) for p in range(1, source.page_count + 1)},
+                Patrones(puede_mover=False),
+            )
             en_revision = self._build_review_queue(classifications, result, stats)
             entregado = entregar(
                 result,
@@ -178,8 +209,10 @@ class ProcessDocument:
                 destino=Destino(directorio=destination),
                 assembler=self._assembler,
                 texto_de=source.text_of,
-                en_revision=[item.page_number for item in en_revision],
+                en_revision=[item.page_number for item in en_revision]
+                + [p for p, _ in (revision.en_revision if revision else ())],
                 estadisticas=self._describe(stats),
+                huellas=self._huellas,
             )
             assembly = entregado.assembly
             review_queue = self._build_review_queue(
@@ -210,6 +243,9 @@ class ProcessDocument:
                 stats=self._describe(stats),
                 inventory=inventory,
                 inventory_path=inventory_path,
+                revision=revision,
+                aviso_del_revisor=aviso_del_revisor,
+                comprobacion=entregado.comprobacion,
             )
         except Exception as error:  # noqa: BLE001 - re-raised after reporting
             self._report(
