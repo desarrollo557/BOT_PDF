@@ -971,3 +971,13 @@ class TestLaCarpetaDeLaCorrida:
         assert FolderRunner._en_destino(run, r"14. ENFERMERIA\CAJA 00C003277") == run.destination / "CAJA 00C003277"
         assert FolderRunner._en_destino(run, "14. ENFERMERIA") == run.destination
         assert FolderRunner._ruta_del_inventario(run) == run.destination / "00.FUID GENERAL.xlsx"
+
+    def test_una_entrega_anterior_con_otro_nombre_tampoco_lo_repite(self, tmp_path):
+        """«MAGANGUE PROCESADO», entregada antes de la regla (2026-11-04)."""
+        from resolutions.api.folders import FolderRun, FolderRunner
+
+        run = FolderRun(
+            id="r", source=tmp_path / "MAGANGUE", destination=tmp_path / "MAGANGUE PROCESADO", en_su_carpeta=True
+        )
+        assert FolderRunner._en_destino(run, r"MAGANGUE\7720382") == run.destination / "7720382"
+        assert FolderRunner._en_destino(run, "MAGANGUE") == run.destination

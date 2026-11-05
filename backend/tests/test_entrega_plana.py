@@ -162,6 +162,57 @@ class TestLaEntregaPlana:
         assert hechos == [] and otra.ya_entregados == 2
         assert _nombres(tmp_path / "destino" / "1000265")[-2:] == ["01_RECLAMO.pdf", "02_RECLAMO.pdf"]
 
+
+class TestUnaEntregaAnteriorConOtroNombre:
+    """El operador, 2026-11-04: «la idea es no reprocesar nada» de MAGANGUE.
+
+    Se entregó el 2026-10-28 en «MAGANGUE PROCESADO», antes de la regla de
+    «<carpeta> - PROCESADO». Relanzada para las cajas que faltaban, el bot abría
+    «MAGANGUE PROCESADO\\MAGANGUE - PROCESADO», vacía, y lo rehacía todo.
+    """
+
+    def test_se_sigue_en_ella_y_solo_se_procesa_lo_que_falta(self, ajustes, tmp_path):
+        from resolutions.api.folders import destino_de_la_corrida
+
+        origen, entregada = tmp_path / "MAGANGUE", tmp_path / "MAGANGUE PROCESADO"
+        _caja(origen, "1000265", "UPD1", "UPD2")
+        _caja(origen, "210847", "UPD3")
+        registro = JobRegistry()
+        # La entrega de antes, directa en «MAGANGUE PROCESADO».
+        _correr(_motor(ajustes, registro, []), origen, entregada, task="segment")
+        assert (entregada / INDICE).is_file()
+        # Las cajas que quedaron sin procesar.
+        _caja(origen, "7720382", "UPD9")
+
+        destino = destino_de_la_corrida(str(origen), str(entregada))
+        assert destino == str(entregada)
+        hechos: list[str] = []
+        run = _correr(_motor(ajustes, registro, hechos), origen, destino, task="segment")
+
+        assert [Path(hecho).name for hecho in hechos] == ["UPD9.pdf"] and run.ya_entregados == 3
+        assert run.en_su_carpeta
+        assert _nombres(entregada / "7720382") == [".bot-entrega-UPD9.json", INDICE, "01_RECLAMO.pdf"]
+        assert not (entregada / "MAGANGUE - PROCESADO").exists()
+        assert not (entregada / "MAGANGUE").exists()
+
+    def test_la_de_otra_carpeta_o_una_carpeta_cualquiera_lleva_la_suya(self, ajustes, tmp_path):
+        from resolutions.api.folders import destino_de_la_corrida
+
+        _caja(tmp_path / "KINGSPAN", "1000265", "UPD1")
+        _correr(_motor(ajustes, JobRegistry(), []), tmp_path / "KINGSPAN", tmp_path / "KINGSPAN PROCESADO", task="segment")
+        origen = tmp_path / "MAGANGUE"
+        _caja(origen, "210847", "UPD3")
+
+        # Una entrega de otra carpeta no se mezcla con ésta.
+        otra = tmp_path / "KINGSPAN PROCESADO"
+        assert destino_de_la_corrida(str(origen), str(otra)) == str(otra / "MAGANGUE - PROCESADO")
+        # Con el nombre de la carpeta pero sin nada del bot dentro: la de siempre.
+        vacia = tmp_path / "MAGANGUE PROCESADO"
+        vacia.mkdir()
+        assert destino_de_la_corrida(str(origen), str(vacia)) == str(vacia / "MAGANGUE - PROCESADO")
+        # La carpeta donde se juntan las entregas: la de siempre.
+        assert destino_de_la_corrida(str(origen), str(tmp_path)) == str(tmp_path / "MAGANGUE - PROCESADO")
+
     def test_rehacer_uno_no_toca_al_otro_upd_de_la_caja(self, ajustes, tmp_path):
         _caja(tmp_path / "origen", "1000265", "UPD1", "UPD2")
         registro = JobRegistry()

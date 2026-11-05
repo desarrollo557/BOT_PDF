@@ -147,13 +147,34 @@ function Recurso-De($letra) {
     return $null
 }
 
+# Una unidad de red en la que el bot tambien ESCRIBE: la monto
+# scripts\montar-unidad-de-red.ps1 como volumen de Docker "botpdf-red-<letra>",
+# con la cuenta que la abre (el operador, 2026-11-04: entregar en W:). Si ese
+# volumen existe, la unidad va montada en /equipo/<letra> como un disco mas.
+function Volumen-De-Red($letra) {
+    $nombre = "botpdf-red-$($letra.ToLower())"
+    $anterior = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    docker volume inspect $nombre 2>$null | Out-Null
+    $hay = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $anterior
+    if ($hay) { return $nombre }
+    return $null
+}
+
 $deRed = @()
+$porRed = @()
 $cuentasDeRed = @()
 $montables = @()
 foreach ($u in $unidades) {
     $letra = $u.DeviceID.Substring(0, 1)
     if ($u.DriveType -eq 4 -and $u.ProviderName) {
-        $deRed += [pscustomobject]@{ Letra = $letra; Ruta = $u.ProviderName }
+        $volumenDeRed = Volumen-De-Red $letra
+        if ($volumenDeRed) {
+            $porRed += [pscustomobject]@{ Letra = $letra; Ruta = $u.ProviderName; Volumen = $volumenDeRed }
+        } else {
+            $deRed += [pscustomobject]@{ Letra = $letra; Ruta = $u.ProviderName }
+        }
     } elseif (Es-Virtual $u) {
         $recurso = Recurso-De $letra
         if ($recurso) {
@@ -175,6 +196,7 @@ function Escribir-Override($discos) {
         "    environment:"
     )
     $pares = @($discos | ForEach-Object { "$($_.DeviceID)=/equipo/$($_.DeviceID.Substring(0,1).ToLower())" })
+    $pares += @($porRed | ForEach-Object { "$($_.Letra):=/equipo/$($_.Letra.ToLower())" })
     # Con barras: en YAML la "\" escapa. Y "$$": compose lee "$" como una variable.
     $pares += @($deRed | ForEach-Object { "$($_.Letra):=" + ($_.Ruta -replace '\\', '/' -replace '\$', '$$$$') })
     $mapa = $pares -join ";"
@@ -209,6 +231,18 @@ function Escribir-Override($discos) {
         $letra = $d.DeviceID.Substring(0, 1)
         $lineas += "      - `"${letra}:/:/equipo/$($letra.ToLower())`""
     }
+    foreach ($r in $porRed) {
+        $lineas += "      - `"$($r.Volumen):/equipo/$($r.Letra.ToLower())`""
+    }
+    if ($porRed.Count) {
+        # Creados por montar-unidad-de-red.ps1, fuera de compose: compose no los
+        # crea ni los borra.
+        $lineas += "volumes:"
+        foreach ($r in $porRed) {
+            $lineas += "  $($r.Volumen):"
+            $lineas += "    external: true"
+        }
+    }
     $texto = ($lineas -join "`n") + "`n"
     # Sin BOM: es YAML para docker compose.
     [System.IO.File]::WriteAllText((Join-Path $raiz "docker-compose.override.yml"), $texto, (New-Object System.Text.UTF8Encoding($false)))
@@ -217,6 +251,9 @@ function Escribir-Override($discos) {
 Paso ("Discos del equipo: " + (($montables | ForEach-Object { $_.DeviceID }) -join ", "))
 if ($deRed.Count) {
     Paso ("Leidas por la red: " + (($deRed | ForEach-Object { "$($_.Letra): -> $($_.Ruta)" }) -join ", "))
+}
+if ($porRed.Count) {
+    Paso ("Montadas por la red, el bot tambien escribe: " + (($porRed | ForEach-Object { "$($_.Letra): -> $($_.Ruta)" }) -join ", "))
 }
 Escribir-Override $montables
 
@@ -253,7 +290,17 @@ docker compose up -d
 if ($LASTEXITCODE -ne 0) {
     $locales = @($montables | Where-Object { $_.DriveType -eq 3 })
     $fuera = @($montables | Where-Object { $_.DriveType -ne 3 } | ForEach-Object { $_.DeviceID })
-    if ($fuera.Count -eq 0) { throw "docker compose no pudo arrancar el servicio. Revise el mensaje de arriba." }
+    # Una unidad de red montada (montar-unidad-de-red.ps1) cuyo equipo esta
+    # apagado, o cuya clave cambio, no deja arrancar: vuelve a leerse por la red,
+    # sin escribir en ella. El volumen se queda; la proxima instalacion lo reintenta.
+    $soltadas = $porRed.Count
+    if ($soltadas) {
+        Write-Host ("   No se pudo montar " + (($porRed | ForEach-Object { "$($_.Letra):" }) -join ", ") +
+            " para escribir en ella; se lee por la red. Si cambio la clave: .\scripts\montar-unidad-de-red.ps1 <letra>") -ForegroundColor Yellow
+        $deRed += @($porRed | ForEach-Object { [pscustomobject]@{ Letra = $_.Letra; Ruta = $_.Ruta } })
+        $porRed = @()
+    }
+    if ($fuera.Count -eq 0 -and -not $soltadas) { throw "docker compose no pudo arrancar el servicio. Revise el mensaje de arriba." }
     Write-Host "   No se pudieron montar todas las unidades; se reintenta solo con los discos locales." -ForegroundColor Yellow
     Write-Host ("   Quedan fuera: " + ($fuera -join ", ") + ". Sus rutas no se veran desde el contenedor.") -ForegroundColor Yellow
     Escribir-Override $locales

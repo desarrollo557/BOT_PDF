@@ -45,7 +45,9 @@ def destino_de_la_corrida(source: str, destination: str) -> str:
 
     Lo pidió el operador el 2026-10-30, para todo el software: en la raíz del
     destino, una carpeta con el nombre de la elegida y «- PROCESADO», y dentro
-    sus cajas, sus UPD y todos sus Excel. Si ya eligió esa carpeta, se respeta.
+    sus cajas, sus UPD y todos sus Excel. Si ya eligió esa carpeta, se respeta;
+    y también si eligió una entrega anterior de esa misma carpeta
+    (``es_entrega_anterior``), aunque se llame de otra manera.
     """
     import ntpath
 
@@ -55,8 +57,58 @@ def destino_de_la_corrida(source: str, destination: str) -> str:
     destino = destination.rstrip("\\/")
     if not source.strip() or not destino or ntpath.basename(destino) == f"{nombre}{SUFIJO_DE_LA_CORRIDA}":
         return destination
+    if es_entrega_anterior(source, destination):
+        return destination
     separador = "/" if "/" in destino and "\\" not in destino else "\\"
     return f"{destino}{separador}{nombre}{SUFIJO_DE_LA_CORRIDA}"
+
+
+def _nombre_plano(texto: str) -> str:
+    """«Magangüe_procesado» -> «MAGANGUE PROCESADO»: sin tildes, en mayúsculas, con espacios."""
+    import unicodedata
+
+    sin_tildes = unicodedata.normalize("NFD", texto).encode("ascii", "ignore").decode()
+    return " ".join(re.sub(r"[^A-Z0-9]+", " ", sin_tildes.upper()).split())
+
+
+def es_entrega_anterior(source: str, destination: str) -> bool:
+    """Si el destino elegido ya es una entrega del bot de esa misma carpeta: se sigue en ella.
+
+    Lo pidió el operador el 2026-11-04. MAGANGUE se entregó el 2026-10-28 en
+    «MAGANGUE PROCESADO», antes de la regla de «- PROCESADO»; al relanzarla
+    para las cajas que faltaban, el bot abría «MAGANGUE PROCESADO\\MAGANGUE -
+    PROCESADO», vacía: no veía las constancias de las 29 971 cajas entregadas
+    y las habría vuelto a procesar -- y a pagar --. Con el destino tal cual,
+    cada PDF encuentra su constancia y se salta lo ya entregado.
+
+    Es una entrega si en su raíz están los Excel generales que deja el bot, y es
+    de esa carpeta si su nombre empieza por el de la carpeta elegida
+    («MAGANGUE PROCESADO» para «MAGANGUE»): una entrega de otra carpeta no se
+    mezcla con ésta. Una carpeta de red que el servicio lee por su cliente SMB
+    no se mira: ahí no se puede entregar.
+    """
+    import ntpath
+
+    from ..adapters.analisis_de_la_entrega import NOMBRE_DEL_ANALISIS
+    from ..adapters.excel_inventory import NOMBRE_DEL_INVENTARIO_DE_PROCESOS
+    from ..adapters.indice_electronico import NOMBRE_DEL_INDICE
+
+    source, destination = clean_path(source), clean_path(destination)
+    nombre = _nombre_plano(ntpath.basename(source.rstrip("\\/")))
+    elegido = _nombre_plano(ntpath.basename(destination.rstrip("\\/")))
+    if not nombre or not (elegido == nombre or elegido.startswith(f"{nombre} ")):
+        return False
+    ruta = al_servicio(destination)
+    if red_smb.por_smb(ruta):
+        return False
+    carpeta = Path(ruta).expanduser()
+    try:
+        return any(
+            (carpeta / general).is_file()
+            for general in (NOMBRE_DEL_ANALISIS, NOMBRE_DEL_INVENTARIO_DE_PROCESOS, NOMBRE_DEL_INDICE)
+        )
+    except OSError:
+        return False
 
 #: Deliveries kept for the live view. It is a window on a running job, not a
 #: record -- the inventory is the record -- so it never grows without bound.
@@ -228,6 +280,10 @@ class FolderRun:
     #: Cuántos PDF de esta carpeta a la vez, si el operador lo eligió. ``None``
     #: es el automático del planificador.
     paralelo: int | None = None
+    #: Si el destino ya es la carpeta de la corrida aunque no se llame
+    #: «<carpeta> - PROCESADO»: una entrega anterior de la misma carpeta
+    #: (``es_entrega_anterior``). Dentro no se repite el nombre de la elegida.
+    en_su_carpeta: bool = False
     #: A cuántos minutos sin avance el vigilante da un documento por atascado.
     #: La pantalla lo dice tal cual: «si sigue así» no decía cuándo.
     minutos_sin_avance: float = 0.0
@@ -892,6 +948,7 @@ class FolderRunner:
             tipo_documento=tipo_documento,
             retomar=str(modo),
             paralelo=paralelo,
+            en_su_carpeta=es_entrega_anterior(source, destination),
             minutos_sin_avance=float(getattr(self._settings, "minutos_sin_avance", 0) or 0),
             paralelo_maximo=self._paralelo_maximo(),
         )
@@ -3034,9 +3091,11 @@ class FolderRunner:
         - PROCESADO», el nombre de la elegida no se repite dentro de ella: el
         operador pidió el 2026-10-30, para todo el software, «DESTINO\\<carpeta>
         - PROCESADO\\<caja>\\<UPD>» y nada más (ver ``destino_de_la_corrida``).
+        Igual si es una entrega anterior de la misma carpeta con otro nombre,
+        «MAGANGUE PROCESADO» (``FolderRun.en_su_carpeta``).
         """
         raiz = FolderRunner._raiz(run)
-        if run.destination.name == f"{raiz}{SUFIJO_DE_LA_CORRIDA}":
+        if run.en_su_carpeta or run.destination.name == f"{raiz}{SUFIJO_DE_LA_CORRIDA}":
             partes = Path(carpeta).parts
             if partes and partes[0] == raiz:
                 return run.destination.joinpath(*partes[1:])
