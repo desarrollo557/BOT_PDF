@@ -55,6 +55,21 @@ COSTURAS_POR_PREGUNTA = 8
 PREGUNTAS_POR_CAJA = 6
 
 
+#: Las reglas de la caja de correspondencia, dichas a la IA del revisor de
+#: cortes en pocas líneas: son las que el operador dictó y mandan sobre lo que
+#: la IA crea ver en el papel.
+REGLAS_DE_LA_CORRESPONDENCIA = (
+    "Caja de correspondencia de Afinia (expediente de un suscriptor). "
+    "Cada sello de radicación nuevo abre documento; la carta del cliente con fecha y asunto también. "
+    "La constancia de reclamación y la notificación personal van solas, sólo con un anexo evidente detrás "
+    "(cédula, factura). La cédula y la factura van con la hoja de delante. "
+    "El acuerdo de pago es un documento: reconocimiento de deuda, pagarés, cartas de instrucciones, cédulas "
+    "y la Ley Habeas Data, aunque haya otros papeles en medio. "
+    "El contrato de transacción va completo, con sus cláusulas y sus firmas. "
+    "Cada acta de suspensión es su documento."
+)
+
+
 @dataclass(frozen=True, slots=True)
 class Patrones:
     """Lo que una habilidad le dice al revisor de su papel."""

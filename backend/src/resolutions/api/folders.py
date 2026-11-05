@@ -407,6 +407,13 @@ class FolderRun:
     #: último que corrigió o mandó a revisión (2026-11-05: «que se muestre el
     #: trabajo del agente revisando todo en el front»).
     agente: AgenteDeLaCorrida = field(default_factory=AgenteDeLaCorrida, repr=False)
+    #: La auditoría de cierre (2026-11-05): el origen contra el destino
+    #: (``comparacion``) y la muestra de 100 PDF revisada otra vez
+    #: (``auditoria``), y cómo termina la corrida por ellas (``etapa``).
+    comparacion: dict | None = None
+    auditoria: dict | None = None
+    etapa: str | None = None
+    etapa_detalle: str = ""
     #: Los PDF que hay que rehacer y por qué: ruta -> (vigencia, constancia).
     a_rehacer: dict[str, tuple] = field(default_factory=dict, repr=False)
     #: La fila del inventario general de procesos de cada PDF, por su ruta
@@ -579,6 +586,11 @@ class FolderRun:
             # Lo que el revisor de cortes lleva hecho en la corrida (2026-11-05);
             # nada hasta que revisa el primer PDF.
             "agente": self.agente.as_dict() if self.agente.pdf else None,
+            # La auditoría de cierre: el cuadre, la muestra y cómo terminó.
+            "comparacion": self.comparacion,
+            "auditoria": self.auditoria,
+            "etapa": self.etapa,
+            "etapa_detalle": self.etapa_detalle,
             # Newest first: the live view reads from the top.
             "deliveries": [item.as_dict() for item in reversed(self.deliveries)],
         }
@@ -1153,6 +1165,12 @@ class FolderRunner:
                 if not run.watch or run.state is RunState.FAILED:
                     break
 
+            # La auditoría de cierre (2026-11-05): el origen contra el destino y
+            # una muestra de 100 PDF entregados revisada otra vez. Antes de los
+            # Excel generales, que la llevan en el análisis de la entrega. Una
+            # carpeta vigilada no termina: no se audita.
+            if not run.watch and run.state is not RunState.FAILED and run.active:
+                await self._auditar_al_cerrar(run)
             # El Excel antes de dar la carpeta por terminada: la pantalla enseña
             # el botón de descarga en cuanto la ve terminada, y un botón que
             # aparece antes que el archivo es un botón que falla.
@@ -2482,6 +2500,97 @@ class FolderRunner:
                 # Sin bucle -- desde un hilo, en una prueba --, al momento.
                 self._escribir_todo_lo_general(run)
 
+    async def _auditar_al_cerrar(self, run: FolderRun) -> None:
+        """La auditoría de cierre: el cuadre del origen con el destino y la muestra de 100 PDF.
+
+        Lo pidió el operador el 2026-11-05: que el bot, así como vigila cada PDF
+        mientras procesa, lo haga también al terminar -- que lo de la fuente
+        esté en el destino y que 100 PDF al azar se revisen otra vez con los
+        patrones y el margen de error (ver ``api/auditoria.py``). Lo que la
+        corrida nunca llegó a tomar -- una carpeta que no se dejó leer -- se
+        procesa antes de cerrar. Nunca tumba la corrida: si no se puede hacer,
+        se dice y lo entregado queda como está.
+        """
+        from ..domain.auditoria import TAMANO_DE_LA_MUESTRA
+        from .auditoria import auditar_la_muestra, cuadrar, etapa_de
+
+        semilla = int(time.time())
+        run.auditoria = {"estado": "auditando", "fase": "cuadre", "hechos": 0, "total": 0, "semilla": semilla}
+        self._publish(run)
+
+        def avance_del_cuadre(hechos: int, total: int) -> None:
+            run.auditoria = {**(run.auditoria or {}), "hechos": hechos, "total": total}
+            self._publish(run)
+
+        def avance_de_la_muestra(hechos: int, resultado) -> None:
+            actual = run.auditoria or {}
+            run.auditoria = {
+                **actual,
+                "hechos": hechos,
+                "total": max(int(actual.get("total") or 0), hechos),
+                "ultimo": resultado.as_dict(),
+            }
+            self._publish(run)
+
+        def detener() -> bool:
+            return not run.active
+
+        try:
+            comparacion, entregas = await asyncio.to_thread(
+                cuadrar, self, run, detener=detener, avance=avance_del_cuadre
+            )
+            nunca = [falta for falta in comparacion["pdf_sin_entregar"] if not falta["intentado"]]
+            if nunca and run.active:
+                self._avisar(
+                    run,
+                    f"Al cerrar, faltaban {len(nunca)} PDF en el destino que la corrida no había tomado "
+                    "(una carpeta que no se dejó leer, un listado cortado): se procesan antes de terminar.",
+                )
+                await self._procesar_por_lotes(run)
+                comparacion, entregas = await asyncio.to_thread(cuadrar, self, run, detener=detener)
+            run.comparacion = comparacion
+            run.auditoria = {
+                "estado": "auditando",
+                "fase": "muestra",
+                "hechos": 0,
+                "total": min(TAMANO_DE_LA_MUESTRA, comparacion["pdf_entregados"]),
+                "semilla": semilla,
+            }
+            self._publish(run)
+            muestra = await asyncio.to_thread(
+                auditar_la_muestra,
+                self,
+                run,
+                entregas,
+                semilla=semilla,
+                juez=self._juez_de_la_auditoria(run),
+                detener=detener,
+                avance=avance_de_la_muestra,
+            )
+            run.etapa, run.etapa_detalle = etapa_de(comparacion, muestra)
+            run.auditoria = {"estado": "hecha", "semilla": semilla, "muestra": muestra, "fecha": _now()}
+            if run.etapa != "Terminado":
+                self._avisar(run, f"Auditoría de cierre: {run.etapa} — {run.etapa_detalle}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001 - la auditoría nunca tumba la corrida
+            logger.exception("la auditoría de cierre de %s falló", run.source)
+            run.auditoria = {"estado": "no se pudo", "error": explicar_fallo(error), "semilla": semilla}
+            self._avisar(
+                run,
+                f"La auditoría de cierre no se pudo hacer ({explicar_fallo(error)}). Lo entregado no cambia.",
+            )
+        self._publish(run)
+
+    def _juez_de_la_auditoria(self, run: FolderRun):
+        """La IA que decide las dudas de la muestra, sólo si la corrida se hizo con ella."""
+        llave = getattr(self._settings, "mistral_api_key", None)
+        if run.lectura not in ("mistral", "mistral-nombres") or not llave:
+            return None
+        from ..adapters.mistral_revisor import MistralJuezDeCosturas
+
+        return MistralJuezDeCosturas(api_key=llave)
+
     async def _escribir_generales_luego(self, run: FolderRun) -> None:
         while run.generales_pendientes:
             espera = INVENTARIO_GENERAL_CADA - (time.monotonic() - run.generales_en)
@@ -2735,6 +2844,9 @@ class FolderRunner:
                 origen=al_operador(run.source),
                 fecha=datetime.now().strftime("%Y-%m-%d %H:%M"),
                 avisos=avisos,
+                # La auditoría de cierre, cuando ya se hizo (2026-11-05).
+                comparacion=run.comparacion,
+                muestra=(run.auditoria or {}).get("muestra"),
             )
             run.analisis = str(ruta)
         except Exception as error:  # noqa: BLE001 - lo entregado ya está en el disco

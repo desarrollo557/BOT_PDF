@@ -16,6 +16,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from ...application.progress import ProgressEvent, Stage
+from ...application.revisor_de_cortes import REGLAS_DE_LA_CORRESPONDENCIA
 from .planillas import _escribir_indice
 from .taller import Taller, _anunciar
 
@@ -270,21 +271,6 @@ def _poner_el_re_en_el_nombre(grupos, anexos: dict, *, textos: dict, sellos: dic
         salida.append(replace(grupo, code=type(grupo.code)(value=nuevo, raw=radicado)))
     anexos = {renombrados.get(codigo, codigo): paginas for codigo, paginas in anexos.items()}
     return replace(grupos, groups=salida), anexos, hallados
-
-
-#: Las reglas de la caja de correspondencia, dichas a la IA del revisor de
-#: cortes en pocas líneas: son las que el operador dictó y mandan sobre lo que
-#: la IA crea ver en el papel.
-REGLAS_DE_LA_CORRESPONDENCIA = (
-    "Caja de correspondencia de Afinia (expediente de un suscriptor). "
-    "Cada sello de radicación nuevo abre documento; la carta del cliente con fecha y asunto también. "
-    "La constancia de reclamación y la notificación personal van solas, sólo con un anexo evidente detrás "
-    "(cédula, factura). La cédula y la factura van con la hoja de delante. "
-    "El acuerdo de pago es un documento: reconocimiento de deuda, pagarés, cartas de instrucciones, cédulas "
-    "y la Ley Habeas Data, aunque haya otros papeles en medio. "
-    "El contrato de transacción va completo, con sus cláusulas y sus firmas. "
-    "Cada acta de suspensión es su documento."
-)
 
 
 def _revisar_los_cortes(

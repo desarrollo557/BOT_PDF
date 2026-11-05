@@ -197,6 +197,16 @@ class TestInstalacion:
         assert pymupdf.TOOLS.mupdf_display_errors() is False
         assert pymupdf.TOOLS.mupdf_display_warnings() is False
 
+    def test_dos_hilos_que_abren_a_la_vez_no_dejan_la_consola_en_cero(self, monkeypatch):
+        """PyMuPDF pone el interruptor en 0 al abrir y lo restaura; dos hilos a la
+        vez lo dejan en 0 (la muestra de la auditoría abre cuatro). Vaciar el
+        almacén lo vuelve a dejar como lo dejó la instalación."""
+        from resolutions.adapters.mupdf_messages import drenar
+
+        monkeypatch.setattr(pymupdf, "JM_mupdf_show_errors", 0)
+        drenar()
+        assert pymupdf.TOOLS.mupdf_display_errors() is False
+
     def test_installing_twice_does_not_chain_one_redirect_on_another(self):
         antes = pymupdf._g_out_message
         instalar()

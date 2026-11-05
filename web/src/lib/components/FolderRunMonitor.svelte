@@ -8,6 +8,7 @@
     origenProcesosUrl
   } from '$lib/api';
   import AgenteDeLaCorrida from '$lib/components/AgenteDeLaCorrida.svelte';
+  import AuditoriaDeCierre from '$lib/components/AuditoriaDeCierre.svelte';
   import Descargas, { type GrupoDeDescargas } from '$lib/components/Descargas.svelte';
   import { confirmar } from '$lib/confirmar.svelte';
   import FolderTree from '$lib/components/FolderTree.svelte';
@@ -480,6 +481,17 @@
     <!-- El agente revisor, en vivo: cómo van quedando los PDF y lo último
          que corrigió (2026-11-05). -->
     <AgenteDeLaCorrida agente={run.agente} activo={active} />
+  {/if}
+
+  {#if run.auditoria}
+    <!-- La auditoría de cierre: el origen contra el destino y la muestra de
+         100 PDF con el margen de error de la corrida (2026-11-05). -->
+    <AuditoriaDeCierre
+      auditoria={run.auditoria}
+      comparacion={run.comparacion}
+      etapa={run.etapa}
+      detalle={run.etapa_detalle}
+    />
   {/if}
 
   <RunStats

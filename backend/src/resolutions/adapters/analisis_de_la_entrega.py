@@ -64,8 +64,16 @@ def escribir_analisis(
     origen: str,
     fecha: str,
     avisos: list[str] | None = None,
+    comparacion: dict | None = None,
+    muestra: dict | None = None,
 ) -> Path:
-    """Escribe el análisis en ``destino`` (entero o nada) y devuelve su ruta."""
+    """Escribe el análisis en ``destino`` (entero o nada) y devuelve su ruta.
+
+    Con la auditoría de cierre (2026-11-05), dos hojas más: «Origen y destino»
+    -- lo que no cuadra entre los dos lados, con su evidencia -- y «Muestra
+    auditada» -- cada PDF de la muestra y lo que se encontró --; y el resumen
+    lleva sus cuentas y el margen de error de la corrida.
+    """
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
 
@@ -81,6 +89,16 @@ def escribir_analisis(
         "Completa": "C6EFCE",
         "Con fallos": "F8CBAD",
         "Con pendientes": "FFF2CC",
+        # La auditoría de cierre.
+        "Falta en el destino": "F8CBAD",
+        "Índice que no cuadra": "F8CBAD",
+        "Sin PDF en el origen": "FFF2CC",
+        "Archivo suelto en la raíz": "FFF2CC",
+        "Sobra en el destino": "FFF2CC",
+        "bien": "C6EFCE",
+        "error": "F8CBAD",
+        "dudoso": "FFF2CC",
+        "no se pudo auditar": "FFF2CC",
     }
 
     def tabla(hoja, columnas: list[tuple[str, int]], renglones: list[list], color_en: int | None = None) -> None:
@@ -125,6 +143,30 @@ def escribir_analisis(
         ["Carpetas", len(por_carpeta)],
         *[[f"Carpetas · {nombre}", estados.get(nombre, 0)] for nombre in ("Completa", "Con pendientes", "Con fallos")],
     ]
+    if comparacion:
+        renglones += [
+            ["", ""],
+            ["Carpetas en la raíz del origen", comparacion.get("carpetas_origen", 0)],
+            ["Carpetas en el destino", comparacion.get("carpetas_destino", 0)],
+            ["Carpetas del origen con PDF", comparacion.get("carpetas_con_pdf", 0)],
+            ["Carpetas completas en el destino", comparacion.get("carpetas_completas", 0)],
+            ["PDF en el origen", comparacion.get("pdf_origen", 0)],
+            ["PDF entregados enteros", comparacion.get("pdf_entregados", 0)],
+            ["Documentos entregados", comparacion.get("documentos_entregados", 0)],
+            ["Filas de los índices", comparacion.get("filas_del_indice", 0)],
+            ["Entrega completa", "Sí" if comparacion.get("completa") else "No"],
+        ]
+    if muestra:
+        margen = muestra.get("margen") or {}
+        renglones += [
+            ["", ""],
+            ["Muestra auditada (PDF)", muestra.get("revisados", 0)],
+            ["Muestra · bien", muestra.get("bien", 0)],
+            ["Muestra · con error", muestra.get("errores", 0)],
+            ["Muestra · dudosos", muestra.get("dudosos", 0)],
+            ["Muestra · semilla", muestra.get("semilla", "")],
+            ["Margen de error de la corrida", margen.get("texto", "")],
+        ]
     tabla(resumen, [("Concepto", 42), ("Cantidad", 60)], renglones)
 
     tabla(
@@ -161,6 +203,40 @@ def escribir_analisis(
         [("Aviso de la corrida", 100)],
         [[aviso] for aviso in avisos],
     )
+    if comparacion:
+        tabla(
+            libro.create_sheet("Origen y destino"),
+            [("Carpeta o PDF", 34), ("Estado", 24), ("Motivo", 50), ("Evidencia", 60)],
+            [
+                *[[f["carpeta"], "Falta en el destino", f["motivo"], f.get("evidencia", "")] for f in comparacion.get("faltan", [])],
+                *[[r["pdf"], "Índice que no cuadra", r["motivo"], ""] for r in comparacion.get("registros_que_no_cuadran", [])],
+                *[[s["carpeta"], "Sin PDF en el origen", s["motivo"], s.get("evidencia", "")] for s in comparacion.get("sin_pdf", [])],
+                *[[a["carpeta"], "Archivo suelto en la raíz", "no es un PDF: no se procesa", ""] for a in comparacion.get("archivos_en_la_raiz", [])],
+                *[[s["carpeta"], "Sobra en el destino", s["motivo"], s.get("evidencia", "")] for s in comparacion.get("sobran", [])],
+            ],
+            color_en=1,
+        )
+    if muestra:
+        tabla(
+            libro.create_sheet("Muestra auditada"),
+            [("PDF", 40), ("Habilidad", 24), ("Resultado", 16), ("Páginas", 10), ("PDF entregados", 14),
+             ("Costuras", 10), ("Dentro del margen", 16), ("Preguntadas a la IA", 18), ("Hallazgos", 90)],
+            [
+                [
+                    p["pdf"],
+                    p.get("habilidad", ""),
+                    p["estado"],
+                    p.get("paginas", 0),
+                    p.get("archivos", 0),
+                    p.get("costuras", 0),
+                    p.get("dentro_del_margen", 0),
+                    p.get("preguntadas_a_la_ia", 0),
+                    "; ".join(p.get("hallazgos", [])),
+                ]
+                for p in muestra.get("pdfs", [])
+            ],
+            color_en=2,
+        )
     destino.mkdir(parents=True, exist_ok=True)
     ruta = destino / NOMBRE_DEL_ANALISIS
     return guardar_libro(libro, ruta)

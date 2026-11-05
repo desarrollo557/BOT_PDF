@@ -651,6 +651,93 @@ export interface FolderRun {
   red?: RedDeLaCorrida;
   /** Lo que el agente revisor lleva hecho; `null` hasta que revisa el primer PDF. */
   agente?: AgenteDeLaCorrida | null;
+  /** La auditoría de cierre (2026-11-05): el origen contra el destino. */
+  comparacion?: ComparacionDeLaEntrega | null;
+  /** Y la muestra de 100 PDF revisada otra vez, mientras se hace y al terminar. */
+  auditoria?: AuditoriaDeCierre | null;
+  /** Cómo terminó por la auditoría: «Terminado», «Terminado con faltantes»… */
+  etapa?: string | null;
+  etapa_detalle?: string;
+}
+
+/** Algo del origen o del destino que no cuadra, con su evidencia. */
+export interface HallazgoDelCuadre {
+  carpeta: string;
+  motivo?: string;
+  evidencia?: string;
+}
+
+/** El origen contra el destino, contado en el disco al cerrar la corrida. */
+export interface ComparacionDeLaEntrega {
+  entradas_origen: number;
+  carpetas_origen: number;
+  carpetas_destino: number;
+  /** Las carpetas del origen que traen PDF, y cuántas los tienen todos entregados. */
+  carpetas_con_pdf: number;
+  carpetas_completas: number;
+  pdf_origen: number;
+  pdf_entregados: number;
+  documentos_entregados: number;
+  filas_del_indice: number;
+  sin_pdf: HallazgoDelCuadre[];
+  archivos_en_la_raiz: HallazgoDelCuadre[];
+  sobran: HallazgoDelCuadre[];
+  faltan: HallazgoDelCuadre[];
+  pdf_sin_entregar: { pdf: string; motivo: string; intentado: boolean }[];
+  registros_que_no_cuadran: { pdf: string; motivo: string }[];
+  completa: boolean;
+}
+
+/** Un PDF de la muestra, abierto y revisado otra vez. */
+export interface PdfAuditado {
+  pdf: string;
+  estado: 'bien' | 'error' | 'dudoso' | 'no se pudo auditar';
+  hallazgos: string[];
+  paginas: number;
+  archivos: number;
+  costuras: number;
+  dentro_del_margen: number;
+  preguntadas_a_la_ia: number;
+  habilidad: string;
+}
+
+/** El error de la corrida medido en la muestra, y si está dentro del margen aceptable. */
+export interface MargenDeLaCorrida {
+  errores: number;
+  revisados: number;
+  tasa: number;
+  desde: number;
+  hasta: number;
+  confianza: number;
+  aceptable: number;
+  dictamen: 'dentro del margen' | 'fuera del margen' | 'sin certeza';
+  texto: string;
+  texto_del_dictamen: string;
+}
+
+export interface MuestraAuditada {
+  semilla: number;
+  candidatos: number;
+  revisados: number;
+  bien: number;
+  errores: number;
+  dudosos: number;
+  no_auditados: number;
+  /** Si encontró errores y revisó otros 100. */
+  ampliada: boolean;
+  margen: MargenDeLaCorrida;
+  pdfs: PdfAuditado[];
+}
+
+export interface AuditoriaDeCierre {
+  estado: 'auditando' | 'hecha' | 'no se pudo';
+  fase?: 'cuadre' | 'muestra';
+  hechos?: number;
+  total?: number;
+  semilla?: number;
+  ultimo?: PdfAuditado;
+  muestra?: MuestraAuditada;
+  error?: string;
 }
 
 /** Un lado de la corrida -- el origen que se lee o el destino en que se escribe --. */

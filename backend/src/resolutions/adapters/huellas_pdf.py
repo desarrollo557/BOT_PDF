@@ -56,6 +56,26 @@ def huellas_de(path: Path) -> list[Huella]:
         drenar()
 
 
+def huellas_y_textos(path: Path) -> tuple[list[Huella], dict[int, str]]:
+    """La huella y la capa de texto de cada página, abriendo el PDF una sola vez.
+
+    Lo usa la auditoría de cierre: casa lo entregado con el original por la
+    huella, y vuelve a revisar sus costuras con el texto. Sólo la capa: nada se
+    vuelve a leer con OCR, ni se paga.
+    """
+    documento = _abrir(Path(path), Path(path).name)
+    try:
+        huellas: list[Huella] = []
+        textos: dict[int, str] = {}
+        for numero, page in enumerate(documento, start=1):
+            huellas.append(huella_de(page))
+            textos[numero] = page.get_text()
+        return huellas, textos
+    finally:
+        documento.close()
+        drenar()
+
+
 def paginas_de(path: Path) -> int:
     """Cuántas páginas tiene, sin mirar ninguna."""
     documento = _abrir(Path(path), Path(path).name)

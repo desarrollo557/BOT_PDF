@@ -93,6 +93,13 @@ def drenar(documento: str | None = None) -> list[Incidencia]:
     al azar, y un aviso atribuido a la página equivocada engaña más que uno sin
     página.
     """
+    # Y la consola, otra vez callada. PyMuPDF pone su interruptor de errores en
+    # 0 mientras abre un documento y lo restaura al terminar; dos hilos que
+    # abren a la vez -- la muestra de la auditoría de cierre abre cuatro -- se
+    # cruzan, y el segundo «restaura» el 0 del primero. 0 también calla, pero
+    # aquí se deja como lo dejó ``instalar`` (2026-11-05).
+    if pymupdf.TOOLS.mupdf_display_errors() is not False:
+        pymupdf.TOOLS.mupdf_display_errors(False)
     try:
         crudo = pymupdf.TOOLS.mupdf_warnings()
     except Exception:  # noqa: BLE001 - saber esto nunca vale un documento
