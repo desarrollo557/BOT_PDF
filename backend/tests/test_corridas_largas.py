@@ -769,10 +769,10 @@ class TestLaEntregaIncompleta:
         _pon(tmp_path / "origen", "a.pdf")
         original = folders._copiar
 
-        def copiar(desde, hasta):
+        def copiar(desde, hasta, medir=None):
             if hasta.suffix == ".pdf":
                 raise OSError(errno.ENOSPC, "No space left on device", str(hasta))
-            return original(desde, hasta)
+            return original(desde, hasta, medir)
 
         monkeypatch.setattr(folders, "_copiar", copiar)
         registry = JobRegistry()
@@ -798,11 +798,11 @@ class TestLaEntregaIncompleta:
         original = folders._copiar
         fallos = {"n": 0}
 
-        def un_corte(desde, hasta):
+        def un_corte(desde, hasta, medir=None):
             if hasta.suffix == ".pdf" and fallos["n"] == 0:
                 fallos["n"] += 1
                 raise OSError(errno.EIO, "Se perdió la conexión de red", str(hasta))
-            return original(desde, hasta)
+            return original(desde, hasta, medir)
 
         monkeypatch.setattr(folders, "_copiar", un_corte)
         motor, hechos = _motor(ajustes, JobRegistry())
@@ -825,11 +825,11 @@ class TestLaEntregaIncompleta:
         original = folders._copiar
         fallos = {"n": 0}
 
-        def caida_un_rato(desde, hasta):
+        def caida_un_rato(desde, hasta, medir=None):
             if hasta.suffix == ".pdf" and fallos["n"] < 3:
                 fallos["n"] += 1
                 raise OSError(errno.EIO, "Se perdió la conexión de red", str(hasta))
-            return original(desde, hasta)
+            return original(desde, hasta, medir)
 
         async def run_job(job):
             salida = ajustes.output_dir / job.id

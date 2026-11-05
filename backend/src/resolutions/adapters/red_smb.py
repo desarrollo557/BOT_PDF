@@ -626,13 +626,43 @@ def firma(ruta: str) -> str:
     return str(_llamar(ruta, resumir))
 
 
-def traer(ruta: str, destino: Path) -> Path:
+def leer_muestra(ruta: str, tope: int) -> tuple[int, float]:
+    """Lee hasta ``tope`` bytes del archivo de red: cuántos y en cuántos segundos.
+
+    Es la prueba de velocidad de la corrida (``adapters/acceso.py``). El reloj
+    corre con el archivo ya abierto y su turno ya dado: lo que se mide es lo
+    que tarda la red en traer los datos, no la espera detrás de otra descarga.
+    """
+    import time
+
+    import smbclient
+
+    def leer(p: Partes, cuenta: dict) -> tuple[int, float]:
+        with smbclient.open_file(p.unc, mode="rb", share_access=COMPARTIDO, **cuenta) as archivo:
+            inicio = time.monotonic()
+            leidos = 0
+            while leidos < tope and (bloque := archivo.read(min(BLOQUE, tope - leidos))):
+                leidos += len(bloque)
+            return leidos, time.monotonic() - inicio
+
+    return _llamar(ruta, leer)  # type: ignore[return-value]
+
+
+def traer(
+    ruta: str, destino: Path, al_copiar: Callable[[int, float, float], None] | None = None
+) -> Path:
     """Copia el archivo de la red a ``destino`` y devuelve la copia.
 
     Primero a «.part» y luego se renombra: una copia cortada a medias no queda
     con el nombre del PDF. Se comprueba el tamaño, porque una red que se corta
     puede dejar un archivo más corto sin error.
+
+    ``al_copiar`` recibe los bytes y de cuándo a cuándo (reloj monótono) se
+    copiaron, con el archivo ya abierto: la velocidad de la red, sin la espera
+    del turno de descarga (``domain/ritmo.py``).
     """
+    import time
+
     import smbclient
 
     destino.parent.mkdir(parents=True, exist_ok=True)
@@ -640,7 +670,14 @@ def traer(ruta: str, destino: Path) -> Path:
 
     def copiar(p: Partes, cuenta: dict) -> int:
         with smbclient.open_file(p.unc, mode="rb", share_access=COMPARTIDO, **cuenta) as origen, parcial.open("wb") as copia:
+            inicio = time.monotonic()
             shutil.copyfileobj(origen, copia, BLOQUE)
+            fin = time.monotonic()
+        if al_copiar is not None:
+            try:
+                al_copiar(parcial.stat().st_size, inicio, fin)
+            except Exception:  # noqa: BLE001 - medir nunca tumba una descarga
+                logger.debug("no se pudo anotar la velocidad de %s", ruta, exc_info=True)
         return int(smbclient.stat(p.unc, **cuenta).st_size)
 
     p = partes(ruta)

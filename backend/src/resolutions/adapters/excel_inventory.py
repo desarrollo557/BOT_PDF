@@ -659,6 +659,11 @@ class FilaDeProceso:
     operador: str
     destino: str
     observaciones: str = ""
+    #: Red o local, del origen al destino -- «Red → Local» --, y con qué
+    #: velocidad se bajó y se entregó el PDF, en MB/s (2026-11-05).
+    acceso: str = ""
+    lectura_mb_s: float | None = None
+    escritura_mb_s: float | None = None
 
 
 class ExcelInventarioDeProcesos:
@@ -686,9 +691,15 @@ class ExcelInventarioDeProcesos:
         ("IA: págs. pagadas", 12),
         ("Operador", 14),
         ("Carpeta de destino", 34),
+        ("Acceso", 14),
+        ("Lectura (MB/s)", 10),
+        ("Escritura (MB/s)", 10),
         ("Observaciones", 40),
     ]
-    CENTRADAS = ("#", "Páginas", "Documentos", "En revisión", "Estado", "Duración", "IA: págs. pagadas")
+    CENTRADAS = (
+        "#", "Páginas", "Documentos", "En revisión", "Estado", "Duración", "IA: págs. pagadas",
+        "Acceso", "Lectura (MB/s)", "Escritura (MB/s)",
+    )
     ARRIBA = ("PDF de origen", "Carpeta de destino", "Observaciones")
 
     def write(
@@ -700,6 +711,7 @@ class ExcelInventarioDeProcesos:
         clase_de_origen: str = "Lote",
         operador: str | None = None,
         nombre: str = NOMBRE_DEL_INVENTARIO_DE_PROCESOS,
+        red: dict | None = None,
     ) -> Path:
         destino.mkdir(parents=True, exist_ok=True)
         book = Workbook()
@@ -732,6 +744,8 @@ class ExcelInventarioDeProcesos:
             relleno=_PENDIENTE if any(f.en_revision for f in filas) else None,
         )
         row = _campo(sheet, row, span, "IA: páginas pagadas", sum(f.paginas_pagadas for f in filas))
+        if red:
+            row = self._la_red(sheet, row + 1, span, red)
         _firma(sheet, row, span)
         _imprimible(sheet, span)
 
@@ -755,6 +769,9 @@ class ExcelInventarioDeProcesos:
                     f.paginas_pagadas,
                     f.operador or "—",
                     f.destino,
+                    f.acceso or "—",
+                    f.lectura_mb_s if f.lectura_mb_s is not None else "—",
+                    f.escritura_mb_s if f.escritura_mb_s is not None else "—",
                     f.observaciones or None,
                 ]
                 for indice, f in enumerate(filas, start=1)
@@ -769,6 +786,26 @@ class ExcelInventarioDeProcesos:
         target = destino / nombre
         guardar_libro(book, target)
         return target
+
+    @staticmethod
+    def _la_red(sheet, row: int, span: int, red: dict) -> int:
+        """Red o local de cada lado, la velocidad medida y la prueba del arranque (2026-11-05)."""
+        from ..domain.ritmo import velocidad_legible
+
+        def lado(datos: dict | None) -> str:
+            datos = datos or {}
+            acceso = {"red": "Red", "local": "Local"}.get(str(datos.get("acceso")), "—")
+            return f"{acceso} · {datos.get('velocidad') or '—'}"
+
+        prueba = red.get("prueba") or {}
+        row = _seccion(sheet, row, span, "Red")
+        row = _campo(sheet, row, span, "Origen (lectura)", lado(red.get("origen")))
+        row = _campo(sheet, row, span, "Destino (escritura)", lado(red.get("destino")))
+        if prueba:
+            lectura = prueba.get("lectura_error") or velocidad_legible(prueba.get("lectura_mb_s"))
+            escritura = prueba.get("escritura_error") or velocidad_legible(prueba.get("escritura_mb_s"))
+            row = _campo(sheet, row, span, "Prueba al empezar", f"lectura {lectura} · escritura {escritura}")
+        return row
 
 
 # -- el control de una entrega retomada ----------------------------------------

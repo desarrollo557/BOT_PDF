@@ -23,6 +23,7 @@ from ..adapters.excel_inventory import (
     NOMBRE_DEL_CONTROL_DE_ENTREGA,
     NOMBRE_DEL_INVENTARIO_DE_PROCESOS,
 )
+from ..domain.ritmo import Ritmo
 from . import constancia as constancias
 from .constancia import Constancia, EstadoDeEntrega, Vigencia
 from .errores import archivo_en_uso, explicar_fallo
@@ -380,6 +381,27 @@ class FolderRun:
 
     #: Tamaño y fecha de cada PDF pendiente, tomados al descubrirlo.
     huellas_del_origen: dict[str, tuple[int, int]] = field(default_factory=dict, repr=False)
+
+    #: Si el origen y el destino están en la red o en este equipo, y a qué
+    #: velocidad se leen y se escriben de verdad. Lo pidió el operador el
+    #: 2026-11-05: «que si es por red el bot me diga y estime en realidad cuánto
+    #: es la velocidad de la red y cuánto podría demorar». Ver
+    #: ``domain/ritmo.py`` y ``adapters/acceso.py``.
+    origen_de_red: bool | None = None
+    destino_de_red: bool | None = None
+    ritmo_de_lectura: Ritmo = field(default_factory=Ritmo, repr=False)
+    ritmo_de_escritura: Ritmo = field(default_factory=Ritmo, repr=False)
+    #: La prueba del arranque: su estado («midiendo», «hecha») y lo que dio.
+    prueba_de_red: dict = field(default_factory=dict)
+    #: Si ya hay quien mide: una corrida que se reanuda no arranca otro.
+    midiendo: bool = False
+    #: Cuándo (reloj monótono) terminó cada PDF de la cola: el ritmo de la corrida.
+    terminados_en: deque = field(default_factory=lambda: deque(maxlen=200), repr=False)
+    #: Si el recorrido del origen terminó: hasta entonces lo que falta es «al menos».
+    recorrido_terminado: bool = False
+    #: Lo medido de cada PDF -- su descarga y su entrega, bytes y segundos --,
+    #: para su fila del inventario general de procesos.
+    medidas_del_pdf: dict[str, dict[str, tuple[int, float]]] = field(default_factory=dict, repr=False)
     #: Los PDF que hay que rehacer y por qué: ruta -> (vigencia, constancia).
     a_rehacer: dict[str, tuple] = field(default_factory=dict, repr=False)
     #: La fila del inventario general de procesos de cada PDF, por su ruta
@@ -547,8 +569,54 @@ class FolderRun:
             "actas_ruta": al_operador(self.actas_general) if self.actas_general else None,
             "inventario_error": self.inventario_error,
             "inventario_validacion": self.inventario_validacion,
+            # Red o local, la velocidad medida y lo que falta (2026-11-05).
+            "red": self.resumen_de_la_red(),
             # Newest first: the live view reads from the top.
             "deliveries": [item.as_dict() for item in reversed(self.deliveries)],
+        }
+
+    def velocidades(self) -> tuple[float | None, float | None]:
+        """Lectura del origen y escritura en el destino, en MB/s: lo de en vivo, o si no aún, la prueba."""
+        lectura = self.ritmo_de_lectura.mb_por_segundo() or self.prueba_de_red.get("lectura_mb_s")
+        escritura = self.ritmo_de_escritura.mb_por_segundo() or self.prueba_de_red.get("escritura_mb_s")
+        return lectura, escritura
+
+    def resumen_de_la_red(self) -> dict[str, object]:
+        """Lo que la pantalla enseña de la red: el acceso de cada lado, su velocidad y lo que falta."""
+        from ..domain.ritmo import duracion_legible, estimar, velocidad_legible
+
+        lectura, escritura = self.velocidades()
+        # Una copia de los valores: el recorrido los añade desde su hilo.
+        pendientes_en_bytes = sum(tamano for tamano, _fecha in list(self.huellas_del_origen.values()))
+        activa = self.active
+        estimacion = estimar(
+            pendientes=len(self.queue) + len(self.en_curso) if activa else 0,
+            terminados_en=tuple(self.terminados_en),
+            ahora=time.monotonic(),
+            bytes_pendientes=pendientes_en_bytes if activa else 0,
+            lectura_mb_s=lectura,
+            escritura_mb_s=escritura,
+            origen_de_red=bool(self.origen_de_red),
+            destino_de_red=bool(self.destino_de_red),
+            recorrido_terminado=self.recorrido_terminado or not activa,
+        )
+
+        def acceso(de_red: bool | None) -> str | None:
+            return None if de_red is None else ("red" if de_red else "local")
+
+        return {
+            "origen": {"acceso": acceso(self.origen_de_red), "mb_s": lectura, "velocidad": velocidad_legible(lectura)},
+            "destino": {
+                "acceso": acceso(self.destino_de_red),
+                "mb_s": escritura,
+                "velocidad": velocidad_legible(escritura),
+            },
+            "prueba": dict(self.prueba_de_red),
+            "falta_s": estimacion.total,
+            "falta": duracion_legible(estimacion.total),
+            "red_s": estimacion.red,
+            "falta_red": duracion_legible(estimacion.red),
+            "al_menos": estimacion.al_menos,
         }
 
 
@@ -877,6 +945,9 @@ class FolderRunner:
         self._hilos_del_recorrido = ThreadPoolExecutor(max_workers=4, thread_name_prefix="recorrido")
         #: El bucle de la aplicación, para publicar desde los hilos de entrega.
         self._loop: asyncio.AbstractEventLoop | None = None
+        #: Las tareas que miden la red de cada corrida: con su referencia aquí,
+        #: el recolector no se las lleva a medio medir.
+        self._medidores: set[asyncio.Task] = set()
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -1037,6 +1108,13 @@ class FolderRunner:
                 run.oficina = await asyncio.to_thread(oficina_de_la_carpeta_de_origen, str(run.source))
                 run.oficina_mirada = True
                 self._publish(run)
+            if not run.midiendo:
+                # Red o local y la velocidad real de cada lado (2026-11-05), en
+                # paralelo: medir no retrasa el primer PDF.
+                run.midiendo = True
+                medidor = asyncio.create_task(self._medir_la_red(run))
+                self._medidores.add(medidor)
+                medidor.add_done_callback(self._medidores.discard)
             while True:
                 # En paralelo y por lotes: el recorrido llena la cola lote a
                 # lote mientras los trabajadores la vacían.
@@ -1673,6 +1751,7 @@ class FolderRunner:
         ranuras = self._planificador.ranuras
 
         async def recorrer() -> None:
+            run.recorrido_terminado = False
             try:
                 async for pending, entregados in self._descubrir_por_lotes(run):
                     for path, constancia in entregados:
@@ -1701,6 +1780,7 @@ class FolderRunner:
                         return
             finally:
                 estado["terminado"] = True
+                run.recorrido_terminado = True
                 hay_novedad.set()
 
         async def trabajador(indice: int) -> None:
@@ -1723,6 +1803,8 @@ class FolderRunner:
                     if not run.active:
                         return
                     await self._consume(run, path)
+                    # El ritmo de la corrida, para estimar lo que falta.
+                    run.terminados_en.append(time.monotonic())
 
         recorrido = asyncio.create_task(recorrer())
         try:
@@ -1761,6 +1843,7 @@ class FolderRunner:
                     if not run.active:
                         return
                     await self._consume(run, path)
+                    run.terminados_en.append(time.monotonic())
 
         cuantos = min(len(cola), self._trabajadores(run))
         await asyncio.gather(*(trabajador(indice) for indice in range(cuantos)))
@@ -1852,7 +1935,7 @@ class FolderRunner:
                 mirada = await asyncio.to_thread(self._vigencia, run, path)
             if local != path and not (mirada and mirada[0] is Vigencia.VIGENTE):
                 try:
-                    await asyncio.to_thread(red_smb.traer, str(path), local)
+                    await asyncio.to_thread(red_smb.traer, str(path), local, self._al_bajar(run, path))
                 except Exception as error:  # noqa: BLE001 - un PDF que no baja no tumba la carpeta
                     self._avisar(run, f"No se pudo traer «{relativa}» de la red: {explicar_fallo(error)}")
                     run.failed += 1
@@ -1921,7 +2004,7 @@ class FolderRunner:
                 # bajaba, como si no tuviera relación con la corrida.
                 job.progress.detail = "Bajando el PDF de la red"
                 self._registry.publish(job)
-                await asyncio.to_thread(red_smb.traer, str(path), local)
+                await asyncio.to_thread(red_smb.traer, str(path), local, self._al_bajar(run, path))
                 job.progress.detail = ""
                 self._registry.publish(job)
             # El PDF que tiene abierto otro programa -- el visor de alguien, el
@@ -2048,7 +2131,7 @@ class FolderRunner:
                         # Otro tomó el nombre mientras tanto: no se pisa.
                         raise FileExistsError(errno.EEXIST, "el nombre ya está ocupado", str(hasta))
                     hasta.parent.mkdir(parents=True, exist_ok=True)
-                    _copiar(desde, hasta)
+                    _copiar(desde, hasta, self._al_entregar(run, origin))
                 except OSError as error:
                     quedan.append((desde, hasta, reemplaza))
                     fallos.append(f"«{hasta.name}»: {explicar_fallo(error)}")
@@ -2064,6 +2147,152 @@ class FolderRunner:
                 )
         entrega.pendientes = quedan
         entrega.fallos = fallos
+
+    # -- la red: red o local, su velocidad y lo que falta (2026-11-05) ------------
+
+    #: Cada cuánto se vuelve a medir la lectura del origen con la corrida en
+    #: marcha, y con cuánto: poco, para no quitarle red a la corrida.
+    SEGUNDOS_ENTRE_MEDIDAS = 300.0
+    MUESTRA_EN_VIVO = 2 * 1024 * 1024
+    #: Cuánto se espera a que el recorrido encuentre un PDF para la prueba de lectura.
+    ESPERA_AL_PRIMER_PDF = 600.0
+
+    async def _medir_la_red(self, run: FolderRun) -> None:
+        """Si el origen y el destino son de red, la prueba del arranque y la lectura en vivo.
+
+        La prueba (el operador la eligió el 2026-11-05: «prueba al empezar + en
+        vivo»): escribe y borra unos MB en el destino y lee unos MB del primer PDF
+        que encuentre el recorrido. Después, cada ``SEGUNDOS_ENTRE_MEDIDAS``, una
+        muestra pequeña del siguiente de la cola; las descargas y las entregas
+        reales también se miden (``_al_bajar``, ``_al_entregar``). Nada de aquí
+        toca la corrida: medir es para informar, y un fallo sólo se anota.
+        """
+        from ..adapters import acceso
+        from ..domain.ritmo import mb_por_segundo
+
+        prueba = run.prueba_de_red
+        # Un origen que se baja con el cliente SMB ya se mide con cada descarga
+        # (``_al_bajar``), y la primera sale en cuanto arranca la corrida: leer
+        # además una muestra sería bajar dos veces, y de lo ya entregado, nunca.
+        por_descargas = red_smb.por_smb(run.source)
+        try:
+            run.origen_de_red = await asyncio.to_thread(acceso.es_de_red, run.source)
+            run.destino_de_red = await asyncio.to_thread(acceso.es_de_red, run.destination)
+            prueba.clear()
+            prueba["estado"] = "midiendo"
+            self._publish(run)
+            # Escribir: una muestra, si la carpeta ya está; si no, la primera
+            # entrega, que la crea. La prueba no crea carpetas que no se eligieron.
+            if await asyncio.to_thread(run.destination.is_dir):
+                try:
+                    escritos, segundos = await asyncio.to_thread(acceso.medir_escritura, run.destination)
+                    prueba["escritura_mb_s"] = mb_por_segundo(escritos, segundos)
+                except Exception as error:  # noqa: BLE001 - se informa, la corrida sigue
+                    prueba["escritura_error"] = explicar_fallo(error)
+            # Leer: la primera descarga, o una muestra del primer PDF pendiente
+            # -- uno que se va a leer de todos modos, nunca uno ya entregado --.
+            muestra = None if por_descargas else await self._un_pdf_del_origen(run)
+            if muestra is not None:
+                try:
+                    leidos, segundos = await asyncio.to_thread(acceso.medir_lectura, muestra)
+                    prueba["lectura_mb_s"] = mb_por_segundo(leidos, segundos)
+                    prueba["muestra"] = re.split(r"[\\/]", muestra)[-1]
+                except Exception as error:  # noqa: BLE001 - se informa, la corrida sigue
+                    prueba["lectura_error"] = explicar_fallo(error)
+            self._publish(run)
+            if por_descargas or "escritura_mb_s" not in prueba:
+                await self._lo_primero_que_se_mueva(run, leer=por_descargas)
+            prueba["estado"] = "hecha"
+            self._publish(run)
+            while await self._dormir_mientras_siga(run, self.SEGUNDOS_ENTRE_MEDIDAS):
+                if por_descargas:
+                    continue
+                siguiente = next(iter(list(run.huellas_del_origen)), None)
+                if siguiente is None:
+                    continue
+                try:
+                    leidos, segundos = await asyncio.to_thread(
+                        acceso.medir_lectura, siguiente, self.MUESTRA_EN_VIVO
+                    )
+                except Exception:  # noqa: BLE001 - la próxima vez
+                    logger.debug("no se pudo medir la lectura de %s", siguiente, exc_info=True)
+                    continue
+                fin = time.monotonic()
+                run.ritmo_de_lectura.sumar(leidos, fin - segundos, fin)
+                self._publish(run)
+        except Exception:  # noqa: BLE001 - medir nunca tumba la corrida
+            logger.warning("no se pudo medir la red de %s", run.source, exc_info=True)
+
+    async def _un_pdf_del_origen(self, run: FolderRun) -> str | None:
+        """El primer PDF pendiente que encuentre el recorrido; ``None`` si no aparece ninguno.
+
+        Sólo pendientes: uno ya entregado no se vuelve a leer, ni para medir.
+        """
+        limite = time.monotonic() + self.ESPERA_AL_PRIMER_PDF
+        while run.active and time.monotonic() < limite:
+            primero = next(iter(list(run.huellas_del_origen)), None)
+            if primero:
+                return str(primero)
+            if run.recorrido_terminado:
+                return None
+            await asyncio.sleep(0.5)
+        return None
+
+    async def _lo_primero_que_se_mueva(self, run: FolderRun, *, leer: bool) -> None:
+        """Lo que falta de la prueba, de la primera descarga y la primera entrega reales.
+
+        Se espera como mucho ``ESPERA_AL_PRIMER_PDF``: una corrida que no baja ni
+        entrega nada -- todo ya estaba -- no tiene nada que medir, y la pantalla
+        lo dice con «—».
+        """
+        prueba = run.prueba_de_red
+        limite = time.monotonic() + self.ESPERA_AL_PRIMER_PDF
+        while run.active and time.monotonic() < limite:
+            if leer and "lectura_mb_s" not in prueba and run.ritmo_de_lectura.medidas:
+                prueba["lectura_mb_s"] = run.ritmo_de_lectura.mb_por_segundo()
+                prueba["muestra"] = "la primera descarga"
+                self._publish(run)
+            if "escritura_mb_s" not in prueba and "escritura_error" not in prueba and run.ritmo_de_escritura.medidas:
+                prueba["escritura_mb_s"] = run.ritmo_de_escritura.mb_por_segundo()
+                self._publish(run)
+            listo_leer = not leer or "lectura_mb_s" in prueba
+            listo_escribir = "escritura_mb_s" in prueba or "escritura_error" in prueba
+            if listo_leer and listo_escribir:
+                return
+            await asyncio.sleep(0.5)
+
+    @staticmethod
+    async def _dormir_mientras_siga(run: FolderRun, segundos: float) -> bool:
+        """Espera ``segundos`` o hasta que la corrida termine; dice si sigue."""
+        limite = time.monotonic() + segundos
+        while run.active and time.monotonic() < limite:
+            await asyncio.sleep(min(1.0, max(0.0, limite - time.monotonic())))
+        return run.active
+
+    @staticmethod
+    def _al_bajar(run: FolderRun, path: Path) -> Callable[[int, float, float], None]:
+        """Lo que se anota de cada descarga de la red: la velocidad de la corrida y la de su PDF."""
+
+        clave = str(FolderRunner._relative(run, path))
+
+        def anotar(bytes_: int, inicio: float, fin: float) -> None:
+            run.ritmo_de_lectura.sumar(bytes_, inicio, fin)
+            run.medidas_del_pdf.setdefault(clave, {})["lectura"] = (bytes_, fin - inicio)
+
+        return anotar
+
+    @staticmethod
+    def _al_entregar(run: FolderRun, path: Path) -> Callable[[int, float, float], None]:
+        """Lo que se anota de cada PDF que se copia al destino: suma a lo de su PDF de origen."""
+
+        clave = str(FolderRunner._relative(run, path))
+
+        def anotar(bytes_: int, inicio: float, fin: float) -> None:
+            run.ritmo_de_escritura.sumar(bytes_, inicio, fin)
+            antes = run.medidas_del_pdf.setdefault(clave, {}).get("escritura", (0, 0.0))
+            run.medidas_del_pdf[clave]["escritura"] = (antes[0] + bytes_, antes[1] + (fin - inicio))
+
+        return anotar
 
     #: Dónde se dejan, mientras se procesan, las copias de los PDF de una carpeta de red.
     CARPETA_DE_COPIAS = "red"
@@ -2103,10 +2332,23 @@ class FolderRunner:
             )
 
     def _anotar_el_proceso(self, run: FolderRun, job: Job, relativa: str) -> None:
-        from .indices import fila_de_proceso
+        from .indices import con_la_red, fila_de_proceso
 
+        medidas = run.medidas_del_pdf.pop(relativa, {})
         if str(job.state) in ("done", "failed", "cancelled"):
-            run.procesos[relativa] = fila_de_proceso(job, self._destino_relativo(run, job))
+            # Con el acceso de cada lado y la velocidad con que se bajó y se
+            # entregó este PDF; si no se movió por la red -- un origen local, o
+            # uno de red que el sistema abre directo --, la de la corrida.
+            lectura, escritura = run.velocidades()
+            run.procesos[relativa] = con_la_red(
+                fila_de_proceso(job, self._destino_relativo(run, job)),
+                origen_de_red=run.origen_de_red,
+                destino_de_red=run.destino_de_red,
+                lectura=medidas.get("lectura"),
+                escritura=medidas.get("escritura"),
+                lectura_de_la_corrida=lectura,
+                escritura_de_la_corrida=escritura,
+            )
 
     def _pausar_si_fallan_seguidos(self, run: FolderRun, job: Job) -> None:
         """Pausa la carpeta cuando fallan demasiados documentos seguidos.
@@ -2396,6 +2638,8 @@ class FolderRunner:
             analisis = self._filas_del_analisis(run)
             avisos = list(run.avisos)
             del_inventario = list(run.inventario_filas)
+            # Lo medido de la red, para su sección en el inventario de procesos.
+            red = run.resumen_de_la_red()
             # También el de una corrida anterior que ésta todavía no reescribió.
             de_las_subcarpetas = {Path(ruta) for ruta in run.inventarios_de_carpeta.values()} | {
                 ruta_del_fuid(FolderRunner._en_destino(run, carpeta)) for carpeta in run.filas_por_carpeta if carpeta
@@ -2414,6 +2658,7 @@ class FolderRunner:
                 origen=run.source.name or str(run.source),
                 clase_de_origen="Carpeta",
                 operador=run.operator,
+                red=red,
             ),
         )
         if con_indice:
@@ -2829,7 +3074,7 @@ class FolderRunner:
             target = None
             try:
                 target = unique_path(carpeta, name)
-                _copiar(source_file, target)
+                _copiar(source_file, target, self._al_entregar(run, origin))
                 if entrega.archivos is not None:
                     entrega.archivos.append(target)
             except OSError as error:
@@ -3201,7 +3446,7 @@ class FolderRunner:
         for desde, hasta in copias:
             try:
                 hasta.parent.mkdir(parents=True, exist_ok=True)
-                _copiar(desde, hasta)
+                _copiar(desde, hasta, self._al_entregar(run, origin))
             except OSError as error:
                 logger.warning("no se pudo entregar %s: %s", hasta.name, error)
                 entrega.fallos.append(f"«{hasta.name}»: {explicar_fallo(error)}")
@@ -4043,19 +4288,30 @@ def _mover(desde: Path, hasta: Path) -> None:
         time.sleep(espera)
 
 
-def _copiar(desde: Path, hasta: Path) -> None:
+def _copiar(desde: Path, hasta: Path, medir: Callable[[int, float, float], None] | None = None) -> None:
     """Copia entera o nada: primero a «.part» y luego, comprobada, a su nombre.
 
     Una copia que se cortaba -- la red, el disco lleno -- dejaba un PDF a medias
     con su nombre definitivo, y la corrida siguiente lo daba por entregado.
+
+    ``medir`` recibe los bytes y de cuándo a cuándo se copiaron: la velocidad
+    de escritura en el destino (2026-11-05).
     """
     parcial = hasta.with_name(hasta.name + ".part")
     for espera in (*ESPERAS_SI_ESTA_EN_USO, None):
         try:
+            inicio = time.monotonic()
             shutil.copy2(desde, parcial)
-            if parcial.stat().st_size != desde.stat().st_size:
+            fin = time.monotonic()
+            tamano = parcial.stat().st_size
+            if tamano != desde.stat().st_size:
                 raise OSError(errno.EIO, "la copia quedó incompleta", str(hasta))
             os.replace(parcial, hasta)
+            if medir is not None:
+                try:
+                    medir(tamano, inicio, fin)
+                except Exception:  # noqa: BLE001 - medir nunca tumba una entrega
+                    logger.debug("no se pudo anotar la velocidad de %s", hasta, exc_info=True)
             return
         except BaseException as error:
             try:

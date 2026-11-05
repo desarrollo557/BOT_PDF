@@ -183,6 +183,42 @@ def fila_de_proceso(job, destino: str | Path | None = None):
     )
 
 
+def con_la_red(
+    fila,
+    *,
+    origen_de_red: bool | None,
+    destino_de_red: bool | None,
+    lectura: tuple[int, float] | None = None,
+    escritura: tuple[int, float] | None = None,
+    lectura_de_la_corrida: float | None = None,
+    escritura_de_la_corrida: float | None = None,
+):
+    """La fila con el acceso de su corrida -- «Red → Local» -- y la velocidad con que se movió su PDF.
+
+    La del PDF si se midió (su descarga de la red, sus copias al destino); si
+    no, la de la corrida en ese momento. Lo pidió el operador el 2026-11-05:
+    las mismas cifras de la pantalla, en el inventario general de procesos.
+    """
+    from dataclasses import replace
+
+    from ..domain.ritmo import mb_por_segundo
+
+    def lado(de_red: bool | None) -> str:
+        return "—" if de_red is None else ("Red" if de_red else "Local")
+
+    def velocidad(medida: tuple[int, float] | None, de_la_corrida: float | None) -> float | None:
+        propia = mb_por_segundo(*medida) if medida else None
+        valor = propia if propia is not None else de_la_corrida
+        return round(valor, 2) if valor is not None else None
+
+    return replace(
+        fila,
+        acceso=f"{lado(origen_de_red)} → {lado(destino_de_red)}",
+        lectura_mb_s=velocidad(lectura, lectura_de_la_corrida),
+        escritura_mb_s=velocidad(escritura, escritura_de_la_corrida),
+    )
+
+
 def inventario_de_procesos(
     jobs: Iterable,
     destino: Path,
@@ -210,12 +246,15 @@ def inventario_de_procesos_de(
     origen: str,
     clase_de_origen: str,
     operador: str | None = None,
+    red: dict | None = None,
 ) -> Path | None:
     """El inventario general del bot con estas filas, en el orden de sus PDF.
 
     La corrida de carpeta guarda la fila de cada PDF al terminarlo y escribe
     con ellas: los trabajos viejos salen del registro, y los PDF que una
     corrida anterior dejó entregados no fueron nunca un trabajo de ésta.
+    ``red`` es lo medido de la red de la corrida (``FolderRun.resumen_de_la_red``),
+    para su sección en el resumen.
     """
     from ..adapters.excel_inventory import ExcelInventarioDeProcesos
 
@@ -223,7 +262,7 @@ def inventario_de_procesos_de(
     if not ordenadas:
         return None
     return ExcelInventarioDeProcesos().write(
-        ordenadas, destino, origen=origen, clase_de_origen=clase_de_origen, operador=operador
+        ordenadas, destino, origen=origen, clase_de_origen=clase_de_origen, operador=operador, red=red
     )
 
 

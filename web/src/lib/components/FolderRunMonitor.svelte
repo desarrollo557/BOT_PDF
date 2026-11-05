@@ -15,6 +15,7 @@
   import RunStats from '$lib/components/RunStats.svelte';
   import PanelDeRendimiento from '$lib/components/PanelDeRendimiento.svelte';
   import { marcadasEnCinta, sumarConsumos } from '$lib/rendimiento';
+  import { lado, loQueFalta, vaPorLaRed } from '$lib/velocidad';
   import { jobStore } from '$lib/jobs.svelte';
   import { unitFor } from '$lib/format';
   import { STAGE_LABELS } from '$lib/rungs';
@@ -115,6 +116,15 @@
     abiertos.reduce((suma, item) => suma + (item.job?.progress.pages_per_second ?? 0), 0)
   );
   const unitLabel = $derived(unitFor(job?.report?.stats, run.resolutions));
+
+  /**
+   * Red o local, la velocidad real de cada lado y lo que falta: lo pidió el
+   * operador el 2026-11-05. Las cifras las escribe el servicio, que es el que
+   * mide (`domain/ritmo.py`); el Excel de procesos dice lo mismo.
+   */
+  const red = $derived(run.red);
+  const midiendo = $derived(red?.prueba.estado === 'midiendo');
+  const falta = $derived(red && active ? loQueFalta(red) : null);
 
   function clock(at: string): string {
     const parsed = Date.parse(at);
@@ -452,6 +462,19 @@
     <div class="descargas"><Descargas grupos={descargas} /></div>
   {/if}
 
+  {#if red && (red.origen.acceso || red.destino.acceso)}
+    <div class="red" data-red={vaPorLaRed(red) ? 'si' : 'no'}>
+      <span class="caps">Red</span>
+      <span><strong>Origen</strong> {lado(red.origen, midiendo)}</span>
+      <span><strong>Destino</strong> {lado(red.destino, midiendo)}</span>
+      {#if falta}
+        <span class="falta">{falta}</span>
+      {:else if active && midiendo}
+        <span class="falta">Midiendo la red…</span>
+      {/if}
+    </div>
+  {/if}
+
   <RunStats
     {pagesDone}
     pagesTotal={0}
@@ -692,6 +715,33 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-2);
+  }
+
+  /* Red o local, su velocidad y lo que falta: una línea, con el tinte del
+     acento cuando algún lado va por la red. */
+  .red {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-1) var(--space-4);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-md);
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-sm);
+    color: var(--ink-2);
+  }
+  .red[data-red='si'] {
+    border-color: color-mix(in srgb, var(--accent) 35%, var(--hairline));
+    background: var(--accent-soft);
+  }
+  .red strong {
+    font-weight: 600;
+    color: var(--muted);
+  }
+  .red .falta {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    color: var(--ink);
   }
 
   .en-paralelo {

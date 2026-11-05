@@ -567,6 +567,44 @@ export interface FolderRun {
   analisis?: string | null;
   analisis_ruta?: string | null;
   controles?: ControlDeLibro[];
+  /** Red o local, la velocidad medida y lo que falta (2026-11-05). Ausente en un servicio anterior. */
+  red?: RedDeLaCorrida;
+}
+
+/** Un lado de la corrida -- el origen que se lee o el destino en que se escribe --. */
+export interface LadoDeLaRed {
+  /** `null` mientras no se ha mirado. */
+  acceso: 'red' | 'local' | null;
+  mb_s: number | null;
+  /** «4,2 MB/s», ya escrito por el servicio; «—» si no se ha medido. */
+  velocidad: string;
+}
+
+/**
+ * Lo que la corrida sabe de la red: el operador pidió el 2026-11-05 que dijera si
+ * va por red o por local, a qué velocidad real y cuánto podría demorar.
+ */
+export interface RedDeLaCorrida {
+  origen: LadoDeLaRed;
+  destino: LadoDeLaRed;
+  /** La prueba del arranque: `estado` «midiendo» o «hecha», y lo que dio. */
+  prueba: {
+    estado?: 'midiendo' | 'hecha';
+    lectura_mb_s?: number | null;
+    escritura_mb_s?: number | null;
+    lectura_error?: string;
+    escritura_error?: string;
+    muestra?: string;
+  };
+  /** Segundos que faltan, o `null` mientras no hay ritmo con qué estimar. */
+  falta_s: number | null;
+  /** «3 h 10 min», ya escrito; «—» si no se sabe. */
+  falta: string;
+  /** De lo que falta, cuánto es mover los PDF por la red. */
+  red_s: number | null;
+  falta_red: string;
+  /** Si el origen aún se está recorriendo: pueden aparecer más PDF. */
+  al_menos: boolean;
 }
 
 /** One source document ever processed, folded back out of the ledger. */
