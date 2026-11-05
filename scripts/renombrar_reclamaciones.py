@@ -50,8 +50,13 @@ Uso, en CMD o PowerShell (sin nada más detrás del comando):
     python renombrar_reclamaciones.py --deshacer   todo como estaba antes del primer --aplicar
     ... --releer                                   vuelve a leer el RE de todos los PDF
 
-Sin carpeta trabaja sobre «C:\\Users\\SIAR1\\Desktop\\FOLIA-BOT\\MAGANGUE PROCESADO»;
-otra va antes de las opciones: ``python renombrar_reclamaciones.py "D:\\otra" --aplicar``.
+Sin carpeta trabaja sobre «W:\\FOLIA-BOT\\MAGANGUE PROCESADO»: la misma carpeta del
+escritorio del otro equipo (W: = \\\\200.100.20.101\\Users\\SIAR1\\Desktop), vista por
+la red desde el equipo de desarrollo (2026-11-04). En el propio equipo es
+«C:\\Users\\SIAR1\\Desktop\\FOLIA-BOT\\MAGANGUE PROCESADO»; ésa, u otra, va antes de las
+opciones: ``python renombrar_reclamaciones.py "C:\\Users\\SIAR1\\Desktop\\FOLIA-BOT\\MAGANGUE PROCESADO" --aplicar``.
+Lo ya leído del RE («00.RE Y ORDEN - LECTURAS.jsonl») sirve por cualquiera de las
+dos rutas: se compara por caja, nombre, tamaño y fecha, que la red conserva.
 
 Necesita Python 3.9 o más nuevo con ``pip install pymupdf openpyxl``, y Tesseract
 para las hojas escaneadas sin texto (sin él sólo se lee el texto del PDF, y lo que
@@ -93,8 +98,9 @@ from copy import copy
 from datetime import date, datetime
 from pathlib import Path
 
-#: La carpeta de MAGANGUE ya procesada, en el equipo donde se corre.
-CARPETA_POR_OMISION = r"C:\Users\SIAR1\Desktop\FOLIA-BOT\MAGANGUE PROCESADO"
+#: La carpeta de MAGANGUE ya procesada, por la unidad de red W: (el escritorio del
+#: otro equipo). En ese equipo, sin red: «C:\Users\SIAR1\Desktop\FOLIA-BOT\MAGANGUE PROCESADO».
+CARPETA_POR_OMISION = r"W:\FOLIA-BOT\MAGANGUE PROCESADO"
 #: Los únicos títulos que llevan el RE, como los deja ``_plano``.
 TITULOS_CON_RE = ("RECLAMO", "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION")
 REGISTRO = "00.RE Y ORDEN - REGISTRO.csv"
