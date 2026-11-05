@@ -897,7 +897,8 @@ class TestElExcelDeLaCarpeta:
         # El FUID oficial, una fila por graduado y una por acta de consejo.
         fuid = load_workbook(del_fuid).active
         assert fuid["P1"].value == "CÓDIGO: FO-GD-008"
-        assert " - ACTA DE GRADO No. 1 - " in fuid["C14"].value
+        # Sin nombre leído, el acta: el mismo texto que su PDF, en mayúsculas (2026-11-05).
+        assert fuid["C14"].value == "ACTA DE GRADO NO. 1"
         assert fuid["C15"].value == "ACTA DE CONSEJO DE FACULTAD No. N/A - ORDINARIA"
         # El Excel de actas, sólo con las de consejo.
         from resolutions.adapters.excel_actas import FILA_DE_ENCABEZADOS

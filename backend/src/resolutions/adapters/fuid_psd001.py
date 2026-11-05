@@ -91,7 +91,11 @@ def celdas_de(fila: FuidRow, cabecera: Cabecera, *, inventariado: date | None) -
         fila.folios,                                 # T  FOLIOS
         fila.soporte,                                # U  SOPORTE
         fila.frecuencia,                             # V  FRECUENCIA
-        fila.notas,                                  # W  NOTAS
+        # NOTAS va vacía: el FUID va al cliente y lo que no se pudo leer sigue
+        # en la revisión del bot (el operador, 2026-11-05: «en notas o en
+        # observación no quiero nada de revisión… ese FUID irá hacia los
+        # clientes»), igual que en el FO-GD-008 desde el 2026-10-30.
+        None,                                        # W  NOTAS
         _o_na(cabecera.elaborado_por),               # X  ELABORADO POR
         # La fecha en que se levantó el inventario sí la sabe el sistema: es el
         # día en que corrió. Las dos de transferencia no: esa la pone quien

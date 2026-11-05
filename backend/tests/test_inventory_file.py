@@ -181,6 +181,10 @@ class TestElFuidQueQuedaEscrito:
         for columna in (3, 8, 9, 19, 26, 27):
             assert escrito.cell(row=PRIMERA_FILA, column=columna).value == NO_APLICA
 
+    def test_notas_va_vacia_porque_el_fuid_va_al_cliente(self, escrito):
+        """El operador (2026-11-05): «en notas o en observación no quiero nada de revisión»."""
+        assert escrito.cell(row=PRIMERA_FILA, column=23).value is None
+
     def test_la_cabecera_de_la_entrega_se_repite_en_la_fila(self, escrito):
         assert escrito.cell(row=PRIMERA_FILA, column=4).value == (
             "KINGSPAN PANELES AISLADOS S.A.S"

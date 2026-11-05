@@ -136,6 +136,38 @@ class TestSiDividirFallaElInventarioSeEscribeIgual:
         )
 
 
+class TestElPdfSeLlamaComoSuAsunto:
+    """El operador (2026-11-05): «que el nombre del PDF sea el mismo que vaya en el FUID»."""
+
+    def test_de_punta_a_punta(self, tmp_path):
+        import fitz
+
+        from resolutions.adapters.fuid_de_la_entrega import filas_del_fuid
+        from resolutions.api.worker import inventario as trabajo
+
+        origen = tmp_path / "libro.pdf"
+        with fitz.open() as doc:
+            for texto in (LISTADO, FORMULARIO_2005, MODERNA_COMPLETA):
+                doc.new_page().insert_text((20, 40), texto, fontsize=6)
+            doc.save(origen)
+        payload = {
+            "job_id": "t",
+            "source": str(origen),
+            "filename": "libro.pdf",
+            "task": "both",
+            "settings": {"ocr_language": "spa", "output_dir": str(tmp_path / "salida")},
+        }
+
+        informe = trabajo._acta_consejo_job(payload, grado=True)
+
+        nombres = sorted(salida.rsplit("/", 1)[-1] for salida in informe["outputs"])
+        assert "02_MARTHA LUCIA HERRERA VILLAMIZAR - ESPECIALISTA EN GESTION DE LA CALIDAD Y AUDITORIA EN SALUD.pdf" in nombres
+        assert "03_ANDRES FELIPE BALLESTAS MENDOZA - ENFERMERO.pdf" in nombres
+        # Y el asunto de cada graduado en el FUID es su PDF sin el orden delante.
+        asuntos = {fila.asunto for fila in filas_del_fuid(informe["inventario_actas"])}
+        assert {nombre[3:-4] for nombre in nombres if not nombre.startswith("01_")} == asuntos
+
+
 class TestLaFechaEnLetras:
     """Los formularios de 1980 a 2005: huecos rellenos a máquina, cifras rotas."""
 
@@ -503,10 +535,13 @@ class TestElFuidDeGrado:
 
         hoja = load_workbook(escribir_fuid_de_actas_de_grado(self._filas(), tmp_path / "f.xlsx")).active
         fila = [hoja.cell(14, columna).value for columna in range(1, 17)]
+        # El operador (2026-11-05): el asunto, el nombre y la especialidad --
+        # el mismo texto que el nombre de su PDF --; desde, el número del acta
+        # tal como va impreso; hasta, la cédula.
         assert fila[:12] == [
-            1, None, "MARTHA LUCIA HERRERA VILLAMIZAR - ACTA DE GRADO No. 01/05 - "
+            1, None, "MARTHA LUCIA HERRERA VILLAMIZAR - "
             "ESPECIALISTA EN GESTION DE LA CALIDAD Y AUDITORIA EN SALUD",
-            "39692338", "N/A", "03/03/2005", "03/03/2005", "00C003292", "UPD3859821", None, None, 1,
+            "01/05", "39692338", "03/03/2005", "03/03/2005", "00C003292", "UPD3859821", None, None, 1,
         ]
         # Sin la IA el folio manuscrito no se lee: N/A en las dos columnas.
         assert fila[12] == fila[11]
@@ -529,7 +564,7 @@ class TestElFuidDeGrado:
         hoja = load_workbook(escribir_fuid_de_actas_de_grado(self._filas(), tmp_path / "f.xlsx")).active
         segunda = [hoja.cell(15, columna).value for columna in range(1, 17)]
         assert segunda[0] == 2
-        assert segunda[3] == "N/A"
+        assert segunda[4] == "N/A"  # la cédula, que no se leyó, va en «hasta»
         assert segunda[15] is None  # NOTAS va vacía en el FUID que se entrega (2026-10-30)
         assert hoja.cell(16, 3).value in (None, "")
 
@@ -540,11 +575,47 @@ class TestElFuidDeGrado:
         assert ubicacion("00C003284\\UPD3859771", "1N°22.pdf") == ("00C003284", "UPD3859771")
         assert ubicacion("", "libro.pdf") == ("", "")
 
-    def test_sin_numero_el_asunto_conserva_su_forma(self, tmp_path):
+    def test_sin_numero_el_asunto_no_cambia_y_desde_dice_n_a(self, tmp_path):
         from resolutions.adapters.fuid_actas_de_grado import filas_del_fuid
 
         fila = {**{k: "" for k in ("carpeta", "archivo")}, "acta": "N/A", "nombre": "ANA RUIZ", "titulo": "ENFERMERA", "tipo": "ACTA DE GRADO"}
-        assert filas_del_fuid([fila])[0].asunto == "ANA RUIZ - ACTA DE GRADO No. N/A - ENFERMERA"
+        hecha = filas_del_fuid([fila])[0]
+        assert hecha.asunto == "ANA RUIZ - ENFERMERA"
+        assert (hecha.consecutivo_inicial, hecha.consecutivo_final) == ("N/A", "N/A")
+
+    def test_el_numero_va_como_esta_impreso_y_el_de_las_filas_de_antes_tambien(self):
+        """«01/05», «082-2005», con su BIS; las filas viejas sólo traían el número suelto."""
+        from resolutions.adapters.fuid_actas_de_grado import fila_del_fuid
+
+        base = {"carpeta": "00C003292", "archivo": "a.pdf", "tipo": "ACTA DE GRADO", "nombre": "ANA RUIZ", "titulo": "ENFERMERA"}
+        assert fila_del_fuid({**base, "acta": "ACTA DE GRADO No. 082-2005", "cedula": "1047"}).consecutivo_inicial == "082-2005"
+        assert fila_del_fuid({**base, "acta": "ACTA DE GRADO No. 01 BIS"}).consecutivo_inicial == "01 BIS"
+        assert fila_del_fuid({**base, "acta": "N/A", "numero": "054231116"}).consecutivo_inicial == "054231116"
+        assert fila_del_fuid({**base, "acta": "ACTA DE GRADO No. 3", "cedula": "1047"}).consecutivo_final == "1047"
+
+    def test_el_asunto_es_el_nombre_del_pdf(self):
+        """El operador (2026-11-05): «que el nombre del PDF sea el mismo que vaya en el FUID»."""
+        from resolutions.adapters.fuid_actas_de_grado import fila_del_fuid
+        from resolutions.application.acta_consejo import (
+            TIPO_DE_GRADO,
+            FilaDeActa,
+            nombre_de_la_sesion,
+        )
+
+        for nombre, titulo, cedula in (
+            ("MARTHA LUCIA HERRERA VILLAMIZAR", "ESPECIALISTA EN GESTION DE LA CALIDAD", "39692338"),
+            # Una palabra imposible no va a ninguno de los dos.
+            ("ANA MSCSDSS RUIZ", "ENFERMERA", None),
+            # Sin nombre legible, el acta y la cédula, en los dos.
+            (None, "ENFERMERA", "1047"),
+        ):
+            fila = FilaDeActa(
+                archivo="a.pdf", acta="ACTA DE GRADO No. 01/05", fecha="03-03-2005", folio_inicial=1,
+                folio_final=1, folios=1, resumen="", tipo=TIPO_DE_GRADO, nombre=nombre, titulo=titulo, cedula=cedula,
+            )
+            from dataclasses import asdict
+
+            assert fila_del_fuid(asdict(fila)).asunto == nombre_de_la_sesion(fila)
 
 
 class TestElFolioManuscrito:
@@ -848,8 +919,12 @@ class TestElNombreYElTituloLimpios:
         # Sin cambiar el género al unificar.
         assert titulos_unificados(["INGENIERO CIVIL", "INGENIERO CIVIL", "INGENIERA CIVIL"])[2] == "INGENIERA CIVIL"
 
-    def test_el_pdf_del_graduado_se_llama_nombre_cedula_y_titulo(self):
-        """El operador (2026-11-03): «nombre, cédula, título, obligatoriamente»."""
+    def test_el_pdf_del_graduado_se_llama_nombre_y_especialidad(self):
+        """El operador (2026-11-05): el nombre del PDF, el mismo del FUID: nombre y especialidad.
+
+        Reemplaza «nombre, cédula, título» del 2026-11-03: la cédula va en la
+        columna «hasta» del FUID.
+        """
         from dataclasses import replace
 
         from resolutions.application.acta_consejo import (
@@ -864,9 +939,9 @@ class TestElNombreYElTituloLimpios:
             titulo="ESPECIALISTA EN GESTION DE LA CALIDAD", cedula="39692338",
         )
         assert nombre_de_la_sesion(fila) == (
-            "MARTHA LUCIA HERRERA VILLAMIZAR - 39692338 - ESPECIALISTA EN GESTION DE LA CALIDAD"
+            "MARTHA LUCIA HERRERA VILLAMIZAR - ESPECIALISTA EN GESTION DE LA CALIDAD"
         )
-        # Sin cédula leída, el nombre y el título.
+        # Con cédula o sin ella, lo mismo.
         assert nombre_de_la_sesion(replace(fila, cedula=None)) == (
             "MARTHA LUCIA HERRERA VILLAMIZAR - ESPECIALISTA EN GESTION DE LA CALIDAD"
         )
@@ -1266,11 +1341,12 @@ class TestElFuidDeLosExamenes:
         assert fila.asunto == "ACTA DE EXAMEN PREPARATORIO DE GRADO - N/A - JESUS MA BARRIOS"
         assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("N/A", "N/A")
 
-    def test_el_acta_de_grado_sigue_igual(self):
+    def test_el_acta_de_grado_va_con_su_numero_y_su_cedula(self):
+        """Las de examen no cambian; la de grado (2026-11-05): número en desde, cédula en hasta."""
         from resolutions.adapters.fuid_actas_de_grado import fila_del_fuid
 
         fila = fila_del_fuid(
             self.fila(acta="ACTA DE GRADO No. 01/05", nombre="MARTHA LUCIA HERRERA", titulo="ENFERMERA", cedula="123456")
         )
-        assert fila.asunto == "MARTHA LUCIA HERRERA - ACTA DE GRADO No. 01/05 - ENFERMERA"
-        assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("123456", "N/A")
+        assert fila.asunto == "MARTHA LUCIA HERRERA - ENFERMERA"
+        assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("01/05", "123456")

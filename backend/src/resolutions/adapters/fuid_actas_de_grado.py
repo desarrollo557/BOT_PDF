@@ -4,11 +4,12 @@ Es el formato que el operador entregó como modelo («16. SECRETARIA
 INVENTARIO_ACTAS DE GRADO.xlsx»), que es el FO-GD-008 de la Universidad
 rellenado así:
 
-* **Nombre o asunto**: «ACTA DE GRADO No. 01/05 - MARTHA LUCIA HERRERA
-  VILLAMIZAR - ESPECIALISTA EN GESTION DE LA CALIDAD Y AUDITORIA EN SALUD».
-* **Consecutivo inicial**: la cédula del graduado, sin puntos; **final**, N/A: el
-  acta no trae otro número (lo pidió el operador el 2026-10-31: la cédula sólo
-  en la columna D).
+* **Nombre o asunto**: el nombre y la especialidad, «MARTHA LUCIA HERRERA
+  VILLAMIZAR - ESPECIALISTA EN GESTION DE LA CALIDAD Y AUDITORIA EN SALUD»: el
+  mismo texto con que se llama su PDF (``asunto_del_graduado``).
+* **Consecutivo inicial**: el número del acta tal como va impreso, «01/05»;
+  **final**: la cédula del graduado, sin puntos. Lo pidió el operador el
+  2026-11-05 para todas las actas de grado; antes la cédula iba en la D.
 * **Fechas extremas**: la fecha del acta, la misma en las dos, «03/03/2005».
 * **Caja** y **carpeta**: «00C003292» y «UPD3859821», de dónde está el PDF.
 * **No. de folios**: cuántos folios -- hojas -- tiene el acta, «1»; **No. de
@@ -39,7 +40,7 @@ from pathlib import Path
 
 from ..application.fuid import FuidRow
 from ..application.inventory_document import template_for
-from ..domain.acta_grado import es_acta_de_examen
+from ..domain.acta_grado import asunto_del_graduado, es_acta_de_examen
 from ..domain.doctype import DocumentType
 from .fuid_inventory import FuidInventory
 
@@ -98,6 +99,28 @@ def _folio(inicial: object, final: object) -> int | str:
     return inicial
 
 
+def _leido(valor: object) -> str | None:
+    """El dato tal como se leyó, o ``None`` si no se leyó: vacío o N/A."""
+    texto = str(valor or "").strip()
+    return texto if texto and texto != NO_LEIDO else None
+
+
+#: El número tras «No.» en el encabezado del acta: «ACTA DE GRADO No. 01/05».
+_NUMERO_DEL_ENCABEZADO = re.compile(r"\bNo\.\s*(\S.*)$")
+
+
+def _numero_del_acta(fila: Mapping[str, object]) -> str:
+    """El número del acta tal como va impreso -- «01/05», «082-2005», «054231116» --, o N/A.
+
+    Del encabezado, que lo trae con su «BIS» si lo lleva; si no, del número
+    suelto que guardan las filas de antes.
+    """
+    encabezado = _NUMERO_DEL_ENCABEZADO.search(str(fila.get("acta") or ""))
+    if encabezado:
+        return encabezado.group(1).strip()
+    return _leido(fila.get("numero")) or NO_LEIDO
+
+
 #: «QUINTO EXAMEN PREPARATORIO DE GRADO»: cuál preparatorio, para el asunto.
 _CUAL_PREPARATORIO = re.compile(r"^(\w+) EXAMEN PREPARATORIO")
 
@@ -125,13 +148,9 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
     caja, upd = ubicacion(str(fila.get("carpeta") or ""), str(fila.get("archivo") or ""))
     acta = str(fila.get("acta") or NO_LEIDO)
     examen = es_acta_de_examen(acta)
-    if acta == NO_LEIDO:
-        # Sin el número, el asunto conserva su forma: «ACTA DE GRADO No. N/A
-        # - NOMBRE - TÍTULO», que es por donde se lee y se filtra.
-        acta = f"{ACTA_DE_GRADO} No. {NO_LEIDO}"
-    nombre = str(fila.get("nombre") or "") or NO_LEIDO
-    titulo = str(fila.get("titulo") or "") or NO_LEIDO
-    cedula = str(fila.get("cedula") or "") or NO_LEIDO
+    nombre = _leido(fila.get("nombre")) or NO_LEIDO
+    titulo = _leido(fila.get("titulo")) or NO_LEIDO
+    cedula = _leido(fila.get("cedula")) or NO_LEIDO
     fecha = _fecha_del_fuid(fila.get("fecha"))
     # Cuántos folios tiene el acta y cuántas páginas se escanearon: no el
     # folio manuscrito de la esquina, que es su lugar en el libro.
@@ -143,21 +162,29 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
         folios = final - inicial + 1
     else:
         folios = max(1, (paginas + 1) // 2)
-    # La cédula sólo en la columna D: el acta no trae otro número. El acta de
-    # examen no trae número ni cédula: desde y hasta, el folio del libro en que
-    # está (lo eligió el operador el 2026-11-04).
-    desde_hasta = (cedula, NO_LEIDO)
     if examen:
+        # El acta de examen no trae número ni cédula: desde y hasta, el folio
+        # del libro en que está, y el examen primero en el asunto (lo eligió el
+        # operador el 2026-11-04).
+        asunto = _asunto_del_examen(acta, nombre, titulo)
         desde_hasta = (
             str(inicial) if _es_numero(inicial) else NO_LEIDO,
             str(final) if _es_numero(final) else NO_LEIDO,
         )
+    else:
+        # El graduado (2026-11-05): el asunto es el nombre y la especialidad,
+        # el mismo texto con que se llama su PDF; desde, el número del acta; y
+        # hasta, su cédula.
+        asunto = asunto_del_graduado(
+            _leido(fila.get("nombre")),
+            _leido(fila.get("titulo")),
+            acta=_leido(fila.get("acta")),
+            cedula=_leido(fila.get("cedula")),
+        )
+        desde_hasta = (_numero_del_acta(fila), cedula)
     return FuidRow(
         orden=0,
-        # Primero el nombre y luego el tipo, en todos los inventarios de la
-        # Universidad (lo pidió el operador el 2026-10-30); el acta de examen,
-        # primero el examen.
-        asunto=_asunto_del_examen(acta, nombre, titulo) if examen else f"{nombre} - {acta} - {titulo}",
+        asunto=asunto,
         codigo_trd="",
         consecutivo_inicial=desde_hasta[0],
         consecutivo_final=desde_hasta[1],

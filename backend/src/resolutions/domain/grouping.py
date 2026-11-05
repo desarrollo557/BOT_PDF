@@ -29,6 +29,10 @@ class PageGroup:
     #: estos papeles son escaneos y no traen metadatos, y vacía cuando el
     #: documento no lleva ninguna fecha legible.
     fecha: str | None = None
+    #: Si ``kind`` va al nombre del archivo tal cual -- con sus espacios: «01_MARTHA
+    #: LUCIA HERRERA - ENFERMERA.pdf» -- en vez de en guiones. Es el del acta de
+    #: grado, que se llama igual que su asunto en el FUID (2026-11-05).
+    nombre_literal: bool = False
 
     @property
     def size(self) -> int:

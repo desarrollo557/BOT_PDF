@@ -66,7 +66,7 @@ def _resolucion(numero: str, pagina: int) -> dict:
     }
 
 
-def _entregar_las_dos(runner, run, settings):
+def _entregar_las_dos(runner, run, settings, *, resumen: str = "N/A"):
     from resolutions.api.jobs import Job
 
     caja = run.source / CAJA
@@ -91,7 +91,7 @@ def _entregar_las_dos(runner, run, settings):
     libro.report = {
         "inventario_actas": [
             {"archivo": actas.name, "acta": "ACTA ORDINARIA", "numero": "02", "fecha": "22-01-2004",
-             "folio_inicial": "N/A", "folio_final": "N/A", "folios": 7, "resumen": "N/A",
+             "folio_inicial": "N/A", "folio_final": "N/A", "folios": 7, "resumen": resumen,
              "observaciones": "", "pagina_inicial": 1, "pagina_final": 7},
         ],
     }
@@ -134,6 +134,57 @@ def test_cada_fuid_va_con_sus_pdf_y_el_general_las_junta_todas(corrida):
         "RESOLUCION 00030 POR LA CUAL SE CONVOCA",
         "RESOLUCION 00031 POR LA CUAL SE CONVOCA",
     ]
+
+
+def test_en_la_carpeta_de_la_corrida_un_solo_fuid_con_las_dos_y_su_resumen(tmp_path):
+    """La entrega real de la 3303 (2026-11-03): DESTINO = «<carpeta> - PROCESADO».
+
+    Las resoluciones y las actas caen en la misma carpeta, ``DESTINO\\00C003303``,
+    pero las actas la anotaban «18-RESOLUCIONES…\\00C003303» y las resoluciones
+    «00C003303»: dos FUID en el mismo archivo, y el segundo pisaba al primero.
+    El de la 3303 salió con sus 307 resoluciones y sin sus 10 actas, que sólo
+    quedaron en el Excel de actas. El operador (2026-11-05): «que los unas y me
+    des un solo resultado», con el resumen en el FUID.
+    """
+    from dataclasses import replace
+
+    from openpyxl import load_workbook
+
+    from resolutions.api.folders import FolderRun, FolderRunner
+    from resolutions.api.jobs import JobRegistry
+    from resolutions.api.settings import Settings
+
+    settings = replace(Settings(), output_dir=tmp_path / "outputs")
+    (tmp_path / CARPETA / CAJA).mkdir(parents=True)
+    destino = tmp_path / f"{CARPETA} - PROCESADO"
+    destino.mkdir()
+    runner = FolderRunner(JobRegistry(), settings, run_job=None)
+    run = FolderRun(
+        id="r1",
+        source=tmp_path / CARPETA,
+        destination=destino,
+        task="both",
+        oficina="FACULTAD DE DERECHO Y CIENCIAS POLITICAS",
+        oficina_mirada=True,
+    )
+    _entregar_las_dos(runner, run, settings, resumen="SE APROBO EL PLAN DE ESTUDIOS")
+
+    ruta = destino / CAJA / f"{CAJA}__FUID.xlsx"
+    fuid = leer_fuid(ruta)
+    assert sorted(fila[2] for fila in fuid.filas) == [
+        "ACTA DE CONSEJO DE FACULTAD No. 02 - ORDINARIA",
+        "RESOLUCION 00030 POR LA CUAL SE CONVOCA",
+        "RESOLUCION 00031 POR LA CUAL SE CONVOCA",
+    ]
+    # Ni un FUID aparte en un árbol con la carpeta elegida delante.
+    assert not (destino / CARPETA).exists()
+    # El resumen del acta, en el FUID, con el formato de la plantilla.
+    hoja = load_workbook(ruta)["INVENTARIO"]
+    assert hoja["R12"].value == "OBJETIVO / RESUMEN"
+    assert hoja["R12"].fill.fgColor.rgb == hoja["P12"].fill.fgColor.rgb
+    resumenes = {hoja.cell(fila, 3).value: hoja.cell(fila, 18).value for fila in range(14, 17)}
+    assert resumenes["ACTA DE CONSEJO DE FACULTAD No. 02 - ORDINARIA"] == "SE APROBO EL PLAN DE ESTUDIOS"
+    assert resumenes["RESOLUCION 00030 POR LA CUAL SE CONVOCA"] == "N/A"
 
 
 def test_un_pdf_que_se_rehace_no_suma_sus_filas_dos_veces(corrida):

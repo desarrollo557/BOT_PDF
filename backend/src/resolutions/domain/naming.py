@@ -91,6 +91,19 @@ def kind_fragment(kind: str) -> str:
     return limpio.strip("-") or DOCUMENT_PREFIX
 
 
+def literal_fragment(kind: str) -> str:
+    """El texto tal cual en un nombre de archivo: «MARTHA LUCIA HERRERA - ENFERMERA».
+
+    Es el del acta de grado, que se llama igual que su asunto en el FUID
+    (2026-11-05). Sólo se le quita lo que Windows no admite -- ``\\ / : * ? "
+    < > |`` -- y los espacios y puntos de los extremos, que Windows tampoco
+    deja al final de un nombre.
+    """
+    limpio = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "-", kind)
+    limpio = re.sub(r"\s+", " ", limpio).strip(" .")
+    return limpio or DOCUMENT_PREFIX
+
+
 def document_folder(document: str, fallback: str = "documento") -> str:
     """La carpeta donde van los PDF que salieron de un documento.
 
@@ -154,6 +167,7 @@ def output_filename(
     mayusculas: bool = False,
     sin_radicado: bool = False,
     radicado_en: Collection[str] = (),
+    literal: bool = False,
 ) -> str:
     """Nombrar un archivo generado por lo que es y por su número.
 
@@ -193,6 +207,10 @@ def output_filename(
     2026-11-04 para el reclamo y la constancia de su contenido). Sólo un RE
     entero, «RE» y trece cifras; al apretar el nombre, el RE tampoco se toca:
     se recorta el tipo.
+
+    ``literal`` deja el tipo con sus espacios en vez de en guiones --
+    ``01_MARTHA LUCIA HERRERA - ENFERMERA.pdf`` --: el acta de grado se llama
+    igual que su asunto en el FUID (lo pidió el operador el 2026-11-05).
     """
     fragment = code_fragment(code)
     radicado = ""
@@ -213,7 +231,7 @@ def output_filename(
         # ese orden y no al revés porque la carpeta se lista por nombre, y lo
         # que hace falta al revisar es recorrerla en el orden en que venían las
         # hojas.
-        etiqueta = kind_fragment(kind)
+        etiqueta = literal_fragment(kind) if literal else kind_fragment(kind)
         quien = slugify(title or "", max_length=TITLE_SLUG_LENGTH) if con_titulo else ""
         # Cuando el código ya es el nombre -- un diploma sin cédula se archiva
         # por el graduado --, el título no lo repite: salía
@@ -238,7 +256,7 @@ def output_filename(
             elif quien and len(quien) > sobra:
                 quien = slugify(quien, max_length=sobra)
             if len(etiqueta) > room:
-                etiqueta = etiqueta[:room].rstrip("-")
+                etiqueta = etiqueta[:room].rstrip(" .-")
         piezas = [fragment, *([quien] if quien else []), f"{etiqueta}-{radicado}" if radicado else etiqueta]
         if mayusculas:
             piezas = [pieza.upper() for pieza in piezas]

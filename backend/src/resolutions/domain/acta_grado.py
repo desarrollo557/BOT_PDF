@@ -854,6 +854,34 @@ def es_acta_de_examen(acta: object) -> bool:
     return str(acta or "").startswith("ACTA DE EXAMEN ")
 
 
+#: Lo que Windows no admite en el nombre de un archivo.
+_NO_VALE_EN_UN_NOMBRE = re.compile(r'[<>:"/\\|?*]+')
+
+
+def asunto_del_graduado(
+    nombre: str | None, titulo: str | None, *, acta: str | None = None, cedula: str | None = None
+) -> str:
+    """«MARTHA LUCIA HERRERA VILLAMIZAR - ENFERMERA»: el nombre del PDF del graduado y su asunto en el FUID.
+
+    Son el mismo texto -- lo pidió el operador el 2026-11-05: «que el nombre
+    del PDF sea el mismo que vaya en el FUID», el nombre y la especialidad --,
+    y por eso los dos salen de aquí. El número del acta y la cédula ya no van
+    en él: tienen sus columnas en el FUID, desde y hasta.
+
+    Del nombre, sólo lo que puede ser un nombre: una palabra imposible --
+    «MSCSDSS», «AAAAANONO» -- no va ni al archivo ni al inventario. Sin nombre
+    legible, el acta y la cédula: ningún archivo sin algo que lo referencie.
+    """
+    from .nombres import clave, parece_palabra_de_nombre
+
+    limpio = " ".join(palabra for palabra in (nombre or "").split() if parece_palabra_de_nombre(clave(palabra)))
+    if limpio:
+        partes = [limpio, *([titulo] if titulo else [])]
+    else:
+        partes = [acta or f"{ROTULO} SIN NUMERO", *([cedula] if cedula else [])]
+    return _NO_VALE_EN_UN_NOMBRE.sub("-", " - ".join(partes)).strip(" .").upper()
+
+
 def _nombre_confirmado(arriba: str | None, del_texto: str | None) -> str | None:
     """El nombre entre sus dos apariciones en la hoja: arriba como título y en «del alumno …».
 

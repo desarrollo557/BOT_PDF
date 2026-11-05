@@ -1606,7 +1606,11 @@ class FolderRunner:
     def _sumar_filas_de_actas(run: FolderRun, filas: list[dict]) -> None:
         run.inventario_filas.extend(filas)
         for fila in filas:
-            carpeta = str(fila.get("carpeta") or "")
+            # Con la clave única de su carpeta en el destino: también las de
+            # una constancia de antes, anotadas con la otra.
+            carpeta = FolderRunner._carpeta_canonica(run, str(fila.get("carpeta") or ""))
+            if carpeta:
+                fila["carpeta"] = carpeta
             run.filas_por_carpeta.setdefault(carpeta, []).append(fila)
             run.version_de_carpeta[carpeta] = run.version_de_carpeta.get(carpeta, 0) + 1
 
@@ -2886,6 +2890,8 @@ class FolderRunner:
             # Un PDF suelto en la carpeta elegida: su FUID va en el espejo de
             # ella, junto al general, y no en la raíz del destino con su nombre.
             carpeta = self._carpeta_de(run, origin)
+        # La misma clave que las actas de esa carpeta: un solo FUID con las dos.
+        carpeta = self._carpeta_canonica(run, carpeta)
         # Por lo que hizo el trabajo y no sólo por lo que se pidió: «Solo el
         # inventario» de un PDF sin registros acaba inventariándolo entero.
         entero = job.task == "inventory_file" or informe.get("task") == "inventory_file"
@@ -3095,11 +3101,36 @@ class FolderRunner:
         «MAGANGUE PROCESADO» (``FolderRun.en_su_carpeta``).
         """
         raiz = FolderRunner._raiz(run)
-        if run.en_su_carpeta or run.destination.name == f"{raiz}{SUFIJO_DE_LA_CORRIDA}":
+        if FolderRunner._quita_la_raiz(run):
             partes = Path(carpeta).parts
             if partes and partes[0] == raiz:
                 return run.destination.joinpath(*partes[1:])
         return run.destination / carpeta
+
+    @staticmethod
+    def _quita_la_raiz(run: FolderRun) -> bool:
+        """Si el destino ya es la carpeta de la corrida y el nombre de la elegida no se repite dentro."""
+        return run.en_su_carpeta or run.destination.name == f"{FolderRunner._raiz(run)}{SUFIJO_DE_LA_CORRIDA}"
+
+    @staticmethod
+    def _carpeta_canonica(run: FolderRun, carpeta: str) -> str:
+        """La clave de una carpeta del destino, la misma la anote quien la anote.
+
+        Las actas la anotan desde la elegida -- «18-RESOLUCIONES INTERNAS Y ACTAS
+        3303\\00C003303» -- y las filas que trae hechas otra habilidad, desde el
+        destino -- «00C003303» --. Si el destino es la carpeta de la corrida, las
+        dos son la misma carpeta en el disco (``_en_destino``) y, con dos claves,
+        se escribían dos FUID en el mismo archivo: el segundo pisaba al primero,
+        y a la 3303 le faltaban sus 10 actas de consejo en el suyo (2026-11-05).
+        Con la elegida delante, una sola clave y un solo FUID con todas.
+        """
+        if not carpeta or not FolderRunner._quita_la_raiz(run):
+            return carpeta
+        raiz = FolderRunner._raiz(run)
+        partes = Path(carpeta).parts
+        if partes and partes[0] == raiz:
+            return carpeta
+        return str(Path(raiz, *partes))
 
     def _carpeta_de(self, run: FolderRun, origin: Path) -> str:
         """La carpeta de un PDF vista desde la raíz: «00C003284\\UPD3859772»."""

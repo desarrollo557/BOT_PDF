@@ -76,6 +76,7 @@ from ..domain.acta_grado import (
     DEDUCIDO,
     ROTULO_DE_CEREMONIA,
     actas_de_grado_del_pdf,
+    asunto_del_graduado,
     completar_acta,
     con_la_franja,
     datos_de_la_ia,
@@ -408,6 +409,9 @@ class SesionDeActa:
     #: «ACTA EXTRAORDINARIA No. 017 - 16-08-2012».
     nombre: str
     piezas: tuple[PiezaDeActa, ...]
+    #: Si el PDF lleva ``nombre`` tal cual, con sus espacios, y no en guiones: el
+    #: del graduado se llama igual que su asunto en el FUID (2026-11-05).
+    literal: bool = False
 
     @property
     def desde(self) -> int:
@@ -443,31 +447,33 @@ def nombre_de_la_sesion(fila: FilaDeActa) -> str:
     if fila.tipo == TIPO_DE_GRADO:
         # El graduado: «MARTHA LUCIA HERRERA VILLAMIZAR - ESPECIALISTA EN
         # GESTION DE LA CALIDAD…», el nombre como va en el acta y el título que
-        # se le otorga, si lo hay. Lo dictó el operador el 2026-10-31.
-        # Del nombre, sólo lo que puede ser un nombre: una palabra imposible
-        # -- «MSCSDSS», «AAAAANONO» -- no va al nombre de un archivo.
-        nombre = " ".join(
-            palabra for palabra in (fila.nombre or "").split() if parece_palabra_de_nombre(clave(palabra))
+        # se le otorga. El mismo texto que su asunto en el FUID: lo pidió el
+        # operador el 2026-11-05, «que el nombre del PDF sea el mismo que vaya
+        # en el FUID», nombre y especialidad. La cédula y el número del acta
+        # van en sus columnas del FUID, ya no en el nombre.
+        def leido(valor: str | None) -> str | None:
+            return valor if valor and valor != NO_APLICA else None
+
+        return asunto_del_graduado(
+            leido(fila.nombre), leido(fila.titulo), acta=leido(fila.acta), cedula=leido(fila.cedula)
         )
-        # Y la cédula entre los dos, si se leyó: «… VILLAMIZAR - 39692338 -
-        # ESPECIALISTA…». Obligatoria si el acta la trae (el operador,
-        # 2026-11-03: «nombre, cédula, título, obligatoriamente»).
-        cedula = fila.cedula if fila.cedula and fila.cedula != NO_APLICA else None
-        if nombre:
-            partes = (
-                [nombre]
-                + ([cedula] if cedula else [])
-                + ([fila.titulo] if fila.titulo and fila.titulo != NO_APLICA else [])
-            )
-        else:
-            # Ningún archivo sin nombre que lo referencie: el acta y la cédula.
-            partes = [fila.acta if fila.acta != NO_APLICA else "ACTA DE GRADO SIN NUMERO"]
-            partes += [fila.cedula] if fila.cedula else []
-        return _NO_VALE_EN_UNA_CARPETA.sub("-", " - ".join(partes)).strip(" .")
     partes = [fila.acta if fila.acta != NO_APLICA else "ACTA SIN NUMERO"]
     if fila.fecha != NO_APLICA:
         partes.append(fila.fecha)
     return _NO_VALE_EN_UNA_CARPETA.sub("-", " - ".join(partes)).strip(" .")
+
+
+def _con_nombre_literal(fila: FilaDeActa) -> bool:
+    """Si el PDF de esta fila se llama con su nombre tal cual: el del graduado y las hojas de su ceremonia.
+
+    El graduado se llama igual que su asunto en el FUID, «01_MARTHA LUCIA
+    HERRERA - ENFERMERA.pdf» (2026-11-05), y la ceremonia de su libro, con el
+    mismo formato. El acta manuscrita de examen (caja 3362) sigue como se
+    entregó: su asunto en el FUID es otro, el examen primero.
+    """
+    if fila.tipo == ROTULO_DE_CEREMONIA:
+        return True
+    return fila.tipo == TIPO_DE_GRADO and not es_acta_de_examen(fila.acta)
 
 
 #: Lo que va delante de la primera sesión de un libro de grado: portada,
@@ -512,6 +518,7 @@ def dividir_actas(
                 code=ResolutionCode(value=f"{sesion.orden:02d}", raw=f"{sesion.orden:02d}"),
                 page_numbers=list(range(sesion.desde, sesion.hasta + 1)),
                 kind=sesion.nombre,
+                nombre_literal=sesion.literal,
             )
             for sesion in outcome.sesiones
         ]
@@ -902,13 +909,17 @@ class InventariarActa:
         if reparto.previas and filas[0].tipo != TIPO_DE_GRADO and filas[0].tipo != ROTULO_DE_CEREMONIA:
             filas[0] = _con_las_previas(filas[0], lecturas[0], reparto.previas)
         sesiones = [
-            SesionDeActa(orden, nombre_de_la_sesion(fila), tuple(lectura.piezas))
+            SesionDeActa(orden, nombre_de_la_sesion(fila), tuple(lectura.piezas), literal=_con_nombre_literal(fila))
             for orden, (lectura, fila) in enumerate(zip(lecturas, filas, strict=True), start=1)
         ]
         if reparto.previas and sesiones[0].desde != reparto.previas[0]:
             desde, hasta = reparto.previas
+            # Con el mismo formato de nombre que las del libro que preceden.
             sesiones.insert(
-                0, SesionDeActa(0, PAGINAS_PREVIAS, (PiezaDeActa(SIN_SESION, desde, hasta),))
+                0,
+                SesionDeActa(
+                    0, PAGINAS_PREVIAS, (PiezaDeActa(SIN_SESION, desde, hasta),), literal=sesiones[0].literal
+                ),
             )
         _comprobar_que_cubre(sesiones, total)
 
