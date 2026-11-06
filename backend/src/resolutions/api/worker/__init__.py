@@ -181,6 +181,13 @@ def _despachar(payload: dict) -> dict:
 
         return historias_academicas_job(payload)
 
+    # Los libros de nómina declarados (2026-11-06): un PDF por persona o por
+    # paquete y su fila en el FUID, con cualquier acción.
+    if TipoPedido.parse(payload.get("tipo")) is TipoPedido.NOMINA:
+        from .nominas import nominas_job
+
+        return nominas_job(payload)
+
     # Inventariar el archivo entero no necesita reconocer nada antes: la unidad
     # documental es el PDF, y qué es se lee de su propio encabezado al pasar por
     # él. Va delante de todo lo demás porque preguntarle a esta ruta de qué tipo

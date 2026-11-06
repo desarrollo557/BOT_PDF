@@ -30,6 +30,7 @@ from datetime import date
 from ..domain.auditoria import MARGEN_ACEPTABLE, margen_de_error
 from ..domain.datos_esperados import (
     CAMPOS_DE_UNA_HISTORIA,
+    CAMPOS_DE_UNA_NOMINA,
     DUDA,
     ERROR,
     VERIFICADO_EN_BLANCO,
@@ -38,9 +39,11 @@ from ..domain.datos_esperados import (
     cifras,
     plano,
     revisar_entre_documentos,
+    revisar_nominas_entre_si,
     revisar_una_historia,
+    revisar_una_nomina,
 )
-from ..domain.historia_academica import HISTORIA_ACADEMICA, Ficha
+from ..domain.historia_academica import CEDULA, HISTORIA_ACADEMICA, Ficha
 from .fuid import FuidRow
 
 #: Lo que se espera de un documento, leído de una fila del informe o del FUID.
@@ -59,6 +62,9 @@ class DatosEsperados:
     revisar: Callable[[DatosDeUnaHistoria], list[Hallazgo]]
     #: Lo que no cuadra entre los documentos de un PDF o una caja: por posición, sus hallazgos.
     entre_documentos: Callable[[Sequence[DatosDeUnaHistoria], Sequence[str]], dict[int, list[Hallazgo]]] | None = None
+    #: Si un PDF entregado no es de nadie y no lleva fila con datos: las hojas
+    #: de antes de la primera ficha, un listado de nómina, el índice del libro.
+    sin_datos: Callable[[str], bool] = lambda pdf: "SIN-FICHA" in pdf.upper()
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,7 +185,7 @@ def auditar_los_datos(
     es una cédula, una tarjeta o una libreta: el FUID sólo trae las cifras. Y las filas del FUID se cruzan entre sí: la misma cédula en
     dos estudiantes es un error.
     """
-    de_estudiante = [pdf for pdf in entregados if "SIN-FICHA" not in pdf.upper()]
+    de_estudiante = [pdf for pdf in entregados if not esperados.sin_datos(pdf)]
     if not de_estudiante:
         return [], []
     if filas_del_fuid is None:
@@ -333,4 +339,74 @@ DE_UNA_HISTORIA = DatosEsperados(
     del_fuid=historia_del_fuid,
     revisar=_revisar_una_historia,
     entre_documentos=revisar_entre_documentos,
+)
+
+
+# -- las nóminas ------------------------------------------------------------------------
+
+
+#: Los asuntos que no son de una persona: el listado, el hablador y el índice.
+_DE_NADIE = ("NOMINA", "INDICE")
+_DEL_HABLADOR = "LISTADO DE NOMINA PERSONAL"
+
+
+def nomina_de_la_fila(fila: Mapping[str, object]) -> DatosDeUnaHistoria | None:
+    """Los datos de una persona de un libro de nómina; ``None`` si la fila es un paquete o el índice."""
+    from ..domain.nomina import NOMINA, PERSONA
+
+    if fila.get("tipo") != NOMINA or fila.get("clase") != PERSONA:
+        return None
+    return DatosDeUnaHistoria(
+        nombre=_texto(fila.get("nombre")),
+        identificacion=cifras(str(fila.get("cedula") or "")) or None,
+        tipo_de_identificacion=CEDULA,
+        anio_inicial=_anio(fila.get("fecha_inicial")),
+        anio_final=_anio(fila.get("fecha_final")),
+        # Su hoja no trae cédula (el libro de anotaciones de 1972): no se pide.
+        hoja_suelta=not fila.get("pide_cedula"),
+        archivo=_texto(fila.get("archivo_generado")),
+    )
+
+
+def nomina_del_fuid(fila: FuidRow) -> DatosDeUnaHistoria | None:
+    """Los datos de una persona tal como quedaron en el FUID: «NOMINAS - NOMBRE», la cédula, los años.
+
+    El listado («NOMINA»), lo que abre el hablador y el índice no son de una
+    persona: ``None``. Una persona sin nombre leído queda con sólo el tipo
+    («NOMINAS»), y es la fila del PDF que se llama por sus páginas.
+    """
+    asunto = " ".join((fila.asunto or "").split()).upper()
+    if not asunto or asunto in _DE_NADIE or asunto.startswith(_DEL_HABLADOR):
+        return None
+    tipo, _, nombre = asunto.partition(" - ")
+    return DatosDeUnaHistoria(
+        nombre=_texto(nombre),
+        identificacion=cifras(str(fila.consecutivo_inicial)) or None,
+        tipo_de_identificacion=CEDULA,
+        anio_inicial=_anio(fila.fecha_inicial),
+        anio_final=_anio(fila.fecha_final),
+        # Al auditar no se sabe si su hoja la traía: sólo la tarjeta y el certificado la piden.
+        hoja_suelta=not (tipo.startswith("NOMINAS") or tipo.startswith("CERTIFICADO")),
+    )
+
+
+def _sin_datos_de_nomina(pdf: str) -> bool:
+    """El PDF de un listado, de un año del hablador o del índice: no es de una persona."""
+    base = re.sub(r"^\d{1,4}_", "", pdf.rsplit("/", 1)[-1]).upper()
+    return base.startswith(("NOMINA-", "LISTADO-DE-NOMINA", "INDICE"))
+
+
+def _revisar_una_nomina(datos: DatosDeUnaHistoria) -> list[Hallazgo]:
+    return revisar_una_nomina(datos, este_anio=date.today().year)
+
+
+#: Lo que se espera de una persona de un libro de nómina: nombre, cédula si su
+#: hoja la trae, y fechas extremas (2026-11-06).
+DE_UNA_NOMINA = DatosEsperados(
+    campos=CAMPOS_DE_UNA_NOMINA,
+    de_la_fila=nomina_de_la_fila,
+    del_fuid=nomina_del_fuid,
+    revisar=_revisar_una_nomina,
+    entre_documentos=revisar_nominas_entre_si,
+    sin_datos=_sin_datos_de_nomina,
 )

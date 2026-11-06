@@ -416,6 +416,43 @@ export const HABILIDADES: Habilidad[] = [
     }
   },
   {
+    // 2026-11-06, «21. NOMINAS» del REPOSITORIO UDC, con los patrones de
+    // «ESTRUCTURA LIBROS UNICARTAGENA.pdf» que marcó el operador.
+    id: 'nominas',
+    escribeFuid: true,
+    titulo: 'Nóminas',
+    papel:
+      'Libros de nómina de la Universidad: tarjetas de la Oficina de Personal, libros de anotaciones escritos a mano, relaciones de empleados por código, comprobantes de pago y el listado de nómina de cada año.',
+    corta:
+      'Si lo pides, un PDF por persona —sus tarjetas u hojas seguidas van juntas—, uno por cada relación de empleados con la misma fecha, uno por cada mes de comprobantes y uno por cada año que separa el hablador «LISTADO DE NOMINA PERSONAL». El índice del libro sale aparte.',
+    nombra:
+      'El inventario es el FUID oficial (FO-GD-008): «NOMINAS - NOMBRE» o «LIBRO DE ANOTACIONES - NOMBRE» con la cédula como número de documento y el año; «NOMINA» con la fecha del listado; «LISTADO DE NOMINA PERSONAL» con su año. Cada PDF de persona se llama con su nombre y su cédula.',
+    nombraConIa:
+      'Y el nombre, la cédula y el año escritos a mano en cada tarjeta u hoja, leídos por la IA; la cédula que la IA copie de la tarjeta de al lado se descarta y queda dicho.',
+    aportaIa:
+      'Lee con la IA la cabecera de cada tarjeta u hoja (diez por página facturada) y la de cada hoja de listado (una página cada una), para que la fecha de cada paquete sea la del papel.',
+    tipo: 'nomina',
+    task: null,
+    acciones: [
+      {
+        id: 'both',
+        label: 'Dividir e inventariar',
+        hint: 'Un PDF por persona o por paquete, y el FUID.'
+      },
+      {
+        id: 'inventory_file',
+        label: 'Solo inventariar',
+        hint: 'Una fila por persona o por paquete en el FUID. El PDF queda entero.'
+      }
+    ],
+    requiereTipo: 'nomina',
+    pideLectura: {
+      id: 'mistral',
+      porque:
+        'El nombre y la cédula van escritos a mano, y la fecha de los listados es una impresión tenue que el OCR de casa lee mal. Con «Solo OCR» los listados se parten igual, con la fecha para confirmar, pero cada tarjeta sale sola y sin nombre.'
+    }
+  },
+  {
     id: 'archivo',
     escribeFuid: true,
     titulo: 'Archivos ya separados',
@@ -504,6 +541,7 @@ const HABILIDAD_DEL_TIPO: Record<string, string> = {
   'acta-consejo': 'actas',
   acta: 'actas-grado',
   'historia-academica': 'historias',
+  nomina: 'nominas',
   // El reconocedor cuenta las historias académicas como matrículas: la
   // habilidad que las parte por estudiante es «Historias académicas»
   // (2026-10-30). Con «No estoy seguro» salían 9 PDF donde había 60 estudiantes.

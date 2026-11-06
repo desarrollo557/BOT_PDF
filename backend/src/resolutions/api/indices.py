@@ -113,6 +113,8 @@ def habilidad_del_proceso(job) -> str:
         return "Caja de correspondencia"
     if informe.get("tipo") == "historia-academica":
         return "Historias académicas"
+    if informe.get("tipo") == "nomina":
+        return "Nóminas"
     if filas := informe.get("inventario_actas"):
         # Por sus filas y no sólo por lo que se pidió: un acta de grado que el
         # patrón desvió desde «Actas de consejo» (Odontología) es de grado.

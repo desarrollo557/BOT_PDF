@@ -21,7 +21,8 @@ Un **perfil** por habilidad dice lo que el agente necesita saber de su papel:
 - su **margen de error aceptable**, contra el que la auditoría juzga la muestra;
 - los **datos que espera** de cada documento (2026-11-06): de una historia, el
   nombre, la cédula -- o la tarjeta, o la libreta militar --, el código y las
-  fechas extremas (``integridad_de_los_datos``).
+  fechas extremas (``integridad_de_los_datos``); de una nómina, el nombre, la
+  cédula si su hoja la trae y las fechas extremas.
 
 El revisor de cortes al procesar (``revisor_de_cortes``) y la auditoría de cierre
 (``auditoria_de_la_entrega``) los leen de aquí: una habilidad nueva se revisa y
@@ -36,7 +37,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from ..domain.auditoria import MARGEN_ACEPTABLE
-from .integridad_de_los_datos import DE_UNA_HISTORIA, DatosEsperados
+from .integridad_de_los_datos import DE_UNA_HISTORIA, DE_UNA_NOMINA, DatosEsperados
 from .revisor_de_cortes import REGLAS_DE_LA_CORRESPONDENCIA, Patrones
 
 
@@ -170,6 +171,19 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
         una_persona_por_pdf=True,
         alias=("historias academicas", "historia academica", "historia-academica", "historias"),
         datos=DE_UNA_HISTORIA,
+    ),
+    PerfilDeRevision(
+        clave="nominas",
+        nombre="Nóminas",
+        reglas=(
+            "Libro de nómina de la Universidad: una tarjeta u hoja por persona, y la misma persona en hojas "
+            "seguidas va junta (la segunda tarjeta repite el nombre sin la cédula); dos cédulas distintas son "
+            "dos personas. Las relaciones de empleados van en un paquete mientras dicen la misma fecha, los "
+            "comprobantes por mes de pago, y el hablador «LISTADO DE NOMINA PERSONAL AÑO …» abre su año."
+        ),
+        # Un listado trae cientos de empleados con su cédula: no es una persona por PDF.
+        alias=("nominas", "nomina", "libros de nomina", "libro de nomina"),
+        datos=DE_UNA_NOMINA,
     ),
     PerfilDeRevision(
         clave="matriculas",

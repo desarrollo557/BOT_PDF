@@ -489,3 +489,82 @@ def revisar_entre_documentos(
     for i, hallazgo in _fuera_del_orden(datos).items():
         hallazgos.setdefault(i, []).append(hallazgo)
     return hallazgos
+
+
+# -- las nóminas ---------------------------------------------------------------------------
+
+#: Lo que se espera de un documento de persona de un libro de nómina: su
+#: nombre, su cédula si su hoja la trae y sus fechas extremas (2026-11-06).
+CAMPOS_DE_UNA_NOMINA = (NOMBRE, IDENTIFICACION, FECHAS)
+
+
+def revisar_una_nomina(datos: DatosDeUnaHistoria, *, este_anio: int) -> list[Hallazgo]:
+    """Lo que no cuadra en una persona de un libro de nómina: su tarjeta, su hoja o su certificado.
+
+    ``hoja_suelta`` dice aquí que su hoja no trae cédula -- el libro de
+    anotaciones de 1972 --: entonces no se pide. Una cédula de cuatro cifras
+    es para mirar, no un error: las de los años cuarenta las tienen, y la IA
+    también se come cifras del lápiz.
+    """
+    hallazgos: list[Hallazgo] = []
+    nombre = " ".join((datos.nombre or "").split())
+    palabras = plano(nombre).split("-") if nombre else []
+    if not nombre:
+        hallazgos.append(Hallazgo(NOMBRE, ERROR, "no se leyó el nombre de la persona"))
+    elif re.search(r"\d", nombre):
+        hallazgos.append(Hallazgo(NOMBRE, ERROR, f"el nombre «{nombre}» trae cifras"))
+    elif len(palabras) < 2:
+        hallazgos.append(Hallazgo(NOMBRE, DUDA, f"el nombre «{nombre}» tiene una sola palabra"))
+    elif raras := [p for p in palabras if len(p) > 1 and palabra_dudosa(p)]:
+        hallazgos.append(
+            Hallazgo(NOMBRE, DUDA, f"el nombre «{nombre}» trae palabras que no parecen de un nombre: {', '.join(raras)}")
+        )
+
+    numero = cifras(datos.identificacion)
+    if numero:
+        if len(numero) == 9 or len(numero) > 10 or (len(numero) == 10 and not numero.startswith("1")):
+            hallazgos.append(Hallazgo(IDENTIFICACION, ERROR, f"la cédula {numero} tiene {len(numero)} cifras: no es una cédula"))
+        elif len(numero) < 5:
+            hallazgos.append(Hallazgo(IDENTIFICACION, DUDA, f"la cédula {numero} tiene sólo {len(numero)} cifras: revísela en el papel"))
+    elif not datos.hoja_suelta:
+        hallazgos.append(Hallazgo(IDENTIFICACION, DUDA, "no se leyó la cédula: revísela en el papel"))
+
+    inicial, final = datos.anio_inicial, datos.anio_final
+    faltan = [que for que, anio in (("inicial", inicial), ("final", final)) if anio is None]
+    if faltan:
+        hallazgos.append(Hallazgo(FECHAS, ERROR, f"sin fecha {' ni '.join(faltan)}"))
+    for que, anio in (("inicial", inicial), ("final", final)):
+        if anio is not None and not DESDE <= anio <= este_anio:
+            hallazgos.append(Hallazgo(FECHAS, ERROR, f"la fecha {que} {anio} no es un año posible"))
+    if inicial is not None and final is not None and inicial > final:
+        hallazgos.append(Hallazgo(FECHAS, ERROR, f"la fecha inicial {inicial} es posterior a la final {final}"))
+
+    if datos.archivo:
+        hallazgos.extend(_el_archivo(datos.archivo, nombre, numero))
+    return hallazgos
+
+
+def revisar_nominas_entre_si(
+    datos: Sequence[DatosDeUnaHistoria], nombres: Sequence[str] | None = None
+) -> dict[int, list[Hallazgo]]:
+    """La misma cédula en dos personas de nombre distinto, en el mismo libro: para mirar.
+
+    No es un error como en las historias: la misma persona puede salir en dos
+    dependencias del libro, con su nombre leído un poco distinto.
+    """
+    rotulos = list(nombres) if nombres else [d.archivo or d.nombre or f"documento {i + 1}" for i, d in enumerate(datos)]
+    por_numero: dict[str, list[int]] = {}
+    for i, d in enumerate(datos):
+        if len(numero := cifras(d.identificacion)) >= 5:
+            por_numero.setdefault(numero, []).append(i)
+    hallazgos: dict[int, list[Hallazgo]] = {}
+    for numero, suyos in por_numero.items():
+        personas = {plano(datos[i].nombre or "") for i in suyos}
+        if len(suyos) < 2 or len(personas) == 1:
+            continue
+        for i in suyos:
+            otros = ", ".join(rotulos[j] for j in suyos if j != i)
+            hallazgos.setdefault(i, []).append(
+                Hallazgo(IDENTIFICACION, DUDA, f"la cédula {numero} sale también en {otros}, con otro nombre: revísela")
+            )
+    return hallazgos

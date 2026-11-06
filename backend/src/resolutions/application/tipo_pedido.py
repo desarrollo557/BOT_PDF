@@ -63,6 +63,12 @@ class TipoPedido(StrEnum):
     #: entregaba 9 PDF donde había 60 estudiantes.
     HISTORIA = "historia-academica"
 
+    #: Libros de nómina de la Universidad: tarjetas de la Oficina de Personal,
+    #: hojas de anotaciones a mano, relaciones de empleados y comprobantes de
+    #: pago. Un PDF por persona o por paquete y su fila en el FUID FO-GD-008.
+    #: Lo pidió el operador el 2026-11-06 para «21. NOMINAS».
+    NOMINA = "nomina"
+
     @property
     def label(self) -> str:
         return _LABELS[self]
@@ -104,6 +110,7 @@ _LABELS = {
     TipoPedido.ACTA_CONSEJO: "Actas de consejo",
     TipoPedido.RESOLUCION: "Legajo de resoluciones",
     TipoPedido.HISTORIA: "Historias académicas",
+    TipoPedido.NOMINA: "Nóminas",
 }
 
 _DOCUMENT_TYPES = {

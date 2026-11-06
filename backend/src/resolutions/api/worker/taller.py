@@ -294,6 +294,17 @@ class Taller:
             )
         )
 
+    def mosaico_de_cabeceras(self, *, tamano: int = 10, dpi: int = 200):
+        """Quien lee la cabecera de muchas hojas, cada una bajo su «PAGINA n», con cualquier lectura de pago.
+
+        Lo usan las nóminas (2026-11-06): de una tarjeta, apellidos, nombre,
+        cédula y año; de una hoja manuscrita, el renglón del nombre. Diez por
+        página facturada. Con «Solo OCR», nadie.
+        """
+        from ...adapters.mosaico_de_cabeceras import MosaicoDeCabeceras
+
+        return self._mosaico(lambda **opciones: MosaicoDeCabeceras(tamano=tamano, dpi=dpi, **opciones))
+
     def mosaico_de_fechas(self):
         """Quien repesca la fecha manuscrita en el pie del diploma, con cualquier lectura de pago.
 

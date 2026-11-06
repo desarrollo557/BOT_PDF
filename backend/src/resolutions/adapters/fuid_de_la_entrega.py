@@ -22,7 +22,8 @@ cada una con su ``tipo``. Aquí se juntan:
 Las columnas siguen la fila guía de la plantilla del operador: el orden desde
 1; «nombre - título» en el asunto; la cédula y el código en el consecutivo; la
 caja y la UPD; los folios. Lo que cada tipo pone en ellas está en su adaptador:
-``fuid_actas_de_consejo``, ``fuid_actas_de_grado``, ``fuid_historias``. Un tipo
+``fuid_actas_de_consejo``, ``fuid_actas_de_grado``, ``fuid_historias``,
+``fuid_nominas``. Un tipo
 nuevo que no necesite reglas propias usa ``fila_generica`` con los nombres de
 campo de abajo, sin tocar nada más.
 """
@@ -39,7 +40,8 @@ from ..application.fuid import Cabecera, FuidRow
 from ..application.inventory_document import template_for
 from ..domain.doctype import DocumentType
 from ..domain.historia_academica import HISTORIA_ACADEMICA, SIN_ESTUDIANTE
-from . import fuid_actas_de_consejo, fuid_actas_de_grado, fuid_historias
+from ..domain.nomina import NOMINA
+from . import fuid_actas_de_consejo, fuid_actas_de_grado, fuid_historias, fuid_nominas
 from .fuid_actas_de_grado import NO_LEIDO, ubicacion
 from .fuid_inventory import FuidInventory
 
@@ -275,6 +277,7 @@ CONVERSORES: dict[str, Callable[[Mapping[str, object]], FuidRow | None]] = {
     fuid_actas_de_grado.ACTA_DE_GRADO: fuid_actas_de_grado.fila_del_fuid,
     fuid_actas_de_grado.CEREMONIA: _sin_fila,
     HISTORIA_ACADEMICA: fuid_historias.fila_del_fuid,
+    NOMINA: fuid_nominas.fila_del_fuid,
     SIN_ESTUDIANTE: _sin_fila,
     FILA_HECHA: fila_hecha,
     PDF_ENTERO: fila_del_pdf_entero,
