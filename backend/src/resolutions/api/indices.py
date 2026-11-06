@@ -122,6 +122,13 @@ def habilidad_del_proceso(job) -> str:
         return "Actas de grado" if de_grado else "Actas de consejo"
     if tipo == "diploma" or job.tipo == "diploma":
         return "Libro de diplomas"
+    # Con su nombre y no por su tarea: Kingspan y las matrículas salían
+    # «Legajo de resoluciones» porque se dividen, y la auditoría las revisaba
+    # con los patrones de otra habilidad (2026-11-05).
+    if getattr(job, "tipo_documento", None) == "kingspan" or "kingspan_rows" in (informe.get("stats") or {}):
+        return "Kingspan"
+    if tipo == "matricula":
+        return "Legajo de matrículas"
     if job.task == "inventory":
         return "Archivos ya separados"
     if tipo == "resolucion" or job.task in ("split", "both"):

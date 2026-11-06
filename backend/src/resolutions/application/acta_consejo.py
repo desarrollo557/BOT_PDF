@@ -335,6 +335,9 @@ class ActaOutcome:
     sesiones: list[SesionDeActa] = field(default_factory=list)
     #: «ACTA DE CONSEJO» o «ACTA DE GRADO»: lo que va en la columna de tipo.
     tipo_documental: str = TIPO_DOCUMENTAL
+    #: El texto de cada página, ya leído para el inventario: con él el agente
+    #: revisor mira las costuras del libro sin leer nada más. No va al informe.
+    textos: dict[int, str] = field(default_factory=dict, repr=False)
 
     @property
     def fila(self) -> FilaDeActa:
@@ -488,6 +491,23 @@ class DivisionDeActas:
 
     salidas: list[str] = field(default_factory=list)
     ilegibles: dict[int, str] = field(default_factory=dict)
+    #: Cada PDF escrito, vuelto a abrir y casado hoja por hoja con el libro.
+    comprobacion: dict[str, object] = field(default_factory=dict)
+
+
+def reparto_de_las_actas(outcome: ActaOutcome) -> GroupingResult:
+    """El libro repartido en sesiones, como se va a escribir: un grupo por PDF."""
+    return GroupingResult(
+        groups=[
+            PageGroup(
+                code=ResolutionCode(value=f"{sesion.orden:02d}", raw=f"{sesion.orden:02d}"),
+                page_numbers=list(range(sesion.desde, sesion.hasta + 1)),
+                kind=sesion.nombre,
+                nombre_literal=sesion.literal,
+            )
+            for sesion in outcome.sesiones
+        ]
+    )
 
 
 def dividir_actas(
@@ -497,6 +517,7 @@ def dividir_actas(
     source: Path,
     destino: Path,
     raiz: Path,
+    huellas: Callable[[Path], list] | None = None,
 ) -> DivisionDeActas:
     """Un PDF por sesión, con todo lo suyo dentro.
 
@@ -510,23 +531,20 @@ def dividir_actas(
     ``destino`` es la carpeta del PDF de origen dentro del trabajo, y ``raiz`` la
     del trabajo: las salidas se anotan relativas a ella, que es como las sirve
     la descarga. Ninguna hoja se queda fuera ni se repite: se comprobó al
-    repartir, antes de llegar aquí.
+    repartir, antes de llegar aquí. Con ``huellas``, cada PDF escrito se vuelve
+    a abrir y se casa hoja por hoja con el libro, como en las demás rutas.
     """
-    reparto = GroupingResult(
-        groups=[
-            PageGroup(
-                code=ResolutionCode(value=f"{sesion.orden:02d}", raw=f"{sesion.orden:02d}"),
-                page_numbers=list(range(sesion.desde, sesion.hasta + 1)),
-                kind=sesion.nombre,
-                nombre_literal=sesion.literal,
-            )
-            for sesion in outcome.sesiones
-        ]
-    )
+    reparto = reparto_de_las_actas(outcome)
     escrito = assembler.write(source, reparto, destino)
+    comprobacion: dict[str, object] = {}
+    if huellas is not None:
+        from .entrega import comprobar_en_el_disco
+
+        comprobacion = comprobar_en_el_disco(source, reparto, escrito, destino, huellas)
     return DivisionDeActas(
         salidas=[ruta.relative_to(raiz).as_posix() for ruta in escrito.outputs],
         ilegibles=dict(escrito.unwritable_pages),
+        comprobacion=comprobacion,
     )
 
 
@@ -937,6 +955,7 @@ class InventariarActa:
             unreadable=ilegibles,
             sesiones=sesiones,
             tipo_documental=self._perfil.tipo_documental,
+            textos=dict(enumerate(paginas, start=1)),
         )
 
     # -- leer -----------------------------------------------------------------

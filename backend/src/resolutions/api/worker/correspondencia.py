@@ -16,9 +16,12 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from ...application.progress import ProgressEvent, Stage
-from ...application.revisor_de_cortes import REGLAS_DE_LA_CORRESPONDENCIA
 from .planillas import _escribir_indice
 from .taller import Taller, _anunciar
+
+#: El perfil con que el agente revisor mira la caja (``perfiles_de_revision``):
+#: sus reglas, sus cruces y su margen.
+PERFIL = "correspondencia"
 
 #: Cuántas palabras de cuatro letras o más hacen de una hoja un documento con
 #: texto propio y no un anexo: las cédulas leídas traen 25-35, la carta de
@@ -296,8 +299,9 @@ def _revisar_los_cortes(
 
     from ...adapters.pymupdf_source import PyMuPDFPageSource
     from ...application.anexos_declarados import SOPORTES
+    from ...application.perfiles_de_revision import perfil_de
     from ...application.ports import Band
-    from ...application.revisor_de_cortes import Patrones, revisar_los_cortes
+    from ...application.revisor_de_cortes import revisar_los_cortes
     from ...domain.anexos_declarados import HOJA_MUDA, clase_de_la_hoja
     from ...domain.asunto_del_documento import (
         LEY_HABEAS_DATA,
@@ -344,11 +348,14 @@ def _revisar_los_cortes(
         revision = revisar_los_cortes(
             grupos,
             textos,
-            Patrones(
+            # Los patrones de la caja, del registro central de perfiles, con
+            # lo que sólo sabe esta ruta: qué abre por regla, qué cruza y qué
+            # no se mueve.
+            perfil_de(PERFIL).patrones(
+                textos,
                 abren=frozenset(abren - tras_la_habeas),
                 cruces=frozenset(cruces | delanteras),
                 fijas=frozenset(fijas),
-                reglas=REGLAS_DE_LA_CORRESPONDENCIA,
                 clase=clase,
             ),
             juez=taller.juez_de_costuras(),
@@ -1515,9 +1522,10 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # Lo que dijeron el revisor de cortes y la comprobación del disco: lo que
     # hay que mirar a la cola, el resumen a los avisos y el detalle aparte.
     # Es lo mismo en todas las habilidades.
+    from ...application.perfiles_de_revision import perfil_de
     from ...application.revisor_de_cortes import anotar_en_el_informe
 
-    anotar_en_el_informe(report, revisados, revisor_roto, entregado.comprobacion)
+    anotar_en_el_informe(report, revisados, revisor_roto, entregado.comprobacion, perfil=perfil_de(PERFIL).as_dict())
     # 4. El Índice Electrónico del cliente, junto a los PDF de la caja y sin
     #    que nadie lo pida. Es el inventario de toda caja de correspondencia y
     #    ocupa el lugar de la planilla de las otras rutas: el archivo recibe un

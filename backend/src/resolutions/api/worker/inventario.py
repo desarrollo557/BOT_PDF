@@ -145,6 +145,7 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
     inventario es sólo el FUID: una fila por graduado.
     """
     from ...adapters.excel_actas import SUFIJO, escribir_inventario_de_actas
+    from ...adapters.huellas_pdf import huellas_de
     from ...adapters.pymupdf_assembler import PyMuPDFAssembler
     from ...adapters.pymupdf_source import PyMuPDFPageSource
     from ...adapters.tesseract_ocr import HeaderAndPageOcr
@@ -154,9 +155,12 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
         SIN_IA,
         InventariarActa,
         dividir_actas,
+        reparto_de_las_actas,
         resultado_de_cada_acta,
     )
     from ...application.control import Cancelled
+    from ...application.perfiles_de_revision import perfil_de
+    from ...application.revisor_de_cortes import anotar_en_el_informe, revisar_sin_romper
 
     # Las actas de grado son el mismo trabajo con otro perfil: otro
     # encabezado, otra fecha y sin resumen.
@@ -201,6 +205,20 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
     # que ya es un acta -- porque alguien lo dividió antes -- se inventaría y
     # nada más; partirlo daría el mismo PDF con otro nombre.
     pidio_dividir = payload.get("task") in (str(TaskKind.SPLIT), str(TaskKind.BOTH))
+    # El agente revisor (2026-11-05), con el perfil de su habilidad -- de grado
+    # o de consejo, por lo que de verdad es --: cada costura entre sesiones del
+    # libro contra lo que dice el papel, se divida o sólo se inventaríe, porque
+    # cada sesión es una fila. Señala y no mueve: el nombre y la fila de cada
+    # acta salen de leerla. Lo que sale del margen lo decide la IA si se eligió.
+    del_revisor = perfil_de(outcome.tipo_documental)
+    revision = aviso_del_revisor = None
+    if outcome.reparto.es_libro and len(outcome.sesiones) > 1:
+        revision, aviso_del_revisor = revisar_sin_romper(
+            reparto_de_las_actas(outcome),
+            outcome.textos,
+            del_revisor.patrones(outcome.textos),
+            juez=taller.juez_de_costuras(),
+        )
     division = None
     no_se_dividio: str | None = None
     if pidio_dividir and outcome.reparto.es_libro:
@@ -228,6 +246,8 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
                 # 8» -- la ruta del espejo pasaba de lo que Windows deja crear.
                 destino=taller.destination / document_folder(Path(taller.name).name),
                 raiz=taller.destination,
+                # Cada PDF escrito, vuelto a abrir y casado con el libro.
+                huellas=huellas_de,
             )
         except Cancelled:
             raise
@@ -261,6 +281,14 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
         report["outputs"] = division.salidas
         report["unwritable_pages"] = division.ilegibles
         report["dividido"] = True
+    if revision is not None or aviso_del_revisor or division is not None:
+        anotar_en_el_informe(
+            report,
+            revision,
+            aviso_del_revisor,
+            division.comprobacion if division is not None else None,
+            perfil=del_revisor.as_dict(),
+        )
 
     _anunciar(payload, Stage.INVENTORYING, detail="escribiendo el FUID", done=0, total=1)
     taller.control.check()

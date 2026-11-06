@@ -71,9 +71,13 @@ def historias_academicas_job(payload: dict) -> dict:
 
     import pymupdf
 
+    from ...adapters.huellas_pdf import huellas_de
     from ...adapters.pymupdf_source import PyMuPDFPageSource
     from ...adapters.tesseract_ocr import HeaderAndPageOcr
     from ...application.acta_consejo import nombres_conocidos
+    from ...application.entrega import comprobar_archivos
+    from ...application.perfiles_de_revision import perfil_de
+    from ...application.revisor_de_cortes import anotar_en_el_informe, revisar_sin_romper
     from ...application.task import TaskKind
     from ...domain.historia_academica import (
         HISTORIA_ACADEMICA,
@@ -241,6 +245,23 @@ def historias_academicas_job(payload: dict) -> dict:
             return _sin_estudiantes(payload, taller, nombre, carpeta, total)
 
         pidio_dividir = payload.get("task") in (str(TaskKind.SPLIT), str(TaskKind.BOTH))
+        # El agente revisor (2026-11-05), con el perfil de las historias: cada
+        # costura entre estudiantes contra lo que dice el papel -- dos cédulas
+        # distintas son dos personas --, se divida o sólo se inventaríe, porque
+        # cada estudiante es una fila. Señala y no mueve: el nombre y la fila
+        # salen de leer su ficha. Lo que sale del margen lo decide la IA si se
+        # eligió.
+        del_revisor = perfil_de("historias")
+        revision = aviso_del_revisor = None
+        if len(unidades) > 1:
+            por_pagina = dict(enumerate(textos, start=1))
+            revision, aviso_del_revisor = revisar_sin_romper(
+                _reparto(unidades), por_pagina, del_revisor.patrones(por_pagina), juez=taller.juez_de_costuras()
+            )
+        #: Qué hojas del original lleva cada PDF escrito, en su orden: con ellas
+        #: se comprueba lo que quedó en el disco.
+        esperado: dict[str, list[int]] = {}
+        comprobacion = None
         salidas: list[str] = []
         filas: list[dict] = []
         carpeta_de_salida = taller.destination / document_folder(nombre)
@@ -254,13 +275,15 @@ def historias_academicas_job(payload: dict) -> dict:
                     orden, unidad.ficha, carpeta=carpeta_de_salida, paginas=(unidad.paginas[0], unidad.paginas[-1])
                 )
                 if pidio_dividir:
+                    en_orden = _con_la_ficha_primero(unidad, textos, de_medicina)
                     with pymupdf.open() as nuevo:
                         # La ficha principal primero, con su reverso: «la
                         # primera página del PDF dividido debe ser la página
                         # principal del estudiante» (el operador, 2026-11-03).
-                        for numero in _con_la_ficha_primero(unidad, textos, de_medicina):
+                        for numero in en_orden:
                             nuevo.insert_pdf(original, from_page=numero - 1, to_page=numero - 1)
                         nuevo.save(carpeta_de_salida / archivo, garbage=3, deflate=True)
+                    esperado[archivo] = list(en_orden)
                     salidas.append((carpeta_de_salida / archivo).relative_to(taller.destination).as_posix())
                 hoja = hojas.get(unidad.paginas[0])
                 if de_hojas:
@@ -343,6 +366,13 @@ def historias_academicas_job(payload: dict) -> dict:
                     }
                 )
                 _anunciar(payload, Stage.ASSEMBLING, detail=f"escribiendo {len(unidades)} PDF", done=orden, total=len(unidades))
+        if pidio_dividir:
+            # Cada PDF escrito, vuelto a abrir y casado hoja por hoja con el
+            # original en el orden en que se escribió; y que ninguna hoja se
+            # quede fuera de todos ni vaya en dos.
+            comprobacion = comprobar_archivos(
+                taller.source, esperado, carpeta_de_salida, huellas_de, paginas_del_original=total
+            )
     finally:
         source.close()
 
@@ -367,9 +397,27 @@ def historias_academicas_job(payload: dict) -> dict:
     if pidio_dividir:
         report["outputs"] = salidas
         report["dividido"] = True
+    if revision is not None or aviso_del_revisor or comprobacion:
+        anotar_en_el_informe(report, revision, aviso_del_revisor, comprobacion, perfil=del_revisor.as_dict())
 
     _escribir_el_fuid(payload, taller, nombre, filas, report)
     return report
+
+
+def _reparto(unidades):
+    """Las unidades -- un estudiante, una hoja suelta -- como grupos de páginas para el revisor."""
+    from ...domain.grouping import GroupingResult, PageGroup
+    from ...domain.resolution_code import ResolutionCode
+
+    return GroupingResult(
+        groups=[
+            PageGroup(
+                code=ResolutionCode(value=f"{orden:03d}", raw=f"{orden:03d}"),
+                page_numbers=sorted(unidad.paginas),
+            )
+            for orden, unidad in enumerate(unidades, start=1)
+        ]
+    )
 
 
 #: Cuántos renglones del nombre de Medicina van en cada mosaico, y a qué

@@ -503,3 +503,35 @@ def test_la_ficha_de_alrededor_del_2000_con_la_tarjeta_sobre_el_renglon():
         "LIB. MILITAR ACUDIENTE: NOMBRE Eduardo CÓDIGO 549910006 AÑO INGRESO 1999"
     )
     assert (ficha.nombre, ficha.tarjeta, ficha.codigo) == ("MATOS AGUDELO JOHANA MARGARITA", "810904-09336", "549910006")
+
+
+class TestElAgenteRevisaLasHistorias:
+    """2026-11-05: el agente revisor y la comprobación del disco, también en las historias."""
+
+    def test_cada_costura_y_cada_pdf_escrito(self, tmp_path):
+        import fitz
+
+        from resolutions.api.worker.historias import historias_academicas_job
+
+        origen = tmp_path / "historias.pdf"
+        with fitz.open() as doc:
+            for texto in (FICHA_1996, NOTAS_1993, FICHA_2003, NOTAS_2003):
+                doc.new_page().insert_textbox(fitz.Rect(30, 30, 560, 800), texto, fontsize=9)
+            doc.save(origen)
+        payload = {
+            "job_id": "t",
+            "source": str(origen),
+            "filename": "historias.pdf",
+            "task": "both",
+            "settings": {"ocr_language": "spa", "output_dir": str(tmp_path / "salida")},
+        }
+
+        informe = historias_academicas_job(payload)
+
+        assert len(informe["outputs"]) == 2
+        revision = informe["revision_de_cortes"]
+        assert revision["perfil"]["clave"] == "historias"
+        assert revision["costuras"] == 3
+        comprobacion = informe["comprobacion_de_la_entrega"]
+        assert comprobacion["comprobada"] and comprobacion["problemas"] == [], comprobacion
+        assert comprobacion["hojas"] == 4

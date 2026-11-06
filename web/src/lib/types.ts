@@ -250,6 +250,18 @@ export interface RevisionDeCortes {
   documentos?: { paginas: number[]; estado: EstadoDelRevisor }[];
   /** Sólo las costuras que salieron del margen; las demás se validaron. */
   fuera_del_margen?: CosturaFuera[];
+  /** El perfil de la habilidad con cuyos patrones se revisó (`perfiles_de_revision`). */
+  perfil?: PerfilDeRevision;
+}
+
+/** Los patrones de una habilidad, del registro central con que revisan el agente y la auditoría. */
+export interface PerfilDeRevision {
+  clave: string;
+  nombre: string;
+  una_persona_por_pdf: boolean;
+  /** Si el agente corrige al procesar; si no, señala. */
+  corrige: boolean;
+  margen_aceptable: number;
 }
 
 export interface ComprobacionDeLaEntrega {
@@ -726,7 +738,21 @@ export interface MuestraAuditada {
   /** Si encontró errores y revisó otros 100. */
   ampliada: boolean;
   margen: MargenDeLaCorrida;
+  /** La muestra partida por habilidad, cada una contra el margen de su perfil. */
+  por_habilidad?: MargenDeUnaHabilidad[];
   pdfs: PdfAuditado[];
+}
+
+/** Lo que la muestra dice de una habilidad, juzgada contra su propio margen aceptable. */
+export interface MargenDeUnaHabilidad {
+  clave: string;
+  habilidad: string;
+  revisados: number;
+  bien: number;
+  errores: number;
+  dudosos: number;
+  no_auditados: number;
+  margen: MargenDeLaCorrida;
 }
 
 export interface AuditoriaDeCierre {

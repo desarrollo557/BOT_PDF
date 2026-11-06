@@ -6,7 +6,14 @@
  * Las cuentas y el margen los calcula el servicio (`api/auditoria.py`); aquí
  * sólo se arman las filas del cuadre, los tonos y la escala del error.
  */
-import type { AuditoriaDeCierre, ComparacionDeLaEntrega, MuestraAuditada, PdfAuditado } from './types';
+import type {
+  AuditoriaDeCierre,
+  ComparacionDeLaEntrega,
+  MargenDeLaCorrida,
+  MargenDeUnaHabilidad,
+  MuestraAuditada,
+  PdfAuditado
+} from './types';
 import type { Tono } from './agente';
 
 export interface FilaDelCuadre {
@@ -89,8 +96,28 @@ export function faseEnCurso(auditoria: AuditoriaDeCierre): string {
  * y el margen aceptable. Nunca menos del doble del margen.
  */
 export function topeDeLaEscala(muestra: MuestraAuditada): number {
-  const { hasta, aceptable } = muestra.margen;
+  return topeDelMargen(muestra.margen);
+}
+
+/** La escala de un margen cualquiera: el de la corrida o el de una habilidad. */
+export function topeDelMargen({ hasta, aceptable }: MargenDeLaCorrida): number {
   return Math.min(1, Math.max(aceptable * 2, hasta * 1.25));
+}
+
+/**
+ * Las habilidades de la muestra, cada una contra su margen, la que se sale
+ * primero. Vacío si la muestra es de una sola: entonces el margen de la
+ * corrida ya es el suyo.
+ */
+export function habilidadesDeLaMuestra(muestra: MuestraAuditada): MargenDeUnaHabilidad[] {
+  const todas = muestra.por_habilidad ?? [];
+  if (todas.length < 2) return [];
+  const orden: Record<MargenDeLaCorrida['dictamen'], number> = {
+    'fuera del margen': 0,
+    'sin certeza': 1,
+    'dentro del margen': 2
+  };
+  return [...todas].sort((a, b) => orden[a.margen.dictamen] - orden[b.margen.dictamen] || b.revisados - a.revisados);
 }
 
 /** «3,7 %», con coma decimal. */

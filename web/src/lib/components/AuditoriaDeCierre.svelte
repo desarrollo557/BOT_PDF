@@ -17,10 +17,12 @@
     ESTADOS_DE_LA_MUESTRA,
     faseEnCurso,
     filasDelCuadre,
+    habilidadesDeLaMuestra,
     paraMirar,
     porCiento,
     tonoDeLaEtapa,
-    topeDeLaEscala
+    topeDeLaEscala,
+    topeDelMargen
   } from '$lib/auditoria';
   import type { AuditoriaDeCierre, ComparacionDeLaEntrega, HallazgoDelCuadre } from '$lib/types';
 
@@ -39,6 +41,7 @@
   const dictamen = $derived(margen ? DICTAMENES[margen.dictamen] : null);
   const tope = $derived(muestra ? topeDeLaEscala(muestra) : 0.1);
   const mirar = $derived(muestra ? paraMirar(muestra) : []);
+  const habilidades = $derived(muestra ? habilidadesDeLaMuestra(muestra) : []);
   const avance = $derived(
     auditoria.total ? Math.min(100, Math.round(((auditoria.hechos ?? 0) / auditoria.total) * 100)) : 0
   );
@@ -60,8 +63,8 @@
   });
 
   /** Dónde cae un valor en la escala del error, en por ciento del ancho. */
-  function en(valor: number): number {
-    return Math.min(100, Math.max(0, (valor / tope) * 100));
+  function en(valor: number, escala: number = tope): number {
+    return Math.min(100, Math.max(0, (valor / escala) * 100));
   }
 </script>
 
@@ -182,6 +185,37 @@
         <div class="eje" aria-hidden="true"><span>0 %</span><span>{porCiento(tope)}</span></div>
         <p class="dictamen">{margen.texto_del_dictamen}. {margen.texto}.</p>
       </div>
+    {/if}
+
+    {#if habilidades.length}
+      <!-- Cada habilidad contra el margen de su perfil: el error de una no se diluye en los aciertos de otra. -->
+      <div class="caps rotulo">Por habilidad, cada una contra su margen</div>
+      <ul class="habilidades">
+        {#each habilidades as h (h.clave)}
+          {@const suyo = DICTAMENES[h.margen.dictamen]}
+          {@const escala = topeDelMargen(h.margen)}
+          <li class="habilidad" data-tono={suyo.tono}>
+            <div class="habilidad-cabeza">
+              <span class="nombre">{h.habilidad}</span>
+              <span class="pill pill-sm etiqueta" data-tono={suyo.tono}>{suyo.etiqueta}</span>
+            </div>
+            <p class="habilidad-cifras">
+              <b class="tabular">{h.bien}</b> de {h.revisados} bien{#if h.errores}
+                · <b class="tabular">{h.errores}</b> con error{/if} ·
+              {h.margen.errores ? `${porCiento(h.margen.tasa)} medido` : `menos del ${porCiento(h.margen.hasta)}`} · aceptable
+              {porCiento(h.margen.aceptable)}
+            </p>
+            <div class="escala mini" aria-hidden="true">
+              <span
+                class="banda"
+                style:left={`${en(h.margen.desde, escala)}%`}
+                style:width={`${Math.max(en(h.margen.hasta, escala) - en(h.margen.desde, escala), 1)}%`}
+              ></span>
+              <span class="raya" style:left={`${en(h.margen.aceptable, escala)}%`}></span>
+            </div>
+          </li>
+        {/each}
+      </ul>
     {/if}
 
     {#if mirar.length}
@@ -476,6 +510,44 @@
     font-size: var(--text-sm);
     line-height: 1.45;
     color: var(--ink-2);
+  }
+
+  /* Cada habilidad de la muestra, con su escala corta y la raya de su aceptable. */
+  .habilidades {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
+    gap: var(--space-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .habilidad {
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--tono) 25%, var(--hairline));
+    border-radius: var(--radius-md);
+    background: var(--surface-2);
+    animation: entrada var(--duration-slow) var(--ease-out) both;
+  }
+  .habilidad-cabeza {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+  .nombre {
+    min-width: 0;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .habilidad-cifras {
+    margin: 4px 0 0;
+    font-size: var(--text-xs);
+    color: var(--ink-2);
+  }
+  .escala.mini {
+    height: 6px;
+    margin-top: var(--space-2);
   }
 
   .lista {

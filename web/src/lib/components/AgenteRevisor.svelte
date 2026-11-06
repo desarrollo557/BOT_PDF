@@ -96,6 +96,14 @@
       <p class="frase">
         {revision ? frase(revision, paginas) : 'Comprobó en el disco cada PDF que se escribió.'}
       </p>
+      {#if revision?.perfil}
+        <!-- Con qué patrones revisó: los de su habilidad, del mismo registro que usa la auditoría. -->
+        <p class="perfil">
+          Con los patrones de <b>{revision.perfil.nombre}</b> · {revision.perfil.corrige
+            ? 'corrige lo seguro'
+            : 'señala sin mover hojas'}{revision.perfil.una_persona_por_pdf ? ' · una persona por PDF' : ''}
+        </p>
+      {/if}
     </div>
     {#if revision}
       <span class="pill estado" data-tono={estado.tono}>
@@ -331,6 +339,15 @@
     margin: 2px 0 0;
     font-size: var(--text-md);
     line-height: 1.45;
+    color: var(--ink-2);
+  }
+  .perfil {
+    margin: 2px 0 0;
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+  .perfil b {
+    font-weight: 600;
     color: var(--ink-2);
   }
   .estado {

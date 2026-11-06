@@ -24,11 +24,12 @@ Cada arreglo había que acordarse de hacerlo cuatro veces.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections import Counter
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..domain.conciliacion import Huella, comprobar_lo_escrito
+from ..domain.conciliacion import Huella, comprobar_lo_escrito, rangos
 from ..domain.grouping import GroupingResult
 from .clasificacion import describir
 from .inventory import Inventory, build_inventory
@@ -194,8 +195,47 @@ def comprobar_en_el_disco(
     Nunca lanza: una comprobación que no se pudo hacer se dice como tal, y la
     entrega sigue siendo la que se escribió.
     """
+    esperado: dict[str, list[int]] = {}
+    for grupo in agrupacion.groups:
+        nombre = assembly.written.get(grupo.code.value)
+        if nombre:
+            esperado[nombre] = [p for p in grupo.page_numbers if p not in assembly.unwritable_pages]
+    return comprobar_archivos(origen, esperado, directorio, huellas)
+
+
+def comprobar_archivos(
+    origen: Path,
+    esperado: Mapping[str, Sequence[int]],
+    directorio: Path,
+    huellas: Callable[[Path], list[Huella]],
+    *,
+    paginas_del_original: int | None = None,
+) -> dict[str, object]:
+    """Cada archivo de ``esperado``, vuelto a abrir y casado hoja por hoja con el original.
+
+    La de cualquier habilidad que escribe por su cuenta -- las historias con la
+    ficha primero, Kingspan por su serie --: ``esperado`` dice qué hojas del
+    original lleva cada archivo (relativo a ``directorio``), en el orden en que
+    se escribieron. Con ``paginas_del_original``, además, que ninguna hoja se
+    quede fuera de todos ni vaya en dos: lo que ``entregar`` comprueba antes de
+    escribir y estas rutas no tenían quien lo comprobara.
+    """
+    problemas: list[dict[str, object]] = []
+    if paginas_del_original:
+        # La cobertura no necesita abrir nada: sale de lo que se quiso escribir.
+        cuantas = Counter(p for paginas in esperado.values() for p in paginas)
+        fuera = [p for p in range(1, paginas_del_original + 1) if p not in cuantas]
+        dobles = sorted(p for p, veces in cuantas.items() if veces > 1)
+        if fuera:
+            problemas.append(
+                {"archivo": None, "pagina": fuera[0], "texto": f"hojas del original en ningún PDF: {rangos(fuera)}"}
+            )
+        if dobles:
+            problemas.append(
+                {"archivo": None, "pagina": dobles[0], "texto": f"hojas del original en más de un PDF: {rangos(dobles)}"}
+            )
     if not Path(origen).is_file():
-        return {"comprobada": False, "resumen": "Entrega sin comprobar: el origen no es un PDF", "problemas": []}
+        return {"comprobada": False, "resumen": "Entrega sin comprobar: el origen no es un PDF", "problemas": problemas}
     try:
         del_origen = huellas(Path(origen))
     except Exception as error:  # noqa: BLE001 - sin el original no hay con qué casar
@@ -203,13 +243,8 @@ def comprobar_en_el_disco(
         return {
             "comprobada": False,
             "resumen": f"Entrega sin comprobar: el original no se dejó leer ({type(error).__name__})",
-            "problemas": [],
+            "problemas": problemas,
         }
-    esperado: dict[str, list[int]] = {}
-    for grupo in agrupacion.groups:
-        nombre = assembly.written.get(grupo.code.value)
-        if nombre:
-            esperado[nombre] = [p for p in grupo.page_numbers if p not in assembly.unwritable_pages]
     escritos: dict[str, list[Huella] | None] = {}
     for nombre in esperado:
         try:
@@ -217,7 +252,7 @@ def comprobar_en_el_disco(
         except Exception:  # noqa: BLE001 - el archivo que no se abre es el problema
             logger.warning("no se pudo abrir %s para comprobarlo", nombre, exc_info=True)
             escritos[nombre] = None
-    problemas = comprobar_lo_escrito(del_origen, escritos, esperado)
+    problemas.extend(comprobar_lo_escrito(del_origen, escritos, esperado))
     hojas = sum(len(p) for p in esperado.values())
     resumen = (
         f"Entrega comprobada: {len(esperado)} PDF y {hojas} hojas, cada una en su sitio"

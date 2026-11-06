@@ -93,8 +93,9 @@ class Patrones:
     #: Si la habilidad sabe nombrar y fechar sus documentos después de que el
     #: revisor mueva hojas. Las que no -- diplomas, actas de grado, resoluciones,
     #: cuyas filas del FUID salen de leer cada documento -- reciben lo que el
-    #: revisor corregiría como revisión, y a la IA no se le pregunta: no se
-    #: gasta en una decisión que no se va a aplicar.
+    #: revisor corregiría como revisión. Con «OCR + IA» la IA decide igual lo que
+    #: sale del margen: lo que desmiente deja de ir a revisión, y lo que confirma
+    #: va con su cita (2026-11-05, el agente igual en todas las habilidades).
     puede_mover: bool = True
 
 
@@ -221,6 +222,14 @@ def revisar_los_cortes(
     en_revision: list[tuple[int, str]] = []
     decididas: list[tuple[Costura, str, str]] = []
     preguntar: list[Costura] = []
+
+    def se_aplica(costura: Costura) -> bool:
+        """Si la habilidad sabe nombrar lo que quedaría al corregir esta costura."""
+        propuesta = costura.propuesta
+        return patrones.puede_mover and not (
+            propuesta is not None and propuesta.hacia is None and not patrones.puede_partir
+        )
+
     for costura in fuera:
         if costura.contra_una_regla or costura.propuesta is None:
             en_revision.append(
@@ -228,11 +237,17 @@ def revisar_los_cortes(
             )
         elif any(p in patrones.fijas for p in costura.propuesta.paginas):
             en_revision.append((costura.derecha, f"fuera del margen, pero la hoja es fija por una regla: {costura.motivo}"))
-        elif not patrones.puede_mover or (costura.propuesta.hacia is None and not patrones.puede_partir):
-            en_revision.append((costura.derecha, f"fuera del margen de error, para mirar: {costura.motivo}"))
-        elif costura.error_seguro:
+        elif costura.error_seguro and se_aplica(costura):
             decididas.append((costura, "dos pruebas del papel", costura.motivo))
+        elif costura.error_seguro:
+            en_revision.append((costura.derecha, f"fuera del margen, con dos pruebas del papel: {costura.motivo}"))
+        elif not se_aplica(costura) and juez is None:
+            en_revision.append((costura.derecha, f"fuera del margen de error, para mirar: {costura.motivo}"))
         else:
+            # Lo decide la IA, en todas las habilidades (2026-11-05: «cuando se
+            # salga un caso del margen de error se lo envíe a la IA»). Donde la
+            # habilidad no sabe nombrar lo movido, su veredicto no mueve hojas:
+            # lo que confirma va a revisión con su cita y lo que desmiente, no.
             preguntar.append(costura)
 
     confirmadas = 0
@@ -291,8 +306,16 @@ def revisar_los_cortes(
                 veredicto = respuesta.get((costura.izquierda, costura.derecha))
                 corrige = "continua" if costura.decision is Decision.CORTE else "abre"
                 confirma = "abre" if costura.decision is Decision.CORTE else "continua"
-                if veredicto and veredicto.decision == corrige and veredicto.cita.strip():
+                if veredicto and veredicto.decision == corrige and veredicto.cita.strip() and se_aplica(costura):
                     decididas.append((costura, "la IA", f"«{veredicto.cita.strip()[:160]}»; {costura.motivo}"))
+                elif veredicto and veredicto.decision == corrige and veredicto.cita.strip():
+                    en_revision.append(
+                        (
+                            costura.derecha,
+                            f"la IA confirma el error («{veredicto.cita.strip()[:160]}»): {costura.motivo}; "
+                            "esta habilidad no mueve hojas, para mirar",
+                        )
+                    )
                 elif veredicto and veredicto.decision == confirma:
                     confirmadas += 1
                     confirmadas_en.add(costura.derecha)
@@ -497,12 +520,15 @@ def anotar_en_el_informe(
     revision: RevisionDeCortes | None,
     aviso: str | None,
     comprobacion: Mapping[str, object] | None,
+    *,
+    perfil: Mapping[str, object] | None = None,
 ) -> None:
     """Lo que el revisor y la comprobación del disco dejan en el informe de cualquier habilidad.
 
     La cola de revisión recibe lo que hay que mirar; ``notices``, el resumen si
     algo no salió validado; y dos claves con el detalle: ``revision_de_cortes``
-    y ``comprobacion_de_la_entrega``.
+    y ``comprobacion_de_la_entrega``. ``perfil`` es el de la habilidad con que
+    se revisó (``perfiles_de_revision``), para que se vea con qué patrones.
     """
     cola = informe.setdefault("review_queue", [])
     avisos = informe.setdefault("notices", [])
@@ -515,6 +541,8 @@ def anotar_en_el_informe(
     elif aviso:
         avisos.append(aviso)
         informe["revision_de_cortes"] = {"estado": "no corrió", "resumen": aviso}
+    if perfil and "revision_de_cortes" in informe:
+        informe["revision_de_cortes"]["perfil"] = dict(perfil)
     if comprobacion:
         problemas = list(comprobacion.get("problemas") or [])
         cola.extend(

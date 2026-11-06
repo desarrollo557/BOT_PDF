@@ -33,11 +33,8 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
     from ...application.diploma_fuid import con_los_archivos
     from ...application.entrega import Destino, entregar
     from ...application.inventory_document import InventoryDocument
-    from ...application.revisor_de_cortes import (
-        Patrones,
-        anotar_en_el_informe,
-        revisar_sin_romper,
-    )
+    from ...application.perfiles_de_revision import perfil_de
+    from ...application.revisor_de_cortes import anotar_en_el_informe, revisar_sin_romper
 
     taller = Taller.desde(payload)
 
@@ -91,11 +88,16 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
     report = outcome.as_dict()
     report["task"] = str(task)
     _dejar_las_lecturas(outcome, taller.destination)
-    # El revisor de cortes (2026-11-05): una persona por PDF -- dos cédulas
-    # distintas en un folio o un expediente son dos personas --. Aquí señala y
-    # no mueve: cada fila del FUID sale de leer su documento.
+    # El revisor de cortes (2026-11-05), con el perfil de su habilidad --
+    # diplomas o matrículas --: una persona por PDF, dos cédulas distintas en
+    # un folio o un expediente son dos personas. Aquí señala y no mueve: cada
+    # fila del FUID sale de leer su documento. Lo que sale del margen lo decide
+    # la IA si se eligió.
+    perfil = perfil_de(str((report.get("stats") or {}).get("document_type") or tipo or "diploma"))
+    if not perfil.una_persona_por_pdf:
+        perfil = perfil_de("diploma")
     revision, aviso_del_revisor = (
-        revisar_sin_romper(agrupacion, textos, Patrones(una_persona_por_pdf=True, puede_mover=False))
+        revisar_sin_romper(agrupacion, textos, perfil.patrones(textos), juez=taller.juez_de_costuras())
         if agrupacion is not None and task.writes_documents
         else (None, None)
     )
@@ -151,7 +153,7 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
             # Cada PDF escrito, vuelto a abrir y casado con el original.
             huellas=huellas_de,
         )
-        anotar_en_el_informe(report, revision, aviso_del_revisor, entregado.comprobacion)
+        anotar_en_el_informe(report, revision, aviso_del_revisor, entregado.comprobacion, perfil=perfil.as_dict())
         report["inventory"] = entregado.inventario.as_dict()
         report["outputs"] = entregado.salidas
         report["unwritable_pages"] = entregado.ilegibles

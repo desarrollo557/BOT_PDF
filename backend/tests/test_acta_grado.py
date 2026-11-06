@@ -168,6 +168,63 @@ class TestElPdfSeLlamaComoSuAsunto:
         assert {nombre[3:-4] for nombre in nombres if not nombre.startswith("01_")} == asuntos
 
 
+class TestElAgenteRevisaElLibro:
+    """2026-11-05: el agente revisor y la comprobación del disco, también en las actas."""
+
+    def test_cada_costura_y_cada_pdf_escrito(self, tmp_path):
+        import fitz
+
+        from resolutions.api.worker import inventario as trabajo
+
+        origen = tmp_path / "libro.pdf"
+        with fitz.open() as doc:
+            for texto in (LISTADO, FORMULARIO_2005, MODERNA_COMPLETA):
+                doc.new_page().insert_text((20, 40), texto, fontsize=6)
+            doc.save(origen)
+        payload = {
+            "job_id": "t",
+            "source": str(origen),
+            "filename": "libro.pdf",
+            "task": "both",
+            "settings": {"ocr_language": "spa", "output_dir": str(tmp_path / "salida")},
+        }
+
+        informe = trabajo._acta_consejo_job(payload, grado=True)
+
+        revision = informe["revision_de_cortes"]
+        assert revision["perfil"]["clave"] == "actas-de-grado"
+        assert revision["perfil"]["una_persona_por_pdf"] is True
+        assert revision["costuras"] == len(informe["outputs"]) - 1
+        assert revision["movimientos"] == []
+        comprobacion = informe["comprobacion_de_la_entrega"]
+        assert comprobacion["comprobada"] and comprobacion["problemas"] == []
+        assert comprobacion["archivos"] == len(informe["outputs"])
+
+    def test_solo_inventariar_un_libro_tambien_se_revisa(self, tmp_path):
+        """Cada sesión es una fila: su costura se revisa aunque no se escriba nada."""
+        import fitz
+
+        from resolutions.api.worker import inventario as trabajo
+
+        origen = tmp_path / "libro.pdf"
+        with fitz.open() as doc:
+            for texto in (LISTADO, FORMULARIO_2005, MODERNA_COMPLETA):
+                doc.new_page().insert_text((20, 40), texto, fontsize=6)
+            doc.save(origen)
+        payload = {
+            "job_id": "t",
+            "source": str(origen),
+            "filename": "libro.pdf",
+            "task": "inventory",
+            "settings": {"ocr_language": "spa", "output_dir": str(tmp_path / "salida")},
+        }
+
+        informe = trabajo._acta_consejo_job(payload, grado=True)
+
+        assert informe["revision_de_cortes"]["perfil"]["clave"] == "actas-de-grado"
+        assert "comprobacion_de_la_entrega" not in informe
+
+
 class TestLaFechaEnLetras:
     """Los formularios de 1980 a 2005: huecos rellenos a máquina, cifras rotas."""
 

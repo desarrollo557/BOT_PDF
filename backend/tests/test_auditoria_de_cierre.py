@@ -292,6 +292,10 @@ class TestLaAuditoriaDeUnaCorrida:
         assert resumen["Entrega completa"] == "Sí"
         assert resumen["Muestra · bien"] == 3
         assert len(muestras) == 3 and all(fila[2] == "bien" for fila in muestras)
+        # El margen de cada habilidad, contra el de su perfil (2026-11-05).
+        [suya] = muestra["por_habilidad"]
+        assert (suya["clave"], suya["revisados"], suya["errores"]) == ("correspondencia", 3, 0)
+        assert resumen["Margen · Caja de correspondencia"].startswith(suya["margen"]["texto"])
 
     def test_un_pdf_mal_partido_se_caza_y_se_amplia_la_muestra(self, ajustes, tmp_path):
         for upd in ("UPD1", "UPD2", "UPD3"):

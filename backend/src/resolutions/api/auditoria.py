@@ -43,13 +43,13 @@ from ..adapters import red_smb
 from ..adapters.huellas_pdf import huellas_de, huellas_y_textos
 from ..adapters.indice_electronico import NOMBRE_DEL_INDICE, leer_indice
 from ..application.auditoria_de_la_entrega import auditar_un_pdf
+from ..application.perfiles_de_revision import perfil_de
 from ..domain.auditoria import (
     BIEN,
     DENTRO_DEL_MARGEN,
     DUDOSO,
     ERROR,
     FUERA_DEL_MARGEN,
-    MARGEN_ACEPTABLE,
     NO_AUDITADO,
     TAMANO_DE_LA_MUESTRA,
     PdfAuditado,
@@ -90,13 +90,48 @@ class EntregaVista:
         ]
 
 
-def margen_aceptable() -> float:
-    """El error que se acepta en una corrida: ``BOTPDF_MARGEN_ACEPTABLE`` en por ciento, o el 5 %."""
-    try:
-        valor = float(os.environ.get("BOTPDF_MARGEN_ACEPTABLE", "").replace(",", ".")) / 100
-    except ValueError:
-        return MARGEN_ACEPTABLE
-    return valor if 0 < valor < 1 else MARGEN_ACEPTABLE
+def margen_aceptable(habilidad: str | None = None) -> float:
+    """El error que se acepta en una habilidad: el de su perfil (``perfiles_de_revision``).
+
+    ``BOTPDF_MARGEN_ACEPTABLE_<CLAVE>`` lo cambia para una habilidad y
+    ``BOTPDF_MARGEN_ACEPTABLE`` para todas, en por ciento; si no, el 5 %.
+    """
+    return perfil_de(habilidad).margen
+
+
+def margenes_por_habilidad(resultados: list[PdfAuditado]) -> list[dict]:
+    """La muestra partida por habilidad, cada una juzgada contra el margen de su perfil.
+
+    Lo pidió el operador el 2026-11-05: «cada habilidad tiene sus patrones; allí
+    sabremos cómo crear el margen de error». Una corrida de carpeta puede
+    mezclar habilidades -- un repositorio con diplomas, actas e historias --, y
+    el error de una no se diluye en los aciertos de las otras.
+    """
+    grupos: dict[str, list[PdfAuditado]] = {}
+    perfiles = {}
+    for resultado in resultados:
+        perfil = perfil_de(resultado.habilidad)
+        perfiles[perfil.clave] = perfil
+        grupos.setdefault(perfil.clave, []).append(resultado)
+    salida = []
+    for clave, suyos in grupos.items():
+        perfil = perfiles[clave]
+        cuentas = Counter(r.estado for r in suyos)
+        revisados = len(suyos) - cuentas.get(NO_AUDITADO, 0)
+        salida.append(
+            {
+                "clave": clave,
+                "habilidad": perfil.nombre,
+                "revisados": revisados,
+                "bien": cuentas.get(BIEN, 0),
+                "errores": cuentas.get(ERROR, 0),
+                "dudosos": cuentas.get(DUDOSO, 0),
+                "no_auditados": cuentas.get(NO_AUDITADO, 0),
+                "margen": margen_de_error(cuentas.get(ERROR, 0), revisados, aceptable=perfil.margen).as_dict(),
+            }
+        )
+    salida.sort(key=lambda h: (-h["revisados"], h["habilidad"]))
+    return salida
 
 
 def _base_de_la_constancia(runner, run, path: Path) -> Path | None:
@@ -325,13 +360,17 @@ def auditar_la_muestra(
     indices: dict[Path, tuple[int | None, int | None]] = {}
 
     def auditar(relativa: str) -> PdfAuditado:
+        # Con su habilidad aunque no se deje auditar: cuenta en la suya.
+        habilidad = por_relativa[relativa].constancia.habilidad or ""
         if detener():
-            return PdfAuditado(relativa, NO_AUDITADO, ("la corrida se detuvo antes de auditarlo",))
+            return PdfAuditado(
+                relativa, NO_AUDITADO, ("la corrida se detuvo antes de auditarlo",), habilidad=habilidad
+            )
         try:
             return _auditar_uno(por_relativa[relativa], juez, indices)
         except Exception as error:  # noqa: BLE001 - un PDF que no se deja auditar se dice
             logger.warning("no se pudo auditar %s", relativa, exc_info=True)
-            return PdfAuditado(relativa, NO_AUDITADO, (f"no se pudo auditar: {error}",))
+            return PdfAuditado(relativa, NO_AUDITADO, (f"no se pudo auditar: {error}",), habilidad=habilidad)
 
     resultados: list[PdfAuditado] = []
 
@@ -342,11 +381,15 @@ def auditar_la_muestra(
                 if avance is not None:
                     avance(len(resultados), resultado)
 
-    aceptable = margen_aceptable()
-
     def medir():
         cuentas = Counter(r.estado for r in resultados)
         revisados = len(resultados) - cuentas.get(NO_AUDITADO, 0)
+        # El de toda la corrida, contra el más estricto de las habilidades que
+        # trae: el que se acepta en una no tapa el de otra.
+        aceptable = min(
+            (margen_aceptable(r.habilidad) for r in resultados if r.estado != NO_AUDITADO),
+            default=margen_aceptable(),
+        )
         return cuentas, revisados, margen_de_error(cuentas.get(ERROR, 0), revisados, aceptable=aceptable)
 
     primera = elegir_la_muestra(list(por_relativa), cuantos, semilla)
@@ -373,6 +416,7 @@ def auditar_la_muestra(
         "no_auditados": cuentas.get(NO_AUDITADO, 0),
         "ampliada": ampliada,
         "margen": margen.as_dict(),
+        "por_habilidad": margenes_por_habilidad(resultados),
         "pdfs": [r.as_dict() for r in resultados],
     }
 
@@ -449,14 +493,23 @@ def etapa_de(comparacion: dict | None, muestra: dict | None) -> tuple[str, str]:
         if comparacion["registros_que_no_cuadran"]:
             partes.append(f"{len(comparacion['registros_que_no_cuadran'])} índices que no cuadran")
     margen = (muestra or {}).get("margen") or {}
+    # La habilidad que se sale de su margen aunque la corrida entera no: sus
+    # errores no se diluyen en los aciertos de las demás.
+    fuera = [
+        h["habilidad"]
+        for h in (muestra or {}).get("por_habilidad") or []
+        if (h.get("margen") or {}).get("dictamen") == FUERA_DEL_MARGEN
+    ]
     if muestra and muestra.get("revisados"):
         partes.append(f"muestra: {muestra['bien']} de {muestra['revisados']} bien")
         if margen.get("texto_del_dictamen"):
             partes.append(str(margen["texto_del_dictamen"]).split(":")[0].lower())
+        if fuera:
+            partes.append("fuera de su margen: " + ", ".join(fuera))
     detalle = " · ".join(partes)
     if comparacion and not comparacion["completa"]:
         return "Terminado con faltantes", detalle
-    if margen.get("dictamen") == FUERA_DEL_MARGEN:
+    if margen.get("dictamen") == FUERA_DEL_MARGEN or fuera:
         return "Terminado: error fuera del margen", detalle
     if muestra and muestra.get("errores"):
         if margen.get("dictamen") == DENTRO_DEL_MARGEN:

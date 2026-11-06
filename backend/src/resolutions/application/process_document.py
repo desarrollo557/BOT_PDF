@@ -15,15 +15,18 @@ from .control import NullRunControl, RunControl
 from .diagnostico import explicar
 from .entrega import Destino, entregar
 from .inventory import Inventory
+from .perfiles_de_revision import perfil_de
 from .pipeline import ClassificationPipeline, PipelineStats
-from .ports import DocumentAssembler, DocumentStore, InventoryStore
+from .ports import DocumentAssembler, DocumentStore, InventoryStore, JuezDeCosturas
 from .progress import NullProgressReporter, ProgressEvent, ProgressReporter, Stage
 from .revisor_de_cortes import (
-    Patrones,
     RevisionDeCortes,
     anotar_en_el_informe,
     revisar_sin_romper,
 )
+
+#: El perfil con que el agente revisor mira un legajo (``perfiles_de_revision``).
+PERFIL = perfil_de("resoluciones")
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +83,9 @@ class ProcessingReport:
 
     def as_dict(self) -> dict[str, object]:
         informe = self._as_dict()
-        anotar_en_el_informe(informe, self.revision, self.aviso_del_revisor, self.comprobacion)
+        anotar_en_el_informe(
+            informe, self.revision, self.aviso_del_revisor, self.comprobacion, perfil=PERFIL.as_dict()
+        )
         return informe
 
     def _as_dict(self) -> dict[str, object]:
@@ -134,6 +139,7 @@ class ProcessDocument:
         progress: ProgressReporter | None = None,
         control: RunControl | None = None,
         huellas: Callable[[Path], list[Huella]] | None = None,
+        juez: JuezDeCosturas | None = None,
     ) -> None:
         self._store = store
         self._pipeline = pipeline
@@ -145,6 +151,9 @@ class ProcessDocument:
         #: Con qué leer las huellas de un PDF para comprobar en el disco lo
         #: escrito; sin él no se comprueba.
         self._huellas = huellas
+        #: Quién decide lo que el revisor deja fuera del margen: la IA, si se
+        #: eligió «OCR + IA»; si no, nadie y va a revisión.
+        self._juez = juez
 
     def execute(
         self,
@@ -195,10 +204,9 @@ class ProcessDocument:
             # lo que dice el papel -- el ARTÍCULO SEGUNDO que sigue al PRIMERO
             # en otra resolución --. Aquí señala y no mueve: cada resolución se
             # nombra por su número, que se leyó de su hoja.
+            textos = {p: source.text_of(p) for p in range(1, source.page_count + 1)}
             revision, aviso_del_revisor = revisar_sin_romper(
-                result,
-                {p: source.text_of(p) for p in range(1, source.page_count + 1)},
-                Patrones(puede_mover=False),
+                result, textos, PERFIL.patrones(textos), juez=self._juez
             )
             en_revision = self._build_review_queue(classifications, result, stats)
             entregado = entregar(

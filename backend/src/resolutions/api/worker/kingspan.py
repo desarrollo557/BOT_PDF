@@ -34,10 +34,15 @@ from pathlib import Path
 import openpyxl
 
 from ...adapters.fuid_psd001 import FuidPsd001
+from ...adapters.huellas_pdf import huellas_de
+from ...application.entrega import comprobar_archivos
 from ...application.fuid import upd_del_archivo
+from ...application.perfiles_de_revision import perfil_de
 from ...application.ports import Band
 from ...application.progress import ProgressEvent, Stage
+from ...application.revisor_de_cortes import anotar_en_el_informe, revisar_sin_romper
 from ...domain.ficha import fichar
+from ...domain.grouping import GroupingResult, PageGroup
 from ...domain.kingspan import (
     ACTAS_DE_TRANSFERENCIA,
     ENTIDAD,
@@ -48,9 +53,13 @@ from ...domain.kingspan import (
     documento_de,
     filas_de,
 )
+from ...domain.resolution_code import ResolutionCode
 from .taller import Taller
 
 logger = logging.getLogger(__name__)
+
+#: El perfil con que el agente revisor mira una UPD (``perfiles_de_revision``).
+PERFIL = perfil_de("kingspan")
 
 #: Cómo se llama el libro que se deja junto a los PDF.
 INVENTORY_SUFFIX = "_INVENTARIO_KINGSPAN.xlsx"
@@ -297,34 +306,51 @@ def escritor() -> FuidPsd001:
     return FuidPsd001(PLANTILLA, hoja=HOJA, primera_fila=PRIMERA_FILA, formato_de_la_plantilla=True)
 
 
-def _dividir(taller: Taller, fila: FilaKingspan, total: int, *, con_portada: bool) -> list[Path]:
-    """Un PDF por documento de la serie, con sus anexos detrás.
+def _tramos(filas: list[FilaKingspan], total: int) -> list[tuple[str, int, int]]:
+    """El archivo de cada documento numerado de la UPD y sus páginas, de la primera a la última.
 
     Cada documento empieza en su página y se queda con todo lo que viene hasta el
-    siguiente de la serie: las facturas y causaciones grapadas detrás son suyas.
-    Lo que haya antes del primero -- la portada -- va con el primero.
+    siguiente documento numerado: las facturas y causaciones grapadas detrás son
+    suyas. Lo que haya antes del primero -- la portada -- va con el primero.
+
+    Con todos los documentos de la UPD a la vez, no fila por fila: con dos
+    series parejas -- dos filas -- el último de la primera llegaba hasta el
+    final del PDF y se llevaba también las hojas de la segunda, que salían en
+    dos PDF (2026-11-05, al comprobar la entrega de Kingspan). Dos números en la
+    misma hoja abren un solo PDF, el del primero.
     """
+    documentos: list[Documento] = []
+    for documento in sorted((d for fila in filas for d in fila.documentos), key=lambda d: d.pagina):
+        if not documentos or documento.pagina != documentos[-1].pagina:
+            documentos.append(documento)
+    tramos = []
+    for indice, documento in enumerate(documentos):
+        inicio = 1 if indice == 0 else documento.pagina
+        fin = documentos[indice + 1].pagina - 1 if indice + 1 < len(documentos) else total
+        tramos.append((f"{documento.codigo}.pdf", inicio, fin))
+    return tramos
+
+
+def _dividir(taller: Taller, tramos: list[tuple[str, int, int]]) -> list[Path]:
+    """Un PDF por documento de la serie, con sus anexos detrás (``_tramos``)."""
     import pymupdf
 
-    documentos = fila.documentos
-    if not documentos:
+    if not tramos:
         return []
     taller.destination.mkdir(parents=True, exist_ok=True)
     escritos: list[Path] = []
     with pymupdf.open(taller.source) as origen:
-        for indice, documento in enumerate(documentos):
+        for indice, (archivo, inicio, fin) in enumerate(tramos):
             taller.control.check()
             taller.progress.emit(
                 ProgressEvent(
                     stage=Stage.ASSEMBLING,
                     done=indice,
-                    total=len(documentos),
-                    detail=f"escribiendo {documento.codigo}",
+                    total=len(tramos),
+                    detail=f"escribiendo {archivo.removesuffix('.pdf')}",
                 )
             )
-            inicio = 1 if indice == 0 and con_portada else documento.pagina
-            fin = documentos[indice + 1].pagina - 1 if indice + 1 < len(documentos) else total
-            destino = taller.destination / f"{documento.codigo}.pdf"
+            destino = taller.destination / archivo
             with pymupdf.open() as salida:
                 salida.insert_pdf(origen, from_page=inicio - 1, to_page=fin - 1)
                 salida.save(destino, garbage=3, deflate=True)
@@ -393,10 +419,40 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
     inventario = escritor().write_cells(celdas, destino)
 
     outputs: list[str] = [str(inventario)]
+    revision = aviso_del_revisor = comprobacion = None
     if task is TaskKind.BOTH:
-        for indice, fila in enumerate(filas):
-            divididos = _dividir(taller, fila, len(textos), con_portada=indice == 0)
-            outputs.extend(str(ruta) for ruta in divididos)
+        tramos = _tramos(filas, len(textos))
+        # El agente revisor (2026-11-05), con el perfil de Kingspan: cada
+        # costura entre documentos de la serie contra lo que dice el papel. Señala
+        # y no mueve: cada PDF se llama por su número. Lo que sale del margen lo
+        # decide la IA si se eligió.
+        if len(tramos) > 1:
+            por_pagina = dict(enumerate(textos, start=1))
+            revision, aviso_del_revisor = revisar_sin_romper(
+                GroupingResult(
+                    groups=[
+                        PageGroup(
+                            code=ResolutionCode(value=f"{orden:03d}", raw=f"{orden:03d}"),
+                            page_numbers=list(range(inicio, fin + 1)),
+                        )
+                        for orden, (_, inicio, fin) in enumerate(tramos, start=1)
+                    ]
+                ),
+                por_pagina,
+                PERFIL.patrones(por_pagina),
+                juez=taller.juez_de_costuras(),
+            )
+        outputs.extend(str(ruta) for ruta in _dividir(taller, tramos))
+        if tramos:
+            # Cada PDF escrito, vuelto a abrir y casado con la UPD; y que
+            # ninguna hoja se quede fuera de todos ni vaya en dos.
+            comprobacion = comprobar_archivos(
+                taller.source,
+                {archivo: list(range(inicio, fin + 1)) for archivo, inicio, fin in tramos},
+                taller.destination,
+                huellas_de,
+                paginas_del_original=len(textos),
+            )
 
     # Lo que hay que revisar con el papel delante -- documentos fuera del rango,
     # fechas que no se leyeron, una cifra en que la imagen y el texto del
@@ -421,7 +477,7 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
     taller.progress.emit(ProgressEvent(stage=Stage.DONE, done=1, total=1))
 
     principal = filas[0]
-    return {
+    report = {
         "document": taller.name,
         "page_count": len(textos),
         "groups": [],
@@ -457,6 +513,9 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
         "task": str(task),
         "notices": notices,
     }
+    if revision is not None or aviso_del_revisor or comprobacion:
+        anotar_en_el_informe(report, revision, aviso_del_revisor, comprobacion, perfil=PERFIL.as_dict())
+    return report
 
 
 #: El libro de toda la corrida, en la raíz del destino.

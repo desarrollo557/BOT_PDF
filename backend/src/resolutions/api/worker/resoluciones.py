@@ -36,6 +36,8 @@ def _split_job(payload: dict, task) -> dict:
         control=taller.control,
         # Cada PDF escrito, vuelto a abrir y casado con el original.
         huellas=huellas_de,
+        # Lo que el revisor deja fuera del margen, a la IA si se eligió.
+        juez=taller.juez_de_costuras(),
     )
     resultado = use_case.execute(taller.source, taller.destination, source_name=taller.name)
     report = resultado.as_dict()

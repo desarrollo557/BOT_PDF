@@ -383,17 +383,53 @@ class TestLoQuePuedePasarEnMedio:
 
 
 class TestLasOtrasHabilidades:
-    def test_dos_personas_en_un_pdf_se_senalan_sin_gastar(self):
+    DOS_PERSONAS = {1: "Diploma a Ana Perez C.C. No. 23000000", 2: "Diploma a Luis Gomez C.C. No. 73195535"}
+
+    def test_dos_personas_en_un_pdf_sin_ia_se_senalan(self):
         """Diplomas, actas de grado: una persona por PDF. La habilidad no sabe
-        nombrar lo partido, así que se señala y a la IA no se le pregunta."""
-        textos = {1: "Diploma a Ana Perez C.C. No. 23000000", 2: "Diploma a Luis Gomez C.C. No. 73195535"}
-        juez = _Juez("abre")
+        nombrar lo partido: sin IA se señala y no se mueve."""
         revision = revisar_los_cortes(
-            _grupos([1, 2]), textos, Patrones(una_persona_por_pdf=True, puede_mover=False), juez=juez
+            _grupos([1, 2]), self.DOS_PERSONAS, Patrones(una_persona_por_pdf=True, puede_mover=False)
         )
-        assert juez.preguntas == []
         assert [p for p, _ in revision.en_revision] == [2]
         assert _paginas(revision) == [[1, 2]]
+
+    def test_fuera_del_margen_lo_decide_la_ia_tambien_donde_no_se_mueve(self):
+        """2026-11-05, el agente igual en todas las habilidades: lo que sale del
+        margen lo decide la IA. Lo que confirma va a revisión con su cita, y no
+        se mueve ninguna hoja: el nombre y la fila salen de leer el documento."""
+        juez = _Juez("abre", cita="Luis Gomez C.C. 73195535")
+        revision = revisar_los_cortes(
+            _grupos([1, 2]), self.DOS_PERSONAS, Patrones(una_persona_por_pdf=True, puede_mover=False), juez=juez
+        )
+        assert len(juez.preguntas) == 1
+        assert _paginas(revision) == [[1, 2]]
+        assert revision.movimientos == ()
+        [(pagina, motivo)] = revision.en_revision
+        assert pagina == 2 and "la IA confirma el error" in motivo and "73195535" in motivo
+        assert revision.fuera[0]["resultado"] == "revision"
+
+    def test_lo_que_la_ia_desmiente_deja_de_ir_a_revision(self):
+        juez = _Juez("continua", cita="la misma graduada")
+        revision = revisar_los_cortes(
+            _grupos([1, 2]), self.DOS_PERSONAS, Patrones(una_persona_por_pdf=True, puede_mover=False), juez=juez
+        )
+        assert revision.en_revision == ()
+        assert revision.confirmadas_por_la_ia == 1
+        assert revision.estado == "validado"
+
+    def test_dos_pruebas_del_papel_no_gastan_ia_donde_no_se_mueve(self):
+        """Un error seguro no se pregunta: va a revisión directo."""
+        textos = {
+            1: "RESOLUCION 10\nARTICULO PRIMERO: Aprobar.\nPágina 1 de 2",
+            2: "ARTICULO SEGUNDO: Comuníquese.\nPágina 2 de 2",
+        }
+        juez = _Juez("continua")
+        revision = revisar_los_cortes(_grupos([1], [2]), textos, Patrones(puede_mover=False), juez=juez)
+        assert juez.preguntas == []
+        assert _paginas(revision) == [[1], [2]]
+        [(pagina, motivo)] = revision.en_revision
+        assert pagina == 2 and "dos pruebas del papel" in motivo
 
     def test_partir_un_pdf_que_lleva_dentro_una_hoja_que_abre(self):
         textos = {1: "Señores\nREF: DERECHO DE PETICION", 2: "sigue la petición en esta hoja.", 3: "Señores\nREF: RECLAMO"}

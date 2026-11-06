@@ -99,6 +99,9 @@ def escribir_analisis(
         "error": "F8CBAD",
         "dudoso": "FFF2CC",
         "no se pudo auditar": "FFF2CC",
+        "dentro del margen": "C6EFCE",
+        "fuera del margen": "F8CBAD",
+        "sin certeza": "FFF2CC",
     }
 
     def tabla(hoja, columnas: list[tuple[str, int]], renglones: list[list], color_en: int | None = None) -> None:
@@ -166,6 +169,13 @@ def escribir_analisis(
             ["Muestra · dudosos", muestra.get("dudosos", 0)],
             ["Muestra · semilla", muestra.get("semilla", "")],
             ["Margen de error de la corrida", margen.get("texto", "")],
+            ["Dictamen de la corrida", margen.get("texto_del_dictamen", "")],
+        ]
+        # Cada habilidad contra el margen de su perfil (2026-11-05): el error
+        # de una no se diluye en los aciertos de las demás.
+        renglones += [
+            [f"Margen · {h['habilidad']}", f"{(h.get('margen') or {}).get('texto', '')} · {(h.get('margen') or {}).get('texto_del_dictamen', '')}"]
+            for h in muestra.get("por_habilidad") or []
         ]
     tabla(resumen, [("Concepto", 42), ("Cantidad", 60)], renglones)
 
@@ -237,6 +247,29 @@ def escribir_analisis(
             ],
             color_en=2,
         )
+        if muestra.get("por_habilidad"):
+            tabla(
+                libro.create_sheet("Margen por habilidad"),
+                [("Habilidad", 28), ("Revisados", 11), ("Bien", 8), ("Con error", 11), ("Dudosos", 10),
+                 ("No auditados", 13), ("Error medido", 30), ("Aceptable", 11), ("Dictamen", 18),
+                 ("Por qué", 70)],
+                [
+                    [
+                        h["habilidad"],
+                        h.get("revisados", 0),
+                        h.get("bien", 0),
+                        h.get("errores", 0),
+                        h.get("dudosos", 0),
+                        h.get("no_auditados", 0),
+                        (h.get("margen") or {}).get("texto", ""),
+                        f"{round(float((h.get('margen') or {}).get('aceptable') or 0) * 100, 1):g} %",
+                        (h.get("margen") or {}).get("dictamen", ""),
+                        (h.get("margen") or {}).get("texto_del_dictamen", ""),
+                    ]
+                    for h in muestra["por_habilidad"]
+                ],
+                color_en=8,
+            )
     destino.mkdir(parents=True, exist_ok=True)
     ruta = destino / NOMBRE_DEL_ANALISIS
     return guardar_libro(libro, ruta)

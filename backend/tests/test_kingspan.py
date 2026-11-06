@@ -531,3 +531,55 @@ class TestEntregaEnCarpeta:
         hoja = openpyxl.load_workbook(inventario_general(tmp_path))[HOJA]
         filas = [f for f in hoja.iter_rows(min_row=PRIMERA_FILA, values_only=True) if f[0] is not None]
         assert len(filas) == 1
+
+
+class TestElAgenteRevisaLaUpd:
+    """2026-11-05: el agente revisor y la comprobación del disco, también en Kingspan."""
+
+    @staticmethod
+    def _encabezado(titulo: str, serie: str, numero: int) -> str:
+        return (
+            f"{titulo}\nKINGSPAN PANELES AISLADOS S.A.S\nNIT 900447906-1\n"
+            f"Número:\n001-{serie}-{numero:08d}\nPRINCIPAL\nFecha:\n05/05/2024\n"
+        )
+
+    def test_dos_series_cada_hoja_en_un_solo_pdf(self, tmp_path):
+        import fitz
+
+        from resolutions.api.worker.kingspan import _kingspan_job
+        from resolutions.application.task import TaskKind
+
+        paginas = [
+            "PORTADA 1300 - 1302",
+            self._encabezado("NOTA BANCARIA", "NB", 1300),
+            "Extracto bancario grapado detrás de la nota",
+            self._encabezado("NOTA BANCARIA", "NB", 1301),
+            self._encabezado("NOTA BANCARIA", "NB", 1302),
+            self._encabezado("COMPROBANTE DE EGRESO", "CEE", 9900),
+            "Factura de proveedor grapada detrás del egreso",
+            self._encabezado("COMPROBANTE DE EGRESO", "CEE", 9901),
+            self._encabezado("COMPROBANTE DE EGRESO", "CEE", 9902),
+        ]
+        origen = tmp_path / "UPD0000001.pdf"
+        with fitz.open() as doc:
+            for texto in paginas:
+                doc.new_page().insert_text((40, 60), texto, fontsize=11)
+            doc.save(origen)
+        payload = {
+            "job_id": "t",
+            "source": str(origen),
+            "filename": "100C000999/UPD0000001.pdf",
+            "task": "both",
+            "settings": {"ocr_language": "spa", "output_dir": str(tmp_path / "salida")},
+        }
+
+        informe = _kingspan_job(payload, TaskKind.BOTH)
+
+        pdfs = sorted(ruta for ruta in informe["outputs"] if ruta.endswith(".pdf"))
+        assert len(pdfs) == 6
+        comprobacion = informe["comprobacion_de_la_entrega"]
+        assert comprobacion["comprobada"] and comprobacion["problemas"] == [], comprobacion
+        assert comprobacion["hojas"] == len(paginas)
+        assert informe["revision_de_cortes"]["perfil"]["clave"] == "kingspan"
+        # Cada par de hojas vecinas es una costura: 9 hojas, 8 costuras.
+        assert informe["revision_de_cortes"]["costuras"] == len(paginas) - 1

@@ -10,7 +10,9 @@ procesar nada:
    su huella. Una hoja del original que no está en ningún PDF, una que está en
    dos, o una entregada que no es de este original, son **errores**.
 2. **Los cortes**: con cómo quedaron repartidas las hojas, el agente revisor
-   vuelve a mirar cada costura con los patrones de la habilidad. Dos pruebas
+   vuelve a mirar cada costura con los patrones de la habilidad -- los de su
+   perfil en ``perfiles_de_revision``, los mismos con que se revisó al
+   procesar --. Dos pruebas
    del papel que contradicen un corte son un **error**; una sola es una
    **duda**, que decide la IA si la corrida se hizo con ella (una pregunta por
    PDF, con la huella de las hojas de alrededor); sin IA queda como duda.
@@ -28,44 +30,11 @@ from collections.abc import Mapping, Sequence
 from ..domain.auditoria import NO_AUDITADO, PdfAuditado, veredicto
 from ..domain.conciliacion import Huella, conciliar, rangos
 from ..domain.revision_de_cortes import Decision, huella_para_la_ia, revisar_costuras
+from .perfiles_de_revision import perfil_de
 from .ports import JuezDeCosturas
-from .revisor_de_cortes import (
-    COSTURAS_POR_PREGUNTA,
-    REGLAS_DE_LA_CORRESPONDENCIA,
-    Patrones,
-)
+from .revisor_de_cortes import COSTURAS_POR_PREGUNTA
 
 logger = logging.getLogger(__name__)
-
-#: Las habilidades que entregan una persona por PDF: dos cédulas son dos personas.
-_UNA_PERSONA = ("diploma", "acta de grado", "actas de grado", "historia")
-
-
-def patrones_de(habilidad: str, textos: Mapping[int, str]) -> Patrones:
-    """Los patrones con que se revisa un PDF de esa habilidad al auditarlo.
-
-    En la caja de correspondencia, lo que por regla va lejos de su documento --
-    las piezas del acuerdo y la Habeas Data, por su propio título -- no es una
-    prueba de error; en las de una persona por PDF, dos cédulas sí.
-    """
-    nombre = (habilidad or "").lower()
-    if "correspondencia" in nombre:
-        from ..domain.asunto_del_documento import (
-            LEY_HABEAS_DATA,
-            PIEZAS_DEL_ACUERDO,
-            titulo_del_documento,
-        )
-
-        cruces = {
-            pagina
-            for pagina, texto in textos.items()
-            if titulo_del_documento(texto or "") in (*PIEZAS_DEL_ACUERDO, LEY_HABEAS_DATA)
-        }
-        return Patrones(cruces=frozenset(cruces), reglas=REGLAS_DE_LA_CORRESPONDENCIA)
-    if any(clave in nombre for clave in _UNA_PERSONA):
-        return Patrones(una_persona_por_pdf=True)
-    return Patrones()
-
 
 def auditar_un_pdf(
     pdf: str,
@@ -112,7 +81,12 @@ def auditar_un_pdf(
     # Cómo quedaron repartidas las hojas, en el orden en que se numeraron los PDF.
     documentos = [[p for p in archivo.paginas if p is not None] for archivo in conciliacion.archivos]
     documentos = [hojas for hojas in documentos if hojas]
-    patrones = patrones_de(habilidad, textos)
+    # Los patrones de su habilidad, del mismo registro con que la revisó el
+    # agente al procesarla (``perfiles_de_revision``): la caja de
+    # correspondencia no cuenta como prueba lo que cruza por regla -- las
+    # piezas del acuerdo y la Habeas Data --; las de una persona por PDF, dos
+    # cédulas sí.
+    patrones = perfil_de(habilidad).patrones(textos)
     costuras = revisar_costuras(
         documentos,
         textos,

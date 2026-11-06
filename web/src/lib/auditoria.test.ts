@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { faseEnCurso, filasDelCuadre, paraMirar, porCiento, tonoDeLaEtapa, topeDeLaEscala } from './auditoria';
-import type { ComparacionDeLaEntrega, MuestraAuditada } from './types';
+import {
+  faseEnCurso,
+  filasDelCuadre,
+  habilidadesDeLaMuestra,
+  paraMirar,
+  porCiento,
+  tonoDeLaEtapa,
+  topeDeLaEscala,
+  topeDelMargen
+} from './auditoria';
+import type { ComparacionDeLaEntrega, MargenDeUnaHabilidad, MuestraAuditada } from './types';
 
 function comparacion(cambios: Partial<ComparacionDeLaEntrega> = {}): ComparacionDeLaEntrega {
   return {
@@ -107,5 +116,48 @@ describe('la muestra y su margen', () => {
   it('el por ciento con coma', () => {
     expect(porCiento(0.037)).toBe('3,7 %');
     expect(porCiento(0.05)).toBe('5 %');
+  });
+});
+
+describe('cada habilidad contra su margen', () => {
+  function habilidad(
+    clave: string,
+    dictamen: MargenDeUnaHabilidad['margen']['dictamen'],
+    revisados: number
+  ): MargenDeUnaHabilidad {
+    return {
+      clave,
+      habilidad: clave,
+      revisados,
+      bien: revisados,
+      errores: 0,
+      dudosos: 0,
+      no_auditados: 0,
+      margen: { ...muestra().margen, dictamen, revisados }
+    };
+  }
+
+  it('con una sola habilidad no se repite: el margen de la corrida ya es el suyo', () => {
+    expect(habilidadesDeLaMuestra(muestra({ por_habilidad: [habilidad('kingspan', 'dentro del margen', 100)] }))).toEqual([]);
+    expect(habilidadesDeLaMuestra(muestra())).toEqual([]);
+  });
+
+  it('la que se sale primero, luego la más revisada', () => {
+    const por_habilidad = [
+      habilidad('correspondencia', 'dentro del margen', 80),
+      habilidad('historias', 'sin certeza', 5),
+      habilidad('diplomas', 'fuera del margen', 15),
+      habilidad('actas-de-grado', 'sin certeza', 10)
+    ];
+    expect(habilidadesDeLaMuestra(muestra({ por_habilidad })).map((h) => h.clave)).toEqual([
+      'diplomas',
+      'actas-de-grado',
+      'historias',
+      'correspondencia'
+    ]);
+  });
+
+  it('la escala de una habilidad, como la de la corrida', () => {
+    expect(topeDelMargen({ ...muestra().margen, aceptable: 0.02, hasta: 0.3 })).toBeCloseTo(0.375);
   });
 });
