@@ -8,6 +8,7 @@
    * comprobó en el disco; y el registro cuenta lo último que corrigió, mandó a
    * revisión o no cuadró. Lo cuenta el servicio PDF a PDF (`run.agente`).
    */
+  import DatosDelAgente from '$lib/components/DatosDelAgente.svelte';
   import Icono from '$lib/components/Icono.svelte';
   import { ESTADOS, porcentaje, repartoDePdf } from '$lib/agente';
   import type { AgenteDeLaCorrida } from '$lib/types';
@@ -92,6 +93,12 @@
       </dd>
     </div>
   </dl>
+
+  {#if agente.datos?.documentos}
+    <!-- Los datos de cada documento de la corrida -- nombre, identificación,
+         código, fechas extremas -- (2026-11-06). -->
+    <DatosDelAgente datos={agente.datos} />
+  {/if}
 
   {#if sucesos.length}
     <ol class="registro" aria-live="polite">

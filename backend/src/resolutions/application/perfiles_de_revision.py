@@ -18,7 +18,10 @@ Un **perfil** por habilidad dice lo que el agente necesita saber de su papel:
   la IA confirma como error va a revisión con su cita, y lo que desmiente no;
 - lo que **cruza por regla** -- la Habeas Data y las piezas del acuerdo de
   pago, lejos de su documento a propósito --;
-- su **margen de error aceptable**, contra el que la auditoría juzga la muestra.
+- su **margen de error aceptable**, contra el que la auditoría juzga la muestra;
+- los **datos que espera** de cada documento (2026-11-06): de una historia, el
+  nombre, la cédula -- o la tarjeta, o la libreta militar --, el código y las
+  fechas extremas (``integridad_de_los_datos``).
 
 El revisor de cortes al procesar (``revisor_de_cortes``) y la auditoría de cierre
 (``auditoria_de_la_entrega``) los leen de aquí: una habilidad nueva se revisa y
@@ -33,6 +36,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from ..domain.auditoria import MARGEN_ACEPTABLE
+from .integridad_de_los_datos import DE_UNA_HISTORIA, DatosEsperados
 from .revisor_de_cortes import REGLAS_DE_LA_CORRESPONDENCIA, Patrones
 
 
@@ -52,6 +56,10 @@ class PerfilDeRevision:
     margen_aceptable: float = MARGEN_ACEPTABLE
     #: Cómo se la nombra en la constancia, el informe o la petición.
     alias: tuple[str, ...] = field(default=())
+    #: Los datos que se esperan de cada documento -- el nombre, la cédula, las
+    #: fechas extremas --, que el agente revisa al procesar y la auditoría
+    #: contra el FUID entregado (2026-11-06). ``None``: sólo se revisan los cortes.
+    datos: DatosEsperados | None = None
 
     @property
     def margen(self) -> float:
@@ -93,6 +101,7 @@ class PerfilDeRevision:
             "una_persona_por_pdf": self.una_persona_por_pdf,
             "corrige": self.corrige,
             "margen_aceptable": self.margen,
+            "datos": list(self.datos.campos) if self.datos else [],
         }
 
 
@@ -160,6 +169,7 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
         ),
         una_persona_por_pdf=True,
         alias=("historias academicas", "historia academica", "historia-academica", "historias"),
+        datos=DE_UNA_HISTORIA,
     ),
     PerfilDeRevision(
         clave="matriculas",

@@ -252,13 +252,14 @@
     </div>
   {/if}
 
-  {#if job.state === 'done' && job.report && (job.report.revision_de_cortes || job.report.comprobacion_de_la_entrega)}
+  {#if job.state === 'done' && job.report && (job.report.revision_de_cortes || job.report.comprobacion_de_la_entrega || job.report.integridad_de_los_datos)}
     <!-- El agente revisor: cada costura del PDF y lo que hizo con ella, y la
          comprobación en el disco de lo que se escribió (2026-11-05). -->
     <div class="seccion">
       <AgenteRevisor
         revision={job.report.revision_de_cortes}
         comprobacion={job.report.comprobacion_de_la_entrega}
+        integridad={job.report.integridad_de_los_datos}
         paginas={job.report.page_count}
       />
     </div>

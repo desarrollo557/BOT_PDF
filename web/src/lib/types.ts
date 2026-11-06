@@ -200,6 +200,41 @@ export interface Report {
   revision_de_cortes?: RevisionDeCortes | null;
   /** Cada PDF escrito, vuelto a abrir y casado hoja por hoja con el original. */
   comprobacion_de_la_entrega?: ComprobacionDeLaEntrega | null;
+  /** Los datos de cada documento contra lo que espera su habilidad (2026-11-06). */
+  integridad_de_los_datos?: IntegridadDeLosDatos | null;
+}
+
+/** En cuántos documentos un dato está bien, para mirar o con error. */
+export interface CuentasDeUnCampo {
+  bien: number;
+  dudas: number;
+  errores: number;
+}
+
+/** Los datos de los documentos -- nombre, identificación, código, fechas --, contados. */
+export interface CuentasDeLosDatos {
+  documentos: number;
+  completos: number;
+  con_dudas: number;
+  con_errores: number;
+  por_campo: Record<string, CuentasDeUnCampo>;
+}
+
+/** Una cosa que no cuadra en los datos de un documento. */
+export interface HallazgoDeDatos {
+  documento: string;
+  pagina?: number | null;
+  campo: string;
+  gravedad: 'error' | 'duda';
+  texto: string;
+}
+
+/** Lo que dijo el agente de los datos de cada documento de un PDF. */
+export interface IntegridadDeLosDatos extends CuentasDeLosDatos {
+  estado: 'validado' | 'en revisión' | 'con errores';
+  resumen: string;
+  hallazgos: HallazgoDeDatos[];
+  margen?: MargenDeLaCorrida;
 }
 
 /** Cómo quedó un PDF a ojos del agente revisor. */
@@ -262,6 +297,8 @@ export interface PerfilDeRevision {
   /** Si el agente corrige al procesar; si no, señala. */
   corrige: boolean;
   margen_aceptable: number;
+  /** Los datos que espera de cada documento: «nombre», «identificacion», «codigo», «fechas». */
+  datos?: string[];
 }
 
 export interface ComprobacionDeLaEntrega {
@@ -286,8 +323,10 @@ export interface AgenteDeLaCorrida {
   correcciones: number;
   hojas_comprobadas: number;
   problemas_de_entrega: number;
+  /** Los datos de cada documento de la corrida (2026-11-06). Ausente en las anteriores. */
+  datos?: CuentasDeLosDatos;
   /** Lo último que corrigió, mandó a revisión o no cuadró en el disco; lo más nuevo primero. */
-  sucesos: { pdf: string; estado: EstadoDelRevisor | 'problema'; texto: string }[];
+  sucesos: { pdf: string; estado: EstadoDelRevisor | 'problema' | 'datos'; texto: string }[];
 }
 
 /** Una fila del inventario de actas de consejo: lo que se ve de cada PDF. */

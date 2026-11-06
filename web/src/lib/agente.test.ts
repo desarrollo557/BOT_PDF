@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ESTADOS,
   cinta,
+  filasDeLosDatos,
   frase,
   porQuien,
   porcentaje,
@@ -127,5 +129,28 @@ describe('las frases', () => {
       'Una sola hoja: no hay costuras que revisar.'
     );
     expect(frase({ estado: 'no corrió', resumen: 'El revisor falló' }, 3)).toBe('El revisor falló');
+  });
+});
+
+describe('los datos de cada documento', () => {
+  it('una fila por dato, en su orden, con sus cuentas', () => {
+    const filas = filasDeLosDatos({
+      documentos: 30,
+      completos: 2,
+      con_dudas: 16,
+      con_errores: 12,
+      por_campo: {
+        fechas: { bien: 24, dudas: 0, errores: 6 },
+        nombre: { bien: 21, dudas: 0, errores: 9 },
+        codigo: { bien: 6, dudas: 24, errores: 0 },
+        identificacion: { bien: 8, dudas: 22, errores: 0 }
+      }
+    });
+    expect(filas.map((fila) => fila.etiqueta)).toEqual(['Nombre', 'Cédula, TI o libreta', 'Código', 'Fechas extremas']);
+    expect(filas[0]).toMatchObject({ bien: 21, errores: 9, total: 30 });
+  });
+
+  it('un dato con error en el registro en vivo se dice como tal', () => {
+    expect(ESTADOS.datos).toEqual({ etiqueta: 'Dato con error', tono: 'bad' });
   });
 });

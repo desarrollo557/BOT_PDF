@@ -4,10 +4,13 @@ El operador lo pidió «como las actas de grado» (2026-10-29), sobre la carpeta
 «14. ENFERMERIA 3277-3283 P», y con la fila guía de su plantilla: «nombre -
 título», «cédula», «código».
 
-* **Nombre o asunto**: «AGUAS GARRIDO CLARENA LUCIA - HISTORIA ACADEMICA»: primero el
-  nombre y luego el tipo, en todos los inventarios de la Universidad (2026-10-30).
+* **Nombre o asunto**: sólo el nombre, «AGUAS GARRIDO CLARENA LUCIA». El operador,
+  2026-11-06, antes de procesar Enfermería otra vez: «en el FUID esté el nombre
+  solamente, luego la cédula o tarjeta o libreta militar, y el código». Hasta
+  entonces llevaba « - HISTORIA ACADEMICA» detrás (2026-10-30).
 * **Consecutivo inicial**: la cédula del estudiante, sin puntos; sin cédula, la
-  tarjeta de identidad que trae la ficha, sólo sus cifras: «65040901935».
+  tarjeta de identidad que trae la ficha, sólo sus cifras: «65040901935»; sin
+  ninguna de las dos, la libreta militar.
 * **Consecutivo final**: su código de estudiante; N/A si la ficha no lo trae
   o no se leyó.
 * **Fechas extremas**: el primer y el último año de sus notas, «01/01/1993» y
@@ -49,13 +52,15 @@ def _fechas(fila: Mapping[str, object]) -> tuple[str, str]:
 
 
 def _identificacion(fila: Mapping[str, object]) -> str:
-    """La cédula, o si la ficha sólo trae la tarjeta de identidad, la suya: sólo sus cifras.
+    """La cédula; si no, la tarjeta de identidad; si no, la libreta militar: sólo sus cifras.
 
-    Sin «T.I.», guiones ni puntos: lo dictó el operador el 2026-10-30. Que es
-    una tarjeta lo dice la nota de la fila.
+    Sin «T.I.», guiones ni puntos: lo dictó el operador el 2026-10-30; la
+    libreta, el 2026-11-06. Es la misma que va al final del nombre del PDF.
     """
-    cifras = re.sub(r"\D", "", str(fila.get("cedula") or fila.get("tarjeta") or ""))
-    return cifras or NO_LEIDO
+    for clave in ("cedula", "tarjeta", "libreta"):
+        if cifras := re.sub(r"\D", "", str(fila.get(clave) or "")):
+            return cifras
+    return NO_LEIDO
 
 
 def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
@@ -72,9 +77,10 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
     folios = folios if isinstance(folios, int) else NO_LEIDO
     return FuidRow(
         orden=0,
-        # Las hojas sueltas de Medicina dicen qué hoja son: «… - CERTIFICADO
-        # DE MATRICULA», «… - RECIBO DE CAJA» (el operador, 2026-11-03).
-        asunto=f"{nombre} - {fila.get('clase') or HISTORIA_ACADEMICA}",
+        # Sólo el nombre (2026-11-06). Las hojas sueltas de Medicina dicen
+        # además qué hoja son: «… - CERTIFICADO DE MATRICULA», «… - RECIBO DE
+        # CAJA» (el operador, 2026-11-03): un estudiante tiene varias.
+        asunto=f"{nombre} - {fila['clase']}" if fila.get("clase") else nombre,
         codigo_trd="",
         consecutivo_inicial=_identificacion(fila),
         consecutivo_final=str(fila.get("codigo") or "") or NO_LEIDO,

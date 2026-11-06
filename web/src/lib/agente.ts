@@ -9,6 +9,7 @@
  */
 import type {
   AgenteDeLaCorrida,
+  CuentasDeLosDatos,
   EstadoDelRevisor,
   MovimientoDelRevisor,
   RevisionDeCortes
@@ -17,13 +18,48 @@ import type {
 /** El tono de cada estado, con su palabra: nada depende sólo del color. */
 export type Tono = 'good' | 'accent' | 'warn' | 'bad' | 'ia' | 'neutral';
 
-export const ESTADOS: Record<EstadoDelRevisor | 'problema', { etiqueta: string; tono: Tono }> = {
+export const ESTADOS: Record<EstadoDelRevisor | 'problema' | 'datos', { etiqueta: string; tono: Tono }> = {
   validado: { etiqueta: 'Validado', tono: 'good' },
   corregido: { etiqueta: 'Corregido', tono: 'accent' },
   'en revisión': { etiqueta: 'En revisión', tono: 'warn' },
   'no corrió': { etiqueta: 'Sin revisar', tono: 'bad' },
-  problema: { etiqueta: 'No cuadra en el disco', tono: 'bad' }
+  problema: { etiqueta: 'No cuadra en el disco', tono: 'bad' },
+  datos: { etiqueta: 'Dato con error', tono: 'bad' }
 };
+
+/** Cómo se llama cada dato que el agente revisa, en el orden en que se dice (2026-11-06). */
+export const CAMPOS_DE_LOS_DATOS: Record<string, string> = {
+  nombre: 'Nombre',
+  identificacion: 'Cédula, TI o libreta',
+  codigo: 'Código',
+  fechas: 'Fechas extremas',
+  archivo: 'Nombre del PDF'
+};
+
+export interface FilaDeUnDato {
+  campo: string;
+  etiqueta: string;
+  bien: number;
+  dudas: number;
+  errores: number;
+  total: number;
+}
+
+/** Una fila por dato, en su orden, con cuántos documentos lo tienen bien, para mirar o con error. */
+export function filasDeLosDatos(datos: CuentasDeLosDatos): FilaDeUnDato[] {
+  const orden = Object.keys(CAMPOS_DE_LOS_DATOS);
+  const puesto = (campo: string) => (orden.includes(campo) ? orden.indexOf(campo) : orden.length);
+  return Object.entries(datos.por_campo ?? {})
+    .map(([campo, cuentas]) => ({
+      campo,
+      etiqueta: CAMPOS_DE_LOS_DATOS[campo] ?? campo,
+      bien: cuentas.bien,
+      dudas: cuentas.dudas,
+      errores: cuentas.errores,
+      total: cuentas.bien + cuentas.dudas + cuentas.errores
+    }))
+    .sort((a, b) => puesto(a.campo) - puesto(b.campo));
+}
 
 /** Lo que el agente hizo con una costura. */
 export type ResultadoDeCostura = 'validada' | 'corregida' | 'confirmada' | 'revision';

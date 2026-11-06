@@ -409,6 +409,14 @@ class AgenteDeLaCorrida:
     correcciones: int = 0
     hojas_comprobadas: int = 0
     problemas_de_entrega: int = 0
+    #: Los datos de cada documento contra lo que espera su habilidad
+    #: (2026-11-06): cuántos documentos, cuántos completos, para mirar y con
+    #: error, y por campo -- nombre, identificación, código, fechas --.
+    datos_documentos: int = 0
+    datos_completos: int = 0
+    datos_con_dudas: int = 0
+    datos_con_errores: int = 0
+    datos_por_campo: dict = field(default_factory=dict)
     #: Lo último que merece contarse -- una corrección, una revisión, un
     #: problema en el disco --, lo más nuevo primero.
     sucesos: deque = field(default_factory=lambda: deque(maxlen=SUCESOS_EN_VIVO))
@@ -418,7 +426,8 @@ class AgenteDeLaCorrida:
         """Suma lo que dijeron el revisor y la comprobación del disco de un PDF terminado."""
         revision = informe.get("revision_de_cortes") or {}
         comprobacion = informe.get("comprobacion_de_la_entrega") or {}
-        if not revision and not comprobacion:
+        datos = informe.get("integridad_de_los_datos") or {}
+        if not revision and not comprobacion and not datos:
             # Una habilidad que no parte PDF -- un inventario sin dividir --
             # no tiene costuras que revisar: no cuenta.
             return
@@ -442,11 +451,29 @@ class AgenteDeLaCorrida:
             self.correcciones += len(movimientos)
             self.hojas_comprobadas += int(comprobacion.get("hojas") or 0)
             self.problemas_de_entrega += len(problemas)
+            self.datos_documentos += int(datos.get("documentos") or 0)
+            self.datos_completos += int(datos.get("completos") or 0)
+            self.datos_con_dudas += int(datos.get("con_dudas") or 0)
+            self.datos_con_errores += int(datos.get("con_errores") or 0)
+            for campo, cuentas in (datos.get("por_campo") or {}).items():
+                suyas = self.datos_por_campo.setdefault(campo, {"bien": 0, "dudas": 0, "errores": 0})
+                for clave in suyas:
+                    suyas[clave] += int((cuentas or {}).get(clave) or 0)
             texto = _lo_que_paso(estado, revision, movimientos, problemas)
-            if texto:
+            de_los_datos = [h for h in datos.get("hallazgos") or [] if h.get("gravedad") == "error"]
+            if texto and (problemas or movimientos):
                 self.sucesos.appendleft(
                     {"pdf": pdf, "estado": "problema" if problemas else estado, "texto": texto}
                 )
+            elif de_los_datos:
+                # Un dato que no puede estar bien pesa más que una costura a revisión.
+                primero = de_los_datos[0]
+                mas = f" (y {len(de_los_datos) - 1} más)" if len(de_los_datos) > 1 else ""
+                self.sucesos.appendleft(
+                    {"pdf": pdf, "estado": "datos", "texto": f"{primero.get('documento')}: {primero.get('texto')}{mas}"}
+                )
+            elif texto:
+                self.sucesos.appendleft({"pdf": pdf, "estado": estado, "texto": texto})
 
     def as_dict(self) -> dict[str, object]:
         with self._candado:
@@ -463,6 +490,13 @@ class AgenteDeLaCorrida:
                 "correcciones": self.correcciones,
                 "hojas_comprobadas": self.hojas_comprobadas,
                 "problemas_de_entrega": self.problemas_de_entrega,
+                "datos": {
+                    "documentos": self.datos_documentos,
+                    "completos": self.datos_completos,
+                    "con_dudas": self.datos_con_dudas,
+                    "con_errores": self.datos_con_errores,
+                    "por_campo": {campo: dict(cuentas) for campo, cuentas in self.datos_por_campo.items()},
+                },
                 "sucesos": list(self.sucesos),
             }
 
@@ -522,6 +556,7 @@ def anotar_en_el_informe(
     comprobacion: Mapping[str, object] | None,
     *,
     perfil: Mapping[str, object] | None = None,
+    integridad=None,
 ) -> None:
     """Lo que el revisor y la comprobación del disco dejan en el informe de cualquier habilidad.
 
@@ -529,6 +564,8 @@ def anotar_en_el_informe(
     algo no salió validado; y dos claves con el detalle: ``revision_de_cortes``
     y ``comprobacion_de_la_entrega``. ``perfil`` es el de la habilidad con que
     se revisó (``perfiles_de_revision``), para que se vea con qué patrones.
+    ``integridad`` es lo que dijo el agente de los datos de cada documento
+    (``integridad_de_los_datos``), con su clave ``integridad_de_los_datos``.
     """
     cola = informe.setdefault("review_queue", [])
     avisos = informe.setdefault("notices", [])
@@ -543,6 +580,16 @@ def anotar_en_el_informe(
         informe["revision_de_cortes"] = {"estado": "no corrió", "resumen": aviso}
     if perfil and "revision_de_cortes" in informe:
         informe["revision_de_cortes"]["perfil"] = dict(perfil)
+    if integridad is not None and integridad.documentos:
+        # Los datos de cada documento (2026-11-06): lo que no cuadra, a la
+        # cola de revisión con su página, y el resumen si algo falta.
+        cola.extend(
+            {"page": h.get("pagina") or 1, "reason": f"datos de {h.get('documento')}: {h.get('texto')}"}
+            for h in integridad.hallazgos
+        )
+        if integridad.estado != "validado":
+            avisos.append(integridad.resumen())
+        informe["integridad_de_los_datos"] = integridad.as_dict()
     if comprobacion:
         problemas = list(comprobacion.get("problemas") or [])
         cola.extend(

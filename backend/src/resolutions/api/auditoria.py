@@ -447,6 +447,14 @@ def _auditar_uno(entrega: EntregaVista, juez, indices: dict) -> PdfAuditado:
     if entrega.base not in indices:
         indices[entrega.base] = _filas_y_pdf_de(entrega.base)
     filas, pdfs = indices[entrega.base]
+    # El FUID entregado en su carpeta, para las habilidades que esperan datos
+    # de cada documento (2026-11-06): una vez por carpeta.
+    del_fuid = None
+    if perfil_de(entrega.constancia.habilidad).datos is not None:
+        clave = ("fuid", entrega.base)
+        if clave not in indices:
+            indices[clave] = _filas_del_fuid_de(entrega.base)
+        del_fuid = indices[clave]
     return auditar_un_pdf(
         entrega.relativa,
         huellas,
@@ -456,7 +464,23 @@ def _auditar_uno(entrega: EntregaVista, juez, indices: dict) -> PdfAuditado:
         juez=juez,
         filas_del_indice=filas,
         pdf_en_su_carpeta=pdfs,
+        filas_del_fuid=del_fuid,
     )
+
+
+def _filas_del_fuid_de(carpeta: Path) -> list | None:
+    """Las filas del FUID entregado en una carpeta -- o en la de encima --; ``None`` si no hay o no se deja leer."""
+    from ..adapters.fuid_reader import filas_de_fuid
+    from .retomar import fuid_del_libro
+
+    for donde in (carpeta, carpeta.parent):
+        if (ruta := fuid_del_libro(donde)) is not None:
+            try:
+                return filas_de_fuid(ruta)[0]
+            except Exception:  # noqa: BLE001 - un FUID que no se deja leer es como no tenerlo
+                logger.warning("no se pudo leer el FUID %s para auditar", ruta, exc_info=True)
+                return None
+    return None
 
 
 def _filas_y_pdf_de(carpeta: Path) -> tuple[int | None, int | None]:

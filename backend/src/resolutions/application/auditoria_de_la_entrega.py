@@ -18,6 +18,9 @@ procesar nada:
    PDF, con la huella de las hojas de alrededor); sin IA queda como duda.
 3. **El índice**: si se sabe cuántas filas tiene el índice de su carpeta y
    cuántos PDF hay en ella, que sean los mismos.
+4. **Los datos** (2026-11-06): en las habilidades que esperan datos de cada
+   documento -- las historias: nombre, cédula o TI o libreta, código, fechas
+   extremas --, cada PDF contra su fila del FUID entregado.
 
 Nada de esto lee con OCR ni paga: la huella y la capa de texto, nada más.
 """
@@ -30,6 +33,8 @@ from collections.abc import Mapping, Sequence
 from ..domain.auditoria import NO_AUDITADO, PdfAuditado, veredicto
 from ..domain.conciliacion import Huella, conciliar, rangos
 from ..domain.revision_de_cortes import Decision, huella_para_la_ia, revisar_costuras
+from .fuid import FuidRow
+from .integridad_de_los_datos import auditar_los_datos
 from .perfiles_de_revision import perfil_de
 from .ports import JuezDeCosturas
 from .revisor_de_cortes import COSTURAS_POR_PREGUNTA
@@ -46,6 +51,7 @@ def auditar_un_pdf(
     juez: JuezDeCosturas | None = None,
     filas_del_indice: int | None = None,
     pdf_en_su_carpeta: int | None = None,
+    filas_del_fuid: Sequence[FuidRow] | None = None,
 ) -> PdfAuditado:
     """Lo que la auditoría encuentra en un PDF entregado.
 
@@ -53,6 +59,9 @@ def auditar_un_pdf(
     de cada hoja (``None`` si no se dejó abrir), en el orden en que se
     numeraron. ``filas_del_indice`` y ``pdf_en_su_carpeta``, si se saben, son
     las filas del índice de su carpeta y los PDF que hay en ella.
+    ``filas_del_fuid`` son las del FUID entregado en su carpeta (``None`` si no
+    tiene): en las habilidades que esperan datos de cada documento -- las
+    historias --, cada PDF se compara con su fila (``integridad_de_los_datos``).
     """
     errores: list[str] = []
     dudas: list[str] = []
@@ -133,6 +142,12 @@ def auditar_un_pdf(
         dudas.extend(f"hojas {c.izquierda}-{c.derecha}: {c.motivo}" for c in resto)
     else:
         dudas.extend(f"hojas {c.izquierda}-{c.derecha}: {c.motivo}" for c in preguntar)
+
+    # Los datos de cada PDF contra su fila del FUID entregado (2026-11-06).
+    if (esperados := perfil_de(habilidad).datos) is not None:
+        de_los_datos, dudas_de_los_datos = auditar_los_datos(list(entregados), filas_del_fuid, esperados)
+        errores.extend(de_los_datos)
+        dudas.extend(dudas_de_los_datos)
 
     if (
         filas_del_indice is not None

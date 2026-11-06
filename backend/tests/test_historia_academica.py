@@ -316,8 +316,10 @@ def _fila(**cambios):
 
 
 def test_la_fila_del_fuid_de_un_estudiante():
+    """El operador, 2026-11-06: «en el FUID esté el nombre solamente, luego la
+    cédula o tarjeta o libreta militar, y el código»."""
     fila = fila_del_fuid(_fila())
-    assert fila.asunto == "AGUAS GARRIDO CLARENA LUCIA - HISTORIA ACADEMICA"
+    assert fila.asunto == "AGUAS GARRIDO CLARENA LUCIA"
     assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("45755189", "549310044")
     assert (fila.fecha_inicial, fila.fecha_final) == ("01/01/1993", "31/12/1996")
     assert (fila.caja, fila.carpeta) == ("00C003282", "UPD3859753")
@@ -326,7 +328,7 @@ def test_la_fila_del_fuid_de_un_estudiante():
 
 def test_lo_que_no_se_leyo_queda_na():
     fila = fila_del_fuid(_fila(nombre=None, cedula=None, codigo=None, anio_inicial=None, anio_final=None, folios=None))
-    assert fila.asunto == "N/A - HISTORIA ACADEMICA"
+    assert fila.asunto == "N/A"
     assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("N/A", "N/A")
     assert (fila.fecha_inicial, fila.fecha_final, fila.folios) == ("N/A", "N/A", "N/A")
 
@@ -425,10 +427,27 @@ def test_la_cedula_con_la_sigla_a_mano_y_la_tarjeta_sin_guion():
     assert (con_tarjeta.cedula, con_tarjeta.tarjeta, con_tarjeta.codigo) == (None, "611208-03173", "800642")
 
 
-def test_sin_cedula_la_fila_lleva_la_tarjeta_y_el_nombre_va_primero():
+def test_sin_cedula_la_fila_lleva_la_tarjeta_y_el_asunto_es_solo_el_nombre():
     fila = fila_del_fuid(_fila(cedula=None, tarjeta="650409-01935"))
     assert fila.consecutivo_inicial == "65040901935"
-    assert fila.asunto.endswith(" - HISTORIA ACADEMICA")
+    assert fila.asunto == "AGUAS GARRIDO CLARENA LUCIA"
+
+
+def test_sin_cedula_ni_tarjeta_la_fila_lleva_la_libreta_militar():
+    """El operador, 2026-11-06: «cédula, o TI, o libreta militar»."""
+    fila = fila_del_fuid(_fila(cedula=None, tarjeta=None, libreta="7341226"))
+    assert fila.consecutivo_inicial == "7341226"
+    # La cédula manda sobre la libreta.
+    assert fila_del_fuid(_fila(libreta="7341226")).consecutivo_inicial == "45755189"
+
+
+def test_la_libreta_militar_se_lee_de_su_casilla():
+    ficha = leer_ficha("Nombre del estudiante PEREZ GOMEZ LUIS Cédula No. Libreta Militar No. 7.341.226 Código.")
+    assert (ficha.cedula, ficha.tarjeta, ficha.libreta) == (None, None, "7341226")
+    assert ficha.identificacion == ("libreta militar", "7341226")
+    # Con cédula, la libreta no la reemplaza; y la cédula escrita en su casilla no es una libreta.
+    con_cedula = leer_ficha("Cédula No. 45.755.189 Libreta Militar No. 45755189")
+    assert con_cedula.identificacion == ("cédula", "45755189") and con_cedula.libreta is None
 
 
 def test_la_tarjeta_mal_leida_se_corrige_con_la_fecha_de_nacimiento():
@@ -535,3 +554,10 @@ class TestElAgenteRevisaLasHistorias:
         comprobacion = informe["comprobacion_de_la_entrega"]
         assert comprobacion["comprobada"] and comprobacion["problemas"] == [], comprobacion
         assert comprobacion["hojas"] == 4
+        # Y los datos de cada estudiante (2026-11-06), con su perfil.
+        datos = informe["integridad_de_los_datos"]
+        assert datos["documentos"] == 2
+        assert set(datos["por_campo"]) == {"nombre", "identificacion", "codigo", "fechas"}
+        assert revision["perfil"]["datos"] == ["nombre", "identificacion", "codigo", "fechas"]
+        # El asunto del FUID es sólo el nombre.
+        assert all(" - " not in (fila.get("nombre") or "") for fila in informe["inventario_actas"])

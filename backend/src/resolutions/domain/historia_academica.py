@@ -48,6 +48,12 @@ HISTORIA_ACADEMICA = "HISTORIA ACADEMICA"
 SIN_ESTUDIANTE = "SIN ESTUDIANTE"
 CLASES = frozenset({HISTORIA_ACADEMICA, SIN_ESTUDIANTE})
 
+#: Con qué se identifica un estudiante, en este orden: lo que va en el nombre
+#: del PDF y en el consecutivo inicial del FUID.
+CEDULA = "cédula"
+TARJETA = "tarjeta de identidad"
+LIBRETA = "libreta militar"
+
 
 def plano(texto: str) -> str:
     """Mayúsculas sin tildes y con un solo espacio: así se comparan las leyendas."""
@@ -178,6 +184,18 @@ class Ficha:
     anio_de_grado: int | None = None
     #: La tarjeta de identidad, «650609-03314», que no es la cédula.
     tarjeta: str | None = None
+    #: El número de la libreta militar: identifica al estudiante sólo si la
+    #: ficha no trae ni cédula ni tarjeta (el operador, 2026-11-06: «siempre y
+    #: cuando tenga cédula, o TI, o libreta militar»).
+    libreta: str | None = None
+
+    @property
+    def identificacion(self) -> tuple[str, str] | None:
+        """Con qué se identifica al estudiante y sus cifras: la cédula, la tarjeta o la libreta, en ese orden."""
+        for tipo, numero in ((CEDULA, self.cedula), (TARJETA, self.tarjeta), (LIBRETA, self.libreta)):
+            if cifras := re.sub(r"\D", "", numero or ""):
+                return tipo, cifras
+        return None
 
     @property
     def clave(self) -> str | None:
@@ -227,6 +245,11 @@ _TARJETA = re.compile(r"(?<!\d)(\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))\s
 _CC = re.compile(r"\b[CE]\s?\.?\s?[CEQOG]\b\.?\s*(?:N[O0]?\.?\s*|#\s*)?(\d{1,3}(?:[.,'\s\-]{1,2}\d{3}|\d{3}){1,3})\b")
 #: «TI 66263 en trámite»: la tarjeta rotulada, aunque sea corta (UPD3859718, pág. 37).
 _TI = re.compile(r"\bT\s?\.?\s?I\b\.?\s*(?:N[O0]?\.?\s*|#\s*)?(\d[\d.\-]{3,13}\d)")
+#: «Libreta Militar No. 7.341.226», «Libreta Militar: 1047382»: el número justo
+#: detrás de su rótulo, de 5 a 10 cifras con o sin puntos de miles.
+_LIBRETA = re.compile(
+    r"\bLIBRETA\s*MILITAR\W{0,4}(?:N[O0]?\.?\s*|#\s*)?(\d{1,3}(?:[.,'\s\-]{1,2}\d{3}){1,3}|\d{5,10})(?![\d.,]?\d)"
+)
 
 
 _MESES = {"ENE": 1, "FEB": 2, "MAR": 3, "ABR": 4, "MAY": 5, "JUN": 6, "JUL": 7, "AGO": 8,
@@ -424,7 +447,13 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
     anio = None
     if hallado := _FECHA_DE_GRADO.search(p):
         anio = int(hallado.group(1))
-    return Ficha(nombre=nombre, cedula=cedula, codigo=codigo, anio_de_grado=anio, tarjeta=tarjeta)
+    libreta = None
+    if hallado := _LIBRETA.search(p):
+        cifras = re.sub(r"\D", "", hallado.group(1))
+        # La cédula escrita en la casilla de la libreta no es una libreta, ni el código.
+        if 5 <= len(cifras) <= 10 and cifras not in (cedula, codigo):
+            libreta = cifras
+    return Ficha(nombre=nombre, cedula=cedula, codigo=codigo, anio_de_grado=anio, tarjeta=tarjeta, libreta=libreta)
 
 
 #: Lo que se le pide a la IA cuando ni la capa, ni el OCR de casa, ni el texto
@@ -681,6 +710,7 @@ def _junta(ficha: Ficha, otra: Ficha) -> Ficha:
         codigo=ficha.codigo or otra.codigo,
         anio_de_grado=ficha.anio_de_grado or otra.anio_de_grado,
         tarjeta=ficha.tarjeta or otra.tarjeta,
+        libreta=ficha.libreta or otra.libreta,
     )
 
 

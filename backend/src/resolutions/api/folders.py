@@ -1170,6 +1170,10 @@ class FolderRunner:
             # Excel generales, que la llevan en el análisis de la entrega. Una
             # carpeta vigilada no termina: no se audita.
             if not run.watch and run.state is not RunState.FAILED and run.active:
+                # Los FUID de cada subcarpeta, al día antes de auditar: la
+                # auditoría compara cada PDF con su fila del FUID entregado
+                # (2026-11-06). Sólo escribe los que cambiaron.
+                await asyncio.to_thread(self._escribir_inventario_de_actas, run)
                 await self._auditar_al_cerrar(run)
             # El Excel antes de dar la carpeta por terminada: la pantalla enseña
             # el botón de descarga en cuanto la ve terminada, y un botón que

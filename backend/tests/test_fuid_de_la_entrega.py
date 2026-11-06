@@ -291,7 +291,8 @@ def test_las_filas_se_numeran_desde_uno_sin_contar_las_que_no_llevan_fila():
         ]
     )
     assert [fila.orden for fila in filas] == [1, 2]
-    assert filas[0].asunto == "ANA PEREZ - HISTORIA ACADEMICA"
+    # Sólo el nombre (el operador, 2026-11-06).
+    assert filas[0].asunto == "ANA PEREZ"
 
 
 # -- lo que queda escrito -----------------------------------------------------

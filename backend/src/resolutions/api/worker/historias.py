@@ -42,7 +42,8 @@ def _nombre_del_pdf(orden: int, ficha, *, carpeta: Path | None = None, paginas: 
 
     Lo dictó el operador el 2026-10-30: sin «HISTORIA-ACADEMICA», que ya dice
     la carpeta. Sin cédula, las cifras de la tarjeta de identidad
-    («…-61120803173») o nada. Recortado para que quepa en ``carpeta`` sin pasar el límite de
+    («…-61120803173»); sin ninguna de las dos, las de la libreta militar
+    (2026-11-06); o nada. Recortado para que quepa en ``carpeta`` sin pasar el límite de
     Windows, y siempre por el nombre: la cédula no se corta nunca. Ninguno se
     llama «SIN-NOMBRE»: si ni la IA leyó el nombre, el PDF dice sus páginas,
     como la regla general de «UPD… PAGINAS a-b».
@@ -53,9 +54,9 @@ def _nombre_del_pdf(orden: int, ficha, *, carpeta: Path | None = None, paginas: 
         return f"{orden:02d}_SIN-FICHA-DE-ESTUDIANTE.pdf"
     sin_nombre = f"PAGINAS-{paginas[0]}-{paginas[1]}" if paginas else "NOMBRE-POR-REVISAR"
     nombre = _sin_tildes(ficha.nombre) if ficha.nombre else sin_nombre
-    # Sólo cifras, sea cédula o tarjeta: sin «TI», guiones ni puntos (lo
-    # dictó el operador el 2026-10-30).
-    documento = re.sub(r"\D", "", ficha.cedula or ficha.tarjeta or "")
+    # Sólo cifras, sea cédula, tarjeta o libreta militar, en ese orden: sin
+    # «TI», guiones ni puntos (lo dictó el operador el 2026-10-30).
+    documento = ficha.identificacion[1] if ficha.identificacion else ""
     cola = f"-{documento}" if documento else ""
     cabe = LARGO_DEL_NOMBRE
     if carpeta is not None:
@@ -76,9 +77,11 @@ def historias_academicas_job(payload: dict) -> dict:
     from ...adapters.tesseract_ocr import HeaderAndPageOcr
     from ...application.acta_consejo import nombres_conocidos
     from ...application.entrega import comprobar_archivos
+    from ...application.integridad_de_los_datos import revisar_los_datos
     from ...application.perfiles_de_revision import perfil_de
     from ...application.revisor_de_cortes import anotar_en_el_informe, revisar_sin_romper
     from ...application.task import TaskKind
+    from ...domain.datos_esperados import MAXIMO_DE_ANIOS, anio_del_codigo
     from ...domain.historia_academica import (
         HISTORIA_ACADEMICA,
         SIN_ESTUDIANTE,
@@ -253,7 +256,8 @@ def historias_academicas_job(payload: dict) -> dict:
         # eligió.
         del_revisor = perfil_de("historias")
         revision = aviso_del_revisor = None
-        if len(unidades) > 1:
+        if unidades:
+            # Con un solo estudiante no hay costuras: sale validado, no «sin revisar».
             por_pagina = dict(enumerate(textos, start=1))
             revision, aviso_del_revisor = revisar_sin_romper(
                 _reparto(unidades), por_pagina, del_revisor.patrones(por_pagina), juez=taller.juez_de_costuras()
@@ -308,6 +312,19 @@ def historias_academicas_job(payload: dict) -> dict:
                     texto_de_la_ficha = textos_de_la_ficha.get(unidad.pagina_de_la_ficha) or textos[unidad.pagina_de_la_ficha - 1]
                     if codigo := codigo_sin_rotulo(texto_de_la_ficha, inicial):
                         unidad.ficha = replace(unidad.ficha, codigo=codigo)
+                del_codigo = None
+                if (
+                    not de_hojas
+                    and inicial is None
+                    and unidad.ficha is not None
+                    and (ingreso := anio_del_codigo(re.sub(r"\D", "", unidad.ficha.codigo or "")))
+                    and (final is None or 0 <= final - ingreso <= MAXIMO_DE_ANIOS)
+                ):
+                    # Sin fecha inicial en las notas, el año de ingreso que dice
+                    # el código -- «549310044», ingreso en 1993 --: ninguna fila
+                    # sin fecha (el operador, 2026-11-06: «necesitamos muy bien
+                    # las fechas extremas»).
+                    inicial = del_codigo = ingreso
                 ficha = unidad.ficha
                 faltan = []
                 if ficha is not None and de_hojas:
@@ -324,6 +341,11 @@ def historias_academicas_job(payload: dict) -> dict:
                             "la cédula"
                             + (f" (código {ficha.codigo})" if ficha.codigo else "")
                             + (f" (la ficha trae la tarjeta de identidad {ficha.tarjeta})" if ficha.tarjeta else "")
+                            + (
+                                f" (la ficha trae la libreta militar {ficha.libreta})"
+                                if ficha.libreta and not ficha.tarjeta
+                                else ""
+                            )
                         )
                     if inicial is None and final is None:
                         faltan.append("los años de las notas")
@@ -343,6 +365,7 @@ def historias_academicas_job(payload: dict) -> dict:
                         "cedula": ficha.cedula if ficha else None,
                         "codigo": ficha.codigo if ficha else None,
                         "tarjeta": ficha.tarjeta if ficha else None,
+                        "libreta": ficha.libreta if ficha else None,
                         "anio_inicial": inicial,
                         "anio_final": final,
                         # Las hojas sueltas dicen qué hoja son, y su fecha entera si la traen.
@@ -359,6 +382,11 @@ def historias_academicas_job(payload: dict) -> dict:
                         "observaciones": "; ".join(
                             [
                                 *([f"no se leyó {', '.join(faltan)} en {donde} del PDF: revíselo en el papel"] if faltan else []),
+                                *(
+                                    [f"fecha inicial {del_codigo}: el año de ingreso que dice el código {ficha.codigo}"]
+                                    if del_codigo and ficha is not None
+                                    else []
+                                ),
                                 *([nota] if (nota := notas_del_nombre.get(unidad.paginas[0])) else []),
                                 *(f"{duda}: revísela" for duda in unidad.dudas),
                             ]
@@ -397,8 +425,15 @@ def historias_academicas_job(payload: dict) -> dict:
     if pidio_dividir:
         report["outputs"] = salidas
         report["dividido"] = True
-    if revision is not None or aviso_del_revisor or comprobacion:
-        anotar_en_el_informe(report, revision, aviso_del_revisor, comprobacion, perfil=del_revisor.as_dict())
+    # El agente también en los datos (2026-11-06): de cada estudiante, el
+    # nombre, la cédula -- o la tarjeta, o la libreta militar --, el código y
+    # las fechas extremas, antes de que vayan al FUID. Lo que no cuadra, a la
+    # cola de revisión con su página.
+    integridad = revisar_los_datos(filas, del_revisor.datos, aceptable=del_revisor.margen) if del_revisor.datos else None
+    if revision is not None or aviso_del_revisor or comprobacion or integridad is not None:
+        anotar_en_el_informe(
+            report, revision, aviso_del_revisor, comprobacion, perfil=del_revisor.as_dict(), integridad=integridad
+        )
 
     _escribir_el_fuid(payload, taller, nombre, filas, report)
     return report
@@ -637,8 +672,9 @@ def _corregir_los_nombres(
 
     Si el nombre cambia, la fila dice qué se leyó.
     """
+    from dataclasses import replace
+
     from ...application.ports import Band
-    from ...domain.historia_academica import Ficha
     from ...domain.historia_medicina import (
         DESDE_LA_ALTURA,
         corregir_con_la_ia,
@@ -698,10 +734,7 @@ def _corregir_los_nombres(
         if not final:
             continue
         unidad = por_unidad[clave]
-        unidad.ficha = Ficha(
-            nombre=final, cedula=unidad.ficha.cedula, codigo=unidad.ficha.codigo,
-            anio_de_grado=unidad.ficha.anio_de_grado, tarjeta=unidad.ficha.tarjeta,
-        )
+        unidad.ficha = replace(unidad.ficha, nombre=final)
         if votado.leido and final != votado.leido:
             notas_del_nombre[clave] = f"nombre corregido; se leyó «{votado.leido}»"
             logger.info("%s: «%s» → «%s» (lecturas: %s)", nombre, votado.leido, final, lecturas.get(clave))
@@ -889,6 +922,7 @@ def _leer_las_fichas_con_la_ia(
                 codigo=de_casa.codigo or de_la_ia.codigo,
                 anio_de_grado=de_la_ia.anio_de_grado or de_casa.anio_de_grado,
                 tarjeta=de_la_ia.tarjeta or de_casa.tarjeta or de_las_notas.tarjeta,
+                libreta=de_la_ia.libreta or de_casa.libreta,
             )
     finally:
         pool.shutdown(wait=False, cancel_futures=True)

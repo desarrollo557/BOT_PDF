@@ -11,6 +11,7 @@
    * prueba, y la comprobación del disco. Todo sale del informe: nada se estima.
    */
   import { onMount } from 'svelte';
+  import DatosDelAgente from '$lib/components/DatosDelAgente.svelte';
   import Icono from '$lib/components/Icono.svelte';
   import {
     ESTADOS,
@@ -24,15 +25,17 @@
     type CosturaDeLaCinta,
     type HojaDeLaCinta
   } from '$lib/agente';
-  import type { ComprobacionDeLaEntrega, RevisionDeCortes } from '$lib/types';
+  import type { ComprobacionDeLaEntrega, IntegridadDeLosDatos, RevisionDeCortes } from '$lib/types';
 
   interface Props {
     revision: RevisionDeCortes | null | undefined;
     comprobacion?: ComprobacionDeLaEntrega | null;
+    /** Lo que revisó de los datos de cada documento, si su habilidad los espera. */
+    integridad?: IntegridadDeLosDatos | null;
     paginas: number;
   }
 
-  let { revision, comprobacion = null, paginas }: Props = $props();
+  let { revision, comprobacion = null, integridad = null, paginas }: Props = $props();
 
   const estado = $derived(ESTADOS[revision?.estado ?? 'no corrió']);
   const datos = $derived(revision ? cinta(revision, paginas) : null);
@@ -279,6 +282,11 @@
         {/each}
       </ul>
     {/if}
+  {/if}
+
+  {#if integridad?.documentos}
+    <!-- Los datos de cada documento contra lo que espera su habilidad (2026-11-06). -->
+    <DatosDelAgente datos={integridad} hallazgos={integridad.hallazgos} />
   {/if}
 </section>
 
