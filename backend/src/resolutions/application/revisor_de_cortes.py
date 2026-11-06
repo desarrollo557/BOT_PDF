@@ -416,6 +416,7 @@ class AgenteDeLaCorrida:
     datos_completos: int = 0
     datos_con_dudas: int = 0
     datos_con_errores: int = 0
+    datos_con_en_blanco: int = 0
     datos_por_campo: dict = field(default_factory=dict)
     #: Lo último que merece contarse -- una corrección, una revisión, un
     #: problema en el disco --, lo más nuevo primero.
@@ -455,8 +456,9 @@ class AgenteDeLaCorrida:
             self.datos_completos += int(datos.get("completos") or 0)
             self.datos_con_dudas += int(datos.get("con_dudas") or 0)
             self.datos_con_errores += int(datos.get("con_errores") or 0)
+            self.datos_con_en_blanco += int(datos.get("con_en_blanco") or 0)
             for campo, cuentas in (datos.get("por_campo") or {}).items():
-                suyas = self.datos_por_campo.setdefault(campo, {"bien": 0, "dudas": 0, "errores": 0})
+                suyas = self.datos_por_campo.setdefault(campo, {"bien": 0, "dudas": 0, "errores": 0, "en_blanco": 0})
                 for clave in suyas:
                     suyas[clave] += int((cuentas or {}).get(clave) or 0)
             texto = _lo_que_paso(estado, revision, movimientos, problemas)
@@ -495,6 +497,7 @@ class AgenteDeLaCorrida:
                     "completos": self.datos_completos,
                     "con_dudas": self.datos_con_dudas,
                     "con_errores": self.datos_con_errores,
+                    "con_en_blanco": self.datos_con_en_blanco,
                     "por_campo": {campo: dict(cuentas) for campo, cuentas in self.datos_por_campo.items()},
                 },
                 "sucesos": list(self.sucesos),

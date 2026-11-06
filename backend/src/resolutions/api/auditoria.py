@@ -465,7 +465,29 @@ def _auditar_uno(entrega: EntregaVista, juez, indices: dict) -> PdfAuditado:
         filas_del_indice=filas,
         pdf_en_su_carpeta=pdfs,
         filas_del_fuid=del_fuid,
+        # Cómo quedó al procesar cada casilla que el agente buscó otra vez, de
+        # las filas que guarda la constancia (2026-11-06).
+        verificados={
+            str(fila.get("archivo_generado")): dict(fila.get("verificado") or {})
+            for fila in entrega.constancia.actas or []
+            if fila.get("archivo_generado") and fila.get("verificado")
+        },
+        tipos={
+            str(fila.get("archivo_generado")): tipo
+            for fila in entrega.constancia.actas or []
+            if fila.get("archivo_generado") and (tipo := _tipo_de_identificacion(fila))
+        },
     )
+
+
+def _tipo_de_identificacion(fila: dict) -> str | None:
+    """Si la identificación de una fila de la constancia es una cédula, una tarjeta o una libreta."""
+    from ..domain.historia_academica import Ficha
+
+    identificacion = Ficha(
+        cedula=fila.get("cedula") or None, tarjeta=fila.get("tarjeta") or None, libreta=fila.get("libreta") or None
+    ).identificacion
+    return identificacion[0] if identificacion else None
 
 
 def _filas_del_fuid_de(carpeta: Path) -> list | None:

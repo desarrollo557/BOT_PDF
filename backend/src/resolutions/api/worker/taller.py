@@ -444,6 +444,33 @@ class Taller:
             encabezado="Texto del acta de grado",
         )
 
+    def verificador_de_fichas(self):
+        """Quien mira otra vez, con la IA, las casillas que le faltan a la ficha de un estudiante.
+
+        Lo pidió el operador el 2026-11-06: «haz que los agentes se aseguren
+        cuando en realidad no encuentren algo». Lee el texto que el OCR ya sacó
+        de la ficha -- se paga por tokens, no por página -- y dice de cada
+        casilla si trae un número, si está en blanco o si no se entiende. Con
+        «Solo OCR» no hay: lo que falta se dice sin verificar.
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_resumen import MistralResumenConfig, MistralResumidor
+        from ...domain.historia_academica import INSTRUCCIONES_PARA_VERIFICAR
+
+        return MistralResumidor(
+            api_key=llave,
+            config=MistralResumenConfig(max_tokens=200, temperatura=0.0),
+            consumo=self.consumo,
+            turnos=self.turnos_de_ia,
+            instrucciones=INSTRUCCIONES_PARA_VERIFICAR,
+            encabezado="Texto de la ficha del estudiante",
+        )
+
     def lector_de_folios(self):
         """Quien lee el folio manuscrito de un acta, si se pidió la IA.
 

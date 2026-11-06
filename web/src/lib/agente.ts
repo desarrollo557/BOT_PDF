@@ -42,6 +42,8 @@ export interface FilaDeUnDato {
   bien: number;
   dudas: number;
   errores: number;
+  /** En blanco en el papel, verificado. */
+  enBlanco: number;
   total: number;
 }
 
@@ -56,7 +58,8 @@ export function filasDeLosDatos(datos: CuentasDeLosDatos): FilaDeUnDato[] {
       bien: cuentas.bien,
       dudas: cuentas.dudas,
       errores: cuentas.errores,
-      total: cuentas.bien + cuentas.dudas + cuentas.errores
+      enBlanco: cuentas.en_blanco ?? 0,
+      total: cuentas.bien + cuentas.dudas + cuentas.errores + (cuentas.en_blanco ?? 0)
     }))
     .sort((a, b) => puesto(a.campo) - puesto(b.campo));
 }

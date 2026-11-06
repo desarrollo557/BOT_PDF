@@ -29,12 +29,26 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from collections import Counter
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 
-from .historia_academica import CEDULA, LIBRETA, TARJETA
+from .historia_academica import (
+    CEDULA,
+    EN_BLANCO,
+    ILEGIBLE,
+    LIBRETA,
+    NO_APARECE,
+    SIN_VERIFICAR,
+    TARJETA,
+)
 
 ERROR = "error"
 DUDA = "duda"
+#: Lo que el agente buscó otra vez y el papel no trae: la casilla está en
+#: blanco o no existe en esa ficha. No es un error ni algo que mirar: se dice,
+#: para que nadie lo busque (2026-11-06).
+VERIFICADO_EN_BLANCO = "en blanco"
 
 NOMBRE = "nombre"
 IDENTIFICACION = "identificacion"
@@ -100,6 +114,10 @@ class DatosDeUnaHistoria:
     anio_final: int | None = None
     hoja_suelta: bool = False
     archivo: str | None = None
+    #: Cómo quedó cada casilla que el agente buscó otra vez: «cedula»,
+    #: «tarjeta», «libreta», «codigo» -> «en blanco», «no aparece»,
+    #: «ilegible» o «sin verificar» (``historia_academica``).
+    verificado: Mapping[str, str] = field(default_factory=dict)
 
 
 def plano(texto: str) -> str:
@@ -137,7 +155,7 @@ _CONECTORES = frozenset({"DE", "DEL", "LA", "LAS", "LOS", "Y", "SAN", "SANTA", "
 _INICIOS = frozenset({
     "BL", "BR", "CH", "CL", "CR", "DR", "FL", "FR", "GL", "GR", "LL", "PL", "PR", "TR",
     # Los de fuera que se usan aquí: STELLA, STEPHANY, SHIRLEY, THOMAS, KHAROL.
-    "TH", "SH", "RH", "KR", "WH", "ST", "SC", "SP", "KH", "GH", "PH", "JH",
+    "TH", "SH", "RH", "KR", "WH", "ST", "SC", "SP", "KH", "GH", "PH", "JH", "DH",  # DHEIRY, DHAYANA
 })
 #: Lo corto que sí es de un nombre: «MA.» por María.
 _CORTAS = frozenset({"MA"})
@@ -208,16 +226,14 @@ def revisar_una_historia(datos: DatosDeUnaHistoria, *, este_anio: int) -> list[H
     if not datos.hoja_suelta:
         # Cédula, tarjeta de identidad o libreta militar: alguna, si el papel la trae.
         if not numero:
-            hallazgos.append(
-                Hallazgo(IDENTIFICACION, DUDA, "sin cédula, tarjeta de identidad ni libreta militar: revisar en el papel")
-            )
+            hallazgos.append(_lo_que_falta(IDENTIFICACION, ("cedula", "tarjeta", "libreta"), datos.verificado))
         elif motivo := _identificacion_posible(numero, datos.tipo_de_identificacion):
             hallazgos.append(Hallazgo(IDENTIFICACION, ERROR, motivo))
 
         # El código del estudiante.
         codigo = cifras(datos.codigo)
         if not codigo:
-            hallazgos.append(Hallazgo(CODIGO, DUDA, "no se leyó el código del estudiante"))
+            hallazgos.append(_lo_que_falta(CODIGO, ("codigo",), datos.verificado))
         elif not 6 <= len(codigo) <= 12:
             hallazgos.append(Hallazgo(CODIGO, ERROR, f"el código {codigo} tiene {len(codigo)} cifras"))
         elif codigo == numero:
@@ -265,6 +281,104 @@ def revisar_una_historia(datos: DatosDeUnaHistoria, *, este_anio: int) -> list[H
     return hallazgos
 
 
+def patron_de_los_codigos(codigos: Sequence[str | None]) -> str | None:
+    """Cómo empiezan los códigos de una caja -- «54» en Enfermería --, si lo dicen casi todos."""
+    largos = [numero for codigo in codigos if len(numero := cifras(codigo)) >= 9]
+    if len(largos) < CODIGOS_PARA_EL_PATRON:
+        return None
+    comun, veces = Counter(codigo[:2] for codigo in largos).most_common(1)[0]
+    return comun if veces / len(largos) >= PARTE_DEL_PATRON else None
+
+
+def codigo_por_el_patron(codigo: str | None, patron: str | None, anio_inicial: int | None) -> str | None:
+    """El código con su primera cifra corregida por el patrón de la caja, si hay dos pruebas; ``None`` si no.
+
+    «599010022» entre veinte «54…» (SOTO CHAQUIR) y «649010005» (VALDERRAMA,
+    con el 5 escrito encima del rótulo) eran «549010022» y «549010005» en el
+    papel (Enfermería, 2026-11-06). Se corrige sólo si difiere del patrón en
+    **una** de sus dos primeras cifras y el año de ingreso que dice así
+    corregido cuadra con su fecha inicial: dos pruebas, como el revisor.
+    """
+    numero = cifras(codigo)
+    if not patron or len(numero) < 9 or numero.startswith(patron) or anio_inicial is None:
+        return None
+    if sum(1 for a, b in zip(numero[:2], patron, strict=True) if a != b) != 1:
+        return None
+    corregido = patron + numero[2:]
+    ingreso = anio_del_codigo(corregido)
+    return corregido if ingreso is not None and abs(ingreso - anio_inicial) <= 1 else None
+
+
+#: Desde cuántos estudiantes, y con qué parte de ellos en orden, se cree que
+#: una caja va por orden alfabético de su primer apellido.
+DOCUMENTOS_PARA_EL_ORDEN = 8
+PARTE_EN_ORDEN = 0.85
+
+
+def _fuera_del_orden(datos: Sequence[DatosDeUnaHistoria]) -> dict[int, Hallazgo]:
+    """Los nombres que rompen el orden alfabético de la caja: sus apellidos pueden ir al revés.
+
+    Las cajas de Enfermería van por el primer apellido. Entre PERDOMO y RIOS
+    salía «CASTRO REYES JACQUELINE», y el papel dice «Reyes Castro Jacqueline»
+    (UPD3859734, 2026-11-06). Sólo si la caja va en orden -- casi todos sus
+    vecinos lo están -- y el nombre no cabe entre los dos suyos, que sí lo están.
+    """
+    fuera: dict[int, Hallazgo] = {}
+    for i, (antes, despues) in _los_que_no_caben([d.nombre for d in datos]).items():
+        fuera[i] = Hallazgo(
+            NOMBRE,
+            DUDA,
+            f"el nombre «{datos[i].nombre}» no sigue el orden alfabético de la caja "
+            f"(va entre {antes} y {despues}): revisar el orden de los apellidos",
+        )
+    return fuera
+
+
+def _clave_del_orden(nombre: str | None) -> str:
+    """Por dónde se ordena un nombre: las dos primeras letras de su primer apellido.
+
+    Dos letras y no la palabra entera: el archivista pone ESPRIELLA antes de
+    ESPAÑA, y con la palabra entera las dos salían «fuera del orden».
+    """
+    return plano(nombre or "").split("-")[0][:2]
+
+
+def _los_que_no_caben(nombres: Sequence[str | None]) -> dict[int, tuple[str, str]]:
+    """Los nombres que no caben entre sus vecinos en una caja ordenada: posición -> (anterior, siguiente)."""
+    primeras = [(i, _clave_del_orden(n), plano(n or "").split("-")[0]) for i, n in enumerate(nombres) if n]
+    if len(primeras) < DOCUMENTOS_PARA_EL_ORDEN:
+        return {}
+    pares = list(zip(primeras, primeras[1:], strict=False))
+    if sum(1 for a, b in pares if a[1] <= b[1]) / len(pares) < PARTE_EN_ORDEN:
+        return {}
+    fuera: dict[int, tuple[str, str]] = {}
+    for k in range(1, len(primeras) - 1):
+        antes, (i, clave, _), despues = primeras[k - 1], primeras[k], primeras[k + 1]
+        if antes[1] <= despues[1] and not antes[1] <= clave <= despues[1]:
+            fuera[i] = (antes[2], despues[2])
+    return fuera
+
+
+def apellidos_al_derecho(nombres: Sequence[str | None]) -> dict[int, str]:
+    """Los nombres con los dos apellidos al revés, por el orden alfabético de su caja: posición -> nombre corregido.
+
+    La IA dejaba a veces el segundo apellido delante: «CASTRO REYES JACQUELINE»
+    por «Reyes Castro Jacqueline», «MARTELO CERA RUBYS» por «Cera Martelo
+    Rubys» (UPD3859734, 2026-11-06). Con dos pruebas: la caja va por orden
+    alfabético del primer apellido y el nombre no cabe entre sus vecinos; con
+    los dos primeros nombres trocados, sí.
+    """
+    corregidos: dict[int, str] = {}
+    for i, (antes, despues) in _los_que_no_caben(nombres).items():
+        palabras = (nombres[i] or "").split()
+        if len(palabras) < 3:
+            continue
+        trocado = " ".join([palabras[1], palabras[0], *palabras[2:]])
+        if _clave_del_orden(antes) <= _clave_del_orden(trocado) <= _clave_del_orden(despues):
+            corregidos[i] = trocado
+    return corregidos
+
+
 def _el_archivo(archivo: str, nombre: str, numero: str) -> list[Hallazgo]:
     """Si el PDF entregado lleva el nombre y la identificación de su fila del FUID."""
     base = re.sub(r"^\d{1,4}_", "", archivo.rsplit("/", 1)[-1].removesuffix(".pdf").removesuffix(".PDF"))
@@ -280,4 +394,98 @@ def _el_archivo(archivo: str, nombre: str, numero: str) -> list[Hallazgo]:
         lleva = base.removesuffix(f"-{numero}") if numero else base
         if not (lleva and (esperado.startswith(lleva) or lleva.startswith(esperado))):
             hallazgos.append(Hallazgo(ARCHIVO, ERROR, f"«{archivo}» no lleva el nombre «{nombre}» de su fila"))
+    return hallazgos
+
+
+#: Lo que se dice de un dato que no está, según cómo quedó al buscarlo otra vez.
+_FALTA = {
+    IDENTIFICACION: (
+        "sin cédula, tarjeta de identidad ni libreta militar: revisar en el papel",
+        "la ficha no trae cédula, tarjeta de identidad ni libreta militar: sus casillas están en blanco (verificado)",
+        "la cédula no se pudo confirmar en la ficha: revisarla en el papel",
+        "no se leyó la cédula, la tarjeta ni la libreta militar; sin IA no se pudo verificar si la ficha la trae",
+    ),
+    CODIGO: (
+        "no se leyó el código del estudiante",
+        "la ficha no trae código ni carné estudiantil: la casilla está en blanco (verificado)",
+        "el código no se pudo confirmar en la ficha: revisarlo en el papel",
+        "no se leyó el código; sin IA no se pudo verificar si la ficha lo trae",
+    ),
+}
+
+
+def _lo_que_falta(campo: str, casillas: Sequence[str], verificado: Mapping[str, str]) -> Hallazgo:
+    """El hallazgo de un dato que no está: en blanco en el papel (verificado), ilegible o sin verificar.
+
+    El operador, 2026-11-06: «haz que los agentes se aseguren cuando en
+    realidad no encuentren algo». Sólo se dice que está en blanco si se miró
+    otra vez cada casilla y ninguna trae nada.
+    """
+    sin_mirar, en_blanco, ilegible, sin_ia = _FALTA[campo]
+    estados = [verificado.get(casilla) for casilla in casillas]
+    if ILEGIBLE in estados:
+        return Hallazgo(campo, DUDA, ilegible)
+    if estados and all(estado in (EN_BLANCO, NO_APARECE) for estado in estados):
+        return Hallazgo(campo, VERIFICADO_EN_BLANCO, en_blanco)
+    if SIN_VERIFICAR in estados:
+        return Hallazgo(campo, DUDA, sin_ia)
+    return Hallazgo(campo, DUDA, sin_mirar)
+
+
+#: Cuántos códigos hacen falta para saber cómo empiezan los de una caja, y qué
+#: parte de ellos tiene que empezar igual.
+CODIGOS_PARA_EL_PATRON = 5
+PARTE_DEL_PATRON = 0.7
+
+
+def revisar_entre_documentos(
+    datos: Sequence[DatosDeUnaHistoria], nombres: Sequence[str] | None = None
+) -> dict[int, list[Hallazgo]]:
+    """Lo que no cuadra entre los documentos de un mismo PDF o de una misma caja.
+
+    - **La misma cédula, tarjeta o libreta en dos estudiantes** es un error: la de
+      VILLALOBOS GARI salía también en CONDE DIAZ, cuya ficha la trae en blanco
+      (Retirados 2003, 2026-11-06). Si uno de los dos no tiene nombre, puede ser
+      el mismo estudiante partido en dos PDF: también se dice.
+    - **El mismo código en dos estudiantes**, igual.
+    - **Un código que no empieza como los demás** de la caja -- «599010022» entre
+      veinte «54…» de Enfermería -- es para mirar: una cifra mal leída.
+
+    ``nombres`` son los de los documentos (el PDF entregado o sus páginas), para
+    decir con quién choca cada uno. Devuelve, por posición, sus hallazgos.
+    """
+    rotulos = list(nombres) if nombres else [d.archivo or d.nombre or f"documento {i + 1}" for i, d in enumerate(datos)]
+    hallazgos: dict[int, list[Hallazgo]] = {}
+
+    def repetidos(clave, campo: str, que: str) -> None:
+        por_numero: dict[str, list[int]] = {}
+        for i, d in enumerate(datos):
+            if numero := cifras(clave(d)):
+                por_numero.setdefault(numero, []).append(i)
+        for numero, suyos in por_numero.items():
+            personas = {plano(datos[i].nombre or "") for i in suyos}
+            if len(suyos) < 2 or (len(personas) == 1 and "" not in personas):
+                continue
+            for i in suyos:
+                otros = ", ".join(rotulos[j] for j in suyos if j != i)
+                hallazgos.setdefault(i, []).append(
+                    Hallazgo(campo, ERROR, f"{que} {numero} sale también en {otros}: no puede ser de dos estudiantes")
+                )
+
+    repetidos(lambda d: d.identificacion, IDENTIFICACION, "la identificación")
+    repetidos(lambda d: d.codigo, CODIGO, "el código")
+
+    comun = patron_de_los_codigos([d.codigo for d in datos])
+    if comun:
+        for i, d in enumerate(datos):
+            if len(codigo := cifras(d.codigo)) >= 9 and not codigo.startswith(comun):
+                hallazgos.setdefault(i, []).append(
+                    Hallazgo(
+                        CODIGO,
+                        DUDA,
+                        f"el código {codigo} no empieza como los demás de esta caja ({comun}…): revisar la primera cifra",
+                    )
+                )
+    for i, hallazgo in _fuera_del_orden(datos).items():
+        hallazgos.setdefault(i, []).append(hallazgo)
     return hallazgos

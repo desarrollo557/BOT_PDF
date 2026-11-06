@@ -52,6 +52,8 @@ def auditar_un_pdf(
     filas_del_indice: int | None = None,
     pdf_en_su_carpeta: int | None = None,
     filas_del_fuid: Sequence[FuidRow] | None = None,
+    verificados: Mapping[str, Mapping[str, str]] | None = None,
+    tipos: Mapping[str, str] | None = None,
 ) -> PdfAuditado:
     """Lo que la auditoría encuentra en un PDF entregado.
 
@@ -62,6 +64,8 @@ def auditar_un_pdf(
     ``filas_del_fuid`` son las del FUID entregado en su carpeta (``None`` si no
     tiene): en las habilidades que esperan datos de cada documento -- las
     historias --, cada PDF se compara con su fila (``integridad_de_los_datos``).
+    ``verificados`` dice, por PDF entregado, cómo quedó al procesar cada casilla
+    que el agente buscó otra vez: la que está en blanco en el papel no es duda.
     """
     errores: list[str] = []
     dudas: list[str] = []
@@ -145,7 +149,9 @@ def auditar_un_pdf(
 
     # Los datos de cada PDF contra su fila del FUID entregado (2026-11-06).
     if (esperados := perfil_de(habilidad).datos) is not None:
-        de_los_datos, dudas_de_los_datos = auditar_los_datos(list(entregados), filas_del_fuid, esperados)
+        de_los_datos, dudas_de_los_datos = auditar_los_datos(
+            list(entregados), filas_del_fuid, esperados, verificados=verificados, tipos=tipos
+        )
         errores.extend(de_los_datos)
         dudas.extend(dudas_de_los_datos)
 

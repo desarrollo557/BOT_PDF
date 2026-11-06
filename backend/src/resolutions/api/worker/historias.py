@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import unicodedata
 from pathlib import Path
 
@@ -81,7 +82,13 @@ def historias_academicas_job(payload: dict) -> dict:
     from ...application.perfiles_de_revision import perfil_de
     from ...application.revisor_de_cortes import anotar_en_el_informe, revisar_sin_romper
     from ...application.task import TaskKind
-    from ...domain.datos_esperados import MAXIMO_DE_ANIOS, anio_del_codigo
+    from ...domain.datos_esperados import (
+        MAXIMO_DE_ANIOS,
+        anio_del_codigo,
+        apellidos_al_derecho,
+        codigo_por_el_patron,
+        patron_de_los_codigos,
+    )
     from ...domain.historia_academica import (
         HISTORIA_ACADEMICA,
         SIN_ESTUDIANTE,
@@ -240,6 +247,42 @@ def historias_academicas_job(payload: dict) -> dict:
                 notas_del_nombre,
             )
 
+        # El agente se asegura (2026-11-06): ningún estudiante con el número de
+        # otro, y lo que falta -- cédula, TI o libreta, código --, buscado otra
+        # vez en todo lo leído y, con la IA, en su ficha, antes de darlo por
+        # faltante. Lo que de verdad no está queda dicho como tal.
+        candado_de_la_fuente = threading.Lock()
+
+        def leer_la_ficha(numero: int) -> str:
+            # Una página con el OCR de pago, para verificar sobre lo que dice el papel.
+            if de_pago is None:
+                return ""
+            try:
+                with candado_de_la_fuente:
+                    imagen = source.render(numero, dpi=200, formato="jpeg")
+                return de_pago.read(imagen).text or ""
+            except Exception:  # noqa: BLE001 - sin la lectura, la casilla queda sin verificar
+                logger.warning("la IA no pudo leer la ficha de la página %s de %s", numero, nombre, exc_info=True)
+                return ""
+
+        asegurador = _Asegurador(taller, textos, textos_de_la_ficha, notas_de_la_ia, leer_pagina=leer_la_ficha)
+        if not de_hojas:
+            _sin_numeros_ajenos(unidades, asegurador)
+            asegurador.numeros(payload, unidades)
+            _sin_numeros_ajenos(unidades, asegurador)
+            # Los apellidos al derecho, por el orden alfabético de la caja: la
+            # IA ponía a veces el segundo delante (2026-11-06).
+            for indice, corregido in apellidos_al_derecho([u.ficha.nombre if u.ficha else None for u in unidades]).items():
+                unidad = unidades[indice]
+                unidad.dudas.append(
+                    f"nombre «{unidad.ficha.nombre}» ordenado como «{corregido}» por el orden alfabético de la caja: "
+                    "revise los apellidos en el papel"
+                )
+                unidad.ficha = replace(unidad.ficha, nombre=corregido)
+        # Cómo empiezan los códigos de esta caja -- «54» en Enfermería --: un
+        # código que difiere en una cifra y cuyo año cuadra se corrige.
+        patron = patron_de_los_codigos([u.ficha.codigo for u in unidades if u.ficha is not None])
+
         if not any(unidad.es_de_un_estudiante for unidad in unidades):
             # Ni una ficha reconocible: un formato que esta habilidad todavía no
             # conoce. El PDF se entrega entero, con su nombre, y lleva su fila
@@ -325,6 +368,23 @@ def historias_academicas_job(payload: dict) -> dict:
                     # sin fecha (el operador, 2026-11-06: «necesitamos muy bien
                     # las fechas extremas»).
                     inicial = del_codigo = ingreso
+                # Los años que aún falten, de lo que la IA lee en su ficha y sus
+                # notas, si se eligió: ninguna fila sin fecha.
+                de_la_ia = None
+                if not de_hojas:
+                    inicial, final, de_la_ia = asegurador.anios(unidad, inicial, final)
+                if (
+                    not de_hojas
+                    and unidad.ficha is not None
+                    and (corregido := codigo_por_el_patron(unidad.ficha.codigo, patron, inicial))
+                ):
+                    # «599010022» entre veinte «54…»: una cifra mal leída
+                    # (SOTO CHAQUIR, 2026-11-06). Corregido, y dicho.
+                    unidad.dudas.append(
+                        f"código {unidad.ficha.codigo} corregido a {corregido} por el patrón de la caja "
+                        f"({patron}…): revíselo en el papel"
+                    )
+                    unidad.ficha = replace(unidad.ficha, codigo=corregido)
                 ficha = unidad.ficha
                 faltan = []
                 if ficha is not None and de_hojas:
@@ -366,6 +426,9 @@ def historias_academicas_job(payload: dict) -> dict:
                         "codigo": ficha.codigo if ficha else None,
                         "tarjeta": ficha.tarjeta if ficha else None,
                         "libreta": ficha.libreta if ficha else None,
+                        # Cómo quedó cada casilla que el agente buscó otra vez:
+                        # en blanco, no aparece, ilegible o sin verificar.
+                        "verificado": asegurador.estados.get(unidad.paginas[0], {}),
                         "anio_inicial": inicial,
                         "anio_final": final,
                         # Las hojas sueltas dicen qué hoja son, y su fecha entera si la traen.
@@ -388,6 +451,8 @@ def historias_academicas_job(payload: dict) -> dict:
                                     else []
                                 ),
                                 *([nota] if (nota := notas_del_nombre.get(unidad.paginas[0])) else []),
+                                *asegurador.notas.get(unidad.paginas[0], []),
+                                *([de_la_ia] if de_la_ia else []),
                                 *(f"{duda}: revísela" for duda in unidad.dudas),
                             ]
                         ),
@@ -926,6 +991,255 @@ def _leer_las_fichas_con_la_ia(
             )
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+
+
+#: Cuánto texto de cada estudiante se le da a la IA para verificar: la ficha
+#: entera y el principio de su hoja de notas.
+TEXTO_PARA_VERIFICAR = 7000
+
+
+class _Asegurador:
+    """El agente se asegura antes de dar un dato por faltante.
+
+    El operador, 2026-11-06, con las historias de Enfermería: «todavía hay falta
+    de cédulas y de códigos… haz que los agentes se aseguren cuando en realidad
+    no encuentren algo». A cada estudiante al que le falte la cédula (o la TI,
+    o la libreta), el código o un año:
+
+    1. **Otra vez, gratis**: en todo lo leído de sus hojas -- la capa de texto,
+       la ficha y las notas que leyó la IA --, con todos los rótulos que se
+       conocen («Código. 54-9010033», «Carné Estudiantil N°», «Documento de
+       Identificación … N°»).
+    2. **La IA, si se eligió**: sobre el texto que su OCR ya leyó (se paga por
+       tokens, no por página), sólo por las casillas que faltan. Un número sólo
+       se toma si está escrito en ese texto; si la casilla está en blanco, se
+       dice que está en blanco.
+
+    Lo que quede, queda con su estado -- «en blanco», «no aparece», «ilegible»
+    o «sin verificar» -- en la fila (``verificado``), para que el agente de los
+    datos y la auditoría digan la verdad de cada casilla.
+    """
+
+    def __init__(self, taller, textos, textos_de_la_ficha, notas_de_la_ia, leer_pagina=None):
+        self._verificador = taller.verificador_de_fichas()
+        #: Quien lee una página con el OCR de pago: sólo se verifica sobre una
+        #: lectura de verdad, no sobre la capa de texto del escáner, que de la
+        #: letra a mano trae basura y hacía decir «no aparece» a lo que estaba
+        #: (págs. 13, 26 y 28 de UPD3859734, 2026-11-06).
+        self._leer_pagina = leer_pagina
+        self._textos = textos
+        self._de_la_ficha = textos_de_la_ficha
+        self._notas = notas_de_la_ia
+        self._respuestas: dict[int, object] = {}
+        #: Por estudiante (su primera página): casilla -> estado.
+        self.estados: dict[int, dict[str, str]] = {}
+        #: Por estudiante: lo que se encontró al asegurarse, para su fila.
+        self.notas: dict[int, list[str]] = {}
+
+    def propios(self, unidad) -> list[str]:
+        """Todo lo leído de las hojas del estudiante: su capa de texto y lo que leyó la IA."""
+        pagina = unidad.pagina_de_la_ficha
+        return [
+            *(texto for texto in (self._de_la_ficha.get(pagina), self._notas.get(pagina)) if texto),
+            *(self._textos[numero - 1] for numero in unidad.paginas if 0 < numero <= len(self._textos)),
+        ]
+
+    def lectura_real(self, unidad) -> str:
+        """La ficha leída por la IA; si aún no se leyó, se lee ahora (una página). Vacía si no se pudo."""
+        pagina = unidad.pagina_de_la_ficha
+        if (
+            pagina
+            and pagina not in self._de_la_ficha
+            and self._leer_pagina is not None
+            and (texto := self._leer_pagina(pagina))
+        ):
+            self._de_la_ficha[pagina] = texto
+        return self._de_la_ficha.get(pagina) or ""
+
+    def _para_la_ia(self, unidad) -> str:
+        ficha = self.lectura_real(unidad)
+        if not ficha.strip():
+            return ""
+        notas = self._notas.get(unidad.pagina_de_la_ficha) or ""
+        return (f"FICHA:\n{ficha}\n\nHOJA DE NOTAS:\n{notas}" if notas else ficha)[:TEXTO_PARA_VERIFICAR]
+
+    def _preguntar(self, unidad):
+        """Lo que dice la IA de las casillas de su ficha, una vez por estudiante."""
+        from ...domain.historia_academica import Verificacion, leer_la_verificacion
+
+        clave = unidad.paginas[0]
+        if clave not in self._respuestas:
+            texto = self._para_la_ia(unidad)
+            if not texto.strip():
+                # Sin una lectura de verdad de su ficha no se verifica nada.
+                self._respuestas[clave] = None
+                return None
+            try:
+                respuesta = self._verificador.resumir(texto)
+            except Exception:  # noqa: BLE001 - sin respuesta, la casilla queda sin verificar
+                logger.warning("la IA no verificó la ficha de la página %s", unidad.pagina_de_la_ficha, exc_info=True)
+                self._respuestas[clave] = None
+            else:
+                verificacion = leer_la_verificacion(respuesta, texto) if respuesta else Verificacion()
+                self._respuestas[clave] = verificacion
+                # Lo que dijo de cada casilla, sin sus números.
+                logger.info(
+                    "verificación de la ficha de la pág. %s: %s", unidad.pagina_de_la_ficha,
+                    ", ".join(
+                        f"{casilla} {estado}" + (f" ({verificacion.motivos[casilla]})" if casilla in verificacion.motivos else "")
+                        for casilla, estado in verificacion.estados.items()
+                    ),
+                )
+        return self._respuestas[clave]
+
+    def _releer_gratis(self, unidad) -> None:
+        from dataclasses import replace
+
+        from ...domain.historia_academica import leer_ficha
+
+        ficha = unidad.ficha
+        for texto in self.propios(unidad):
+            if ficha.identificacion and ficha.codigo:
+                break
+            otra = leer_ficha(texto)
+            if not ficha.identificacion and otra.identificacion:
+                ficha = replace(ficha, cedula=otra.cedula, tarjeta=otra.tarjeta, libreta=otra.libreta)
+            if not ficha.codigo and otra.codigo and otra.codigo != re.sub(r"\D", "", ficha.cedula or ""):
+                ficha = replace(ficha, codigo=otra.codigo)
+        unidad.ficha = ficha
+
+    def numeros(self, payload, unidades) -> None:
+        """La identificación y el código de cada estudiante, asegurados."""
+        from concurrent.futures import ThreadPoolExecutor
+        from dataclasses import replace
+
+        from ...domain.historia_academica import LEIDO, SIN_VERIFICAR
+
+        faltan = []
+        for unidad in unidades:
+            if unidad.ficha is None or not unidad.pagina_de_la_ficha:
+                continue
+            self._releer_gratis(unidad)
+            if not unidad.ficha.identificacion or not unidad.ficha.codigo:
+                faltan.append(unidad)
+        if not faltan:
+            return
+        if self._verificador is None:
+            for unidad in faltan:
+                self.estados[unidad.paginas[0]] = {
+                    casilla: SIN_VERIFICAR for casilla in self._casillas_que_faltan(unidad.ficha)
+                }
+            return
+        _anunciar(payload, Stage.IDENTIFYING, detail=f"asegurando con la IA los datos de {len(faltan)} estudiantes")
+        # Antes de preguntar, una lectura de verdad de cada ficha que no la
+        # tenga; con ella se vuelve a buscar gratis, y sólo lo que siga
+        # faltando se le pregunta a la IA.
+        for unidad in faltan:
+            if self.lectura_real(unidad):
+                self._releer_gratis(unidad)
+        faltan = [u for u in faltan if not u.ficha.identificacion or not u.ficha.codigo]
+        with ThreadPoolExecutor(max_workers=LECTORES_DE_IA) as pool:
+            respuestas = list(pool.map(self._preguntar, faltan))
+        for unidad, verificacion in zip(faltan, respuestas, strict=True):
+            clave = unidad.paginas[0]
+            casillas = self._casillas_que_faltan(unidad.ficha)
+            if verificacion is None:
+                self.estados[clave] = {casilla: SIN_VERIFICAR for casilla in casillas}
+                continue
+            ficha = unidad.ficha
+            if not ficha.identificacion:
+                for casilla in ("cedula", "tarjeta", "libreta"):
+                    if numero := verificacion.numeros.get(casilla):
+                        ficha = replace(ficha, **{casilla: numero})
+                        self.notas.setdefault(clave, []).append(f"{casilla} {numero} leída al verificar con la IA")
+                        break
+            if (
+                not ficha.codigo
+                and (numero := verificacion.numeros.get("codigo"))
+                and numero != re.sub(r"\D", "", ficha.cedula or "")
+            ):
+                ficha = replace(ficha, codigo=numero)
+                self.notas.setdefault(clave, []).append(f"código {numero} leído al verificar con la IA")
+            unidad.ficha = ficha
+            self.estados[clave] = {
+                casilla: verificacion.estados.get(casilla, SIN_VERIFICAR)
+                for casilla in self._casillas_que_faltan(ficha)
+                if verificacion.estados.get(casilla) != LEIDO
+            }
+
+    @staticmethod
+    def _casillas_que_faltan(ficha) -> list[str]:
+        casillas = [] if ficha.identificacion else ["cedula", "tarjeta", "libreta"]
+        return casillas if ficha.codigo else [*casillas, "codigo"]
+
+    def anios(self, unidad, inicial, final) -> tuple[int | None, int | None, str | None]:
+        """Los años que le falten al estudiante, de lo que la IA lee en su ficha y sus notas."""
+        from ...domain.datos_esperados import MAXIMO_DE_ANIOS
+        from ...domain.historia_academica import anios as anios_de
+
+        if (inicial and final) or self._verificador is None or unidad.ficha is None or not unidad.pagina_de_la_ficha:
+            return inicial, final, None
+        pagina = unidad.pagina_de_la_ficha
+        if pagina not in self._notas and self._leer_pagina is not None:
+            # Su hoja de notas, leída de verdad si no lo estaba: sus períodos
+            # -- «IPA/05», «AÑO 90» -- son los años (TORRES PARERNINA, 2026-11-06).
+            siguiente = next((numero for numero in unidad.paginas if numero != pagina), None)
+            if siguiente and (texto := self._leer_pagina(siguiente)):
+                self._notas[pagina] = texto
+                self._respuestas.pop(unidad.paginas[0], None)  # se pregunta otra vez, con las notas
+                desde, hasta = anios_de([texto])
+                nuevo_inicial, nuevo_final = inicial or desde, final or hasta
+                if (
+                    (nuevo_inicial, nuevo_final) != (inicial, final)
+                    and not (nuevo_inicial and nuevo_final and not 0 <= nuevo_final - nuevo_inicial <= MAXIMO_DE_ANIOS)
+                ):
+                    inicial, final = nuevo_inicial, nuevo_final
+                    if inicial and final:
+                        return inicial, final, "fechas extremas completadas con la hoja de notas leída al verificar"
+        verificacion = self._preguntar(unidad)
+        if verificacion is None:
+            return inicial, final, None
+        nuevo_inicial = inicial or verificacion.anio_ingreso
+        nuevo_final = final or verificacion.anio_final
+        if nuevo_inicial and nuevo_final and not 0 <= nuevo_final - nuevo_inicial <= MAXIMO_DE_ANIOS:
+            return inicial, final, None
+        if (nuevo_inicial, nuevo_final) == (inicial, final):
+            return inicial, final, None
+        return nuevo_inicial, nuevo_final, "fechas extremas completadas al verificar la ficha con la IA"
+
+
+def _sin_numeros_ajenos(unidades, asegurador: _Asegurador) -> None:
+    """Ningún estudiante se queda con la cédula, la TI, la libreta o el código de otro.
+
+    CONDE DIAZ (Retirados 2003, 2026-11-06) salió con la cédula 22809768 de
+    VILLALOBOS GARI, la de antes: su ficha la trae en blanco. Si dos estudiantes
+    distintos comparten un número, se lo queda el que lo trae escrito en sus
+    hojas; al otro se le quita, con su nota. Si ninguno o los dos lo traen, se
+    queda como está y el agente de los datos lo marca como error.
+    """
+    from dataclasses import replace
+
+    from ...domain.historia_academica import en_el_texto
+
+    etiquetas = {"cedula": "la cédula", "tarjeta": "la tarjeta de identidad", "libreta": "la libreta militar", "codigo": "el código"}
+    for casilla, etiqueta in etiquetas.items():
+        por_numero: dict[str, list] = {}
+        for unidad in unidades:
+            if unidad.ficha is not None and (numero := re.sub(r"\D", "", getattr(unidad.ficha, casilla) or "")):
+                por_numero.setdefault(numero, []).append(unidad)
+        for numero, suyas in por_numero.items():
+            if len(suyas) < 2 or len({(u.ficha.nombre or "").upper() for u in suyas}) < 2:
+                continue
+            propias = [u for u in suyas if any(en_el_texto(numero, t) for t in asegurador.propios(u))]
+            if not propias or len(propias) == len(suyas):
+                continue
+            dueno = propias[0].ficha.nombre or f"la página {propias[0].paginas[0]}"
+            for unidad in suyas:
+                if unidad in propias:
+                    continue
+                unidad.ficha = replace(unidad.ficha, **{casilla: None})
+                unidad.dudas.append(f"{etiqueta} {numero} es de {dueno} y no está en sus hojas: se quitó")
+                logger.info("%s %s quitada de %s: es de %s", etiqueta, numero, unidad.ficha.nombre, dueno)
 
 
 def _segunda_lectura(payload, taller, source, unidades, conocidas=()) -> None:

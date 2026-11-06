@@ -166,17 +166,23 @@ class TestAlProcesar:
         filas = [
             {"tipo": "SIN ESTUDIANTE", "pagina_inicial": 1, "pagina_final": 2},
             _fila(),
-            _fila(nombre="PEREZ GOMEZ LUIS", cedula=None, tarjeta="650409-01935", archivo_generado="03_PEREZ-GOMEZ-LUIS-65040901935.pdf"),
+            _fila(
+                nombre="PEREZ GOMEZ LUIS", cedula=None, tarjeta="650409-01935", codigo="549310045",
+                archivo_generado="03_PEREZ-GOMEZ-LUIS-65040901935.pdf",
+            ),
             _fila(nombre="RUIZ DIAZ ANA", cedula=None, codigo=None, archivo_generado="04_RUIZ-DIAZ-ANA.pdf", pagina_inicial=9),
-            _fila(nombre="LOPEZ MARIA", anio_final=None, archivo_generado="05_LOPEZ-MARIA-45755189.pdf", pagina_inicial=12),
+            _fila(
+                nombre="LOPEZ MARIA", cedula="45755190", codigo="549310046", anio_final=None,
+                archivo_generado="05_LOPEZ-MARIA-45755190.pdf", pagina_inicial=12,
+            ),
         ]
         integridad = revisar_los_datos(filas, DE_UNA_HISTORIA)
         assert (integridad.documentos, integridad.completos, integridad.con_dudas, integridad.con_errores) == (4, 2, 1, 1)
         assert integridad.estado == "con errores"
-        assert integridad.por_campo["identificacion"] == {"bien": 3, "dudas": 1, "errores": 0}
-        assert integridad.por_campo["fechas"] == {"bien": 3, "dudas": 0, "errores": 1}
+        assert integridad.por_campo["identificacion"] == {"bien": 3, "dudas": 1, "errores": 0, "en_blanco": 0}
+        assert integridad.por_campo["fechas"] == {"bien": 3, "dudas": 0, "errores": 1, "en_blanco": 0}
         sin_fecha = next(h for h in integridad.hallazgos if h["campo"] == "fechas")
-        assert (sin_fecha["documento"], sin_fecha["pagina"]) == ("05_LOPEZ-MARIA-45755189.pdf", 12)
+        assert (sin_fecha["documento"], sin_fecha["pagina"]) == ("05_LOPEZ-MARIA-45755190.pdf", 12)
         assert integridad.as_dict()["margen"]["revisados"] == 4
 
     def test_la_libreta_identifica_si_no_hay_cedula_ni_tarjeta(self):
@@ -201,7 +207,7 @@ class TestAlProcesar:
             agente.sumar("caja/UPD.pdf", informe)
         datos = agente.as_dict()["datos"]
         assert (datos["documentos"], datos["completos"], datos["con_errores"]) == (3, 2, 1)
-        assert datos["por_campo"]["fechas"] == {"bien": 2, "dudas": 0, "errores": 1}
+        assert datos["por_campo"]["fechas"] == {"bien": 2, "dudas": 0, "errores": 1, "en_blanco": 0}
         assert agente.as_dict()["sucesos"][0]["estado"] == "datos"
 
 

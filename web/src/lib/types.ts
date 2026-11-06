@@ -209,6 +209,8 @@ export interface CuentasDeUnCampo {
   bien: number;
   dudas: number;
   errores: number;
+  /** En blanco en el papel: el agente lo buscó otra vez y no está (2026-11-06). */
+  en_blanco?: number;
 }
 
 /** Los datos de los documentos -- nombre, identificación, código, fechas --, contados. */
@@ -217,6 +219,8 @@ export interface CuentasDeLosDatos {
   completos: number;
   con_dudas: number;
   con_errores: number;
+  /** Completos a los que alguna casilla les falta en el papel, verificado. */
+  con_en_blanco?: number;
   por_campo: Record<string, CuentasDeUnCampo>;
 }
 
@@ -225,7 +229,7 @@ export interface HallazgoDeDatos {
   documento: string;
   pagina?: number | null;
   campo: string;
-  gravedad: 'error' | 'duda';
+  gravedad: 'error' | 'duda' | 'en blanco';
   texto: string;
 }
 

@@ -32,10 +32,12 @@ from ..domain.datos_esperados import (
     CAMPOS_DE_UNA_HISTORIA,
     DUDA,
     ERROR,
+    VERIFICADO_EN_BLANCO,
     DatosDeUnaHistoria,
     Hallazgo,
     cifras,
     plano,
+    revisar_entre_documentos,
     revisar_una_historia,
 )
 from ..domain.historia_academica import HISTORIA_ACADEMICA, Ficha
@@ -55,6 +57,8 @@ class DatosEsperados:
     #: De una fila del FUID entregado.
     del_fuid: Callable[[FuidRow], DatosDeUnaHistoria | None]
     revisar: Callable[[DatosDeUnaHistoria], list[Hallazgo]]
+    #: Lo que no cuadra entre los documentos de un PDF o una caja: por posición, sus hallazgos.
+    entre_documentos: Callable[[Sequence[DatosDeUnaHistoria], Sequence[str]], dict[int, list[Hallazgo]]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,11 +69,15 @@ class IntegridadDeLosDatos:
     completos: int
     con_dudas: int
     con_errores: int
-    #: Por campo: en cuántos documentos está bien, en cuántos para mirar y en cuántos con error.
+    #: Por campo: en cuántos documentos está bien, en cuántos para mirar, en
+    #: cuántos con error y en cuántos el papel lo trae en blanco (verificado).
     por_campo: dict[str, dict[str, int]]
     #: Lo que no cuadra, documento por documento: {documento, pagina, campo, gravedad, texto}.
     hallazgos: tuple[dict[str, object], ...] = ()
     aceptable: float = MARGEN_ACEPTABLE
+    #: Los completos a los que alguna casilla les falta en el papel: buscada
+    #: otra vez, está en blanco (2026-11-06).
+    con_en_blanco: int = 0
 
     @property
     def estado(self) -> str:
@@ -85,6 +93,8 @@ class IntegridadDeLosDatos:
             partes.append(f"{self.con_errores} con error")
         if self.con_dudas:
             partes.append(f"{self.con_dudas} para mirar")
+        if self.con_en_blanco:
+            partes.append(f"{self.con_en_blanco} con casillas en blanco en el papel")
         return f"Datos de cada documento: {self.estado} ({'; '.join(partes)})"
 
     def as_dict(self) -> dict[str, object]:
@@ -95,6 +105,7 @@ class IntegridadDeLosDatos:
             "completos": self.completos,
             "con_dudas": self.con_dudas,
             "con_errores": self.con_errores,
+            "con_en_blanco": self.con_en_blanco,
             "por_campo": {campo: dict(cuentas) for campo, cuentas in self.por_campo.items()},
             "hallazgos": [dict(h) for h in self.hallazgos],
             "margen": margen_de_error(self.con_errores, self.documentos, aceptable=self.aceptable).as_dict(),
@@ -107,16 +118,15 @@ def revisar_los_datos(
     *,
     aceptable: float = MARGEN_ACEPTABLE,
 ) -> IntegridadDeLosDatos:
-    """Los datos de cada fila del informe contra lo que espera la habilidad."""
-    documentos = completos = con_dudas = con_errores = 0
-    por_campo = {campo: {"bien": 0, "dudas": 0, "errores": 0} for campo in esperados.campos}
+    """Los datos de cada fila del informe contra lo que espera la habilidad, y entre ellas."""
+    suyas = [(fila, datos) for fila in filas if (datos := esperados.de_la_fila(fila)) is not None]
+    rotulos = [str(fila.get("archivo_generado") or "") or _paginas(fila) for fila, _ in suyas]
+    entre = esperados.entre_documentos([datos for _, datos in suyas], rotulos) if esperados.entre_documentos else {}
+    completos = con_dudas = con_errores = con_en_blanco = 0
+    por_campo = {campo: {"bien": 0, "dudas": 0, "errores": 0, "en_blanco": 0} for campo in esperados.campos}
     hallazgos: list[dict[str, object]] = []
-    for fila in filas:
-        datos = esperados.de_la_fila(fila)
-        if datos is None:
-            continue
-        documentos += 1
-        suyos = esperados.revisar(datos)
+    for indice, ((fila, datos), documento) in enumerate(zip(suyas, rotulos, strict=True)):
+        suyos = [*esperados.revisar(datos), *entre.get(indice, [])]
         gravedades = {h.gravedad for h in suyos}
         if ERROR in gravedades:
             con_errores += 1
@@ -124,21 +134,29 @@ def revisar_los_datos(
             con_dudas += 1
         else:
             completos += 1
+            con_en_blanco += VERIFICADO_EN_BLANCO in gravedades
         for campo, cuentas in por_campo.items():
             del_campo = {h.gravedad for h in suyos if h.campo == campo}
-            cuentas["errores" if ERROR in del_campo else "dudas" if DUDA in del_campo else "bien"] += 1
-        documento = str(fila.get("archivo_generado") or "") or _paginas(fila)
+            if ERROR in del_campo:
+                cuentas["errores"] += 1
+            elif DUDA in del_campo:
+                cuentas["dudas"] += 1
+            elif VERIFICADO_EN_BLANCO in del_campo:
+                cuentas["en_blanco"] += 1
+            else:
+                cuentas["bien"] += 1
         hallazgos.extend(
             {"documento": documento, "pagina": fila.get("pagina_inicial"), **h.as_dict()} for h in suyos
         )
     return IntegridadDeLosDatos(
-        documentos=documentos,
+        documentos=len(suyas),
         completos=completos,
         con_dudas=con_dudas,
         con_errores=con_errores,
         por_campo=por_campo,
         hallazgos=tuple(hallazgos),
         aceptable=aceptable,
+        con_en_blanco=con_en_blanco,
     )
 
 
@@ -146,12 +164,20 @@ def auditar_los_datos(
     entregados: Sequence[str],
     filas_del_fuid: Sequence[FuidRow] | None,
     esperados: DatosEsperados,
+    *,
+    verificados: Mapping[str, Mapping[str, str]] | None = None,
+    tipos: Mapping[str, str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Cada PDF entregado contra su fila del FUID entregado: los errores y las dudas, dichos para el operador.
 
     Sin FUID en su carpeta no hay con qué comprobar: es un error, porque toda
     habilidad de la Universidad entrega el suyo. El PDF que no es de ningún
     estudiante -- las hojas de antes de la primera ficha -- no lleva fila.
+    ``verificados`` dice, por PDF, cómo quedó cada casilla que el agente buscó
+    otra vez al procesar (de la constancia): la que está en blanco en el papel
+    no es una duda. ``tipos``, también de la constancia, si su identificación
+    es una cédula, una tarjeta o una libreta: el FUID sólo trae las cifras. Y las filas del FUID se cruzan entre sí: la misma cédula en
+    dos estudiantes es un error.
     """
     de_estudiante = [pdf for pdf in entregados if "SIN-FICHA" not in pdf.upper()]
     if not de_estudiante:
@@ -159,6 +185,13 @@ def auditar_los_datos(
     if filas_del_fuid is None:
         return ["su carpeta no tiene FUID con que comprobar los datos"], []
     candidatas = [(fila, datos) for fila in filas_del_fuid if (datos := esperados.del_fuid(fila)) is not None]
+    entre = (
+        esperados.entre_documentos(
+            [datos for _, datos in candidatas], [datos.nombre or f"la fila {fila.orden}" for fila, datos in candidatas]
+        )
+        if esperados.entre_documentos
+        else {}
+    )
     usadas: set[int] = set()
     errores: list[str] = []
     dudas: list[str] = []
@@ -169,26 +202,41 @@ def auditar_los_datos(
             errores.append(f"«{archivo}» no tiene su fila en el FUID (ni por su identificación ni por su nombre)")
             continue
         usadas.add(suya)
-        datos = candidatas[suya][1]
-        for hallazgo in esperados.revisar(_con_archivo(datos, archivo)):
-            (errores if hallazgo.gravedad == ERROR else dudas).append(f"«{archivo}»: {hallazgo.texto}")
+        datos = replace(candidatas[suya][1], archivo=archivo, verificado=dict((verificados or {}).get(archivo) or {}))
+        if datos.identificacion and (tipo := (tipos or {}).get(archivo)):
+            # El FUID sólo trae las cifras; la constancia dice si son de una
+            # cédula: «415467824» no lo es (PAJARO MARTINEZ, 2026-11-06).
+            datos = replace(datos, tipo_de_identificacion=tipo)
+        for hallazgo in [*esperados.revisar(datos), *entre.get(suya, [])]:
+            if hallazgo.gravedad == ERROR:
+                errores.append(f"«{archivo}»: {hallazgo.texto}")
+            elif hallazgo.gravedad == DUDA:
+                dudas.append(f"«{archivo}»: {hallazgo.texto}")
     return errores, dudas
 
 
 def _la_fila_de(pdf: str, candidatas: list, usadas: set[int]) -> int | None:
-    """La fila del FUID de un PDF: por su identificación al final del nombre, o por su nombre."""
+    """La fila del FUID de un PDF: por su identificación y su nombre, por uno de los dos, o la sin nombre.
+
+    Primero la que coincide en las dos cosas: con la misma cédula en dos filas
+    -- la de VILLALOBOS GARI también en CONDE DIAZ, 2026-11-06 -- el PDF de
+    CONDE se casaba con la fila de VILLALOBOS.
+    """
     base = re.sub(r"^\d{1,4}_", "", pdf.rsplit("/", 1)[-1].rsplit(".", 1)[0]).upper()
     numero = hallado.group(1) if (hallado := re.search(r"-(\d{4,})$", base)) else ""
     nombre = base.removesuffix(f"-{numero}") if numero else base
     libres = [i for i in range(len(candidatas)) if i not in usadas]
-    if numero:
-        for i in libres:
-            if cifras(candidatas[i][1].identificacion) == numero:
-                return i
-    for i in libres:
+
+    def por_nombre(i: int) -> bool:
         esperado = plano(candidatas[i][1].nombre or "")
-        if esperado and (esperado.startswith(nombre) or nombre.startswith(esperado)):
-            return i
+        return bool(esperado) and (esperado.startswith(nombre) or nombre.startswith(esperado))
+
+    def por_numero(i: int) -> bool:
+        return bool(numero) and cifras(candidatas[i][1].identificacion) == numero
+
+    for prueba in (lambda i: por_numero(i) and por_nombre(i), por_numero, por_nombre):
+        if (suya := next((i for i in libres if prueba(i)), None)) is not None:
+            return suya
     if _SIN_NOMBRE.match(nombre):
         # El PDF que salió sin nombre -- «PAGINAS-5-6», «NOMBRE-POR-REVISAR» --
         # es una fila sin nombre («N/A») del FUID, en el mismo orden: su
@@ -203,10 +251,6 @@ def _la_fila_de(pdf: str, candidatas: list, usadas: set[int]) -> int | None:
 
 #: Cómo se llama el PDF de un estudiante cuyo nombre no se leyó (``historias._nombre_del_pdf``).
 _SIN_NOMBRE = re.compile(r"^(?:PAGINAS-\d+-\d+|NOMBRE-POR-REVISAR)$")
-
-
-def _con_archivo(datos: DatosDeUnaHistoria, archivo: str) -> DatosDeUnaHistoria:
-    return replace(datos, archivo=archivo)
 
 
 def _paginas(fila: Mapping[str, object]) -> str:
@@ -245,6 +289,7 @@ def historia_de_la_fila(fila: Mapping[str, object]) -> DatosDeUnaHistoria | None
         anio_final=final,
         hoja_suelta=bool(fila.get("clase")),
         archivo=_texto(fila.get("archivo_generado")),
+        verificado=dict(fila.get("verificado") or {}),
     )
 
 
@@ -287,4 +332,5 @@ DE_UNA_HISTORIA = DatosEsperados(
     de_la_fila=historia_de_la_fila,
     del_fuid=historia_del_fuid,
     revisar=_revisar_una_historia,
+    entre_documentos=revisar_entre_documentos,
 )

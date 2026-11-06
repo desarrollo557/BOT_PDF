@@ -22,10 +22,10 @@
   let { datos, hallazgos = [], tope = 12 }: Props = $props();
 
   const filas = $derived(filasDeLosDatos(datos));
-  /** Los errores primero: son lo que no puede estar bien. */
-  const ordenados = $derived(
-    [...hallazgos].sort((a, b) => (a.gravedad === b.gravedad ? 0 : a.gravedad === 'error' ? -1 : 1))
-  );
+  /** Los errores primero, luego lo que hay que mirar, y al final lo verificado en blanco. */
+  const PESO: Record<HallazgoDeDatos['gravedad'], number> = { error: 0, duda: 1, 'en blanco': 2 };
+  const TONO: Record<HallazgoDeDatos['gravedad'], string> = { error: 'bad', duda: 'warn', 'en blanco': 'neutral' };
+  const ordenados = $derived([...hallazgos].sort((a, b) => PESO[a.gravedad] - PESO[b.gravedad]));
 </script>
 
 <div class="datos">
@@ -34,7 +34,8 @@
     <span class="cuenta">
       <b class="tabular">{datos.completos}</b> de {datos.documentos} completos{#if datos.con_errores}{' · '}<b
           class="tabular malo">{datos.con_errores}</b> con error{/if}{#if datos.con_dudas}{' · '}<b
-          class="tabular mirar">{datos.con_dudas}</b> para mirar{/if}
+          class="tabular mirar">{datos.con_dudas}</b> para mirar{/if}{#if datos.con_en_blanco}{' · '}<b
+          class="tabular">{datos.con_en_blanco}</b> con casillas en blanco en el papel{/if}
     </span>
   </p>
 
@@ -45,13 +46,16 @@
         <span
           class="barra"
           role="img"
-          aria-label={`${fila.etiqueta}: ${fila.bien} bien, ${fila.dudas} para mirar, ${fila.errores} con error`}
+          aria-label={`${fila.etiqueta}: ${fila.bien} bien, ${fila.dudas} para mirar, ${fila.errores} con error, ${fila.enBlanco} en blanco en el papel`}
         >
           {#if fila.bien}<span class="tramo" data-tono="good" style:flex-grow={fila.bien}></span>{/if}
+          {#if fila.enBlanco}<span class="tramo" data-tono="neutral" style:flex-grow={fila.enBlanco}></span>{/if}
           {#if fila.dudas}<span class="tramo" data-tono="warn" style:flex-grow={fila.dudas}></span>{/if}
           {#if fila.errores}<span class="tramo" data-tono="bad" style:flex-grow={fila.errores}></span>{/if}
         </span>
-        <span class="cifra tabular">{fila.bien}/{fila.total}</span>
+        <span class="cifra tabular" title="Bien o en blanco en el papel (verificado), de cuántos"
+          >{fila.bien + fila.enBlanco}/{fila.total}</span
+        >
       </li>
     {/each}
   </ul>
@@ -59,7 +63,7 @@
   {#if ordenados.length}
     <ol class="hallazgos">
       {#each ordenados.slice(0, tope) as hallazgo, i (i)}
-        <li class="hallazgo" data-tono={hallazgo.gravedad === 'error' ? 'bad' : 'warn'}>
+        <li class="hallazgo" data-tono={TONO[hallazgo.gravedad] ?? 'warn'}>
           <span class="status-dot" aria-hidden="true"></span>
           <span class="pdf">{hallazgo.documento}</span>
           <span class="texto">{hallazgo.texto}</span>
@@ -75,6 +79,9 @@
 <style>
   [data-tono='good'] {
     --tono: var(--good);
+  }
+  [data-tono='neutral'] {
+    --tono: var(--axis);
   }
   [data-tono='warn'] {
     --tono: var(--warning);

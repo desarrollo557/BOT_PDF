@@ -305,8 +305,36 @@ def _sin_puntuacion(p: str) -> str:
     return re.sub(r"(?<=[A-Z])[,;\-.]+(?=\s*[A-Z])", " ", p)
 #: «Código. 549310019», «Cód. Estudiante 5420011003», «# 549310044».
 #: Con el rótulo, también de seis cifras: «Código. 800642» (1980).
-_CODIGO = re.compile(r"(?:\bCODIGO\b|\bCOD\b)\W{0,4}(?:ESTUDIANTE\W{0,3})?(\d{6,12})\b|#\s*(\d{8,12})\b")
+#: El código del estudiante tras su rótulo. También con el programa separado
+#: por un guion -- «Código. 54-9010033», como se escribe a mano en las fichas de
+#: Enfermería de 1990: COTA ZAMBRANO salía sin código (2026-11-06) -- y con el
+#: rótulo de la ficha de 2003, «Carné Estudiantil N°: 5420030020».
+_CODIGO = re.compile(
+    r"(?:\bCODIGO\b|\bCOD\b|\bCARNET?\s+(?:ESTUDIANTIL\s+)?N\b)\W{0,4}(?:ESTUDIANTE\W{0,3})?"
+    r"(\d{2}[\s\-.]?\d{4,10})(?![\d\-])|#\s*(\d{8,12})\b"
+)
 _FECHA_DE_GRADO = re.compile(r"FECHA DE GRADO\W{0,4}.{0,30}?\b(19[2-9]\d|20[0-3]\d)\b")
+#: La ficha de 2003: «Documento de Identificación: C. C. ( ) T.I. ( ) Cédula
+#: Extranjería ( ) Pasaporte ( ) N° ____». El número va detrás de «N°» (CONDE
+#: DIAZ, Retirados 2003, 2026-11-06: la casilla estaba en blanco).
+_DOCUMENTO_N = re.compile(
+    r"DOCUMENTO DE IDENTIFICACION.{0,110}?\bN\b\W{0,4}(\d{1,3}(?:[.,'\s\-]{1,2}\d{3}){1,3}|\d{5,11})(?![\d.,]?\d)"
+)
+#: La casilla de la tarjeta de identidad marcada: «T.I. (X)».
+_TI_MARCADA = re.compile(r"\bT\s?\.?\s?I\b\.?\s*\(\s*X\s*\)")
+
+
+def es_del_bachillerato(texto: str, desde: int) -> bool:
+    """Si la «Fecha de Grado» que empieza en ``desde`` es la del bachillerato y no la de la Universidad.
+
+    En la ficha de Enfermería de los 90 va en el renglón del colegio --
+    «Bachiller del colegio: … Ciudad: … Fecha de Grado. Dic 7 de 1989» -- y es
+    cuando el estudiante salió del colegio: tomada por el grado de la carrera,
+    COTA ZAMBRANO salía «1989-1993» con notas de 1990 a 1993 (2026-11-06). El
+    grado de la carrera va en su recuadro, «Grado en el mes de: Diciembre 10/93».
+    """
+    antes = texto[max(0, desde - 160) : desde]
+    return "BACHILLER" in antes or "COLEGIO" in antes
 #: Palabras de la propia ficha que se cuelan en un nombre leído de la capa de
 #: texto o por OCR, y lo que el OCR hace con ellas.
 _NO_SON_NOMBRE = {
@@ -395,7 +423,8 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
         nombre = _limpio(hallado.group(1), conocidas)
     cedula = tarjeta = codigo = None
     if hallado := _CODIGO.search(p):
-        codigo = hallado.group(1) or hallado.group(2)
+        # Sólo sus cifras: «54-9010033» es el 549010033.
+        codigo = re.sub(r"\D", "", hallado.group(1) or hallado.group(2))
     # La cédula y la tarjeta se buscan en su casilla y en las de al lado, hasta
     # la del acudiente: la cédula de éste es de otra persona.
     # Desde un poco antes del rótulo: la tarjeta va a veces escrita encima del
@@ -439,14 +468,25 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
         cifras = hallado.group(1).translate(_LETRA_POR_CIFRA) + hallado.group(2) + hallado.group(3)
         if cifras.isdigit() and _parece_cedula(cifras) and not (tarjeta and tarjeta.startswith(cifras[:6])):
             cedula = cifras
+    if cedula is None and tarjeta is None and (hallado := _DOCUMENTO_N.search(p)):
+        # La ficha de 2003: el número tras «N°» del renglón «Documento de
+        # Identificación»; es tarjeta si su casilla está marcada o si tiene
+        # las once cifras de una.
+        cifras = re.sub(r"\D", "", hallado.group(1))
+        if _TI_MARCADA.search(hallado.group(0)) or len(cifras) == 11:
+            tarjeta = cifras
+        elif _parece_cedula(cifras):
+            cedula = cifras
     if tarjeta:
         tarjeta = _con_la_fecha_de_nacimiento(tarjeta, _nacimiento(p))
     if codigo and codigo == cedula:
         # «CC # 78106659»: el «#» es de la cédula, no un código (pág. 13).
         codigo = None
     anio = None
-    if hallado := _FECHA_DE_GRADO.search(p):
-        anio = int(hallado.group(1))
+    for hallado in _FECHA_DE_GRADO.finditer(p):
+        if not es_del_bachillerato(p, hallado.start()):
+            anio = int(hallado.group(1))
+            break
     libreta = None
     if hallado := _LIBRETA.search(p):
         cifras = re.sub(r"\D", "", hallado.group(1))
@@ -475,6 +515,171 @@ INSTRUCCIONES_DEL_ESTUDIANTE = (
     "- Cada palabra tiene que estar escrita así en alguna parte del texto: no la corrijas por tu cuenta ni inventes.\n"
     "- Si el texto no trae el nombre del estudiante, devuelve solo: NINGUNO"
 )
+
+
+#: Cómo quedó cada casilla que el agente buscó otra vez (2026-11-06, el
+#: operador: «haz que los agentes se aseguren cuando en realidad no encuentren
+#: algo»).
+LEIDO = "leído"
+EN_BLANCO = "en blanco"
+NO_APARECE = "no aparece"
+ILEGIBLE = "ilegible"
+#: Sin IA no hay quien mire el papel otra vez: se dice que no se pudo verificar.
+SIN_VERIFICAR = "sin verificar"
+
+#: Lo que se le pregunta a la IA de la ficha de un estudiante al que le falta
+#: la cédula, el código o los años, sobre el texto que su OCR ya leyó: se paga
+#: por tokens, no por página.
+INSTRUCCIONES_PARA_VERIFICAR = (
+    "Eres archivista de la Universidad de Cartagena. Recibes el texto, leído por OCR, de la ficha académica "
+    "de un estudiante (y a veces de su hoja de notas). El OCR trae errores y a veces separa el rótulo de su "
+    "valor.\n\n"
+    "Responde SOLO un objeto JSON con estas claves:\n"
+    '{"cedula": "", "tarjeta": "", "libreta": "", "codigo": "", "anio_ingreso": "", "anio_final": ""}\n'
+    "Para cada clave pon UNO de estos valores:\n"
+    "- el número tal como está escrito en el texto, sólo sus cifras;\n"
+    "- \"VACIO\" si la casilla está en el texto pero no tiene nada escrito;\n"
+    "- \"NO_APARECE\" si el texto no trae esa casilla;\n"
+    "- \"ILEGIBLE\" si hay algo escrito en la casilla que no se entiende.\n\n"
+    "- cedula: la cédula de ciudadanía DEL ESTUDIANTE («Cédula No.», «C.C.», «Documento de Identificación N°»). "
+    "Nunca la del acudiente, la de los padres, un teléfono ni la del puesto de ingreso. Si su casilla está en "
+    "blanco, responde VACIO aunque haya otros números cerca.\n"
+    "- tarjeta: su tarjeta de identidad (T.I.).\n"
+    "- libreta: su libreta militar.\n"
+    "- codigo: su código o carné estudiantil; «54-9010033» es 549010033.\n"
+    "- anio_ingreso: el año en que entró a la Universidad (no el del bachillerato ni el de nacimiento). Si la "
+    "casilla «Año de ingreso» está en blanco, el primer año de su tabla de períodos académicos («Año 03 Período "
+    "II» es 2003) o de sus notas.\n"
+    "- anio_final: el año de su grado en la Universidad, o el de su deserción o retiro, o el último año con notas.\n"
+    "No inventes ni corrijas: cada número tiene que estar escrito así en el texto."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class Verificacion:
+    """Lo que dijo la IA de las casillas de una ficha, comprobado contra su texto."""
+
+    #: Campo -> cifras, sólo las que están escritas en el texto: «cedula», «tarjeta», «libreta», «codigo».
+    numeros: dict[str, str] = field(default_factory=dict)
+    #: Campo -> ``LEIDO``, ``EN_BLANCO``, ``NO_APARECE`` o ``ILEGIBLE``.
+    estados: dict[str, str] = field(default_factory=dict)
+    anio_ingreso: int | None = None
+    anio_final: int | None = None
+    #: Campo -> por qué no se tomó el número que dio la IA (sin el número): para el registro.
+    motivos: dict[str, str] = field(default_factory=dict)
+
+
+#: Cuántas cifras puede tener cada número para tomarlo.
+_CIFRAS_DE = {"cedula": (5, 10), "tarjeta": (4, 11), "libreta": (5, 10), "codigo": (6, 12)}
+
+
+def en_el_texto(cifras: str, texto: str) -> bool:
+    """Si ese número está escrito en el texto, con o sin separadores de miles («22'809.768»)."""
+    junto = re.sub(r"(?<=\d)[\s.,'’\-](?=\d)", "", texto or "")
+    return bool(cifras) and re.search(rf"(?<!\d){re.escape(cifras)}(?!\d)", junto) is not None
+
+
+#: El rótulo que tiene que ir delante de cada número para tomarlo de la IA.
+_ROTULOS_DE = {
+    "cedula": re.compile(r"CEDULA|\bC\s?\.?\s?C\b|IDENTIFICACION|DOCUMENTO"),
+    "tarjeta": re.compile(r"\bT\s?\.?\s?I\b|TARJETA|IDENTIFICACION|DOCUMENTO"),
+    "libreta": re.compile(r"LIBRETA|MILITAR"),
+    "codigo": re.compile(r"CODIGO|\bCOD\b|CARNE|#"),
+}
+#: Lo que, entre el rótulo y el número, dice que el número es de otra casilla.
+_OTRA_CASILLA = re.compile(r"TELEFONO|\bTEL\b|CELULAR|PUESTO|EDAD|FECHA")
+#: Hasta dónde se mira hacia atrás desde el número para encontrar su rótulo.
+DISTANCIA_DEL_ROTULO = 70
+
+
+def junto_a_su_rotulo(cifras: str, texto: str, casilla: str) -> bool:
+    """Si el número va escrito detrás del rótulo de su casilla, sin otra casilla en medio.
+
+    Que el número esté en el texto no basta: con la casilla de la cédula en
+    blanco, la IA podía tomar el teléfono de al lado (2026-11-06).
+    """
+    return por_que_no(cifras, texto, casilla) is None
+
+
+def por_que_no(cifras: str, texto: str, casilla: str) -> str | None:
+    """Por qué un número no se puede tomar como el de esa casilla; ``None`` si se puede."""
+    junto = plano(re.sub(r"(?<=\d)[\s.,'’\-](?=\d)", "", texto or ""))
+    rotulo = _ROTULOS_DE.get(casilla)
+    motivo = "un número que el texto no trae"
+    for hallado in re.finditer(rf"(?<!\d){re.escape(cifras)}(?!\d)", junto):
+        antes = junto[max(0, hallado.start() - DISTANCIA_DEL_ROTULO) : hallado.start()]
+        rotulos = list(rotulo.finditer(antes)) if rotulo else []
+        if not rotulos:
+            motivo = (
+                f"un número de otra casilla ({otra.group(0)})"
+                if (otra := _OTRA_CASILLA.search(antes))
+                else "un número sin su rótulo"
+            )
+            continue
+        if otra := _OTRA_CASILLA.search(antes[rotulos[-1].end() :]):
+            motivo = f"un número de otra casilla ({otra.group(0)})"
+            continue
+        return None
+    return motivo
+
+
+def leer_la_verificacion(respuesta: str, texto: str) -> Verificacion:
+    """La respuesta de la IA, con sólo lo que el texto confirma: un número que no está escrito no se toma.
+
+    Si la IA dice un número que el texto no trae, la casilla queda ``ILEGIBLE``:
+    alguien tiene que mirarla, pero no se inventa.
+    """
+    import json
+
+    hallado = re.search(r"\{.*\}", respuesta or "", re.S)
+    try:
+        datos = json.loads(hallado.group(0)) if hallado else {}
+    except ValueError:
+        datos = {}
+    if not isinstance(datos, dict):
+        datos = {}
+    numeros: dict[str, str] = {}
+    estados: dict[str, str] = {}
+    motivos: dict[str, str] = {}
+    for campo, (menos, mas) in _CIFRAS_DE.items():
+        valor = str(datos.get(campo) or "").strip()
+        marca = plano(valor).replace("_", " ")
+        cifras = re.sub(r"\D", "", valor)
+        if "ILEGIB" in marca:
+            estados[campo] = ILEGIBLE
+        elif not valor or marca in ("NO APARECE", "NO EXISTE", "NULL", "NONE"):
+            estados[campo] = NO_APARECE
+        elif not cifras:
+            # «VACIO», pero también «N/A», «—», «( )», «no registra»: sin un
+            # número, la casilla está en blanco (MONCADA, Retirados 2003, salía
+            # «ilegible» con su cédula en blanco; 2026-11-06).
+            estados[campo] = EN_BLANCO
+        elif len(cifras) <= 3:
+            # Un «número» de tres cifras o menos no es una cédula ni un código:
+            # la IA tomó el de otra casilla -- «Puesto de Ingreso N° 20» --, y la
+            # suya está en blanco (CONDE DIAZ, 2026-11-06).
+            estados[campo] = EN_BLANCO
+            motivos[campo] = f"la IA dio un número de {len(cifras)} cifras, de otra casilla"
+        elif not menos <= len(cifras) <= mas:
+            estados[campo] = ILEGIBLE
+            motivos[campo] = f"un número de {len(cifras)} cifras"
+        elif (motivo := por_que_no(cifras, texto, campo)) is None:
+            numeros[campo] = cifras
+            estados[campo] = LEIDO
+        else:
+            # Un número que el texto no trae junto a su rótulo: no se inventa,
+            # y alguien tiene que mirar la casilla.
+            estados[campo] = ILEGIBLE
+            motivos[campo] = motivo
+
+    def anio(clave: str) -> int | None:
+        cifras = re.sub(r"\D", "", str(datos.get(clave) or ""))
+        if len(cifras) != 4 or not DESDE <= int(cifras) <= 2035:
+            return None
+        # Escrito entero o abreviado («AÑO 90», «IPA/04») en algún sitio del texto.
+        return int(cifras) if en_el_texto(cifras, texto) or re.search(rf"(?<!\d){cifras[2:]}(?!\d)", texto or "") else None
+
+    return Verificacion(numeros, estados, anio("anio_ingreso"), anio("anio_final"), motivos)
 
 
 def nombre_de_la_ia(respuesta: str, texto: str) -> str | None:
@@ -520,6 +725,18 @@ _PLAN_DE_ESTUDIOS = re.compile(r"PLAN DE ESTUDIOS(?:\W+[A-Z]+){0,8}?\W+[12]\.?\d
 #: bachillerato. «AÑO INGRESO 2-000» es 2000 en la capa de texto rota.
 _INGRESO = re.compile(r"\bANO\s*(?:DE\s*)?INGRESO\W{0,4}([0-9][0-9\-.\s]{2,6}[0-9])")
 _GRADUACION = re.compile(r"FECHA DE GRADU?(?:ACION|O)\W{0,4}.{0,24}?\b(19[2-9]\d|20[0-3]\d)\b")
+#: El retiro de la ficha de 2003: «Fecha de Deserción: I PA/2004» es su último
+#: año (CONDE DIAZ, Retirados 2003, salía sin fecha final; 2026-11-06).
+_DESERCION = re.compile(r"FECHA DE DESERCION\W{0,4}.{0,24}?\b(19[2-9]\d|20[0-3]\d)\b")
+#: La tabla «Período Académico» de la ficha de 2003: «Año 03 Período II, Año 04
+#: Período I». Cuando «Año de ingreso» va en blanco, sus años son los extremos
+#: (QUINTANA JIMENEZ y RAMIREZ RIOS, Retirados 2003, 2026-11-06).
+_TABLA_DE_PERIODOS = re.compile(r"PERIODO\W{0,3}ACADEMICO(.{0,400})")
+#: Como la escribe la IA: «| Año 03 | Periodo II | Año 04 | Periodo I |», o sin las palabras.
+_ANIO_Y_PERIODO = re.compile(r"(?<![\d/])(\d{2})\W{1,4}(?:PERIODO\W{0,3})?(I{1,2})\b")
+#: El período de las notas de 2003 en adelante: «IPA/05», «II PA/2004», «IPA-2003»;
+#: la IA lee a veces «JPA/04». Es su año (TORRES PARERNINA, 2026-11-06).
+_PERIODO_ACADEMICO = re.compile(r"\b(?:I{1,2}|J{1,2})\s?P\s?\.?A\s?[/\-]\s?(\d{4}|\d{2})\b")
 
 
 #: Los años de estudio que la ficha de 1968 a 1999 anota a mano junto al
@@ -562,8 +779,20 @@ def anios_de_la_ficha(texto: str) -> tuple[int | None, int | None]:
         cifras = re.sub(r"\D", "", hallado.group(1))
         if len(cifras) == 4 and DESDE <= int(cifras) <= 2030:
             ingreso = int(cifras)
-    if hallado := _GRADUACION.search(p):
-        grado = int(hallado.group(1))
+    for hallado in _GRADUACION.finditer(p):
+        # La del bachillerato no: es cuando salió del colegio (ver ``es_del_bachillerato``).
+        if not es_del_bachillerato(p, hallado.start()):
+            grado = int(hallado.group(1))
+            break
+    if hallado := _DESERCION.search(p):
+        grado = max(grado or 0, int(hallado.group(1)))
+    if ingreso is None and (tabla := _TABLA_DE_PERIODOS.search(p)):
+        anios_de_la_tabla = sorted(
+            (2000 if int(corto) < 30 else 1900) + int(corto) for corto, _ in _ANIO_Y_PERIODO.findall(tabla.group(1))
+        )
+        if anios_de_la_tabla and anios_de_la_tabla[-1] - anios_de_la_tabla[0] <= 15:
+            ingreso = anios_de_la_tabla[0]
+            grado = max(grado or 0, anios_de_la_tabla[-1])
     if hallado := _PERIODO.search(_PLAN_DE_ESTUDIOS.sub(" ", p)):
         desde, hasta = int(hallado.group(1)), hallado.group(2)
         hasta = int(hasta) if len(hasta) == 4 else desde // 100 * 100 + int(hasta)
@@ -596,6 +825,11 @@ def _candidatos(textos: Sequence[str], ventana: tuple[int, int] | None = None) -
                     anio = otro
             vistos.append((anio, False))
         vistos.extend((int(h.group(1)), True) for h in _ANIO_LARGO.finditer(p))
+        for hallado in _PERIODO_ACADEMICO.finditer(p):
+            cifras = hallado.group(1)
+            anio = int(cifras) if len(cifras) == 4 else (2000 if int(cifras) < 50 else 1900) + int(cifras)
+            # Con su período delante es un año de verdad, aunque vaya con dos cifras.
+            vistos.append((anio, True))
     return vistos
 
 
