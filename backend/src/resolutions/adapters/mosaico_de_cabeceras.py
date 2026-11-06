@@ -83,20 +83,29 @@ class MosaicoDeCabeceras:
         #: Las páginas de las tandas que no volvieron enteras.
         self._sin_repartir: list[int] = []
 
-    def leer_franjas(self, source, paginas: Sequence[int], banda: Callable[[int], Band]) -> dict[int, str]:
+    def leer_franjas(
+        self,
+        source,
+        paginas: Sequence[int],
+        banda: Callable[[int], Band],
+        al_leer: Callable[[dict[int, str]], None] | None = None,
+    ) -> dict[int, str]:
         """Lo que dice la franja de cada página: ``banda(pagina)`` dice dónde recortarla.
+
+        ``al_leer`` recibe lo de cada tanda en cuanto vuelve repartida, para
+        que la pantalla avance en vivo y no al final del libro (2026-11-06).
 
         Nunca levanta: un mosaico que falla deja sin leer sus franjas, que se
         vuelven a pedir en mitades; una franja sola que vuelve vacía queda sin
         leer, y lo dice quien llama.
         """
         self._sin_repartir = []
-        leidas = self._una_pasada(source, list(paginas), banda)
+        leidas = self._una_pasada(source, list(paginas), banda, al_leer)
         if self._sin_repartir and self._tamano > 1:
             mitad = copy.copy(self)
             mitad._tamano = max(1, self._tamano // 2)
             logger.info("se releen %d cabeceras en mosaicos de %d", len(self._sin_repartir), mitad._tamano)
-            leidas.update(mitad.leer_franjas(source, list(self._sin_repartir), banda))
+            leidas.update(mitad.leer_franjas(source, list(self._sin_repartir), banda, al_leer))
         return leidas
 
     def otra_mirada(self) -> MosaicoDeCabeceras:
@@ -106,7 +115,9 @@ class MosaicoDeCabeceras:
         clon._dpi = int(self._dpi * 1.5)
         return clon
 
-    def _una_pasada(self, source, paginas: list[int], banda: Callable[[int], Band]) -> dict[int, str]:
+    def _una_pasada(
+        self, source, paginas: list[int], banda: Callable[[int], Band], al_leer=None
+    ) -> dict[int, str]:
         tandas = [paginas[i : i + self._tamano] for i in range(0, len(paginas), self._tamano)]
         leidas: dict[int, str] = {}
         vuelo: dict = {}
@@ -121,11 +132,16 @@ class MosaicoDeCabeceras:
                     if repartido is None:
                         if len(tanda) == 1 and texto:
                             # Una franja sola: todo lo leído es suyo.
-                            leidas[tanda[0]] = _IMAGEN.sub(" ", texto).strip()
+                            repartido = {tanda[0]: _IMAGEN.sub(" ", texto).strip()}
                         else:
                             self._sin_repartir.extend(tanda)
-                    else:
+                    if repartido:
                         leidas.update(repartido)
+                        if al_leer is not None:
+                            try:
+                                al_leer(repartido)
+                            except Exception:  # noqa: BLE001 - avisar nunca rompe la lectura
+                                logger.debug("no se pudo avisar del avance del mosaico", exc_info=True)
 
         # Los mosaicos se arman en este hilo -- MuPDF no es seguro entre hilos
         # sobre el mismo documento -- y se leen en varios.

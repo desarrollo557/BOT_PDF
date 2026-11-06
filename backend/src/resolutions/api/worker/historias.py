@@ -323,13 +323,13 @@ def historias_academicas_job(payload: dict) -> dict:
                 )
                 if pidio_dividir:
                     en_orden = _con_la_ficha_primero(unidad, textos, de_medicina)
-                    with pymupdf.open() as nuevo:
-                        # La ficha principal primero, con su reverso: «la
-                        # primera página del PDF dividido debe ser la página
-                        # principal del estudiante» (el operador, 2026-11-03).
-                        for numero in en_orden:
-                            nuevo.insert_pdf(original, from_page=numero - 1, to_page=numero - 1)
-                        nuevo.save(carpeta_de_salida / archivo, garbage=3, deflate=True)
+                    # La ficha principal primero, con su reverso: «la primera
+                    # página del PDF dividido debe ser la página principal del
+                    # estudiante» (el operador, 2026-11-03). Por tramos y con
+                    # ``garbage=1``: guardar con ``garbage=3`` era lo lento.
+                    from .nominas import escribir_paginas
+
+                    escribir_paginas(original, taller.source, list(en_orden), carpeta_de_salida / archivo)
                     esperado[archivo] = list(en_orden)
                     salidas.append((carpeta_de_salida / archivo).relative_to(taller.destination).as_posix())
                 hoja = hojas.get(unidad.paginas[0])

@@ -453,6 +453,41 @@ export const HABILIDADES: Habilidad[] = [
     }
   },
   {
+    // 2026-11-06, «22. CERTIFICADOS DE TIEMPO SERVICIOS» del REPOSITORIO UDC.
+    id: 'certificados',
+    escribeFuid: true,
+    titulo: 'Certificados de tiempo de servicio',
+    papel:
+      'Libros de certificados de tiempo de servicio de la Universidad: cada certificado de la Sección de Archivo, con la carta con que se pidió, las hojas de cálculo, los recibos y las copias que lo acompañan.',
+    corta:
+      'Si lo pides, un PDF por certificado con todos sus anexos detrás. Un certificado es su número: su segunda hoja y sus borradores, con el mismo número, van con él; un número nuevo abre otro.',
+    nombra:
+      'El inventario es el FUID oficial (FO-GD-008): «CERTIFICADO DE TIEMPO DE SERVICIO - NOMBRE», la cédula como número de documento y la fecha de la firma como fechas extremas. Cada PDF se llama con el nombre y la cédula.',
+    nombraConIa: 'Y el número, el nombre, la cédula y la fecha de la firma leídos por la IA en cada hoja del certificado.',
+    aportaIa:
+      'Lee con la IA cada hoja de certificado (una página facturada cada una); las cartas, los cálculos a mano y los recibos no se pagan.',
+    tipo: 'certificado-tiempo',
+    task: null,
+    acciones: [
+      {
+        id: 'both',
+        label: 'Dividir e inventariar',
+        hint: 'Un PDF por certificado con sus anexos, y el FUID.'
+      },
+      {
+        id: 'inventory_file',
+        label: 'Solo inventariar',
+        hint: 'Una fila por certificado en el FUID. El PDF queda entero.'
+      }
+    ],
+    requiereTipo: 'certificado-tiempo',
+    pideLectura: {
+      id: 'mistral',
+      porque:
+        'Las copias de estos certificados están muy gastadas y su texto escaneado dice «CZHTinCADO Ho.»: con «OCR + IA» se lee bien cada número, nombre, cédula y fecha. Con «Solo OCR» se corta igual, con nombres y fechas peores.'
+    }
+  },
+  {
     id: 'archivo',
     escribeFuid: true,
     titulo: 'Archivos ya separados',
@@ -542,6 +577,7 @@ const HABILIDAD_DEL_TIPO: Record<string, string> = {
   acta: 'actas-grado',
   'historia-academica': 'historias',
   nomina: 'nominas',
+  'certificado-tiempo': 'certificados',
   // El reconocedor cuenta las historias académicas como matrículas: la
   // habilidad que las parte por estudiante es «Historias académicas»
   // (2026-10-30). Con «No estoy seguro» salían 9 PDF donde había 60 estudiantes.

@@ -186,6 +186,20 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
         datos=DE_UNA_NOMINA,
     ),
     PerfilDeRevision(
+        clave="certificados",
+        nombre="Certificados de tiempo de servicio",
+        reglas=(
+            "Libro de certificados de tiempo de servicio: un PDF por certificado, que es su número. Su segunda "
+            "hoja («VIENEN», «HOJA Nº 2») y sus borradores, con el mismo número, van con él; la carta con que se "
+            "pidió, las hojas de cálculo a mano, los recibos y las copias que siguen son sus anexos. Un número "
+            "nuevo abre otro certificado."
+        ),
+        # Sus anexos -- recibos, cartas, copias -- traen otros números, y la capa
+        # del escáner es basura: la persona la vigila el agente de los datos.
+        alias=("certificados de tiempo de servicio", "certificado de tiempo de servicio", "certificado-tiempo"),
+        datos=DE_UNA_NOMINA,
+    ),
+    PerfilDeRevision(
         clave="matriculas",
         nombre="Legajo de matrículas",
         reglas=(

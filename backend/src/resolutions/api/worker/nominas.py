@@ -23,7 +23,8 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 from ...application.ports import Band
@@ -40,8 +41,12 @@ BANDA_DE_LA_FECHA = Band(0.40, 0.0, 1.0, 0.16)
 #: El tercio de arriba de la hoja de listado, para la IA: la cabecera y los
 #: primeros renglones. Más estrecho, la IA lo toma por una foto.
 BANDA_DEL_LISTADO = Band(0.0, 0.0, 1.0, 0.33)
-#: Las fechas de pago de los comprobantes («910125 T O T A L»), a la izquierda.
-BANDA_DEL_PAGO = Band(0.0, 0.0, 0.55, 1.0)
+#: Las fechas de pago de los comprobantes («910125 T O T A L»), a la izquierda:
+#: a 150 ppp y hasta el 40 % del ancho, Tesseract las lee igual y un tercio más
+#: rápido que a 200 y hasta el 55 % (2026-11-06).
+BANDA_DEL_PAGO = Band(0.0, 0.0, 0.40, 1.0)
+#: De los comprobantes se lee una hoja de cada tantas; donde cambia el mes, las de en medio.
+PASO_DE_LOS_COMPROBANTES = 3
 #: La cabecera de la tarjeta: apellidos, nombre, cédula y año. Medida sobre la
 #: nómina de 1975: ceñida, diez de diez bien leídas; con un recorte más alto el
 #: mosaico pierde nitidez y salía «CASTELLAR AGUA 4064» por CASTELLAR MEZA
@@ -61,6 +66,72 @@ CABECERAS_DE_HOJA = (8, 300)
 
 #: Una capa de texto con menos letras que esto no dice qué hoja es.
 _CAPA_POBRE = 60
+
+
+#: La muestra con que se sabe de qué es un libro sin capa de texto, con la IA:
+#: sus primeras hojas -- la tapa, el índice, el primer hablador -- y una de
+#: cada tantas después.
+PRIMERAS_DE_LA_MUESTRA = 12
+UNA_DE_CADA = 8
+
+
+def muestra_del_libro(paginas: list[int]) -> list[int]:
+    """Las primeras doce y una de cada ocho después: de qué es el libro, sin leerlo entero."""
+    return [p for posicion, p in enumerate(paginas) if posicion < PRIMERAS_DE_LA_MUESTRA or posicion % UNA_DE_CADA == 0]
+
+
+def muestra_de_comprobantes(paginas: list[int]) -> list[int]:
+    """Una hoja de cada ``PASO_DE_LOS_COMPROBANTES``, y la última."""
+    muestra = paginas[::PASO_DE_LOS_COMPROBANTES]
+    if paginas and paginas[-1] not in muestra:
+        muestra.append(paginas[-1])
+    return muestra
+
+
+def paginas_donde_cambia_el_mes(hojas, muestra: list[int], paginas: list[int]) -> list[int]:
+    """Las hojas sin leer entre dos leídas con distinto mes de pago: ahí está el corte."""
+
+    def mes(numero: int):
+        fechas = hojas[numero - 1].fechas
+        return Counter((f[2], f[1]) for f in fechas).most_common(1)[0][0] if fechas else None
+
+    leidas = [p for p in muestra if mes(p) is not None]
+    en_medio: list[int] = []
+    for antes, despues in zip(leidas, leidas[1:], strict=False):
+        if mes(antes) != mes(despues):
+            en_medio.extend(p for p in paginas if antes < p < despues and p not in muestra)
+    return en_medio
+
+
+def escribir_paginas(original, fuente: Path, paginas: list[int], destino: Path) -> None:
+    """El PDF de esas hojas del original, en ese orden, deprisa.
+
+    - **El libro entero, en su orden: se copia el archivo.** «NOMINAS MARZO
+      1991» -- 777 hojas, 1,7 GB, un solo mes -- se rehacía hoja por hoja y se
+      guardaba con ``garbage=3``, y pasó más de una hora «Escribiendo los PDF»
+      (2026-11-06).
+    - **Lo demás, por tramos de hojas seguidas** -- una inserción por tramo, no
+      una por hoja -- y guardado con ``garbage=1``, como el ensamblador: sobre
+      un escaneo de 192 MB, ``garbage=4`` con ``deflate`` costó 347 s y
+      ``garbage=1``, 0,65 s (``pymupdf_assembler``).
+    """
+    import shutil
+
+    import pymupdf
+
+    if paginas == list(range(1, original.page_count + 1)):
+        shutil.copyfile(fuente, destino)
+        return
+    tramos: list[list[int]] = []
+    for numero in paginas:
+        if tramos and numero == tramos[-1][-1] + 1:
+            tramos[-1].append(numero)
+        else:
+            tramos.append([numero])
+    with pymupdf.open() as nuevo:
+        for tramo in tramos:
+            nuevo.insert_pdf(original, from_page=tramo[0] - 1, to_page=tramo[-1] - 1)
+        nuevo.save(destino, garbage=1)
 
 
 def _sin_tildes(texto: str) -> str:
@@ -159,16 +230,48 @@ def nominas_job(payload: dict) -> dict:
             )
         plantillas = [n.plantilla_de(texto) for texto in textos]
 
+        # Las fechas de pago, sólo las de los años del libro: Tesseract lee
+        # «710125» por «910125», y cada una así parecía otro mes y obligaba a
+        # releer las hojas de en medio (274 en «NOMINAS MARZO 1991»).
+        anios_de_pago = n.ventana_del_libro(nombre)
+
+        def del_listado(texto: str):
+            # «00» es 2000 y «06» 2006: un año fuera del libro es una mala lectura.
+            fecha = n.fecha_del_listado(texto)
+            if fecha and anios_de_pago and not anios_de_pago[0] - 1 <= fecha[2] <= anios_de_pago[1] + 1:
+                return None
+            return fecha
+
+        def pagos(texto: str) -> tuple:
+            return tuple(
+                f for f in n.fechas_de_pago(texto)
+                if anios_de_pago is None or anios_de_pago[0] - 1 <= f[2] <= anios_de_pago[1] + 1
+            )
+
         # 2. Lo que la capa no dice, la cabecera con Tesseract: los libros de
         # 1974 y de 1977-1984 no traen capa.
         sin_capa = [i + 1 for i, (t, p) in enumerate(zip(textos, plantillas, strict=True)) if p is None and _letras(t) < _CAPA_POBRE]
+        # Basta una muestra para saber de qué es el libro. Leer con Tesseract
+        # cada hoja sin capa costaba un segundo por hoja: catorce minutos en
+        # «NOMINAS MARZO 1991», que no trae capa en 772 de sus 777 (2026-11-06).
         cabeceras = _con_tesseract(
-            payload, taller, source, local, sin_capa, BANDA_DE_LA_CABECERA, dpi=250, hilos=hilos,
-            detalle="leyendo la cabecera de las hojas sin capa de texto",
+            payload, taller, source, local, muestra_del_libro(sin_capa), BANDA_DE_LA_CABECERA, dpi=250, hilos=hilos,
+            detalle="mirando de qué es el libro",
         )
         for numero, texto in cabeceras.items():
             plantillas[numero - 1] = n.plantilla_de(texto)
         del_libro = n.plantilla_del_libro(plantillas)
+        if (de_pago is None and del_libro == n.LISTADO) or del_libro == n.CERTIFICADO:
+            # Un libro de listados sin la IA se mira entero: un hablador de en
+            # medio sólo se ve en su hoja. Con la IA lo reconoce su lectura de
+            # cada hoja de listado (paso 4).
+            resto = [p for p in sin_capa if p not in cabeceras]
+            for numero, texto in _con_tesseract(
+                payload, taller, source, local, resto, BANDA_DE_LA_CABECERA, dpi=250, hilos=hilos,
+                detalle="leyendo la cabecera de las hojas sin capa de texto",
+            ).items():
+                cabeceras[numero] = texto
+                plantillas[numero - 1] = n.plantilla_de(texto)
         # La hoja que no dice nada es de lo que es el libro: una tarjeta u hoja
         # de persona, o la continuación del listado. En un libro de
         # certificados no: es un anexo y va con su certificado.
@@ -192,11 +295,12 @@ def nominas_job(payload: dict) -> dict:
         # 4. La fecha y el «PAG. n» de cada listado; las fechas de pago de cada comprobante.
         for hoja in hojas:
             if hoja.plantilla == n.LISTADO:
-                hoja.fecha = n.fecha_del_listado(lo_leido(hoja.numero))
+                hoja.fecha = del_listado(lo_leido(hoja.numero))
                 hoja.pagina = n.pagina_del_listado(lo_leido(hoja.numero))
             elif hoja.plantilla == n.COMPROBANTE:
-                hoja.fechas = tuple(n.fechas_de_pago(lo_leido(hoja.numero)))
+                hoja.fechas = pagos(lo_leido(hoja.numero))
         listados = [h.numero for h in hojas if h.plantilla == n.LISTADO]
+        leidas_por_la_ia: set[int] = set()
         if de_pago is not None:
             # Con la IA, la cabecera de cada hoja de listado: Tesseract lee mal
             # una fecha de cada tres en esa impresión de matriz («2.07.84» por
@@ -207,22 +311,77 @@ def nominas_job(payload: dict) -> dict:
                 detalle="leyendo con la IA la fecha de cada hoja de listado",
             ).items():
                 hoja = hojas[numero - 1]
-                hoja.fecha = n.fecha_del_listado(texto) or hoja.fecha
+                if not texto.strip():
+                    continue
+                leidas_por_la_ia.add(numero)
+                # El hablador o el índice que la muestra no vio: lo dice lo leído.
+                if (otra := n.plantilla_de(texto)) in (n.HABLADOR, n.INDICE):
+                    hoja.plantilla, hoja.anio = otra, n.anio_del_hablador(texto)
+                    continue
+                hoja.fecha = del_listado(texto) or hoja.fecha
                 hoja.pagina = n.pagina_del_listado(texto) or hoja.pagina
-        sin_fecha = [numero for numero in listados if hojas[numero - 1].fecha is None]
+            # El año del hablador que reconoció la IA va abajo, fuera del tercio
+            # que leyó: la hoja entera con Tesseract, como en el paso 3.
+            sin_anio = [h.numero for h in hojas if h.plantilla == n.HABLADOR and h.anio is None]
+            for numero, texto in _con_tesseract(
+                payload, taller, source, local, sin_anio, None, dpi=150, hilos=hilos,
+                detalle="leyendo el año del hablador",
+            ).items():
+                hojas[numero - 1].anio = n.anio_del_hablador(texto)
+        # Tesseract, sólo en lo que la IA no pudo leer: la hoja que leyó y no
+        # trae la línea de la fecha no la trae, y releerla era tiempo perdido.
+        sin_fecha = [
+            numero
+            for numero in listados
+            if hojas[numero - 1].plantilla == n.LISTADO
+            and hojas[numero - 1].fecha is None
+            and numero not in leidas_por_la_ia
+        ]
         for numero, texto in _con_tesseract(
             payload, taller, source, local, sin_fecha, BANDA_DE_LA_FECHA, dpi=300, hilos=hilos,
             detalle="leyendo la fecha de cada listado",
         ).items():
             hoja = hojas[numero - 1]
-            hoja.fecha = n.fecha_del_listado(texto)
+            hoja.fecha = del_listado(texto)
             hoja.pagina = hoja.pagina or n.pagina_del_listado(texto)
+        # Los comprobantes, una hoja de cada tres: un libro de 777 hojas es casi
+        # siempre un solo mes, y leerlas todas costaba catorce minutos en
+        # «NOMINAS MARZO 1991» (2026-11-06). Donde el mes cambia entre dos hojas
+        # leídas, se leen las de en medio para poner el corte en su sitio.
         sin_pago = [h.numero for h in hojas if h.plantilla == n.COMPROBANTE and not h.fechas]
+        muestra = muestra_de_comprobantes(sin_pago)
+        de_pago_leido: dict[int, str] = {}
         for numero, texto in _con_tesseract(
-            payload, taller, source, local, sin_pago, BANDA_DEL_PAGO, dpi=200, hilos=hilos,
+            payload, taller, source, local, muestra, BANDA_DEL_PAGO, dpi=150, hilos=hilos,
             detalle="leyendo la fecha de pago de los comprobantes",
         ).items():
-            hojas[numero - 1].fechas = tuple(n.fechas_de_pago(texto))
+            hojas[numero - 1].fechas = pagos(texto)
+            de_pago_leido[numero] = texto
+        en_medio = paginas_donde_cambia_el_mes(hojas, muestra, sin_pago)
+        for numero, texto in _con_tesseract(
+            payload, taller, source, local, en_medio, BANDA_DEL_PAGO, dpi=150, hilos=hilos,
+            detalle="leyendo dónde cambia el mes de pago",
+        ).items():
+            hojas[numero - 1].fechas = pagos(texto)
+            de_pago_leido[numero] = texto
+        # La hoja de comprobantes leída que no dice nada de un comprobante -- ni
+        # sueldo, ni total, ni caja -- puede ser un hablador o un índice que la
+        # muestra del paso 2 no vio (la revisión, 2026-11-06). Sólo esas: la
+        # fecha de pago se lee en una hoja de cada cuatro, y releer todas las
+        # que no la dicen desharía lo ganado.
+        mudas = [
+            p for p, texto in de_pago_leido.items()
+            if hojas[p - 1].plantilla == n.COMPROBANTE
+            and not hojas[p - 1].fechas
+            and p not in cabeceras
+            and not re.search(r"SUELDO|TOTAL|T O T A L|CAJA|SOBRETASA|PRIMA|PAGO", texto.upper())
+        ]
+        for numero, texto in _con_tesseract(
+            payload, taller, source, local, mudas, BANDA_DE_LA_CABECERA, dpi=250, hilos=hilos,
+            detalle="mirando las hojas sin fecha de pago",
+        ).items():
+            if (otra := n.plantilla_de(texto)) in (n.HABLADOR, n.INDICE):
+                hojas[numero - 1].plantilla, hojas[numero - 1].anio = otra, n.anio_del_hablador(texto)
 
         # 5. El nombre, la cédula y el año de cada persona: la cabecera de su
         # tarjeta u hoja con la IA, si se pidió.
@@ -288,10 +447,7 @@ def nominas_job(payload: dict) -> dict:
                 taller.control.check()
                 archivo = nombre_del_pdf(orden, documento, carpeta=carpeta_de_salida)
                 if pidio_dividir:
-                    with pymupdf.open() as nuevo:
-                        for numero in documento.paginas:
-                            nuevo.insert_pdf(original, from_page=numero - 1, to_page=numero - 1)
-                        nuevo.save(carpeta_de_salida / archivo, garbage=3, deflate=True)
+                    escribir_paginas(original, taller.source, list(documento.paginas), carpeta_de_salida / archivo)
                     esperado[archivo] = list(documento.paginas)
                     salidas.append((carpeta_de_salida / archivo).relative_to(taller.destination).as_posix())
                 inicial, final, de_donde = n.fechas_extremas(documento, anio_del_libro=anio_del_libro, ventana=ventana)
@@ -380,72 +536,82 @@ def nominas_job(payload: dict) -> dict:
     return report
 
 
-def _con_tesseract(payload, taller, source, local, paginas, banda, *, dpi, hilos, detalle) -> dict[int, str]:
-    """Lo que lee Tesseract en ``banda`` de cada página (la hoja entera sin banda). Gratis.
+def _en_tubo(payload, taller, source, paginas, preparar, leer, *, hilos, detalle, procedencia) -> dict[int, str]:
+    """Lee esas páginas en varios hilos y avisa a la pantalla **en cuanto termina cada una**.
 
-    Se rasteriza en este hilo -- MuPDF no es seguro entre hilos -- y se lee en
-    varios: Tesseract es otro proceso por lectura.
+    La imagen se prepara en este hilo -- MuPDF no es seguro entre hilos -- y se
+    lee en otro; nunca hay más del doble de los hilos esperando. Antes se
+    preparaban todas las del libro y sólo después se contaban: la barra se
+    quedaba quieta mientras la IA ya iba leyendo (el operador, 2026-11-06:
+    «necesito que todo sea reflejado en caliente y muy rápido»). Cada página
+    leída repinta su cuadrito con quien la leyó.
     """
     if not paginas:
         return {}
     leidas: dict[int, str] = {}
-    _anunciar(payload, Stage.IDENTIFYING, detail=detalle, done=0, total=len(paginas))
+    total = len(paginas)
+    total_del_libro = source.page_count
+    _anunciar(payload, Stage.IDENTIFYING, detail=detalle, done=0, total=total)
+    vuelo: dict = {}
+    hechas = 0
 
-    def leer(par):
-        numero, imagen = par
+    def protegido(numero: int, imagen: bytes) -> str | None:
         try:
-            return numero, local.read(imagen).text or ""
+            return leer(imagen) or ""
         except Exception:  # noqa: BLE001 - una hoja que no se deja leer queda sin leer
-            logger.debug("Tesseract no pudo leer la página %s", numero, exc_info=True)
-            return numero, ""
+            # ``None``: ni se pinta como leída ni se da por leída (la revisión, 2026-11-06).
+            logger.warning("no se pudo leer la página %s (%s)", numero, procedencia, exc_info=True)
+            return None
+
+    def una_mas(numero: int, texto: str | None) -> None:
+        nonlocal hechas
+        hechas += 1
+        if texto is not None:
+            leidas[numero] = texto
+            _anunciar(payload, Stage.PAGE, page_count=total_del_libro, page_number=numero, provenance=procedencia)
+        _anunciar(payload, Stage.IDENTIFYING, detail=detalle, done=hechas, total=total)
+
+    def recoger(todo: bool = False) -> None:
+        while vuelo and (todo or len(vuelo) >= 2 * hilos):
+            listos, _ = wait(list(vuelo), return_when=FIRST_COMPLETED)
+            for futuro in listos:
+                una_mas(vuelo.pop(futuro), futuro.result())
 
     with ThreadPoolExecutor(max_workers=hilos) as pool:
-        futuros = []
         for numero in paginas:
             taller.control.check()
+            recoger()
             try:
-                imagen = source.render(numero, banda, dpi) if banda is not None else source.render(numero, dpi=dpi)
-            except Exception:  # noqa: BLE001
+                imagen = preparar(numero)
+            except Exception:  # noqa: BLE001 - una hoja que no se deja rasterizar queda sin leer
                 logger.debug("no se pudo rasterizar la página %s", numero, exc_info=True)
+                una_mas(numero, None)
                 continue
-            futuros.append(pool.submit(leer, (numero, imagen)))
-        for hecho, futuro in enumerate(futuros, start=1):
-            numero, texto = futuro.result()
-            leidas[numero] = texto
-            _anunciar(payload, Stage.IDENTIFYING, detail=detalle, done=hecho, total=len(paginas))
+            vuelo[pool.submit(protegido, numero, imagen)] = numero
+        recoger(todo=True)
     return leidas
+
+
+def _con_tesseract(payload, taller, source, local, paginas, banda, *, dpi, hilos, detalle) -> dict[int, str]:
+    """Lo que lee Tesseract en ``banda`` de cada página (la hoja entera sin banda). Gratis."""
+    return _en_tubo(
+        payload, taller, source, paginas,
+        lambda numero: source.render(numero, banda, dpi) if banda is not None else source.render(numero, dpi=dpi),
+        lambda imagen: local.read(imagen).text,
+        hilos=hilos, detalle=detalle, procedencia="ocr_region",
+    )
 
 
 def _con_la_ia(payload, taller, source, de_pago, paginas, banda, *, dpi, hilos, detalle) -> dict[int, str]:
     """Lo que lee la IA en ``banda`` de cada página, una por imagen: una página facturada cada una."""
-    if not paginas or de_pago is None:
+    if de_pago is None:
         return {}
-    leidas: dict[int, str] = {}
-    _anunciar(payload, Stage.IDENTIFYING, detail=detalle, done=0, total=len(paginas))
-
-    def leer(par):
-        numero, imagen = par
-        try:
-            return numero, de_pago.read(imagen).text or ""
-        except Exception:  # noqa: BLE001 - una hoja que no se deja leer queda para Tesseract
-            logger.warning("la IA no pudo leer la página %s", numero, exc_info=True)
-            return numero, ""
-
-    with ThreadPoolExecutor(max_workers=hilos) as pool:
-        futuros = []
-        for numero in paginas:
-            taller.control.check()
-            try:
-                imagen = source.render(numero, banda, dpi, formato="jpeg")
-            except Exception:  # noqa: BLE001
-                logger.debug("no se pudo rasterizar la página %s", numero, exc_info=True)
-                continue
-            futuros.append(pool.submit(leer, (numero, imagen)))
-        for hecho, futuro in enumerate(futuros, start=1):
-            numero, texto = futuro.result()
-            leidas[numero] = texto
-            _anunciar(payload, Stage.IDENTIFYING, detail=detalle, done=hecho, total=len(paginas))
-    return leidas
+    return _en_tubo(
+        payload, taller, source, paginas,
+        lambda numero: source.render(numero, banda, dpi, formato="jpeg"),
+        lambda imagen: de_pago.read(imagen).text,
+        hilos=hilos, detalle=detalle, procedencia="vision_model",
+    )
 
 
 def _leer_las_personas(payload, taller, source, hojas) -> tuple[set[int], dict[int, str]]:
@@ -475,13 +641,40 @@ def _leer_las_personas(payload, taller, source, hojas) -> tuple[set[int], dict[i
         def banda(_pagina: int, base: Band = base) -> Band:
             return base
 
-        _anunciar(payload, Stage.IDENTIFYING, detail="leyendo el nombre de cada persona con la IA", done=0, total=len(suyas))
-        leidas = mosaico.leer_franjas(source, [h.numero for h in suyas], banda)
+        detalle = "leyendo con la IA el nombre de cada persona"
+        _anunciar(payload, Stage.IDENTIFYING, detail=detalle, done=0, total=len(suyas))
+        vistas: set[int] = set()
+        total_del_libro = source.page_count
+
+        def al_leer(
+            repartido: dict[int, str],
+            detalle: str = detalle,
+            total: int = len(suyas),
+            vistas: set[int] = vistas,
+            total_del_libro: int = total_del_libro,
+        ) -> None:
+            # Cada tanda que vuelve, en vivo: su avance y el cuadrito de cada hoja.
+            for numero in repartido:
+                _anunciar(payload, Stage.PAGE, page_count=total_del_libro, page_number=numero, provenance="vision_model")
+            vistas.update(repartido)
+            _anunciar(payload, Stage.IDENTIFYING, detail=detalle, done=len(vistas), total=total)
+
+        leidas = mosaico.leer_franjas(source, [h.numero for h in suyas], banda, al_leer)
         faltan = [h.numero for h in suyas if not n.leer_los_datos(leidas.get(h.numero, ""), plantilla).nombre]
         if faltan:
             # Con más papel alrededor y más zoom, una por imagen.
             mas_alta = _mas_alta(banda)
-            releidas = mosaico.otra_mirada().leer_franjas(source, faltan, mas_alta)
+            _anunciar(payload, Stage.IDENTIFYING, detail=f"mirando otra vez {len(faltan)} nombres que no salieron", done=0, total=len(faltan))
+            otra_vez: set[int] = set()
+
+            def al_releer(repartido: dict[int, str], total: int = len(faltan), otra_vez: set[int] = otra_vez) -> None:
+                otra_vez.update(repartido)
+                _anunciar(
+                    payload, Stage.IDENTIFYING, detail=f"mirando otra vez {total} nombres que no salieron",
+                    done=len(otra_vez), total=total,
+                )
+
+            releidas = mosaico.otra_mirada().leer_franjas(source, faltan, mas_alta, al_releer)
             for numero, texto in releidas.items():
                 if n.leer_los_datos(texto, plantilla).nombre or numero not in leidas:
                     leidas[numero] = texto
@@ -499,7 +692,6 @@ def _leer_las_personas(payload, taller, source, hojas) -> tuple[set[int], dict[i
             hoja = suyas[posicion]
             hoja.datos = limpias[posicion]
             copiadas[hoja.numero] = cedula
-        _anunciar(payload, Stage.IDENTIFYING, detail="leyendo el nombre de cada persona con la IA", done=len(suyas), total=len(suyas))
     return sin_leer, copiadas
 
 

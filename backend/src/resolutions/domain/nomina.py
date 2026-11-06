@@ -102,7 +102,7 @@ def plantilla_de(texto: str) -> str | None:
         return None
     junto = p.replace(" ", "")
     cabeza = p[:700]
-    if "HACECONSTAR" in junto and ("CERTIFICA" in cabeza or "SECRETARIA" in cabeza or "TIEMPO" in p):
+    if es_certificado(texto):
         return CERTIFICADO
     if re.search(r"\bINDICE\b", cabeza[:250]) and len(re.findall(r"PAGINA|PAG\b", p)) >= 3:
         return INDICE
@@ -162,7 +162,10 @@ _FECHA_CON_ROTULO = re.compile(r"FECHA\W{0,3}(\d{1,2})\s?[./\-]\s?(\d{1,2})\s?[.
 
 
 def _fecha_valida(dia: int, mes: int, anio: int) -> Fecha | None:
-    if 1 <= dia <= 31 and 1 <= mes <= 12 and 1940 <= anio <= 2010:
+    """La fecha, si existe en el calendario: un «31» de un mes de treinta días es una mala lectura."""
+    import calendar
+
+    if 1 <= mes <= 12 and 1940 <= anio <= 2010 and 1 <= dia <= calendar.monthrange(anio, mes)[1]:
         return dia, mes, anio
     return None
 
@@ -316,33 +319,246 @@ _MESES = {
     "ENERO": 1, "FEBRERO": 2, "MARZO": 3, "ABRIL": 4, "MAYO": 5, "JUNIO": 6, "JULIO": 7, "AGOSTO": 8,
     "SEPTIEMBRE": 9, "SETIEMBRE": 9, "OCTUBRE": 10, "NOVIEMBRE": 11, "DICIEMBRE": 12,
 }
-_CEDULA_DEL_CERTIFICADO = re.compile(r"CEDULA\s+DE\s+CIUDADANIA\s+N[O0º°]?\W{0,4}\s*(\d[\d.,\s]{3,14})")
-_NOMBRE_DEL_CERTIFICADO = re.compile(
-    r"QUE\s+(?:EL|LA)?\s*(?:DOCTOR|DOCTORA|DR|DRA|SENOR|SENORA|SR|SRA|SENORITA)?\W*\s*([A-Z][A-Z .]{5,80}?)\s*,?\s+IDENTIFICAD"
+# -- el certificado de tiempo de servicio («22. CERTIFICADOS DE TIEMPO SERVICIOS») ------------
+
+#: «CERTIFICADO No. 004», «CIRTIFICADO No. 013», «CERTIFICADO N2 086» (Nº), «Ne. 097»,
+#: «CERTIFICADO NUMERO 001» (1986), también en blanco en el formulario: el certificado
+#: numerado de la Sección de Archivo, y su número.
+_CERTIFICADO_NUMERADO = re.compile(
+    # El «2», la «E» o el «9» por la «º» sólo si no van pegados al número: «Nº 97»
+    # queda «N 97» (sin la «º») y no se le puede comer el 9 (la revisión, 2026-11-06).
+    r"C[EI]R?T[I1L]F[I1L]C?A[DL][O0]\s*(?:NUMERO|N\s?(?:[O0°º*%]|[2E9](?=\D))?|H\s?[O0]|#)\W{0,4}(\d{1,4})?(?!\d)"
 )
-_FECHA_DEL_CERTIFICADO = re.compile(
-    r"\((\d{1,2})\)\s*DIAS?\s+DEL\s+MES\s+DE\s+([A-Z]+)\s+DE[L]?\b.{0,40}?\(?(\d)\W?(\d{3})\)?"
+#: Quién lo firma: el Secretario General, el Coordinador o el Jefe de la Sección de
+#: Archivo, el Síndico habilitado (1964). No «ante el suscrito» de una copia de
+#: posesión, ni los decanos ni las secretarías académicas de las facultades:
+#: sus certificados son anexos.
+_SUSCRITO = re.compile(
+    r"(?<!ANTE )(?:EL|LA)\s+SUSCRIT[OA]\s+(?:SECRETARI[OA]\s+GENERAL|COORDINADOR\w*\s+ADMINISTRATIV|JEFE\s+DE\s+LA\s+SECCION|SINDICO)"
 )
-_FECHA_EN_LETRA = re.compile(r"\b(\d{1,2})\s+DE\s+([A-Z]+)\s+DE[L]?\s+(\d)\W?(\d{3})\b")
+#: El encabezado del formulario: «Sección de Archivos y Correspondencia».
+_FORMULARIO = re.compile(r"SECCI\w{0,2}N\s+DE\s+ARCHIV\w*\W+Y\W+CO\w*|SECC\W+CORRESPOND\w*\s+Y\s+ARCHIV")
+#: La hoja que sigue un certificado de varias: «VIENEN:», «PASAN:», «HOJA Nº 2», o el «(2)»
+#: pegado al número. No el verbo del cuerpo («viene laborando») ni el «(2)» de una
+#: fecha («dos (2) de Febrero»), que pegaban el certificado siguiente al anterior
+#: (la revisión, 2026-11-06). Se busca justo detrás del número.
+_SIGUE = re.compile(r"\bVIENEN?\s*:|\bPASAN\s*:|HOJA\s+N\W{0,3}\s*[2-9]\b|^\W{0,6}\(\s*[2-9]\s*\)")
+#: Lo que no es un certificado aunque lo parezca: la copia de una posesión.
+_NO_ES_CERTIFICADO = re.compile(r"COPIA\s+DE\s+(?:LA\s+)?POSESION")
+#: Cuánto de la hoja es su encabezado.
+_ENCABEZADO = 700
 
 
-def leer_el_certificado(texto: str) -> DatosDeLaHoja:
+@dataclass(frozen=True, slots=True)
+class Encabezado:
+    """Lo que dice de sí misma una hoja de certificado: si lo es, su número y si sigue otro."""
+
+    es: bool
+    numero: int | None = None
+    sigue: bool = False
+
+
+def encabezado_del_certificado(texto: str) -> Encabezado:
+    """Si la hoja es de un certificado de tiempo de servicio, con qué número, y si continúa uno.
+
+    Medido sobre «22. CERTIFICADOS DE TIEMPO SERVICIOS» (2026-11-06): un
+    certificado es su número. Sus hojas segunda y siguientes repiten el
+    encabezado con el mismo número y «VIENEN», «PASAN», «HOJA Nº 2» o «(2)»; el
+    libro trae además el definitivo y sus borradores seguidos, con el mismo
+    número. La carta con que se pidió, las hojas de cálculo a mano, los
+    recibos, los contratos, las copias de posesión y los certificados de las
+    facultades no dicen nada de eso: son anexos.
+    """
+    p = plano(texto)
+    zona = p[:_ENCABEZADO]
+    if _NO_ES_CERTIFICADO.search(zona):
+        return Encabezado(es=False)
+    junto = p.replace(" ", "")
+    numerado = _CERTIFICADO_NUMERADO.search(zona)
+    suscrito = _SUSCRITO.search(p[:1500])
+    formulario = _FORMULARIO.search(zona) and "CONSTAR" in junto
+    # Un «certificado No…» sin número sólo cuenta en el encabezado de verdad:
+    # una carta puede decir «el certificado no se expidió» (la revisión, 2026-11-06).
+    if numerado and not numerado.group(1) and not (suscrito or formulario or "SECRETARIA GENERAL" in zona):
+        numerado = None
+    es = bool(
+        numerado
+        or suscrito
+        or formulario
+        or ("SINDICATURA" in zona and ("HACECONSTAR" in junto or re.search(r"\bCERTIFICA\b", p)))
+    )
+    if not es:
+        return Encabezado(es=False)
+    numero = int(numerado.group(1)) if numerado and numerado.group(1) else None
+    # Sin número, sólo lo que diga el principio de la hoja.
+    tras_el_numero = zona[numerado.end() : numerado.end() + 250] if numerado else ""
+    sigue = bool(_SIGUE.search(tras_el_numero) or re.match(r"\W*(?:VIENEN?|PASAN)\b", zona))
+    return Encabezado(es=True, numero=numero, sigue=sigue)
+
+
+def es_certificado(texto: str) -> bool:
+    """Si la hoja es de un certificado de tiempo de servicio (la primera o una que lo continúa)."""
+    return encabezado_del_certificado(texto).es
+
+
+_TITULO = r"(?:SR|SRA|SENOR|SENORA|SENORITA|DR|DRA|DOCTOR|DOCTORA|LIC|LICENCIAD[OA]|ING|INGENIER[OA]|PROFESOR|PROFESORA)\.?"
+#: «el (la)», que la IA lee «61 (1a)» o «él(1a)».
+_ARTICULO = r"(?:EL|LA|61)\s*(?:\(\s*1?L?A\s*\))?|\(\s*1?L?A\s*\)"
+#: Dónde empieza el nombre de quien se certifica: tras «Que el Doctor», tras la
+#: «UNIVERSIDAD DE CARTAGENA: El (la) Señor» del formulario, o tras la
+#: solicitud «formulada por el Dr.». Tras «Que» tiene que venir el artículo o el
+#: título: «Que aparece como…», «que se elabore Resolución» no son nombres. Los
+#: rótulos se buscan sueltos y el nombre desde cada uno: buscándolos con el
+#: nombre, el «Que verificados los Libros…» se comía el «Cartagena: él (1a) Dr.
+#: ANTONIO ORTEGA RODRIGUEZ» que venía detrás (1986).
+_ROTULOS_DEL_NOMBRE = (
+    re.compile(r"\bQUE\W+(?=(?:EL|LA|61|\(|" + _TITULO.rstrip("\\.?") + r")\b)|CARTAGENA\s*:\s*"),
+    re.compile(r"FORMULADA\s+POR\s+"),
+)
+_NOMBRE_TRAS_EL_ROTULO = re.compile(rf"(?:{_ARTICULO})?\W*(?:{_TITULO}\W+)?([A-Z][A-Z .\-]{{3,90}})")
+#: Dónde acaba: la cédula, la coma, los puntos de relleno, «identificado», «prestó», «el día».
+_DESPUES_DEL_NOMBRE = re.compile(
+    r"\s*(?:\.\s*\.|\.-|,|;|\bC\s?\.?\s?C\b|IDENTIFICAD|PORTADOR|PRESTO|PRESTA\b|LABORO|LABORA\b|HA\s+PRESTADO|"
+    r"EXPEDID|MAYOR\s+DE|VECIN|CON\s+CEDULA|EN\s+OFICIO|DE\s+FECHA|MEDIANTE|QUIEN|EL\s+DIA\b|DESDE\b|RECIBIO|"
+    r"DURANTE|DEVENGO|TRABAJO\b|SE\s+DESEMPEN|$)"
+)
+#: Lo que no es de un nombre: lo que trae la plantilla del certificado.
+_NO_ES_UN_NOMBRE = frozenset(
+    {
+        "VERIFICADOS", "LIBROS", "CARPETAS", "SECCION", "ARCHIVO", "ARCHIVOS", "CORRESPONDENCIA", "UNIVERSIDAD",
+        "CARTAGENA", "SOLICITUD", "OFICIO", "FECHA", "SERVICIOS", "CERTIFICA", "CONSTAR", "SECRETARIO", "GENERAL",
+        "NOMINA", "NOMINAS", "DATOS", "INTERESADA", "INTERESADO", "APARECEN", "REGISTRADOS", "FIRMA", "APARECE",
+        "ELABORE", "RESOLUCION", "CONTRATO", "PROFESOR", "SE", "HA",
+    }
+)
+_CEDULA_DEL_CERTIFICADO = re.compile(
+    r"(?:\bC\s?\.?\s?C\b\.?|CEDULA(?:\s+DE\s+CIUDADANIA)?)\s*(?:N\s?[O0]?\s?\.?|#|NUMERO|NRO\.?)?\s*[:.]?\s*"
+    r"(\d{1,3}(?:[.,]\s?\d{3}){1,3}|\d{5,11})"
+)
+
+
+def _nombre_del_certificado(p: str) -> tuple[str | None, int]:
+    """El nombre de quien se certifica y dónde acaba en el texto, o ``(None, 0)``."""
+    for rotulo in _ROTULOS_DEL_NOMBRE:
+        for hallado in rotulo.finditer(p):
+            if not (nombre_hallado := _NOMBRE_TRAS_EL_ROTULO.match(p, hallado.end())):
+                continue
+            resto = nombre_hallado.group(1)
+            corte = _DESPUES_DEL_NOMBRE.search(resto)
+            crudo = resto[: corte.start()] if corte else resto
+            if (nombre := _limpio(crudo)) and not set(nombre.split()) & _NO_ES_UN_NOMBRE:
+                return " ".join(nombre.split()[:6]), nombre_hallado.start(1) + len(crudo)
+    return None, 0
+
+
+#: Un año, también partido por la máquina de escribir o por la IA: «1.993», «1.9 93», «2.000».
+_ANIO_PARTIDO = r"(1\W{0,3}9\W{0,3}\d\W{0,3}\d|2\W{0,3}0\W{0,3}[0-3]\W{0,3}\d)"
+#: La fecha en que se firma o se expide: «se firma en Cartagena, a los veintidós
+#: (22) días del mes de Mayo del Dos Mil (2.000)», «se ha expedido el
+#: Certificado número 001 … de Enero 18 de … 1.9 93».
+_FECHA_DE_LA_FIRMA = (
+    # «se firma [el presente certi- ficado] en Cartagena a los 26 días del mes de Enero de 1993».
+    re.compile(
+        r"FIRMA\w*\b.{0,80}?EN\s+CARTAGENA.{0,60}?\(?(\d{1,2})\)?\s*DIAS?\s+DEL\s+MES\s+DE\s+"
+        r"([A-Z]+)\s+DE[L]?\b.{0,40}?" + _ANIO_PARTIDO
+    ),
+    # «Se ha expedido el Certificado número 013 de Enero 26 [de] 1.9 93».
+    re.compile(
+        r"(?:EXPEDIDO|EXPIDE)\s+(?:EL\s+)?CERTIFICADO.{0,40}?\bDE\s+([A-Z]+)\W{0,3}(\d{1,2})\W{0,8}(?:DE\W{0,8})?"
+        + _ANIO_PARTIDO
+    ),
+)
+#: Cualquier otra fecha: «22 de Mayo de 2000», «Enero 18 de 1993», «(22) días del mes de Mayo de 1993».
+_OTRA_FECHA = (
+    re.compile(r"\b(\d{1,2})\s+DE\s+([A-Z]+)\s+DE[L]?\s+" + _ANIO_PARTIDO),
+    re.compile(r"\b([A-Z]+)\s+(\d{1,2})\s+DE[L]?\s+" + _ANIO_PARTIDO),
+    re.compile(r"\((\d{1,2})\)\s*DIAS?\s+DEL\s+MES\s+DE\s+([A-Z]+)\s+DE[L]?\b.{0,40}?" + _ANIO_PARTIDO),
+)
+#: La fecha de la solicitud no es la del certificado.
+_DE_LA_SOLICITUD = re.compile(r"(?:OFICIO|SOLICITUD)\s+DE\s+FECHA\W*$|\bFECHA\W*$")
+
+
+def _fecha_de(hallado: re.Match) -> Fecha | None:
+    """Día, mes y año de un hallazgo, sea «día de mes» o «mes día»."""
+    a, b, anio = hallado.groups()
+    dia, mes = (a, b) if a.isdigit() else (b, a)
+    numero = _MESES.get(mes)
+    cifras = re.sub(r"\D", "", anio)
+    if not numero or len(cifras) != 4:
+        return None
+    return _fecha_valida(int(dia), numero, int(cifras))
+
+
+def fecha_del_certificado(textos: Sequence[str], ventana: tuple[int, int] | None = None) -> Fecha | None:
+    """La fecha de expedición del certificado, de sus hojas en su orden (puede firmarse en la segunda).
+
+    Primero la de la firma o la expedición; si no se leyó, la última fecha que
+    cae en los años del libro (el certificado trae también la fecha del oficio
+    y los años de servicio: «del 29 de Marzo de 1979 al…»). La del oficio con
+    que se pidió no cuenta.
+    """
+    firmas, ultima = _fechas_del_certificado(textos, ventana)
+    return firmas[-1] if firmas else ultima
+
+
+def fechas_del_certificado(textos: Sequence[str], ventana: tuple[int, int] | None = None) -> list[Fecha]:
+    """Las fechas de firma de todas las versiones de un certificado -- el definitivo y sus borradores --, o la última que se lea.
+
+    Son sus fechas extremas: el 083 de 1999 se firmó el 8 y el 12 de abril.
+    """
+    firmas, ultima = _fechas_del_certificado(textos, ventana)
+    return firmas or ([ultima] if ultima else [])
+
+
+def _fechas_del_certificado(textos: Sequence[str], ventana: tuple[int, int] | None) -> tuple[list[Fecha], Fecha | None]:
+    """Las fechas de firma y la última fecha de los años del libro, en el texto seguido de sus hojas.
+
+    Seguido, porque la frase de la firma se parte entre dos hojas: «se firma el
+    presente certi-» y, en la siguiente, «… de 1993.» (AURA MACHUCA, 1993). Y
+    con un año de holgura, pero si dos lecturas chocan gana la que cae en los
+    años del libro: el formulario del 013 dice «Enero 26 de 1.9 93» arriba y
+    «26 días del mes de Enero de 1992» al pie, en un libro de 1993.
+    """
+
+    def en_el_libro(fecha: Fecha | None, holgura: int = 1) -> bool:
+        return fecha is not None and (ventana is None or ventana[0] - holgura <= fecha[2] <= ventana[1] + holgura)
+
+    junto = plano("\n".join(textos))
+    firmas: list[tuple[int, Fecha]] = []
+    for patron in _FECHA_DE_LA_FIRMA:
+        for hallado in patron.finditer(junto):
+            if en_el_libro(fecha := _fecha_de(hallado)):
+                firmas.append((hallado.start(), fecha))  # type: ignore[arg-type]
+    candidatas: list[tuple[int, Fecha]] = []
+    for patron in _OTRA_FECHA:
+        for hallado in patron.finditer(junto):
+            if _DE_LA_SOLICITUD.search(junto[max(0, hallado.start() - 30) : hallado.start()]):
+                continue
+            if en_el_libro(fecha := _fecha_de(hallado)):
+                candidatas.append((hallado.start(), fecha))  # type: ignore[arg-type]
+    de_la_firma = [f for _, f in sorted(firmas)]
+    de_la_firma = [f for f in de_la_firma if en_el_libro(f, 0)] or de_la_firma
+    estrictas = [c for c in candidatas if en_el_libro(c[1], 0)]
+    ultima = max(estrictas or candidatas)[1] if candidatas else None
+    return de_la_firma, ultima
+
+
+def leer_el_certificado(texto: str, ventana: tuple[int, int] | None = None) -> DatosDeLaHoja:
     """El nombre, la cédula y la fecha del certificado de tiempo de servicio.
 
     «Que el Doctor JAVIER SEGOVIA FUENTES identificado con la cédula de
     ciudadanía No. 73.088.568 … a los veintidós (22) días del mes de Mayo del
-    Dos Mil (2.000)»: la fecha de expedición, al pie, es la fecha extrema.
+    Dos Mil (2.000)»: el asunto, el número de documento y la fecha extrema que
+    marcó el operador. En el formulario: «El (la) Señor TULIO CASTELLAR
+    MEZA.- C.C.# 9.064.394».
     """
     p = plano(texto)
-    nombre = _NOMBRE_DEL_CERTIFICADO.search(p)
-    cedula = _CEDULA_DEL_CERTIFICADO.search(p)
-    fecha = None
-    for hallada in (*_FECHA_DEL_CERTIFICADO.finditer(p), *_FECHA_EN_LETRA.finditer(p)):
-        dia, mes, uno, resto = hallada.groups()
-        if (numero := _MESES.get(mes)) and (valida := _fecha_valida(int(dia), numero, int(uno + resto))):
-            fecha = valida
+    nombre, donde = _nombre_del_certificado(p)
+    # La cédula de esa persona: la primera después de su nombre; si no, la primera.
+    cedula = _CEDULA_DEL_CERTIFICADO.search(p, donde) or _CEDULA_DEL_CERTIFICADO.search(p)
+    fecha = fecha_del_certificado([texto], ventana)
     return DatosDeLaHoja(
-        nombre=_limpio(nombre.group(1)) if nombre else None,
+        nombre=nombre,
         cedula=_cedula(cedula.group(1)) if cedula else None,
         anio=fecha[2] if fecha else None,
         fecha=fecha,
@@ -458,6 +674,9 @@ class Hoja:
     pagina: int | None = None
     #: El año del hablador o del índice.
     anio: int | None = None
+    #: El número del certificado, y si la hoja continúa uno («VIENEN», «HOJA Nº 2»).
+    certificado: int | None = None
+    sigue: bool = False
 
 
 @dataclass(slots=True)
@@ -473,6 +692,8 @@ class Documento:
     clave: tuple[int, ...] | None = None
     #: El año del hablador o del índice que lo abrió.
     anio: int | None = None
+    #: El número del certificado.
+    numero: int | None = None
     dudas: list[str] = field(default_factory=list)
 
     @property
@@ -546,11 +767,18 @@ def claves_suavizadas(hojas: Sequence[Hoja], *, tolerante: bool = True) -> list[
     corridas: list[list[int]] = []
     for posicion, i in enumerate(leidas):
         clave = claves[i]
-        if corridas and any(iguales(clave, claves[j]) for j in corridas[-1][-3:]):
+        empieza = hojas[i].pagina is not None and hojas[i].pagina <= 2
+        recientes = corridas[-1][-3:] if corridas else []
+        # «PAG. 1» o «PAG. 2» con otra fecha abre aunque difiera en una sola
+        # cifra: dos listados seguidos pueden ser del 14.06.82 y del 14.06.83
+        # (la revisión, 2026-11-06). Antes de la tolerancia, no después.
+        if corridas and empieza and not any(clave == claves[j] for j in recientes):
+            corridas.append([i])
+            continue
+        if corridas and any(iguales(clave, claves[j]) for j in recientes):
             corridas[-1].append(i)
             continue
         siguiente = claves[leidas[posicion + 1]] if posicion + 1 < len(leidas) else None
-        empieza = hojas[i].pagina is not None and hojas[i].pagina <= 2
         if not corridas or empieza or (siguiente is not None and iguales(clave, siguiente)):
             corridas.append([i])
     suaves: list[tuple[int, ...] | None] = [None] * len(claves)
@@ -605,7 +833,27 @@ def documentos(hojas: Sequence[Hoja], *, tolerante: bool = True) -> list[Documen
             abrir(DEL_INDICE, hoja, anio=hoja.anio)
             continue
         if hoja.plantilla == CERTIFICADO:
-            abrir(PERSONA, hoja, lecturas=[hoja.datos] if hoja.datos else [])
+            # Un certificado es su número: la hoja que lo continúa o lo repite
+            # -- su segunda hoja, un borrador, otra copia firmada -- va con él.
+            # Si la hoja y el certificado abierto tienen número, manda el número:
+            # «(2) PASAN» con otro número es la segunda hoja de otro certificado
+            # cuya primera no se leyó, no la del abierto (la revisión, 2026-11-06).
+            if (
+                actual is not None
+                and actual.plantilla == CERTIFICADO
+                and (
+                    hoja.certificado == actual.numero
+                    if hoja.certificado is not None and actual.numero is not None
+                    else hoja.sigue
+                )
+            ):
+                actual.paginas.append(hoja.numero)
+                if hoja.datos:
+                    actual.lecturas.append(hoja.datos)
+                if actual.numero is None:
+                    actual.numero = hoja.certificado
+                continue
+            abrir(PERSONA, hoja, lecturas=[hoja.datos] if hoja.datos else [], numero=hoja.certificado)
             continue
         if hoja.plantilla in DE_PAQUETE:
             if actual is not None and actual.clase == PAQUETE and (clave is None or actual.clave in (None, clave)):
@@ -731,7 +979,8 @@ def fechas_extremas(
     if documento.clase == DEL_INDICE:
         anio = documento.anio or anio_del_libro
         return ((1, 1, anio), (31, 12, anio), None) if anio else (None, None, None)
-    exactas = [lectura.fecha for lectura in documento.lecturas if lectura.fecha]
+    # El certificado: las fechas de firma de sus versiones, si se dieron; si no, las de sus hojas.
+    exactas = list(documento.fechas) or [lectura.fecha for lectura in documento.lecturas if lectura.fecha]
     if exactas:
         ordenadas = sorted(exactas, key=lambda f: (f[2], f[1], f[0]))
         return ordenadas[0], ordenadas[-1], None

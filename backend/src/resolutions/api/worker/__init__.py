@@ -188,6 +188,13 @@ def _despachar(payload: dict) -> dict:
 
         return nominas_job(payload)
 
+    # Los certificados de tiempo de servicio declarados (2026-11-06): un PDF por
+    # certificado con sus anexos, y su fila en el FUID.
+    if TipoPedido.parse(payload.get("tipo")) is TipoPedido.CERTIFICADO_TIEMPO:
+        from .certificados import certificados_job
+
+        return certificados_job(payload)
+
     # Inventariar el archivo entero no necesita reconocer nada antes: la unidad
     # documental es el PDF, y qué es se lee de su propio encabezado al pasar por
     # él. Va delante de todo lo demás porque preguntarle a esta ruta de qué tipo

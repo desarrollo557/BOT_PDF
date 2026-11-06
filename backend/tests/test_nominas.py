@@ -458,3 +458,307 @@ class TestLosAgentes:
             DE_UNA_NOMINA,
         )
         assert errores == [] and dudas == []
+
+
+class TestEnVivo:
+    """El operador, 2026-11-06: «necesito que todo sea reflejado en caliente y muy rápido»."""
+
+    def test_la_muestra_de_un_libro_sin_capa(self):
+        from resolutions.api.worker.nominas import muestra_del_libro
+
+        assert muestra_del_libro(list(range(1, 31))) == [*range(1, 13), 17, 25]
+
+    def test_cada_pagina_se_avisa_en_cuanto_termina(self):
+        from resolutions.api.worker.nominas import _en_tubo
+
+        avisos = []
+        cola = SimpleNamespace(put_nowait=avisos.append)
+        taller = SimpleNamespace(control=SimpleNamespace(check=lambda: None))
+        source = SimpleNamespace(page_count=5)
+        leidas = _en_tubo(
+            {"progress_queue": cola, "job_id": "j"}, taller, source, [2, 3, 4],
+            lambda numero: f"img{numero}".encode(), lambda imagen: imagen.decode().upper(),
+            hilos=2, detalle="leyendo", procedencia="vision_model",
+        )
+        assert leidas == {2: "IMG2", 3: "IMG3", 4: "IMG4"}
+        paginas = [a["page_number"] for a in avisos if a["stage"] == "page"]
+        assert sorted(paginas) == [2, 3, 4]
+        assert all(a["provenance"] == "vision_model" for a in avisos if a["stage"] == "page")
+        hechas = [a["done"] for a in avisos if a["stage"] == "identifying"]
+        assert hechas == [0, 1, 2, 3]
+
+    def test_el_mosaico_avisa_cada_tanda(self):
+        import pymupdf
+
+        from resolutions.adapters.mosaico_de_cabeceras import MosaicoDeCabeceras
+        from resolutions.application.ports import Band
+
+        imagen = pymupdf.Pixmap(pymupdf.csGRAY, pymupdf.IRect(0, 0, 40, 10), False)
+        imagen.clear_with(255)
+        source = SimpleNamespace(render=lambda pagina, banda, dpi: imagen.tobytes("png"))
+        tandas = []
+        mosaico = MosaicoDeCabeceras(
+            lambda _imagen: "PAGINA 1\nANA DIAZ\nPAGINA 2\nJUAN PEREZ" if len(tandas) == 0 else "PAGINA 3\nLUIS GOMEZ",
+            tamano=2, lectores=1,
+        )
+        leidas = mosaico.leer_franjas(source, [1, 2, 3], lambda _p: Band(), tandas.append)
+        assert leidas == {1: "ANA DIAZ", 2: "JUAN PEREZ", 3: "LUIS GOMEZ"}
+        assert tandas == [{1: "ANA DIAZ", 2: "JUAN PEREZ"}, {3: "LUIS GOMEZ"}]
+
+
+#: Lo que leyó la IA de certificados reales de «22. CERTIFICADOS DE TIEMPO SERVICIOS» (2026-11-06).
+CERTIFICADO_1993 = (
+    "Sección de Archivos y Correspondencia... CERTIFICADO No.001 - UNIVERSIDAD DE CARTAGENA SECRETARIA GENERAL "
+    "EL SUSCRITO SECRETARIO GENERAL DE LA UNIVERSIDAD DE CARTAGENA, en atención a la solicitud de formulada por "
+    "61,(1a) Señor TULIO CASTELLAR MEZA. oficio de fecha Enero 18 ... de 1.9 93.- # H A C E C O N S T A R: Que "
+    "verificados los Libros y Carpetas en la Sección de Archivos y Correspondencia de la UNIVERSIDAD DE CARTAGENA: "
+    "61 (1a) Señor TULIO CASTELLAR MEZA.- C.C.# 9.064.394- Expedida en Cartagena.- prestó(a) Servicios desde el día "
+    "Dos(2) de Enero de Mil novecientos sesenta y tres (1.963) Se ha expedido el Certificado número 001 ... de "
+    "Enero 18 de ... 1.9 93-"
+)
+CERTIFICADO_1986 = (
+    "UNIVERSIDAD DE CARTAGENA. SECRETARIA GENERAL U.DE.C. Seco.Archivos y Corresponl. CERTIFICADO NUMERO 001 "
+    "EL SUSCRITO SECRETARIO GENERAL DE LA UNIVERSIDAD DE CARTAGENA, en atención a la solicitud formulada por "
+    "él(1a) Dr. ANTONIO ORTEGA RODRIGUEZ en oficio de fecha Enero 20 de 1.9 86 # N A C E C O N S T A R: Que "
+    "verificados los Libros en la Sección Archivos y Correspondencia Universidad de Cartagena: él (1a) DR ANTONIO "
+    "ORTEGA RODRIGUEZ prestó servicios desde el día 1º de Marzo de 1960 hasta el 31 de Mayo de 1984, que aparece "
+    "como Profesor Asistente. Que se ha expedido el Certificado No. 001 de Enero 20 de 1.9 86"
+)
+CERTIFICADO_1964 = (
+    "SINDICATURA APARTADO POSTAL 195 UNIVERSIDAD DE CARTAGENA EL SUSCRITO SINDICO HABILITADO DE LA UNIVERSIDAD DE "
+    "CARTAGENA, M A C E C O N S T A R: Que el, Dr. JOSE MARIA PEREZ RUIZ, recibió durante los años que trabajo por "
+    "contrato las siguientes Primas de Navidad así: AÑO DE 1.960 Para constancia firmo el presente certificado, "
+    "según peticion - del interesado en Cartagena a los veinte y cinco (25) días del mes de noviembre de mil "
+    "novecientos sesenta y cuatro (1.964).-"
+)
+
+
+class TestLosCertificados:
+    """«22. CERTIFICADOS DE TIEMPO SERVICIOS»: un certificado es su número, con sus anexos detrás."""
+
+    @pytest.mark.parametrize(
+        ("texto", "ventana", "esperado"),
+        [
+            (CERTIFICADO_1993, (1993, 1993), n.DatosDeLaHoja("TULIO CASTELLAR MEZA", "9064394", 1993, (18, 1, 1993))),
+            (CERTIFICADO_1986, (1986, 1986), n.DatosDeLaHoja("ANTONIO ORTEGA RODRIGUEZ", None, 1986, (20, 1, 1986))),
+            (CERTIFICADO_1964, (1964, 1965), n.DatosDeLaHoja("JOSE MARIA PEREZ RUIZ", None, 1964, (25, 11, 1964))),
+        ],
+    )
+    def test_lo_que_se_lee_de_cada_forma(self, texto, ventana, esperado):
+        assert n.leer_el_certificado(texto, ventana) == esperado
+
+    def test_el_numero_y_la_hoja_que_sigue(self):
+        assert n.encabezado_del_certificado(CERTIFICADO_1986) == n.Encabezado(es=True, numero=1)
+        segunda = "UNIVERSIDAD DE CARTAGENA SECRETARIA GENERAL SECCION ARCHIVO CERTIFICADO Nº 083 (2) PASAN: Se certifica"
+        assert n.encabezado_del_certificado(segunda) == n.Encabezado(es=True, numero=83, sigue=True)
+        viene = "UNIVERSIDAD DE CARTAGENA SECRETARIA GENERAL SECCION ARCHIVO CERTIFICADO N*. 097 HOJA N*. 2 VIENEN:"
+        assert n.encabezado_del_certificado(viene).sigue
+
+    @pytest.mark.parametrize(
+        "texto",
+        [
+            "Cartagena, Diciembre 25 de 1992 Doctor PEDRO MACIA Secretario Por medio de la presente le solicito un certificado",
+            "LOS SUSCRITOS DECANO Y SECRETARIO ACADEMICO DE LA FACULTAD DE MEDICINA CERTIFICAN que el Doctor X",
+            "COPIA DE POSESION DEL Dr. JOSE MARIA ARRAZOLA ... ante el suscrito Secretario General se presentó",
+            "UNIVERSIDAD DE CARTAGENA RECIBO DE CAJA No. 0019031",
+        ],
+    )
+    def test_lo_que_es_anexo(self, texto):
+        assert not n.es_certificado(texto)
+
+    def test_la_fecha_es_la_de_la_firma_y_no_la_del_oficio_ni_los_anios_de_servicio(self):
+        texto = (
+            "SOLICITUD FORMULADA POR EL DR. JAVIER ANAYA LORDUY, en oficio de fecha Diciembre 25 de 1992. HACE "
+            "CONSTAR: Que el Dr. JAVIER ANAYA LORDUY prestó servicios desde el dia 29 de Marzo de 1979 hasta el dia 9 "
+            "de Noviembre de 1992 ... PARA CONSTANCIA SE FIRMA EL PRESENTE EN CARTAGENA A LOS 20 DIAS DEL MES DE "
+            "ENERO DE 1993."
+        )
+        assert n.fecha_del_certificado([texto], (1993, 1993)) == (20, 1, 1993)
+
+    def test_la_firma_partida_entre_dos_hojas(self):
+        """AURA MACHUCA, 1993: «se firma el presente certi-» y en la hoja siguiente «… 1993.»."""
+        hojas = ["Para constancia se firma el presente certi-", "ficado en Cartagena a los 27 días del mes de Enero de 1993."]
+        assert n.fecha_del_certificado(hojas, (1993, 1993)) == (27, 1, 1993)
+
+    def test_dos_lecturas_de_la_firma_gana_la_del_libro(self):
+        """El 013 de 1993: «Enero 26 1.9 93» arriba y «26 días del mes de Enero de 1992» al pie."""
+        texto = (
+            "Se ha expedido el Certificado número 013 de Enero 26 1.9 93 Para constancia se firma el presente "
+            "certificado en Cartagena a los 26 días del mes de Enero de 1992."
+        )
+        assert n.fechas_del_certificado([texto], (1993, 1993)) == [(26, 1, 1993)]
+
+    def test_un_certificado_es_su_numero(self):
+        """El 083 de 1999: su hoja 1, su hoja (2), la carta «Anexo a la presente Certificado No.083», otra copia."""
+        datos = n.DatosDeLaHoja("ROSMERIS DEL CARMEN BELTRAN NAVARRO", "30774278")
+        hojas = [
+            n.Hoja(numero=1, plantilla=n.CERTIFICADO, datos=n.DatosDeLaHoja("PEDRO JULIO MERCADO", "2444312"), certificado=84),
+            n.Hoja(numero=2, plantilla=n.CERTIFICADO, datos=n.DatosDeLaHoja("PEDRO JULIO MERCADO"), certificado=84),
+            n.Hoja(numero=3, plantilla=None),
+            n.Hoja(numero=4, plantilla=n.CERTIFICADO, datos=datos, certificado=83),
+            n.Hoja(numero=5, plantilla=n.CERTIFICADO, certificado=83, sigue=True),
+            n.Hoja(numero=6, plantilla=n.CERTIFICADO, certificado=83),
+            n.Hoja(numero=7, plantilla=n.CERTIFICADO, datos=datos, certificado=83),
+            n.Hoja(numero=8, plantilla=None),
+            n.Hoja(numero=9, plantilla=n.CERTIFICADO, datos=n.DatosDeLaHoja("TULIO CASTELLAR MEZA")),
+            n.Hoja(numero=10, plantilla=n.CERTIFICADO, datos=n.DatosDeLaHoja("OSCAR MARRUGO BAENA")),
+        ]
+        documentos = n.documentos(hojas)
+        assert [d.paginas for d in documentos] == [[1, 2, 3], [4, 5, 6, 7, 8], [9], [10]]
+        assert [d.numero for d in documentos] == [84, 83, None, None]
+        assert n.asunto(documentos[1]) == "CERTIFICADO DE TIEMPO DE SERVICIO - ROSMERIS DEL CARMEN BELTRAN NAVARRO"
+        documentos[1].fechas = [(8, 4, 1999), (12, 4, 1999)]
+        assert n.fechas_extremas(documentos[1])[:2] == ((8, 4, 1999), (12, 4, 1999))
+
+    def test_la_habilidad_se_declara_y_tiene_su_perfil(self):
+        from resolutions.api.indices import habilidad_del_proceso
+
+        assert TipoPedido.parse("certificado-tiempo") is TipoPedido.CERTIFICADO_TIEMPO
+        perfil = perfil_de("Certificados de tiempo de servicio")
+        assert perfil.clave == "certificados" and perfil.datos is DE_UNA_NOMINA
+        informe = SimpleNamespace(report={"tipo": "certificado-tiempo"}, tipo="certificado-tiempo", task="both")
+        assert habilidad_del_proceso(informe) == "Certificados de tiempo de servicio"
+
+
+class TestDeprisa:
+    """El operador, 2026-11-06: «ya lleva más de una hora en un solo PDF» (NOMINAS MARZO 1991, 777 hojas)."""
+
+    def _libro(self, tmp_path, hojas=6):
+        import pymupdf
+
+        ruta = tmp_path / "libro.pdf"
+        with pymupdf.open() as libro:
+            for numero in range(1, hojas + 1):
+                libro.new_page().insert_text((72, 72), f"hoja {numero}")
+            libro.save(ruta)
+        return ruta
+
+    def test_el_libro_entero_se_copia(self, tmp_path):
+        import pymupdf
+
+        from resolutions.api.worker.nominas import escribir_paginas
+
+        fuente = self._libro(tmp_path)
+        with pymupdf.open(fuente) as original:
+            escribir_paginas(original, fuente, [1, 2, 3, 4, 5, 6], tmp_path / "entero.pdf")
+        assert (tmp_path / "entero.pdf").read_bytes() == fuente.read_bytes()
+
+    def test_lo_demas_por_tramos_y_en_su_orden(self, tmp_path):
+        import pymupdf
+
+        from resolutions.api.worker.nominas import escribir_paginas
+
+        fuente = self._libro(tmp_path)
+        with pymupdf.open(fuente) as original:
+            escribir_paginas(original, fuente, [4, 5, 1, 2], tmp_path / "parte.pdf")
+        with pymupdf.open(tmp_path / "parte.pdf") as parte:
+            assert [p.get_text().strip() for p in parte] == ["hoja 4", "hoja 5", "hoja 1", "hoja 2"]
+
+    def test_la_copia_exacta_se_comprueba_sin_huellas(self, tmp_path):
+        """MARZO 1991: sacar la huella de 777 hojas del original y de la copia costaba más que copiar."""
+        import shutil
+
+        from resolutions.application.entrega import comprobar_archivos, copia_exacta
+
+        fuente = self._libro(tmp_path)
+        (tmp_path / "salida").mkdir()
+        shutil.copyfile(fuente, tmp_path / "salida" / "01_NOMINA.pdf")
+        assert copia_exacta(fuente, tmp_path / "salida" / "01_NOMINA.pdf")
+
+        def sin_huellas(_ruta):
+            raise AssertionError("no debía sacar huellas de una copia exacta")
+
+        comprobacion = comprobar_archivos(
+            fuente, {"01_NOMINA.pdf": [1, 2, 3, 4, 5, 6]}, tmp_path / "salida", sin_huellas, paginas_del_original=6
+        )
+        assert comprobacion["comprobada"] and not comprobacion["problemas"]
+        assert "copia exacta" in comprobacion["resumen"]
+
+    def test_lo_que_no_es_copia_se_comprueba_hoja_por_hoja(self, tmp_path):
+        import pymupdf
+
+        from resolutions.adapters.huellas_pdf import huellas_de
+        from resolutions.api.worker.nominas import escribir_paginas
+        from resolutions.application.entrega import comprobar_archivos, copia_exacta
+
+        fuente = self._libro(tmp_path)
+        (tmp_path / "salida").mkdir()
+        with pymupdf.open(fuente) as original:
+            escribir_paginas(original, fuente, [1, 2, 3], tmp_path / "salida" / "01.pdf")
+            escribir_paginas(original, fuente, [4, 5, 6], tmp_path / "salida" / "02.pdf")
+        assert not copia_exacta(fuente, tmp_path / "salida" / "01.pdf")
+        comprobacion = comprobar_archivos(
+            fuente, {"01.pdf": [1, 2, 3], "02.pdf": [4, 5, 6]}, tmp_path / "salida", huellas_de, paginas_del_original=6
+        )
+        assert comprobacion["comprobada"] and not comprobacion["problemas"]
+
+    def test_los_comprobantes_una_de_cada_tres_y_el_corte_donde_cambia_el_mes(self):
+        from resolutions.api.worker.nominas import (
+            muestra_de_comprobantes,
+            paginas_donde_cambia_el_mes,
+        )
+
+        paginas = list(range(1, 11))
+        muestra = muestra_de_comprobantes(paginas)
+        assert muestra == [1, 4, 7, 10]
+        hojas = [n.Hoja(numero=p, plantilla=n.COMPROBANTE) for p in paginas]
+        hojas[0].fechas = ((25, 1, 1991),)
+        hojas[3].fechas = ((25, 1, 1991),)
+        hojas[6].fechas = ((4, 4, 1991),)
+        assert paginas_donde_cambia_el_mes(hojas, muestra, paginas) == [5, 6]
+
+
+class TestLoQueVioLaRevision:
+    """Los defectos que confirmó la revisión independiente del 2026-11-06, para que no vuelvan."""
+
+    def test_el_verbo_viene_y_el_dos_de_una_fecha_no_son_continuacion(self):
+        """El 084 dice «viene laborando» y el 085 «dos (2) de Febrero»: abren, no siguen al 083."""
+        viene = (
+            "CERTIFICADO No. 084 EL SUSCRITO SECRETARIO GENERAL DE LA UNIVERSIDAD DE CARTAGENA HACE CONSTAR: Que el "
+            "señor PEDRO JULIO MERCADO, identificado con la cédula 2.444.312, viene laborando en esta Universidad"
+        )
+        fecha = (
+            "CERTIFICADO No. 085 EL SUSCRITO SECRETARIO GENERAL ... en oficio de fecha dos (2) de Febrero HACE CONSTAR"
+        )
+        assert n.encabezado_del_certificado(viene) == n.Encabezado(es=True, numero=84)
+        assert n.encabezado_del_certificado(fecha) == n.Encabezado(es=True, numero=85)
+
+    def test_otro_numero_abre_aunque_diga_que_sigue(self):
+        """La hoja 1 del 084 no se leyó; su «(2) PASAN» no es del 083."""
+        hojas = [
+            n.Hoja(numero=1, plantilla=n.CERTIFICADO, certificado=83),
+            n.Hoja(numero=2, plantilla=None),
+            n.Hoja(numero=3, plantilla=n.CERTIFICADO, certificado=84, sigue=True),
+        ]
+        assert [d.paginas for d in n.documentos(hojas)] == [[1, 2], [3]]
+
+    @pytest.mark.parametrize(
+        ("texto", "numero"),
+        [
+            ("UNIVERSIDAD DE CARTAGENA SECRETARIA GENERAL CERTIFICADO Nº 97 EL SUSCRITO SECRETARIO GENERAL", 97),
+            ("UNIVERSIDAD DE CARTAGENA SECRETARIA GENERAL CERTIFICADO Nº 213 EL SUSCRITO SECRETARIO GENERAL", 213),
+            ("UNIVERSIDAD DE CARTAGENA SECRETARIA GENERAL CERTIFICADO N2 086 EL SUSCRITO SECRETARIO GENERAL", 86),
+            ("UNIVERSIDAD DE CARTAGENA SECRETARIA GENERAL CERTIFICADO N9, 094 LA SUSCRITA SECRETARIA GENERAL", 94),
+        ],
+    )
+    def test_el_numero_tras_el_signo(self, texto, numero):
+        assert n.encabezado_del_certificado(texto).numero == numero
+
+    def test_una_carta_que_dice_certificado_no_no_es_un_certificado(self):
+        carta = "Cartagena, 3 de marzo de 1999 Doctor CARLOS TORRES BUSTILLO: el certificado no se me ha expedido aún"
+        assert not n.es_certificado(carta)
+
+    def test_pag_1_con_otra_fecha_abre_aunque_difiera_en_una_cifra(self):
+        """Con «Solo OCR»: el listado del 14.06.82 y el del 14.06.83, seguidos."""
+        hojas = [
+            n.Hoja(numero=1, plantilla=n.LISTADO, fecha=(14, 6, 1983), pagina=40),
+            n.Hoja(numero=2, plantilla=n.LISTADO, fecha=(14, 6, 1983), pagina=41),
+            n.Hoja(numero=3, plantilla=n.LISTADO, fecha=(14, 6, 1982), pagina=1),
+            n.Hoja(numero=4, plantilla=n.LISTADO, fecha=(14, 6, 1982), pagina=2),
+        ]
+        assert [d.paginas for d in n.documentos(hojas, tolerante=True)] == [[1, 2], [3, 4]]
+
+    def test_una_fecha_que_no_existe_no_vale(self):
+        assert n.fecha_del_listado("RELACION DE EMPLEADOS POR CODIGO 31.04.84 PAG. 3") is None
+        assert n.fecha_del_listado("RELACION DE EMPLEADOS POR CODIGO 30.04.84 PAG. 3") == (30, 4, 1984)
+

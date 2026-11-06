@@ -69,6 +69,11 @@ class TipoPedido(StrEnum):
     #: Lo pidió el operador el 2026-11-06 para «21. NOMINAS».
     NOMINA = "nomina"
 
+    #: Certificados de tiempo de servicio de la Universidad: un PDF por
+    #: certificado, con sus anexos, y su fila en el FUID FO-GD-008. Lo pidió el
+    #: operador el 2026-11-06 para «22. CERTIFICADOS DE TIEMPO SERVICIOS».
+    CERTIFICADO_TIEMPO = "certificado-tiempo"
+
     @property
     def label(self) -> str:
         return _LABELS[self]
@@ -111,6 +116,7 @@ _LABELS = {
     TipoPedido.RESOLUCION: "Legajo de resoluciones",
     TipoPedido.HISTORIA: "Historias académicas",
     TipoPedido.NOMINA: "Nóminas",
+    TipoPedido.CERTIFICADO_TIEMPO: "Certificados de tiempo de servicio",
 }
 
 _DOCUMENT_TYPES = {

@@ -203,6 +203,32 @@ def comprobar_en_el_disco(
     return comprobar_archivos(origen, esperado, directorio, huellas)
 
 
+#: Cuánto del principio y del final se compara para dar una copia por exacta.
+BYTES_DE_LA_PUNTA = 1 << 20
+
+
+def copia_exacta(origen: Path, copia: Path) -> bool:
+    """Si ``copia`` es el mismo archivo que ``origen``: el mismo tamaño, y el mismo principio y final.
+
+    El cuerpo de un PDF no se puede cambiar sin cambiar su tamaño o su tabla
+    final (el «xref» y el «trailer» van al final): una copia que cuadra en las
+    dos puntas y en el tamaño es la del original.
+    """
+    try:
+        tamano = origen.stat().st_size
+        if not copia.is_file() or copia.stat().st_size != tamano:
+            return False
+        with origen.open("rb") as uno, copia.open("rb") as otro:
+            if uno.read(BYTES_DE_LA_PUNTA) != otro.read(BYTES_DE_LA_PUNTA):
+                return False
+            desde = max(0, tamano - BYTES_DE_LA_PUNTA)
+            uno.seek(desde)
+            otro.seek(desde)
+            return uno.read() == otro.read()
+    except OSError:
+        return False
+
+
 def comprobar_archivos(
     origen: Path,
     esperado: Mapping[str, Sequence[int]],
@@ -236,6 +262,26 @@ def comprobar_archivos(
             )
     if not Path(origen).is_file():
         return {"comprobada": False, "resumen": "Entrega sin comprobar: el origen no es un PDF", "problemas": problemas}
+    # El PDF que es el libro entero, copiado byte a byte: no hace falta sacar la
+    # huella de sus hojas, que es leer y descifrar dos veces todo el libro. En
+    # «NOMINAS MARZO 1991» -- 777 hojas, 1,7 GB -- costaba más que la copia
+    # (2026-11-06). Basta con que sea del mismo tamaño y empiece y acabe igual.
+    todas = list(range(1, paginas_del_original + 1)) if paginas_del_original else None
+    if todas and esperado and all(
+        list(paginas) == todas and copia_exacta(Path(origen), Path(directorio) / nombre)
+        for nombre, paginas in esperado.items()
+    ):
+        return {
+            "comprobada": True,
+            "archivos": len(esperado),
+            "hojas": len(todas) * len(esperado),
+            "problemas": problemas,
+            "resumen": (
+                f"Entrega comprobada: {len(esperado)} PDF, copia exacta del original con sus {len(todas)} hojas"
+                if not problemas
+                else f"Entrega comprobada con {len(problemas)} problema(s): {problemas[0]['texto']}"
+            ),
+        }
     try:
         del_origen = huellas(Path(origen))
     except Exception as error:  # noqa: BLE001 - sin el original no hay con qué casar
