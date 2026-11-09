@@ -14,8 +14,10 @@ Lo que cuesta cada cosa:
   IA lee la primera hoja de cada paquete para confirmarla: una página facturada
   por paquete (Tesseract lee «14.06.82» donde el papel dice 83).
 - **El nombre, la cédula y el año de cada persona**, escritos a mano: sólo la
-  IA, en un mosaico de cabeceras (diez por página facturada). Con «Solo OCR»
-  no se leen y cada hoja sale con sus páginas por nombre.
+  IA, en un mosaico de cabeceras (diez por página facturada). La cédula de la
+  hoja manuscrita que no sale entera se mira otra vez en su esquina, con zoom
+  (cuatro por página facturada). Con «Solo OCR» no se leen y cada hoja sale
+  con sus páginas por nombre.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ import unicodedata
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
+from typing import NamedTuple
 
 from ...application.ports import Band
 from ...application.progress import Stage
@@ -54,9 +57,28 @@ PASO_DE_LOS_COMPROBANTES = 3
 #: más papel (``_mas_alta``). No se ancla en el rótulo «Apellidos» de la capa:
 #: el escáner lo trae desplazado.
 BANDA_DE_LA_TARJETA = Band(0.40, 0.05, 0.78, 0.17)
-#: El renglón del nombre de la hoja manuscrita, y la casilla del año: medido
-#: sobre el libro de anotaciones de 1972 y las anotaciones de pago de 1974.
-BANDA_DE_LA_HOJA = Band(0.10, 0.0, 0.80, 0.17)
+#: El renglón del nombre de la hoja manuscrita, con su «C.C.#», y la casilla
+#: del año: medido sobre el libro de anotaciones de 1972 y las anotaciones de
+#: pago de 1974. Hasta el 80 % del ancho cortaba la cédula de 1972, que va del
+#: 70 % al 98 %: la IA leía «$2.351,71 c», el principio de «c.c.#», y el libro
+#: salió sin una sola cédula (2026-11-06). Hasta el 95 %; más allá entra el
+#: folio de la esquina («21 323») y la IA lo lee por la cédula.
+BANDA_DE_LA_HOJA = Band(0.10, 0.0, 0.95, 0.17)
+#: La segunda mirada a la cédula de la hoja manuscrita, cuando la IA ve el
+#: rótulo «C.C.#» y no un número entero (el operador: «si es necesario hacerle
+#: zoom, adelante»): la mitad de arriba de la hoja, una por imagen. La esquina
+#: sola o el renglón solo, la IA los toma por una foto y no devuelve nada;
+#: con media hoja leyó «26/885693», que la franja dejaba en el borde
+#: (2026-11-06, libro de 1972, hoja 301).
+BANDA_DE_LA_CEDULA_DE_LA_HOJA = Band(0.0, 0.0, 1.0, 0.5)
+#: Una por página facturada, y a qué resolución, en esa mirada.
+CEDULAS_DE_HOJA = (1, 300)
+#: Los renglones de esa media hoja en que se busca el rótulo: el folio, el
+#: nombre y la cédula van arriba; debajo, la cuadrícula.
+RENGLONES_DE_LA_SEGUNDA_MIRADA = 6
+#: Lo que se dice en la fila y no va a la cola de revisión: lo normal, no una falta.
+NOTA_DEL_ANIO = "fechas: el año"
+NOTA_DE_CEDULA_EN_BLANCO = "la hoja deja la C.C. en blanco"
 
 #: Cuántas cabeceras por página facturada y a qué resolución. La tarjeta, diez
 #: a 200 ppp (las diez leídas, 2026-11-06); la hoja a lápiz de 1974 necesita
@@ -385,7 +407,7 @@ def nominas_job(payload: dict) -> dict:
 
         # 5. El nombre, la cédula y el año de cada persona: la cabecera de su
         # tarjeta u hoja con la IA, si se pidió.
-        sin_leer_la_cabecera, copiadas = _leer_las_personas(payload, taller, source, hojas)
+        sin_leer_la_cabecera, copiadas, rotulos = _leer_las_personas(payload, taller, source, hojas)
 
         # 6. Los certificados: de su capa; con la IA, la hoja entera si falta algo.
         for hoja in hojas:
@@ -403,12 +425,16 @@ def nominas_job(payload: dict) -> dict:
         documentos = n.documentos(hojas, tolerante=de_pago is None)
         notas_de_la_fecha = _confirmar_las_fechas(payload, taller, source, de_pago, hojas, documentos)
         documentos, notas_de_la_fecha = _juntar_los_paquetes_iguales(documentos, notas_de_la_fecha)
+        _las_tarjetas_sin_cedula(payload, taller, source, documentos)
 
         anio_del_libro = n.anio_del_libro(nombre, [h.anio for h in hojas if h.plantilla == n.INDICE and h.anio])
         tipo_de_hoja = n.tipo_de_la_hoja(nombre)
         ventana = n.ventana_del_libro(nombre)
-        # El patrón del libro: si sus hojas manuscritas traen cédula -- las de
-        # 1974 sí, las de 1972 no --, la que no la trae es para mirar.
+        # El patrón del libro: si la mitad de sus hojas manuscritas traen
+        # cédula, la que no la trae es para mirar. Y, hoja por hoja, la que trae
+        # el rótulo «C.C.#» la pide, salvo que lo deje en blanco (ver la fila).
+        # Las de 1972 sí la traen: se dio el libro por uno sin cédula porque la
+        # franja la cortaba (2026-11-06).
         personas = [d for d in documentos if d.clase == n.PERSONA]
         con_cedula = sum(1 for d in personas if d.cedula)
         piden_cedula = {n.TARJETA, n.CERTIFICADO} | ({n.HOJA} if personas and con_cedula * 2 >= len(personas) else set())
@@ -451,7 +477,10 @@ def nominas_job(payload: dict) -> dict:
                     esperado[archivo] = list(documento.paginas)
                     salidas.append((carpeta_de_salida / archivo).relative_to(taller.destination).as_posix())
                 inicial, final, de_donde = n.fechas_extremas(documento, anio_del_libro=anio_del_libro, ventana=ventana)
-                notas = _lo_que_falta(documento, inicial, piden_cedula, sin_leer_la_cabecera, con_ia=de_pago is not None)
+                en_blanco, pide_cedula = _la_cedula_que_pide(documento, piden_cedula, rotulos)
+                notas = _lo_que_falta(documento, inicial, pide_cedula, sin_leer_la_cabecera, con_ia=de_pago is not None)
+                if en_blanco:
+                    notas.append(NOTA_DE_CEDULA_EN_BLANCO)
                 if de_donde:
                     notas.append(f"fechas: {de_donde}")
                 notas.extend(notas_de_la_fecha.get(id(documento), []))
@@ -474,7 +503,7 @@ def nominas_job(payload: dict) -> dict:
                         "asunto": n.asunto(documento, tipo_de_hoja=tipo_de_hoja),
                         "nombre": documento.nombre,
                         "cedula": documento.cedula,
-                        "pide_cedula": documento.plantilla in piden_cedula,
+                        "pide_cedula": pide_cedula,
                         "fecha_inicial": _fecha(inicial),
                         "fecha_final": _fecha(final),
                         "folios": len(documento.paginas),
@@ -490,11 +519,12 @@ def nominas_job(payload: dict) -> dict:
                 )
                 # A la cola de revisión, lo que hay que mirar; no el año que se
                 # tomó del libro o del hablador porque la hoja no lo dice, que
-                # es lo normal en la tarjeta (la casilla del año va vacía).
+                # es lo normal en la tarjeta (la casilla del año va vacía), ni
+                # la «C.C.» que la hoja deja en blanco, que se miró con zoom.
                 cola.extend(
                     {"page": documento.paginas[0], "reason": f"{archivo}: {nota}"}
                     for nota in notas
-                    if not nota.startswith("fechas: el año")
+                    if not nota.startswith(NOTA_DEL_ANIO) and nota != NOTA_DE_CEDULA_EN_BLANCO
                 )
                 _anunciar(payload, Stage.ASSEMBLING, detail=f"escribiendo {len(documentos)} PDF", done=orden, total=len(documentos))
         if pidio_dividir:
@@ -614,19 +644,35 @@ def _con_la_ia(payload, taller, source, de_pago, paginas, banda, *, dpi, hilos, 
     )
 
 
-def _leer_las_personas(payload, taller, source, hojas) -> tuple[set[int], dict[int, str]]:
+class LoLeidoDeLasPersonas(NamedTuple):
+    """Lo que dejó la lectura de las cabeceras, para las filas."""
+
+    #: Las páginas cuya cabecera no se pudo leer.
+    sin_leer: set[int]
+    #: Por página, la cédula que la IA copió de la hoja de abajo y no se tomó.
+    copiadas: dict[int, str]
+    #: Por página de hoja manuscrita con el rótulo «C.C.#», cómo está su cédula:
+    #: ``CEDULA_LEIDA``, ``CEDULA_EN_BLANCO`` o ``CEDULA_INCOMPLETA`` de ``nomina``.
+    rotulos: dict[int, str]
+
+
+def _leer_las_personas(payload, taller, source, hojas) -> LoLeidoDeLasPersonas:
     """El nombre, la cédula y el año de cada tarjeta y hoja manuscrita, de su cabecera leída por la IA.
 
     Las que no vuelven con nombre se miran otra vez, una por imagen y con más
-    zoom (el agente se asegura). La hoja en la que la IA no ve nada escrito
+    zoom (el agente se asegura). La hoja manuscrita con el rótulo «C.C.#» y
+    sin un número entero detrás, también: su esquina, con zoom
+    (``_las_cedulas_con_zoom``). La hoja en la que la IA no ve nada escrito
     arriba es el reverso o la continuación de la anterior: se marca vacía y va
-    con ella. Devuelve las páginas que no se pudieron leer y, por página, la
-    cédula que la IA copió de la hoja de abajo y no se tomó.
+    con ella. Devuelve las páginas que no se pudieron leer, por página la
+    cédula que la IA copió de la hoja de abajo y no se tomó, y cómo está la
+    cédula de cada hoja manuscrita con rótulo.
     """
     from ...domain import nomina as n
 
     sin_leer: set[int] = set()
     copiadas: dict[int, str] = {}
+    rotulos: dict[int, str] = {}
     for plantilla, (tamano, dpi), base in (
         (n.TARJETA, CABECERAS_DE_TARJETA, BANDA_DE_LA_TARJETA),
         (n.HOJA, CABECERAS_DE_HOJA, BANDA_DE_LA_HOJA),
@@ -685,6 +731,8 @@ def _leer_las_personas(payload, taller, source, hojas) -> tuple[set[int], dict[i
             texto = leidas[hoja.numero]
             hoja.datos = n.leer_los_datos(texto, plantilla)
             hoja.vacia = _nada_escrito(texto, hoja.datos)
+        if plantilla == n.HOJA:
+            rotulos.update(_las_cedulas_con_zoom(payload, taller, source, suyas, leidas))
         # La cédula que la IA copió de la tarjeta de abajo en la que continúa
         # (2026-11-06): fuera, y dicho.
         limpias, quitadas = n.sin_cedulas_copiadas([h.datos for h in suyas])
@@ -692,7 +740,120 @@ def _leer_las_personas(payload, taller, source, hojas) -> tuple[set[int], dict[i
             hoja = suyas[posicion]
             hoja.datos = limpias[posicion]
             copiadas[hoja.numero] = cedula
-    return sin_leer, copiadas
+    return LoLeidoDeLasPersonas(sin_leer, copiadas, rotulos)
+
+
+def _las_cedulas_con_zoom(payload, taller, source, suyas, leidas: dict[int, str]) -> dict[int, str]:
+    """Cómo está la cédula de cada hoja manuscrita con rótulo, mirando con zoom las dudosas.
+
+    La hoja de 1972 lleva «cc#» en el renglón del nombre y, detrás, la cédula
+    hasta el borde de la hoja, o nada. Si la IA ve el rótulo y no un número
+    entero, se mira otra vez la mitad de arriba de la hoja
+    (``BANDA_DE_LA_CEDULA_DE_LA_HOJA``), una por imagen. Lo que vuelve con
+    número se toma; con el rótulo solo, la hoja lo deja en blanco; con cifras
+    a medias, a revisión. Lo que no vuelve, o vuelve sin el rótulo, se queda
+    como lo dijo la primera mirada.
+    """
+    from dataclasses import replace
+
+    from ...domain import nomina as n
+
+    rotulos: dict[int, str] = {}
+    for hoja in suyas:
+        if hoja.numero in leidas:
+            _, estado = n.cedula_de_la_hoja(leidas[hoja.numero])
+            if estado:
+                rotulos[hoja.numero] = estado
+    dudosas = [h for h in suyas if rotulos.get(h.numero) in (n.CEDULA_EN_BLANCO, n.CEDULA_INCOMPLETA)]
+    tamano, dpi = CEDULAS_DE_HOJA
+    zoom = taller.mosaico_de_cabeceras(tamano=tamano, dpi=dpi) if dudosas else None
+    if zoom is None:
+        return rotulos
+    detalle = f"mirando con zoom {len(dudosas)} cédulas"
+    _anunciar(payload, Stage.IDENTIFYING, detail=detalle, done=0, total=len(dudosas))
+    vistas: set[int] = set()
+
+    def al_leer(repartido: dict[int, str]) -> None:
+        vistas.update(repartido)
+        _anunciar(payload, Stage.IDENTIFYING, detail=detalle, done=len(vistas), total=len(dudosas))
+
+    esquinas = zoom.leer_franjas(
+        source, [h.numero for h in dudosas], lambda _pagina: BANDA_DE_LA_CEDULA_DE_LA_HOJA, al_leer
+    )
+    for hoja in dudosas:
+        cedula, estado = n.cedula_de_la_hoja(esquinas.get(hoja.numero, ""), renglones=RENGLONES_DE_LA_SEGUNDA_MIRADA)
+        if cedula:
+            hoja.datos = replace(hoja.datos, cedula=cedula)
+            rotulos[hoja.numero] = n.CEDULA_LEIDA
+        elif estado:
+            rotulos[hoja.numero] = estado
+    return rotulos
+
+
+#: De cada persona con tarjeta y sin cédula, cuántas de sus tarjetas se miran otra vez.
+TARJETAS_POR_PERSONA = 2
+
+
+def _las_tarjetas_sin_cedula(payload, taller, source, documentos) -> int:
+    """La cédula de la persona cuya tarjeta volvió sin ella, mirada otra vez una por imagen.
+
+    La IA lee diez tarjetas por página facturada y a veces la tanda entera
+    vuelve sin cédula o con la cédula partida por la raya de la cuadrícula:
+    en 1977 tomo 2, las hojas 41 a 50, diez personas y ninguna cédula
+    (2026-11-06). Cada persona con tarjeta que no la tiene se mira otra vez:
+    sus primeras tarjetas, cada una en su imagen, con más papel y más zoom.
+    Lo leído se suma a sus lecturas; con «Solo OCR» no hay a quién pedírselo.
+    Devuelve cuántas personas salieron con cédula.
+    """
+    from ...domain import nomina as n
+
+    sin = [d for d in documentos if d.clase == n.PERSONA and d.plantilla == n.TARJETA and not d.cedula]
+    tamano, dpi = CABECERAS_DE_TARJETA
+    mosaico = taller.mosaico_de_cabeceras(tamano=tamano, dpi=dpi) if sin else None
+    if mosaico is None:
+        return 0
+    paginas = [p for d in sin for p in d.paginas[:TARJETAS_POR_PERSONA]]
+    detalle = f"mirando otra vez la cédula de {len(sin)} personas"
+    _anunciar(payload, Stage.IDENTIFYING, detail=detalle, done=0, total=len(paginas))
+    vistas: set[int] = set()
+
+    def al_leer(repartido: dict[int, str]) -> None:
+        vistas.update(repartido)
+        _anunciar(payload, Stage.IDENTIFYING, detail=detalle, done=len(vistas), total=len(paginas))
+
+    def banda(_pagina: int) -> Band:
+        return BANDA_DE_LA_TARJETA
+
+    leidas = mosaico.otra_mirada().leer_franjas(source, paginas, _mas_alta(banda), al_leer)
+    rescatadas = 0
+    for documento in sin:
+        for pagina in documento.paginas[:TARJETAS_POR_PERSONA]:
+            if cedula := n.leer_la_tarjeta(leidas.get(pagina, "")).cedula:
+                documento.lecturas.append(n.DatosDeLaHoja(cedula=cedula))
+        rescatadas += bool(documento.cedula)
+    logger.info("la segunda mirada a la tarjeta dio la cédula de %d de %d personas", rescatadas, len(sin))
+    return rescatadas
+
+
+def _la_cedula_que_pide(documento, piden_cedula: set[str], rotulos: dict[int, str]) -> tuple[bool, bool]:
+    """Si la hoja deja la «C.C.» en blanco, y si la fila pide la cédula.
+
+    La pide la tarjeta y el certificado; la hoja manuscrita, si la trae la
+    mitad del libro o si alguna de sus hojas lleva el rótulo «C.C.#». La que
+    lleva el rótulo y nada detrás -- mirado con zoom -- la deja en blanco: la
+    celda va vacía con su porqué, no a revisión.
+    """
+    from ...domain import nomina as n
+
+    estados = [rotulos[p] for p in documento.paginas if p in rotulos]
+    en_blanco = (
+        documento.clase == n.PERSONA
+        and not documento.cedula
+        and bool(estados)
+        and all(estado == n.CEDULA_EN_BLANCO for estado in estados)
+    )
+    pide = (documento.plantilla in piden_cedula or bool(estados)) and not en_blanco
+    return en_blanco, pide
 
 
 #: Los rótulos impresos de la cabecera de la tarjeta, que no son nada escrito.
@@ -806,7 +967,7 @@ def _juntar_los_paquetes_iguales(documentos, notas):
     return juntos, notas
 
 
-def _lo_que_falta(documento, inicial, piden_cedula, sin_leer, *, con_ia: bool) -> list[str]:
+def _lo_que_falta(documento, inicial, pide_cedula: bool, sin_leer, *, con_ia: bool) -> list[str]:
     """Lo que no se leyó del documento, dicho para la fila y la cola de revisión."""
     from ...domain import nomina as n
 
@@ -816,7 +977,7 @@ def _lo_que_falta(documento, inicial, piden_cedula, sin_leer, *, con_ia: bool) -
             faltan.append(
                 "no se leyó el nombre" + ("" if con_ia else " (con «Solo OCR» no se lee lo escrito a mano)")
             )
-        if documento.plantilla in piden_cedula and not documento.cedula:
+        if pide_cedula and not documento.cedula:
             faltan.append("no se leyó la cédula")
         if any(p in sin_leer for p in documento.paginas) and con_ia:
             faltan.append("la IA no pudo leer la cabecera de alguna de sus hojas")

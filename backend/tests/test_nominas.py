@@ -762,3 +762,212 @@ class TestLoQueVioLaRevision:
         assert n.fecha_del_listado("RELACION DE EMPLEADOS POR CODIGO 31.04.84 PAG. 3") is None
         assert n.fecha_del_listado("RELACION DE EMPLEADOS POR CODIGO 30.04.84 PAG. 3") == (30, 4, 1984)
 
+
+class TestLaCedulaDeLaHoja:
+    """El operador, 2026-11-06, con dos hojas de 1972 marcadas: «no extrajiste la cédula, mira dónde estaba».
+
+    El libro de anotaciones de 1972 salió con 0 cédulas de 339 personas: la
+    franja terminaba en el 80 % del ancho y la cédula va del 70 % al 98 %, tras
+    un «cc#» que la IA lee de mil maneras. Las lecturas son las de la IA sobre
+    el libro (UPD3860692) con la franja nueva.
+    """
+
+    @pytest.mark.parametrize(
+        ("texto", "esperado"),
+        [
+            ("Guillermo Peña E. $4.223.62 c.c. f 889196  |   |   |   |", ("889196", n.CEDULA_LEIDA)),
+            ("Julio Castellar M. $2.351,71 c.e. $9064394  |   |   |", ("9064394", n.CEDULA_LEIDA)),
+            # Benito Mercado S., la primera hoja que marcó el operador.
+            ("Benito Mercado S. $2054.72 ccf 3790692", ("3790692", n.CEDULA_LEIDA)),
+            ("Benito Mercado S. $2054.72 c.c.f. 3790692\n1972 Cargo", ("3790692", n.CEDULA_LEIDA)),
+            ("Myrian Alcazar |   | $1.430.23 |   | eef 33114299 |   | ✓  |", ("33114299", n.CEDULA_LEIDA)),
+            # Las anotaciones de pago de 1974: «CO/», y el «c°c°/» que la IA lee «C of», «CUF», «CCA», «ACF».
+            ("SEBASTIAN, MEDIANO MEZA CO/9645668", ("9645668", n.CEDULA_LEIDA)),
+            ("* / AINE FANDIDO FRANKY C of 2933939\n\n|  no | año | DETALLES |", ("2933939", n.CEDULA_LEIDA)),
+            ("CECILIA HAYDAR HOWAR CUF/9054300", ("9054300", n.CEDULA_LEIDA)),
+            ("PEDRO PEREZ ROSALES CCA 9054301", ("9054301", n.CEDULA_LEIDA)),
+            ("PEDRO PEREZ ROSALES ACF/9054302", ("9054302", n.CEDULA_LEIDA)),
+            # El folio solo de la esquina, antes del renglón del nombre.
+            ("64\n\nRAMIRO TENORIO TUIRAN C of 3192139\n\n|   | DETALLES |", ("3192139", n.CEDULA_LEIDA)),
+            # «CEA» es un apellido: el rótulo es el que lleva la cédula detrás.
+            ("75\n\nEL DUARDO F. CEA BERMEJO C of 2001593", ("2001593", n.CEDULA_LEIDA)),
+            # El «cc#» vacío: la mitad de las hojas de 1972.
+            ("Julian Puerta B $2228.02 c.e.", (None, n.CEDULA_EN_BLANCO)),
+            ("*Gonzalo Urbina |   | $ 5.150= |   | eef |   | ✓  |", (None, n.CEDULA_EN_BLANCO)),
+            # «9.062.100» leída a medias, o leída como un importe.
+            ("Enrique Cervantes $1,264.04 c.e. 9.062", (None, n.CEDULA_INCOMPLETA)),
+            ("Enrique Cervantes $1,264.04 c.c.f. 9,062.00", (None, n.CEDULA_INCOMPLETA)),
+            # Sin rótulo: la hoja de «Dic», y nombres que empiezan como él.
+            ("Guillermo Peña E.  |   |   |   |", (None, None)),
+            ("Santos Cortezero $2.803=", (None, None)),
+            ("Enrique Cervantes $1,264.04", (None, None)),
+            # La lectura con la franja de antes: «c», el principio de «cc#», cortado.
+            (HOJA_1972, (None, None)),
+        ],
+    )
+    def test_la_cedula_tras_su_rotulo(self, texto, esperado):
+        assert n.cedula_de_la_hoja(texto) == esperado
+
+    def test_en_la_segunda_mirada_se_busca_mas_abajo(self):
+        """La media hoja de la 301: el folio y el nombre van antes que «26/885693»."""
+        texto = "Carlos A Castillo f.\n\n10 187\n\n26/885693"
+        assert n.cedula_de_la_hoja(texto) == (None, None)
+        assert n.cedula_de_la_hoja(texto, renglones=6) == ("885693", n.CEDULA_LEIDA)
+
+    def test_el_nombre_y_la_cedula(self):
+        assert n.leer_la_hoja("Benito Mercado S. $2054.72 ccf 3790692") == n.DatosDeLaHoja(
+            "BENITO MERCADO S", "3790692", None
+        )
+        # Sin sueldo, el rótulo corta el nombre; «CORREA» no es un rótulo.
+        assert n.leer_la_hoja("CARLOS CORREA cc# 9123456") == n.DatosDeLaHoja("CARLOS CORREA", "9123456", None)
+
+    @pytest.mark.parametrize(
+        ("texto", "nombre"),
+        [
+            # La entrega de 1974 llevaba el rótulo pegado al nombre del PDF y del FUID.
+            ("CECILIA HAYDAR HOWAR CCF", "CECILIA HAYDAR HOWAR"),
+            ("CECILIA HAYDAR HOWAR CUF/9054300", "CECILIA HAYDAR HOWAR"),
+            # Con la franja ancha, el folio de la esquina va a veces antes, solo: el nombre no se pierde.
+            ("64\n\nRAMIRO TENORIO TUIRAN C of 3192139", "RAMIRO TENORIO TUIRAN"),
+            ("75\n\nEL DUARDO F. CEA BERMEJO C of 2001593", "EL DUARDO F CEA BERMEJO"),
+        ],
+    )
+    def test_el_rotulo_y_el_folio_no_son_del_nombre(self, texto, nombre):
+        assert n.leer_la_hoja(texto).nombre == nombre
+
+    @pytest.mark.parametrize(
+        ("texto", "cedula"),
+        [
+            # La raya de la cuadrícula parte el número en dos celdas: salía 9077.
+            ("| C. C. O NIT No. 9077 | 722 | Lugar |", "9077722"),
+            # El «1» trazado como una raya larga, que la IA transcribe «/»: salía 2275.
+            ("| C. C. O NIT No. 22.75/525 | Lugar de Expedición |", "22751525"),
+            ("| C. C. O NIT No. 33/22//3 | Lugar |", "33122113"),
+            # «N°», «N.I.T.» y el guion.
+            ("| C. C. O NIT N° 9064111 | Lugar |", "9064111"),
+            ("| C. C. O N.I.T. No. 9064111 |", "9064111"),
+            ("| C. C. O NIT No. 26-705.474 |", "26705474"),
+            # Una cédula entera no se junta con la celda de al lado; la casilla vacía, vacía.
+            ("| C. C. O NIT No. 9064111 | 1975 |", "9064111"),
+            ("| C. C. O NIT No. | Lugar de Expedición |", None),
+        ],
+    )
+    def test_la_cedula_de_la_tarjeta(self, texto, cedula):
+        assert n.leer_la_tarjeta(texto).cedula == cedula
+
+    def test_la_letra_que_la_ia_repite_cuenta_una_vez(self):
+        """1977 tomo 2, hoja 8: «GONZALEZ D H S S S S … JACQUELINE»."""
+        texto = "| Apellidos GONZALEZ D H " + "S " * 40 + "| Nombre JACQUELINE |"
+        assert n.leer_la_tarjeta(texto).nombre == "GONZALEZ D H S JACQUELINE"
+
+    def test_la_tarjeta_sin_cedula_se_mira_otra_vez(self):
+        """1977 tomo 2, hojas 41 a 50: la tanda volvió sin una cédula."""
+        from resolutions.api.worker.nominas import (
+            BANDA_DE_LA_TARJETA,
+            _las_tarjetas_sin_cedula,
+        )
+
+        con = n.Documento(clase=n.PERSONA, plantilla=n.TARJETA, paginas=[3, 4])
+        con.lecturas.append(n.DatosDeLaHoja("PEREZ JUAN", "9064111"))
+        sin = n.Documento(clase=n.PERSONA, plantilla=n.TARJETA, paginas=[5, 6, 7])
+        sin.lecturas.append(n.DatosDeLaHoja("GOMEZ ANA", None))
+        hoja = n.Documento(clase=n.PERSONA, plantilla=n.HOJA, paginas=[8])
+        pedidos = []
+
+        class Mosaico:
+            def otra_mirada(self):
+                return self
+
+            def leer_franjas(self, _source, paginas, banda, al_leer=None):
+                pedidos.append((list(paginas), banda(paginas[0])))
+                return {5: "| Apellidos GOMEZ | Nombre ANA |\n| C. C. O NIT No. 33.114.299 | Lugar |", 6: ""}
+
+        rescatadas = _las_tarjetas_sin_cedula(
+            {}, SimpleNamespace(mosaico_de_cabeceras=lambda **_o: Mosaico()), None, [con, sin, hoja]
+        )
+        # Sólo la persona de tarjeta sin cédula, sus dos primeras tarjetas, con más papel.
+        assert pedidos[0][0] == [5, 6]
+        assert pedidos[0][1].y0 < BANDA_DE_LA_TARJETA.y0 and pedidos[0][1].y1 > BANDA_DE_LA_TARJETA.y1
+        assert rescatadas == 1 and sin.cedula == "33114299" and con.cedula == "9064111"
+
+    def test_la_franja_llega_hasta_la_cedula(self):
+        from resolutions.api.worker.nominas import BANDA_DE_LA_HOJA
+
+        # La cédula de 1972 va del 70 % al 98 % del ancho; el folio, más allá del 95 %.
+        assert BANDA_DE_LA_HOJA.x1 == pytest.approx(0.95)
+
+    def test_la_segunda_mirada_toma_lo_que_lee_y_deja_lo_demas(self):
+        from resolutions.api.worker.nominas import (
+            BANDA_DE_LA_CEDULA_DE_LA_HOJA,
+            _las_cedulas_con_zoom,
+        )
+
+        hojas = [n.Hoja(numero=i, plantilla=n.HOJA) for i in range(1, 6)]
+        leidas = {
+            1: "Guillermo Peña E. $4.223.62 c.c. f 889196",
+            2: "Carlos A Castillo |   | $ |   | eef |   | ✓  |",
+            3: "Enrique Cervantes $1,264.04 c.e. 9.062",
+            4: "Guillermo Peña E.",
+            5: "Julian Puerta B $2228.02 c.e.",
+        }
+        for hoja in hojas:
+            hoja.datos = n.leer_la_hoja(leidas[hoja.numero])
+        pedidos = []
+
+        class Zoom:
+            def leer_franjas(self, _source, paginas, banda, al_leer=None):
+                pedidos.append((list(paginas), banda(paginas[0])))
+                # La 2 se lee; la 3 vuelve a medias; la 5, la IA la toma por foto.
+                return {2: "Carlos A Castillo f.\n\n10 187\n\n26/885693", 3: "3\n\n63\n\ne.e/ 9.062.00", 5: ""}
+
+        def mosaico(*, tamano, dpi):
+            pedidos.append((tamano, dpi))
+            return Zoom()
+
+        avisos = []
+        rotulos = _las_cedulas_con_zoom(
+            {"progress_queue": SimpleNamespace(put_nowait=avisos.append), "job_id": "j"},
+            SimpleNamespace(mosaico_de_cabeceras=mosaico), None, hojas, leidas,
+        )
+        # Sólo las dudosas, con la media hoja, una por imagen.
+        assert pedidos == [(1, 300), ([2, 3, 5], BANDA_DE_LA_CEDULA_DE_LA_HOJA)]
+        assert rotulos == {1: n.CEDULA_LEIDA, 2: n.CEDULA_LEIDA, 3: n.CEDULA_INCOMPLETA, 5: n.CEDULA_EN_BLANCO}
+        assert [h.datos.cedula for h in hojas] == ["889196", "885693", None, None, None]
+        assert any("zoom" in str(a.get("detail")) for a in avisos)
+
+    def test_sin_dudosas_no_se_paga_otra_mirada(self):
+        from resolutions.api.worker.nominas import _las_cedulas_con_zoom
+
+        hoja = n.Hoja(numero=1, plantilla=n.HOJA, datos=n.leer_la_hoja("Benito Mercado S. $2054.72 ccf 3790692"))
+
+        def mosaico(**_opciones):
+            raise AssertionError("no hacía falta mirar otra vez")
+
+        rotulos = _las_cedulas_con_zoom(
+            {}, SimpleNamespace(mosaico_de_cabeceras=mosaico), None, [hoja], {1: "Benito Mercado S. $2054.72 ccf 3790692"}
+        )
+        assert rotulos == {1: n.CEDULA_LEIDA}
+
+    @pytest.mark.parametrize(
+        ("plantilla", "cedula", "rotulos", "pide_el_libro", "esperado"),
+        [
+            # El «cc#» vacío, mirado dos veces: la celda va vacía con su porqué, no a revisión.
+            (n.HOJA, None, {1: n.CEDULA_EN_BLANCO}, True, (True, False)),
+            # Cifras a medias: a revisión.
+            (n.HOJA, None, {1: n.CEDULA_INCOMPLETA}, False, (False, True)),
+            # La hoja de 1972 y su «Dic»: la cédula leída.
+            (n.HOJA, "3790692", {1: n.CEDULA_LEIDA}, False, (False, True)),
+            # Sin rótulo: lo que diga el libro.
+            (n.HOJA, None, {}, False, (False, False)),
+            (n.HOJA, None, {}, True, (False, True)),
+            (n.TARJETA, None, {}, True, (False, True)),
+        ],
+    )
+    def test_cuando_se_pide_la_cedula(self, plantilla, cedula, rotulos, pide_el_libro, esperado):
+        from resolutions.api.worker.nominas import _la_cedula_que_pide
+
+        documento = n.Documento(clase=n.PERSONA, plantilla=plantilla, paginas=[1, 2])
+        documento.lecturas.append(n.DatosDeLaHoja("JULIO CASTELLAR M", cedula, None))
+        piden = {n.TARJETA, n.CERTIFICADO} | ({n.HOJA} if pide_el_libro else set())
+        assert _la_cedula_que_pide(documento, piden, rotulos) == esperado
+

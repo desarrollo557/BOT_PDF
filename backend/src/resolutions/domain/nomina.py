@@ -237,6 +237,10 @@ def _limpio(nombre: str) -> str | None:
     for palabra in re.sub(r"[^A-Z\s]", " ", plano(nombre).replace(".", " ")).split():
         if palabra in _NO_SON_DEL_NOMBRE:
             continue
+        # La IA a veces repite una letra suelta sin fin: «GONZALEZ D H S S S S … JACQUELINE»
+        # (1977 tomo 2, 2026-11-06). Una inicial repetida seguida cuenta una vez.
+        if len(palabra) == 1 and palabras and palabras[-1] == palabra:
+            continue
         palabras.append(palabra)
     # Una inicial suelta al final vale («GUILLERMO PENA E»); lo que quede debe
     # traer al menos dos palabras de verdad.
@@ -253,9 +257,110 @@ def _cedula(trozo: str) -> str | None:
 
 _APELLIDOS = re.compile(r"APELLIDOS?\W*(.*?)\s*(?:\||NOMBRES?\b|$)")
 _NOMBRE = re.compile(r"NOMBRES?\b\W*(.*?)\s*(?:\||$)")
-_CEDULA_DE_LA_TARJETA = re.compile(r"N\s?I\s?T\s*(?:N\s?[O0º°]\.?)?\W*(\d[\d.,\s]{3,14})")
+#: La cédula tras «C. C. O NIT No.» de la tarjeta. También «N.I.T.» y «N°», que ``plano`` deja en
+#: «N»; y, dentro del número, el «/» y el «|» de lo que la IA hace con él (``_cifras_de_la_tarjeta``).
+_CEDULA_DE_LA_TARJETA = re.compile(r"N\W?I\W?T\W*(?:N\W?[O0º°]?\W*)?(\d(?:[\d.,\s-]|[/|](?=[\s/]*\d)){3,18})")
 _ANIO_DE_LA_TARJETA = re.compile(r"ACUMULA\w*\W*(1\W?9\d\d|\d{2})\b")
-_CEDULA_DE_LA_HOJA = re.compile(r"(?:\bC\W?C\b|\bCO\b|\bC0\b|\b6O\b|\b60\b|\bGO\b)\W{0,3}(\d[\d.]{3,12})")
+
+
+def _cifras_de_la_tarjeta(crudo: str) -> str | None:
+    """Las cifras de la cédula de la tarjeta, con lo que la IA hace de ellas (2026-11-06).
+
+    - El «1» trazado como una raya larga lo transcribe «/»: «22.75/525» es
+      22751525 -- salía 2275 en cuatro tarjetas --, «33/22//3» es 33122113.
+    - La raya de la cuadrícula parte el número en dos celdas: «9077 | 722» es
+      9077722 -- salía 9077 en tandas enteras --. Se junta sólo si lo de antes
+      no es ya una cédula entera.
+    """
+    partes = [re.sub(r"\D", "", parte.replace("/", "1")) for parte in crudo.split("|")]
+    cifras = partes[0]
+    if len(cifras) < CIFRAS_DE_LA_CEDULA_DE_LA_HOJA[0] and len(partes) > 1:
+        cifras += partes[1]
+    return _cedula(cifras)
+
+
+#: El rótulo «C.C.#» de la hoja manuscrita, como lo lee la IA. En el libro de anotaciones de
+#: 1972 (2026-11-06): «c.c. f 889196», «c.e. $9064394», «ccf 3790692», «c.c.f. 3790692», «eef
+#: 33114299», «26/885693»; en las anotaciones de pago de 1974, «CO/9645668», «60/9645668», «C of
+#: 2933939», «CUF», «CA», «CCA», «CUA», «CCY», «ACF» y el «CCI» suelto. Dos o tres letras -- C, E
+#: o A, y C, E, O, U o A -- con o sin punto, o «60», «GO», «26/»; el «#» que sale «f», «$» o «/»;
+#: y nunca el principio de una palabra: «CORTEZERO» y «CERVANTES» no son un rótulo. Como dos
+#: letras sueltas pueden ser de un apellido («CEA»), el rótulo vale cuando lleva detrás la
+#: cédula o nada (``_tras_el_rotulo``).
+_ROTULO_DE_LA_CEDULA = re.compile(
+    r"(?<![A-Z0-9])(?:[CEA]\W?[CEOUA0](?:\W?[CEOAUY])?|6\W?[O0]|G\W?O|26(?=\s*/))(?:\W{0,2}[F#$/*]|[ILT])?(?![A-Z])"
+)
+#: Lo escrito tras el rótulo: cifras con sus puntos.
+_NUMERO_TRAS_EL_ROTULO = re.compile(r"\W{0,3}(\d[\d.,]*)")
+#: Un importe y no una cédula: acaba en dos decimales («9,062.00», que es «9.062.100» mal leída).
+_IMPORTE = re.compile(r"[.,]\d{2}$")
+#: Las cifras de una cédula entera de las hojas manuscritas: «885693», «9.062.100», «33114299».
+#: Menos es una lectura a medias: la franja cortada daba «9.062».
+CIFRAS_DE_LA_CEDULA_DE_LA_HOJA = (6, 11)
+
+#: Cómo está la cédula de la hoja manuscrita tras su rótulo.
+CEDULA_LEIDA = "leida"
+CEDULA_EN_BLANCO = "en blanco"
+CEDULA_INCOMPLETA = "incompleta"
+
+
+def cedula_de_la_hoja(texto: str, *, renglones: int | None = 2) -> tuple[str | None, str | None]:
+    """La cédula tras el rótulo «C.C.#» de la hoja manuscrita, y cómo está el rótulo.
+
+    Devuelve ``(cédula, estado)``. Sin rótulo, ``(None, None)``: la hoja de
+    «Dic» no lo lleva. Con un número entero detrás, ``(cifras, CEDULA_LEIDA)``.
+    Sin nada escrito detrás, ``(None, CEDULA_EN_BLANCO)``: la mitad de las
+    hojas de 1972 dejan el «cc#» vacío. Con cifras que no son una cédula
+    entera -- menos de seis, o un importe --, ``(None, CEDULA_INCOMPLETA)``.
+
+    El rótulo va en el renglón del nombre: se busca en los ``renglones``
+    primeros desde el del nombre -- el folio de la esquina («64», «21 323») puede
+    venir antes, solo -- (la cuadrícula de abajo no lo trae); en la media hoja
+    de la segunda mirada, en más.
+    """
+    lineas = _desde_el_nombre(texto)
+    estado = None
+    for linea in lineas[:renglones] if renglones is not None else lineas:
+        p = plano(linea)
+        for rotulo in _ROTULO_DE_LA_CEDULA.finditer(p):
+            # Lo de detrás del rótulo, en su celda.
+            resto = p[rotulo.end() :].split("|", 1)[0]
+            tras = _tras_el_rotulo(resto)
+            if tras is None:
+                continue
+            crudo, cifras = tras
+            minimo, maximo = CIFRAS_DE_LA_CEDULA_DE_LA_HOJA
+            if minimo <= len(cifras) <= maximo and not _IMPORTE.search(crudo):
+                return cifras, CEDULA_LEIDA
+            if cifras:
+                estado = CEDULA_INCOMPLETA
+            elif estado is None:
+                estado = CEDULA_EN_BLANCO
+    return None, estado
+
+
+def _tras_el_rotulo(resto: str) -> tuple[str, str] | None:
+    """Lo escrito tras un rótulo de la cédula -- ``(crudo, cifras)`` --, o ``None`` si no lo es.
+
+    Un rótulo lleva detrás su número o nada: «C OF 2933939», «CCF», «eef |».
+    Lo que sigue con letras no era un rótulo sino dos letras de un nombre
+    («EL DUARDO F. CEA BERMEJO C of 2001593»).
+    """
+    if numero := _NUMERO_TRAS_EL_ROTULO.match(resto):
+        crudo = numero.group(1).rstrip(".,")
+        return crudo, re.sub(r"\D", "", crudo)
+    if re.search(r"[A-Z]", resto):
+        return None
+    return "", ""
+
+
+def _desde_el_nombre(texto: str) -> list[str]:
+    """Los renglones con algo escrito desde el primero con letras: el folio solo, de antes, no cuenta."""
+    lineas = [linea for linea in texto.splitlines() if re.search(r"[A-Za-z0-9]", linea)]
+    for i, linea in enumerate(lineas):
+        if len(re.findall(r"[A-Za-z]", linea)) >= 3:
+            return lineas[i:]
+    return lineas
 
 
 def leer_la_tarjeta(texto: str) -> DatosDeLaHoja:
@@ -277,36 +382,47 @@ def leer_la_tarjeta(texto: str) -> DatosDeLaHoja:
         valor_del_anio = int(cifras) if len(cifras) == 4 else 1900 + int(cifras)
     return DatosDeLaHoja(
         nombre=_limpio(completo) if completo else None,
-        cedula=_cedula(cedula.group(1)) if cedula else None,
+        cedula=_cifras_de_la_tarjeta(cedula.group(1)) if cedula else None,
         anio=valor_del_anio if valor_del_anio and 1940 <= valor_del_anio <= 2010 else None,
     )
+
+
+def _sin_el_rotulo(texto: str) -> str:
+    """Lo de antes del rótulo de la cédula que cierra el texto: «AINE FANDIDO FRANKY C OF » → el nombre.
+
+    Sólo el rótulo que no lleva letras detrás: «CEA» en «EL DUARDO F. CEA
+    BERMEJO C OF» es un apellido, y el nombre no se corta ahí.
+    """
+    for rotulo in _ROTULO_DE_LA_CEDULA.finditer(texto):
+        if not re.search(r"[A-Z]", texto[rotulo.end() :]):
+            return texto[: rotulo.start()]
+    return texto
 
 
 def leer_la_hoja(texto: str) -> DatosDeLaHoja:
     """El nombre escrito arriba de la hoja manuscrita, su «C.C.» y el año de su casilla.
 
     La lectura vuelve con el nombre en el primer renglón y detrás, a veces, el
-    sueldo («Guillermo Pena E. $4.223,62») o la cédula («SEBASTIAN MERLANO MEZA
-    CC/9645668», que la IA lee también «60/9645668»); el año, «1.972», en el
-    renglón de abajo.
+    sueldo y la cédula («Guillermo Peña E. $4.223,62 c.c. f 889196»,
+    «SEBASTIAN MERLANO MEZA CO/9645668»: ver ``cedula_de_la_hoja``); el año,
+    «1.972», en el renglón de abajo.
     """
-    # Los renglones con algo escrito; los separadores de la tabla («| --- |») no.
-    lineas = [linea for linea in texto.splitlines() if re.search(r"[A-Za-z0-9]", linea)]
-    nombre = cedula = None
+    # Los renglones con algo escrito, desde el primero con letras: los
+    # separadores de la tabla («| --- |») no, ni el folio solo de la esquina
+    # («64»), que con la franja ancha a veces va antes (1974, 2026-11-06).
+    lineas = _desde_el_nombre(texto)
+    nombre = None
     if lineas:
-        # El nombre, en la primera celda del primer renglón que traiga uno: lo
-        # de abajo es la cuadrícula («Sueldo devengado»), no un nombre.
+        # El nombre, en la primera celda del renglón del nombre que traiga uno:
+        # lo de abajo es la cuadrícula («Sueldo devengado»), no un nombre.
         for celda in (" ".join(c.split()) for c in lineas[0].split("|")):
             p = plano(celda)
-            # Lo de antes del sueldo, de la cédula o de la primera cifra.
-            corte = re.split(r"\$|\bC\W?C\W?[ILT]?\b|\bCO\W|\b60\W|\d", p, maxsplit=1)[0]
+            # Lo de antes del sueldo, de la primera cifra o del rótulo de la cédula.
+            corte = _sin_el_rotulo(re.split(r"\$|\d", p, maxsplit=1)[0])
             if limpio := _limpio(corte):
                 nombre = limpio
                 break
-    for linea in lineas[:2]:
-        if hallada := _CEDULA_DE_LA_HOJA.search(plano(linea)):
-            cedula = _cedula(hallada.group(1))
-            break
+    cedula, _ = cedula_de_la_hoja(texto)
     anio = None
     for linea in lineas[:4]:
         if hallado := _ANIO_SUELTO.search(plano(linea)):
