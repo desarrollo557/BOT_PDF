@@ -458,6 +458,47 @@ def test_la_tarjeta_mal_leida_se_corrige_con_la_fecha_de_nacimiento():
     assert leer_ficha("Cédula o tarjeta No. 61720803173 Libreta Militar No.").tarjeta == "617208-03173"
 
 
+def test_el_lugar_de_expedicion_leido_como_cifras_no_vuelve_tarjeta_a_la_cedula():
+    """Tovar Orozco (UPD3859727, pág. 89, 2026-11-09): en el papel «45.466.499 de C/gena», de Cartagena.
+
+    La «de C» cursiva se leyó «000»: once cifras, que pasaban por la tarjeta de
+    identidad «454664-99000», y el FUID llevó 45466499000. La cédula es 45466499.
+    """
+    nacida = "Fecha de nacimiento Marzo 23 - 1964 Estado civil Soltera "
+    for renglon in (
+        "Cédula o tarjeta No. 45.466.499 000 Libreta Militar No.",
+        "Cédula o tarjeta No. 45 466.499 000 Libreta Militar No.",
+        "| Cédula o tarjeta No. 45.466.499 000 | Libreta Militar No. |",
+        # Como la leyó la IA en su renglón ampliado: ésta ya salía bien.
+        "Cédula o tarjeta No. 45 466.499 de 6/que Libreta Militar No.",
+        # La ficha de 2003, por su «N°».
+        "Documento de Identificación: C. C. ( ) T.I. ( ) Pasaporte ( ) N° 45.466.499 000 ",
+    ):
+        for texto in (renglon, nacida + renglon):
+            ficha = leer_ficha(texto)
+            assert (ficha.cedula, ficha.tarjeta) == ("45466499", None), texto
+    # Nuñez Jezama (UPD3859745, pág. 38): «73.788.799 C/gena», leída «737887-99000».
+    assert leer_ficha("CÉDULA No. 73.788.799 000 LIB. MILITAR").cedula == "73788799"
+    # Sin el espacio no se sabe dónde acaba la cédula: no se inventa ni se trunca.
+    # Pero con puntos de miles, o contra la fecha de nacimiento, tampoco es tarjeta.
+    for dudoso in ("45.466.499.000", "45466499000"):
+        ficha = leer_ficha(nacida + f"Cédula o tarjeta No. {dudoso} Libreta Militar No.")
+        assert (ficha.cedula, ficha.tarjeta) == (None, None), dudoso
+    assert leer_ficha("Cédula o tarjeta No. 45.466.499.000 Libreta Militar No.").tarjeta is None
+    # Diez cifras con puntos hasta el final no se truncan (revisión, 2026-11-09).
+    assert leer_ficha("Cédula o tarjeta No. 7.047.382.991 Libreta Militar No.").cedula is None
+    # La tarjeta de verdad sigue siéndolo: con o sin guion, aunque la fecha de
+    # nacimiento se lea mal (el teléfono tomado por el año), y con puntos si
+    # empieza por una fecha.
+    assert leer_ficha(nacida + "Cédula o tarjeta No. 64032301234 C/gena Libreta Militar No.").tarjeta == "640323-01234"
+    assert leer_ficha("Cédula o tarjeta No. 640323-01234 de C/gena Libreta Militar No.").tarjeta == "640323-01234"
+    telefono = "FECHA DE NACIMIENTO 9 Junio 1965\nTELEFONO 64321\nCédula o tarjeta No. 65060903314\nNOMBRE DEL ACUDIENTE"
+    assert leer_ficha(telefono).tarjeta == "650609-03314"
+    assert leer_ficha("Cédula o tarjeta No. 65.060.903 314 Libreta Militar No.").cedula is None
+    # Y la cédula de diez cifras, con sus puntos, sigue siendo cédula.
+    assert leer_ficha("Cédula o tarjeta No. 1.047.382.991 de C/gena Libreta Militar No.").cedula == "1047382991"
+
+
 def test_la_cedula_del_acudiente_no_es_la_del_estudiante():
     texto = "Cédula o tarjeta No. Libreta Militar No. Nombre del acudiente (s) Luis Pérez C.C. 3.456.789 Dirección"
     assert leer_ficha(texto).cedula is None

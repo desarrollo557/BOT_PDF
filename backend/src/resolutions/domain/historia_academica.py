@@ -277,6 +277,52 @@ def _nacimiento(p: str) -> str | None:
     return f"{numeros[-1][-2:]}{mes:02d}{int(numeros[0]):02d}"
 
 
+def _puede_ser_tarjeta(cifras: str, nacimiento: str | None) -> bool:
+    """Si once cifras pueden ser la tarjeta de identidad de quien nació ese día.
+
+    La tarjeta empieza por la fecha de nacimiento (AAMMDD). Si sus seis primeras
+    cifras ni siquiera son una fecha y la ficha dice otra -- ni con un dígito
+    mal leído --, no es su tarjeta: «45466499000» no lo es de Tovar Orozco,
+    nacida el «Marzo 23 1964» (UPD3859727, pág. 89, 2026-11-09). Una que sí
+    empieza por una fecha posible se queda: ``_nacimiento`` a veces toma el año
+    de la casilla de al lado -- el teléfono, la edad -- y no puede borrar una
+    tarjeta bien leída (revisión, 2026-11-09). Sin fecha que lo desmienta, sí.
+    """
+    if _parece_fecha(cifras[:6]) or not nacimiento:
+        return True
+    return sum(a != b for a, b in zip(cifras[:6], nacimiento, strict=False)) <= 1
+
+
+#: La cédula con sus puntos de miles y, tras un espacio, un grupo de tres cifras
+#: de más: «45.466.499 000», «45 466.499 000», «9'132.107 000».
+_CEDULA_Y_GRUPO_DE_MAS = re.compile(r"(\d{1,3}(?:[.,'’\s]{1,2}\d{3}){1,2})\s+\d{3}")
+
+
+def _sin_el_lugar_de_expedicion(numero: str) -> str | None:
+    """La cédula de un número con puntos de miles al que la lectura le pegó cifras de más.
+
+    Detrás de la cédula va el lugar donde se expidió -- «45.466.499 de C/gena»,
+    de Cartagena -- escrito a mano: la «d», la «e» y la «C» cursivas se leen
+    ceros, y sale «45.466.499 000», once cifras que pasaban por tarjeta de
+    identidad (Tovar Orozco, UPD3859727, pág. 89, y Nuñez Jezama, UPD3859745,
+    pág. 38, 2026-11-09: el FUID llevó 45466499000). Una tarjeta nunca se
+    escribe con puntos de miles.
+
+    Sólo si el grupo de más va separado por un espacio, la cédula lleva algún
+    punto y el número no empieza por una fecha: «7.047.382.991», con puntos
+    hasta el final, no se trunca a 7047382, y «65.060.903 314» puede ser la
+    tarjeta 650609-03314 (revisión, 2026-11-09). Mejor N/A que truncada.
+    """
+    hallado = _CEDULA_Y_GRUPO_DE_MAS.fullmatch(numero.strip())
+    if not hallado or not re.search(r"[.,'’]", hallado.group(1)):
+        return None
+    cifras = re.sub(r"\D", "", hallado.group(1))
+    todas = re.sub(r"\D", "", numero)
+    if _parece_fecha(todas[:6]) or not _parece_cedula(cifras):
+        return None
+    return cifras
+
+
 def _con_la_fecha_de_nacimiento(tarjeta: str, nacimiento: str | None) -> str:
     """La tarjeta empieza por la fecha de nacimiento: un dígito que el OCR leyó mal se corrige con ella.
 
@@ -434,6 +480,7 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
     desde = max(0, desde - 60) if desde >= 0 else desde
     hasta = p.find("NOMBRE DEL ACUDIENTE", max(desde, 0))
     zona = p[desde : hasta if hasta > desde else desde + 200] if desde >= 0 else p
+    nacimiento = _nacimiento(p)
     if hallado := _TARJETA.search(zona):
         tarjeta = f"{hallado.group(1)}-{hallado.group(2)}"
     elif hallado := _TI.search(zona):
@@ -449,7 +496,19 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
             pass  # el número del rótulo es la tarjeta de identidad
         elif len(cifras) == 6 and _parece_fecha(cifras):
             tarjeta = tarjeta or cifras
-        elif len(cifras) == 11 or (len(cifras) == 10 and not cifras.startswith("1") and _parece_fecha(cifras[:6])):
+        elif len(cifras) in (10, 11) and not _parece_cedula(cifras) and (
+            sin_lugar := _sin_el_lugar_de_expedicion(hallado.group(1))
+        ):
+            # «45.466.499 000»: la cédula y su lugar de expedición leído como cifras.
+            cedula = sin_lugar
+        elif (
+            len(cifras) == 11
+            and _puede_ser_tarjeta(cifras, nacimiento)
+            # Con puntos de miles y sin fecha al comienzo no es una tarjeta: «45.466.499.000».
+            and (_parece_fecha(cifras[:6]) or not re.search(r"\d[.,'’]\s?\d{3}", hallado.group(1)))
+        ) or (
+            len(cifras) == 10 and not cifras.startswith("1") and _parece_fecha(cifras[:6])
+        ):
             # «61120803173»: la tarjeta de identidad escrita sin su guion. Once
             # cifras no las tiene ninguna cédula.
             tarjeta = tarjeta or f"{cifras[:6]}-{cifras[6:]}"
@@ -473,12 +532,14 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
         # Identificación»; es tarjeta si su casilla está marcada o si tiene
         # las once cifras de una.
         cifras = re.sub(r"\D", "", hallado.group(1))
-        if _TI_MARCADA.search(hallado.group(0)) or len(cifras) == 11:
+        if not _TI_MARCADA.search(hallado.group(0)) and (sin_lugar := _sin_el_lugar_de_expedicion(hallado.group(1))):
+            cedula = sin_lugar
+        elif _TI_MARCADA.search(hallado.group(0)) or len(cifras) == 11:
             tarjeta = cifras
         elif _parece_cedula(cifras):
             cedula = cifras
     if tarjeta:
-        tarjeta = _con_la_fecha_de_nacimiento(tarjeta, _nacimiento(p))
+        tarjeta = _con_la_fecha_de_nacimiento(tarjeta, nacimiento)
     if codigo and codigo == cedula:
         # «CC # 78106659»: el «#» es de la cédula, no un código (pág. 13).
         codigo = None
@@ -543,8 +604,11 @@ INSTRUCCIONES_PARA_VERIFICAR = (
     "- \"ILEGIBLE\" si hay algo escrito en la casilla que no se entiende.\n\n"
     "- cedula: la cédula de ciudadanía DEL ESTUDIANTE («Cédula No.», «C.C.», «Documento de Identificación N°»). "
     "Nunca la del acudiente, la de los padres, un teléfono ni la del puesto de ingreso. Si su casilla está en "
-    "blanco, responde VACIO aunque haya otros números cerca.\n"
-    "- tarjeta: su tarjeta de identidad (T.I.).\n"
+    "blanco, responde VACIO aunque haya otros números cerca. Detrás de la cédula suele ir el lugar donde se "
+    "expidió («45.466.499 de C/gena», de Cartagena), que el OCR a veces lee como cifras («45.466.499 000»): "
+    "esas cifras de más no son de la cédula; la cédula es 45466499.\n"
+    "- tarjeta: su tarjeta de identidad (T.I.): empieza por la fecha de nacimiento (AAMMDD) y nunca lleva "
+    "puntos de miles.\n"
     "- libreta: su libreta militar.\n"
     "- codigo: su código o carné estudiantil; «54-9010033» es 549010033.\n"
     "- anio_ingreso: el año en que entró a la Universidad (no el del bachillerato ni el de nacimiento). Si la "
