@@ -95,3 +95,22 @@ describe('un servicio que contesta con un error', () => {
     await expect(listFolderRuns()).rejects.toBeInstanceOf(ApiError);
   });
 });
+
+describe('lo que el servicio dijo de sí mismo (2026-11-09)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('se recuerda, y una pregunta que falla no lo borra', async () => {
+    const { fetchHealth, ultimaSalud } = await import('./api');
+    const salud = { status: 'ok', document_types: [{ id: 'nomina', label: 'Nóminas' }] };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(salud), { status: 200 })));
+    expect(await fetchHealth()).toEqual(salud);
+    // Al cancelar una carpeta, el panel «Procesar» se monta otra vez: si su
+    // pregunta falla, lo último que se supo sigue valiendo.
+    vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('Failed to fetch'))));
+    expect(await fetchHealth()).toBeNull();
+    expect(ultimaSalud()).toEqual(salud);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 503 })));
+    expect(await fetchHealth()).toBeNull();
+    expect(ultimaSalud()).toEqual(salud);
+  });
+});

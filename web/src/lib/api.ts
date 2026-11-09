@@ -723,11 +723,29 @@ export async function fetchRendimiento(): Promise<Rendimiento | null> {
   }
 }
 
+/**
+ * Lo último que el servicio dijo de sí mismo, para quien se monta después o
+ * pregunta en mal momento (2026-11-09). Al detener una carpeta y cerrar el
+ * informe, el panel «Procesar» se montaba de nuevo sin saber qué habilidades
+ * hay, y si su primera pregunta tardaba o fallaba, todas salían «No
+ * disponible» durante minutos aunque el servicio contestara en 1 ms y la barra
+ * de arriba ya lo supiera.
+ */
+let saludConocida: Health | null = null;
+
+/** La última respuesta buena de `/api/health`, o `null` si todavía no hubo ninguna. */
+export function ultimaSalud(): Health | null {
+  return saludConocida;
+}
+
 /** One cheap call. Used by the status rail, which polls it slowly on purpose. */
 export async function fetchHealth(): Promise<Health | null> {
   try {
     const response = await pedir(`${BASE}/health`);
-    return response.ok ? await response.json() : null;
+    if (!response.ok) return null;
+    const salud: Health = await response.json();
+    saludConocida = salud;
+    return salud;
   } catch {
     // The rail reports "sin conexión" from a null; it never throws at the UI.
     return null;

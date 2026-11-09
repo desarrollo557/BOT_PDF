@@ -1,7 +1,7 @@
 <script lang="ts">
   import { fly } from 'svelte/transition';
 
-  import { fetchHealth, reconocerArchivo, type Health, type Sugerencia } from '$lib/api';
+  import { fetchHealth, reconocerArchivo, ultimaSalud, type Health, type Sugerencia } from '$lib/api';
   import Icono from '$lib/components/Icono.svelte';
   import UploadSummary from '$lib/components/UploadSummary.svelte';
   import Callout from '$lib/components/wizard/Callout.svelte';
@@ -67,14 +67,22 @@
   let acta = $state('');
   /** Cuántos archivos a la vez. Cero es el automático del servicio. */
   let paralelo = $state(0);
-  let health = $state<Health | null>(null);
+  /**
+   * Qué sabe hacer el servicio. Empieza con lo último que se le oyó -- la barra
+   * de arriba pregunta todo el rato -- y una pregunta que falla no lo borra: al
+   * cerrar el informe de una carpeta detenida, este panel se montaba en blanco
+   * y todas las habilidades salían «No disponible» durante minutos (2026-11-09).
+   * Si el servicio de verdad no contesta, lo dice la barra; enviar fallaría con
+   * su motivo.
+   */
+  let health = $state<Health | null>(ultimaSalud());
   /** Files dropped and waiting for "Confirmar y subir". */
   let pendientes = $state<File[]>([]);
 
   $effect(() => {
     const preguntar = () =>
       void fetchHealth().then((value) => {
-        health = value;
+        health = value ?? health ?? ultimaSalud();
       });
     preguntar();
     const reloj = setInterval(preguntar, 15_000);
