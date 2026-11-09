@@ -193,6 +193,43 @@ class TestLoQueSeMandaAResumir:
         assert "2. INFORMES" in limpio
 
 
+class TestElResumenNuncaQuedaCortado:
+    """El operador, 2026-11-09: «no quiero un … en el resumen»."""
+
+    def test_los_puntos_suspensivos_del_final_se_vuelven_punto(self):
+        from resolutions.domain.acta_consejo import sin_cortes
+
+        assert sin_cortes("Se aprobó el calendario académico y las notas…") == (
+            "Se aprobó el calendario académico y las notas."
+        )
+        assert sin_cortes("Se aprobó el calendario, ...") == "Se aprobó el calendario."
+        assert sin_cortes("Se aprobó el calendario. . .") == "Se aprobó el calendario."
+        # Lo que ya está entero no se toca.
+        assert sin_cortes("Sesionó el consejo. Se aprobó X.") == "Sesionó el consejo. Se aprobó X."
+
+    def test_cortado_por_el_tope_llega_hasta_su_ultima_frase_completa(self):
+        from resolutions.domain.acta_consejo import sin_cortes
+
+        assert sin_cortes("Sesionó el consejo. Se aprobó la corrección de notas de la estudiante Katy", cortado=True) == (
+            "Sesionó el consejo."
+        )
+        # Sin ninguna frase completa, lo que hay: mejor que nada.
+        assert sin_cortes("Sesionó el consejo de", cortado=True) == "Sesionó el consejo de"
+
+    def test_el_resumidor_no_entrega_un_resumen_a_media_frase(self, monkeypatch):
+        respuesta = json.dumps(
+            {
+                "choices": [
+                    {"message": {"content": "Sesionó el consejo. Se aprobó la corrección de notas de"}, "finish_reason": "length"}
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 1000},
+            }
+        ).encode()
+        monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: _Respuesta(respuesta))
+
+        assert MistralResumidor("llave").resumir("texto") == "Sesionó el consejo."
+
+
 class TestDepurarElResumen:
     def test_quita_la_frase_que_menciona_el_quorum(self):
         resumen = depurar_resumen(

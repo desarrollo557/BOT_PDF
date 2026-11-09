@@ -16,9 +16,9 @@ por acta:
 * **Notas**: el folio inicial y el final escritos a mano, si se leyeron, y lo
   que no se pudo leer.
 
-Y a la derecha del formato, lo que el operador pidió para Odontología el
-2026-10-31: **ACTA #**, **OBJETIVO / RESUMEN** y las **páginas del PDF** desde
-y hasta en que va el acta.
+Del 2026-10-31 al 2026-11-09 llevó además, a la derecha del formato, **ACTA #**,
+**OBJETIVO / RESUMEN** y las **páginas del PDF**. El operador las quitó al
+poner el resumen en el asunto: «un FUID limpio, manejando el original».
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import unicodedata
 from collections.abc import Mapping
 
 from ..application.fuid import FuidRow
+from ..domain.acta_consejo import sin_cortes
 from .fuid_actas_de_grado import NO_LEIDO, ubicacion
 
 #: El consejo que dice el papel, por la palabra que lo nombra en la fila.
@@ -108,13 +109,13 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow:
         frecuencia="",
         notas="; ".join(notas),
         pagina_inicial=fila.get("pagina_inicial"),  # type: ignore[arg-type]
-        acta=numero,
-        resumen=resumen,
-        pagina_final=_entero(fila.get("pagina_final")),
     )
 
 
 def _resumen(valor: object) -> str:
-    """El resumen del acta, o N/A si no lo hay: con «Solo OCR» no se escribe."""
-    texto = " ".join(str(valor or "").split())
+    """El resumen del acta, sin «…» al final (``sin_cortes``); N/A si no lo hay: con «Solo OCR» no se escribe.
+
+    También los resúmenes ya guardados en una entrega de antes del 2026-11-09.
+    """
+    texto = sin_cortes(" ".join(str(valor or "").split()))
     return texto or NO_LEIDO

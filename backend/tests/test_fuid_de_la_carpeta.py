@@ -179,15 +179,10 @@ def test_en_la_carpeta_de_la_corrida_un_solo_fuid_con_las_dos_y_su_resumen(tmp_p
     ]
     # Ni un FUID aparte en un árbol con la carpeta elegida delante.
     assert not (destino / CARPETA).exists()
-    # El resumen del acta, en el FUID, con el formato de la plantilla.
+    # El resumen del acta va en su asunto, y el FUID es el formato original:
+    # nada a la derecha de NOTAS (el operador, 2026-11-09: «un FUID limpio»).
     hoja = load_workbook(ruta)["INVENTARIO"]
-    assert hoja["R12"].value == "OBJETIVO / RESUMEN"
-    assert hoja["R12"].fill.fgColor.rgb == hoja["P12"].fill.fgColor.rgb
-    resumenes = {hoja.cell(fila, 3).value: hoja.cell(fila, 18).value for fila in range(14, 17)}
-    assert resumenes["ACTA DE CONSEJO DE FACULTAD No. 02 - ORDINARIA - SE APROBO EL PLAN DE ESTUDIOS"] == (
-        "SE APROBO EL PLAN DE ESTUDIOS"
-    )
-    assert resumenes["RESOLUCION 00030 POR LA CUAL SE CONVOCA"] == "N/A"
+    assert all(hoja.cell(row=f, column=c).value is None for f in range(12, 17) for c in range(17, 21))
 
 
 def test_un_pdf_que_se_rehace_no_suma_sus_filas_dos_veces(corrida):

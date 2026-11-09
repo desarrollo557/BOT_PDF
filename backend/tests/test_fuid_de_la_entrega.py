@@ -175,12 +175,9 @@ def test_el_asunto_del_acta_lleva_su_sesion_y_su_resumen_con_los_nombres():
     )
     fila = fila_de_acta({"acta": "ACTA ORDINARIA", "numero": "022", "resumen": f"  {resumen}\n"})
     assert fila.asunto == f"ACTA DE CONSEJO DE FACULTAD No. 022 - ORDINARIA - {resumen}"
-    # La columna del resumen sigue llevándolo.
-    assert fila.resumen == resumen
     # Sin resumen («Solo OCR»), el asunto como antes: sin un «- N/A» colgando.
     sin_resumen = fila_de_acta({"acta": "ACTA EXTRAORDINARIA", "numero": "09"})
     assert sin_resumen.asunto == "ACTA DE CONSEJO DE FACULTAD No. 09 - EXTRAORDINARIA"
-    assert sin_resumen.resumen == "N/A"
     # Y al resumidor se le pide nombrar a las personas, no la lista de asistentes.
     from resolutions.adapters.mistral_resumen import INSTRUCCIONES
 
@@ -352,10 +349,18 @@ def test_el_fuid_lleva_la_oficina_de_su_carpeta_y_las_filas_de_todas_las_habilid
     assert planilla.filas[1][15] == ""  # NOTAS va vacía (2026-10-30)
 
 
-def test_las_actas_llevan_a_la_derecha_su_numero_su_resumen_y_sus_paginas(tmp_path):
-    """Odontología (2026-10-31): ACTA #, OBJETIVO / RESUMEN y las páginas del PDF desde y hasta."""
+def test_el_fuid_de_actas_es_el_formato_original_con_el_resumen_en_el_asunto(tmp_path):
+    """El operador, 2026-11-09: «un FUID limpio, manejando el original». Sin ACTA #, OBJETIVO /
+    RESUMEN ni las páginas del PDF a la derecha de NOTAS (de 2026-10-31): el resumen va en el asunto,
+    entero, y la fila crece hasta leerlo."""
     from openpyxl import load_workbook
 
+    resumen = (
+        "El Consejo de Facultad de Odontología, presidido por la doctora Luisa Leonor Arévalo Tovar, "
+        "aprobó el calendario académico y las correcciones de notas de los estudiantes Katyuska Medina "
+        "Márquez y Johnny Ricardo Galindo Ruello, solicitadas por los docentes César Herrera Zárate y "
+        "Luis Eduardo Carmona Arango..."
+    )
     destino = escribir_fuid(
         [
             {
@@ -363,7 +368,7 @@ def test_las_actas_llevan_a_la_derecha_su_numero_su_resumen_y_sus_paginas(tmp_pa
                 "numero": "022",
                 "fecha": "13-12-2016",
                 "folios": 15,
-                "resumen": "El Consejo de Facultad aprobó el calendario académico.",
+                "resumen": resumen,
                 "carpeta": "15. ODONTOLOGIA\\00C003286\\UPD3859793",
                 "archivo": "1ACTAS DE CONSEJO N°22 Y 23 2016.pdf",
                 "pagina_inicial": 1,
@@ -384,15 +389,45 @@ def test_las_actas_llevan_a_la_derecha_su_numero_su_resumen_y_sus_paginas(tmp_pa
         tmp_path / "UPD3859793__FUID.xlsx",
     )
     hoja = load_workbook(destino)["INVENTARIO"]
-    assert [hoja[c].value for c in ("Q12", "R12", "S12", "S13", "T13")] == [
-        "ACTA #", "OBJETIVO / RESUMEN", "PÁGINAS DEL PDF", "Desde", "Hasta",
-    ]
-    assert [hoja.cell(row=14, column=c).value for c in range(17, 21)] == [
-        "022", "El Consejo de Facultad aprobó el calendario académico.", 1, 50,
-    ]
-    assert [hoja.cell(row=15, column=c).value for c in range(17, 21)] == ["023", "N/A", 51, 57]
+    # Nada a la derecha de NOTAS: ni títulos ni filas.
+    assert all(hoja.cell(row=f, column=c).value is None for f in (12, 13, 14, 15) for c in range(17, 21))
+    # El asunto, entero y sin «...» al final.
+    esperado = "ACTA DE CONSEJO DE FACULTAD No. 022 - ORDINARIA - " + resumen[:-3] + "."
+    assert hoja["C14"].value == esperado
+    assert "..." not in hoja["C14"].value and "…" not in hoja["C14"].value
+    # Se ajusta y la fila crece para que se lea; el acta sin resumen, como siempre.
+    assert hoja["C14"].alignment.wrap_text
+    assert hoja.row_dimensions[14].height > 20
+    assert hoja["C15"].value == "ACTA DE CONSEJO DE FACULTAD No. 023 - EXTRAORDINARIA"
+    assert hoja.row_dimensions[15].height == 20
     # Las de siempre siguen donde estaban: fechas extremas y folios.
     assert (hoja["F14"].value, hoja["L14"].value) == ("13/12/2016", 15)
+
+
+def test_un_fuid_viejo_como_plantilla_pierde_las_columnas_de_actas(tmp_path):
+    """Si la plantilla es un FUID de antes del 2026-11-09, con ACTA # y OBJETIVO / RESUMEN, se limpian."""
+    from pathlib import Path
+
+    from openpyxl import load_workbook
+
+    import resolutions
+    from resolutions.adapters.fuid_inventory import FuidInventory
+
+    libro = load_workbook(Path(resolutions.__file__).parent / "assets" / "fuid-fo-gd-008.xlsx")
+    hoja = libro["INVENTARIO"]
+    hoja["Q12"], hoja["R12"], hoja["S12"] = "ACTA #", "OBJETIVO / RESUMEN", "PÁGINAS DEL PDF"
+    hoja.merge_cells("Q12:Q13")
+    hoja.merge_cells("S12:T12")
+    hoja["S13"], hoja["T13"] = "Desde", "Hasta"
+    hoja["Q14"], hoja["R14"], hoja["S14"], hoja["T14"] = "022", "Un resumen viejo", 1, 22
+    viejo = tmp_path / "viejo__FUID.xlsx"
+    libro.save(viejo)
+
+    destino = FuidInventory(viejo).write([FuidRow(orden=1, asunto="ACTA DE CONSEJO DE FACULTAD No. 1")], tmp_path / "x.xlsx")
+    nuevo = load_workbook(destino)["INVENTARIO"]
+    assert all(nuevo.cell(row=f, column=c).value is None for f in (12, 13, 14) for c in range(17, 21))
+    assert not [str(r) for r in nuevo.merged_cells.ranges if r.min_col >= 17 and r.min_row in (12, 13)]
+    assert nuevo["C14"].value == "ACTA DE CONSEJO DE FACULTAD No. 1"
 
 
 def test_sin_actas_el_fuid_no_lleva_esas_columnas(tmp_path):

@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 from ..application.consumo import Consumo, anotar_uso_json
 from ..application.ports import ResumenNoDisponible
+from ..domain.acta_consejo import sin_cortes
 from .turnos import turno
 
 logger = logging.getLogger(__name__)
@@ -71,9 +72,10 @@ INSTRUCCIONES = (
 class MistralResumenConfig:
     model: str = "mistral-small-latest"
     timeout_seconds: int = 120
-    #: Un párrafo de ciento cuarenta palabras son unos doscientos cincuenta
-    #: tokens. El margen es para que un modelo locuaz no se corte a media frase.
-    max_tokens: int = 600
+    #: Un párrafo de doscientas palabras con sus nombres son unos cuatrocientos
+    #: tokens, y el modelo se pasa: el acta 022 de Odontología salió con 249
+    #: palabras (2026-11-09). El margen es para que no se corte a media frase.
+    max_tokens: int = 1000
     temperatura: float = 0.2
     #: Cuántas veces se reintenta un «más despacio» (429) o una caída del
     #: proveedor (5xx) antes de dejar el acta sin resumen.
@@ -157,7 +159,7 @@ class MistralResumidor:
                 raise ResumenNoDisponible(f"Mistral no respondió ({motivo})") from error
 
             anotar_uso_json(self._consumo, PROVEEDOR, payload)
-            resumen = _texto_de(payload).strip()
+            resumen = sin_cortes(_texto_de(payload).strip(), cortado=_cortado(payload))
             if not resumen:
                 raise ResumenNoDisponible("Mistral devolvió un resumen vacío")
             return resumen
@@ -206,6 +208,12 @@ class MistralResumidor:
             self._cerrado = "la cuenta de Mistral no tiene saldo (HTTP 402)"
             return self._cerrado
         return f"Mistral rechazó la petición (HTTP {codigo})"
+
+
+def _cortado(payload: dict) -> bool:
+    """Si el modelo dejó de escribir por el tope de tokens, a media frase."""
+    choices = payload.get("choices") or [{}]
+    return choices[0].get("finish_reason") == "length"
 
 
 def _texto_de(payload: dict) -> str:

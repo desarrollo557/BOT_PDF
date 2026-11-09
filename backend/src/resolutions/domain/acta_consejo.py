@@ -1540,6 +1540,29 @@ _DEL_ORDEN_DEL_DIA = re.compile(
 )
 
 
+#: Los puntos suspensivos al final: «…», «...» o «. . .».
+_SUSPENSIVOS_AL_FINAL = re.compile(r"\s*(?:…|\.(?:\s?\.){2,})+\s*$")
+
+
+def sin_cortes(texto: str, *, cortado: bool = False) -> str:
+    """El resumen entero: nunca a media frase ni con «…» al final.
+
+    El operador, 2026-11-09: «no quiero un … en el resumen». Si el modelo se
+    cortó por el tope de su respuesta (``cortado``), el texto llega hasta su
+    última frase completa. Los puntos suspensivos del final se vuelven punto:
+    lo que dicen antes se queda.
+    """
+    texto = texto.strip()
+    if cortado and not texto.endswith((".", "!", "?")):
+        ultimo = max(texto.rfind(". "), texto.rfind("! "), texto.rfind("? "))
+        if ultimo > 0:
+            texto = texto[: ultimo + 1]
+    if _SUSPENSIVOS_AL_FINAL.search(texto):
+        texto = _SUSPENSIVOS_AL_FINAL.sub("", texto).rstrip(" ,;:")
+        texto = f"{texto}." if texto else texto
+    return texto
+
+
 def depurar_resumen(resumen: str) -> str:
     """El resumen sin el llamado a lista, el quórum, las proposiciones ni los varios.
 
