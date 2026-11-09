@@ -40,18 +40,26 @@ PROVEEDOR = "mistral-resumen"
 #: documento en general y nunca el llamado a lista, la verificación del
 #: quórum, las proposiciones ni los varios (estos dos, desde el 2026-10-31). El
 #: texto ya llega sin el llamado a lista; decírselo es para que no lo deduzca
-#: de lo que queda.
+#: de lo que queda. Desde el 2026-11-09 nombra a las personas que se mencionan
+#: (el operador: «colocar el nombre de las personas que mencionan»): el resumen
+#: va también en el asunto del FUID, y «un docente investigador» no dice quién.
 INSTRUCCIONES = (
     "Eres archivista de la Universidad de Cartagena y preparas el Formato Único "
     "de Inventario Documental. Recibes el texto de un acta de sesión de un "
     "consejo u órgano colegiado, a veces con su citación, la lista de asistencia "
     "y sus anexos. El texto viene de un OCR y trae errores de lectura.\n\n"
     "Escribe el resumen del documento para la columna de notas del inventario:\n"
-    "- Un solo párrafo en español, de 60 a 140 palabras, en tercera persona y en pasado.\n"
+    "- Un solo párrafo en español, de 80 a 200 palabras, en tercera persona y en pasado.\n"
     "- Di qué órgano sesionó y quién presidió, y resume los asuntos tratados, las "
     "decisiones, los compromisos y los anexos que se mencionen.\n"
+    "- Nombra a las personas que el acta menciona en los asuntos tratados, con su nombre "
+    "completo tal como está escrito y su cargo o papel: quién presidió, quién presentó cada "
+    "informe o propuesta, y a quién se le aprobó, negó, designó o reconoció algo (docentes, "
+    "estudiantes, funcionarios, invitados). Nunca escribas «un docente» o «una estudiante» "
+    "si el texto dice su nombre.\n"
     "- No menciones el llamado a lista, la verificación del quórum, la asistencia, "
-    "las proposiciones ni los varios, y no enumeres el orden del día. Si en "
+    "las proposiciones ni los varios, y no enumeres el orden del día ni la lista de "
+    "asistentes: nombra a cada persona por lo que hizo o le tocó en la sesión. Si en "
     "proposiciones y varios se decidió algo, cuéntalo sin nombrar ese punto.\n"
     "- No repitas el número ni la fecha del acta: ya constan en otras columnas.\n"
     "- No inventes nada que no esté en el texto. Si un nombre está ilegible, omítelo.\n"

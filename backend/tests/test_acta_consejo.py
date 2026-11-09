@@ -825,7 +825,11 @@ class TestElExcelDeLaCarpeta:
             "2012/ACTAS 2012__inventario.xlsx",
         ]
         fuid = load_workbook(run.destination / "2012" / "2012__FUID.xlsx").active
-        assert (fuid["A14"].value, fuid["C14"].value) == (1, "ACTA DE CONSEJO DE FACULTAD No. N/A - ORDINARIA")
+        # El asunto lleva detrás el resumen del acta (el operador, 2026-11-09).
+        assert (fuid["A14"].value, fuid["C14"].value) == (
+            1,
+            "ACTA DE CONSEJO DE FACULTAD No. N/A - ORDINARIA - Sesionó el Consejo de Facultad.",
+        )
         assert run.as_dict()["actas"] == "ACTAS 2012__inventario.xlsx"
         assert run.as_dict()["inventario_filas"] == 2
 
@@ -899,7 +903,7 @@ class TestElExcelDeLaCarpeta:
         assert fuid["P1"].value == "CÓDIGO: FO-GD-008"
         # Sin nombre leído, el acta: el mismo texto que su PDF, en mayúsculas (2026-11-05).
         assert fuid["C14"].value == "ACTA DE GRADO NO. 1"
-        assert fuid["C15"].value == "ACTA DE CONSEJO DE FACULTAD No. N/A - ORDINARIA"
+        assert fuid["C15"].value == "ACTA DE CONSEJO DE FACULTAD No. N/A - ORDINARIA - Sesionó el Consejo de Facultad."
         # El Excel de actas, sólo con las de consejo.
         from resolutions.adapters.excel_actas import FILA_DE_ENCABEZADOS
 

@@ -166,6 +166,28 @@ def test_la_fila_de_un_acta_de_consejo():
     assert fila.notas == "folios 120 a 123"
 
 
+def test_el_asunto_del_acta_lleva_su_sesion_y_su_resumen_con_los_nombres():
+    """El operador, 2026-11-09: «ACTA DE CONSEJO DE FACULTAD No. 09 - ORDINARIA - RESUMEN», con
+    «el nombre de las personas que mencionan». El número, como lo dice el papel."""
+    resumen = (
+        "El Consejo de Facultad de Odontología, presidido por la doctora Luisa Leonor Arévalo Tovar, "
+        "otorgó la distinción Ivo Seni Canata al docente investigador Antonio Díaz Caballero."
+    )
+    fila = fila_de_acta({"acta": "ACTA ORDINARIA", "numero": "022", "resumen": f"  {resumen}\n"})
+    assert fila.asunto == f"ACTA DE CONSEJO DE FACULTAD No. 022 - ORDINARIA - {resumen}"
+    # La columna del resumen sigue llevándolo.
+    assert fila.resumen == resumen
+    # Sin resumen («Solo OCR»), el asunto como antes: sin un «- N/A» colgando.
+    sin_resumen = fila_de_acta({"acta": "ACTA EXTRAORDINARIA", "numero": "09"})
+    assert sin_resumen.asunto == "ACTA DE CONSEJO DE FACULTAD No. 09 - EXTRAORDINARIA"
+    assert sin_resumen.resumen == "N/A"
+    # Y al resumidor se le pide nombrar a las personas, no la lista de asistentes.
+    from resolutions.adapters.mistral_resumen import INSTRUCCIONES
+
+    assert "Nombra a las personas que el acta menciona" in INSTRUCCIONES
+    assert "ni la lista de asistentes" in INSTRUCCIONES
+
+
 def test_sin_fecha_ni_folios_queda_na_y_no_se_inventa():
     fila = fila_de_acta({"numero": "3", "fecha": "2012", "carpeta": "", "archivo": "acta.pdf"})
     assert (fila.fecha_inicial, fila.folios) == ("N/A", "N/A")

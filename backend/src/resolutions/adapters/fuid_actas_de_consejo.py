@@ -7,6 +7,8 @@ por acta:
 
 * **Nombre o asunto**: «ACTA DE CONSEJO DE FACULTAD No. 022 - ORDINARIA», con
   el consejo que diga el papel: académico, superior o, si no dice, de facultad.
+  Desde el 2026-11-09, seguido del resumen del acta, que nombra a las personas
+  que menciona: «… No. 022 - ORDINARIA - El Consejo de Facultad… sesionó…».
 * **Consecutivo inicial y final**: el número del acta, «022».
 * **Fechas extremas**: la de la sesión en las dos, «17/12/2012».
 * **Caja** y **carpeta**: «00C003284» y «UPD3859771», de dónde está el PDF.
@@ -63,12 +65,25 @@ def asunto_del_acta(fila: Mapping[str, object]) -> str:
     return f"{serie} No. {numero}" + (f" - {sesion}" if sesion else "")
 
 
+def asunto_con_resumen(fila: Mapping[str, object], resumen: str | None = None) -> str:
+    """«ACTA DE CONSEJO DE FACULTAD No. 022 - ORDINARIA - El Consejo de Facultad… sesionó…».
+
+    El operador, 2026-11-09: el asunto es el acta, su sesión y su resumen, con
+    el nombre de las personas que menciona. Sin resumen -- «Solo OCR» -- el
+    asunto queda sin él, no con un «- N/A» al final.
+    """
+    asunto = asunto_del_acta(fila)
+    resumen = _resumen(fila.get("resumen")) if resumen is None else resumen
+    return f"{asunto} - {resumen}" if resumen != NO_LEIDO else asunto
+
+
 def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow:
     """La fila del FUID de un acta. El número de orden lo pone quien junta las filas."""
     caja, upd = ubicacion(str(fila.get("carpeta") or ""), str(fila.get("archivo") or ""))
     numero = str(fila.get("numero") or "").strip() or NO_LEIDO
     fecha = _fecha(fila.get("fecha"))
     folios = _entero(fila.get("folios"))
+    resumen = _resumen(fila.get("resumen"))
     notas = []
     inicial, final = _entero(fila.get("folio_inicial")), _entero(fila.get("folio_final"))
     if inicial is not None and final is not None:
@@ -77,7 +92,7 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow:
         notas.append(str(fila["observaciones"]))
     return FuidRow(
         orden=0,
-        asunto=asunto_del_acta(fila),
+        asunto=asunto_con_resumen(fila, resumen),
         codigo_trd="",
         consecutivo_inicial=numero,
         consecutivo_final=numero,
@@ -94,7 +109,7 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow:
         notas="; ".join(notas),
         pagina_inicial=fila.get("pagina_inicial"),  # type: ignore[arg-type]
         acta=numero,
-        resumen=_resumen(fila.get("resumen")),
+        resumen=resumen,
         pagina_final=_entero(fila.get("pagina_final")),
     )
 

@@ -171,8 +171,9 @@ def test_en_la_carpeta_de_la_corrida_un_solo_fuid_con_las_dos_y_su_resumen(tmp_p
 
     ruta = destino / CAJA / f"{CAJA}__FUID.xlsx"
     fuid = leer_fuid(ruta)
+    # El asunto del acta lleva detrás su resumen (el operador, 2026-11-09).
     assert sorted(fila[2] for fila in fuid.filas) == [
-        "ACTA DE CONSEJO DE FACULTAD No. 02 - ORDINARIA",
+        "ACTA DE CONSEJO DE FACULTAD No. 02 - ORDINARIA - SE APROBO EL PLAN DE ESTUDIOS",
         "RESOLUCION 00030 POR LA CUAL SE CONVOCA",
         "RESOLUCION 00031 POR LA CUAL SE CONVOCA",
     ]
@@ -183,7 +184,9 @@ def test_en_la_carpeta_de_la_corrida_un_solo_fuid_con_las_dos_y_su_resumen(tmp_p
     assert hoja["R12"].value == "OBJETIVO / RESUMEN"
     assert hoja["R12"].fill.fgColor.rgb == hoja["P12"].fill.fgColor.rgb
     resumenes = {hoja.cell(fila, 3).value: hoja.cell(fila, 18).value for fila in range(14, 17)}
-    assert resumenes["ACTA DE CONSEJO DE FACULTAD No. 02 - ORDINARIA"] == "SE APROBO EL PLAN DE ESTUDIOS"
+    assert resumenes["ACTA DE CONSEJO DE FACULTAD No. 02 - ORDINARIA - SE APROBO EL PLAN DE ESTUDIOS"] == (
+        "SE APROBO EL PLAN DE ESTUDIOS"
+    )
     assert resumenes["RESOLUCION 00030 POR LA CUAL SE CONVOCA"] == "N/A"
 
 
