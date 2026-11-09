@@ -183,3 +183,46 @@ def test_las_noticias_llegan_aunque_los_hilos_del_servicio_esten_ocupados():
             await asyncio.gather(*ocupados)
 
     assert asyncio.run(ir()) == [evento]
+
+
+class TestLosProcesosNacenConSpawn:
+    """«15. ACTA 17 ODONTOLOGIA» en Docker (2026-11-09): diez documentos parados en
+    «Reconociendo el documento», CPU al 1 % y sin red. py-spy los mostró a todos en
+    ``_lock_unlock_module``, nacidos por ``popen_fork``: un «fork» de un proceso con decenas
+    de hilos hereda el cerrojo de importación que uno de ellos tenía tomado. En Linux lo de
+    omisión es «fork»; en Windows, «spawn», y por eso aquí no pasaba."""
+
+    def _pool(self, documentos_por_proceso):
+        from dataclasses import replace
+
+        from resolutions.api.main import _nuevo_pool
+        from resolutions.api.settings import Settings
+
+        return _nuevo_pool(replace(Settings(), document_workers=1, documentos_por_proceso=documentos_por_proceso))
+
+    def test_el_pool_arranca_sus_procesos_con_spawn_aunque_no_se_reciclen(self):
+        for reciclar in (0, 5):
+            pool = self._pool(reciclar)
+            try:
+                assert pool._mp_context.get_start_method() == "spawn", reciclar
+            finally:
+                pool.shutdown(wait=False)
+
+    def test_y_un_proceso_del_pool_trabaja(self):
+        import os
+
+        pool = self._pool(0)
+        try:
+            assert pool.submit(os.getpid).result(timeout=120) != os.getpid()
+        finally:
+            pool.shutdown(wait=True)
+
+    def test_el_manager_tambien_nace_con_spawn(self):
+        import inspect
+
+        from resolutions.api import main
+
+        fuente = inspect.getsource(main.lifespan)
+        assert "multiprocessing.get_context(ARRANQUE).Manager()" in fuente
+        assert "multiprocessing.Manager()" not in fuente
+        assert main.ARRANQUE == "spawn"

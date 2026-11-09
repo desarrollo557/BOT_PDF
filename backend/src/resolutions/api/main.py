@@ -124,25 +124,35 @@ def _arrancar() -> Contexto:
 contexto = _arrancar()
 
 
+#: Cómo nacen los procesos del pool y el Manager: siempre «spawn», un Python
+#: nuevo que importa lo que necesita. En Linux -- Docker -- lo de omisión era
+#: «fork», una copia de este proceso con sus decenas de hilos (los 64 del
+#: servicio, las descargas, la pantalla). Si al copiarlo uno de ellos estaba
+#: importando un módulo, el hijo nacía con ese cerrojo de importación tomado y
+#: nadie lo soltaba: el primer ``import`` del trabajo esperaba para siempre.
+#: Lo vivió el operador el 2026-11-09 con «15. ACTA 17 ODONTOLOGIA»: diez
+#: documentos en «Reconociendo el documento», CPU al 1 %, sin red, y py-spy
+#: los mostró a todos en ``_lock_unlock_module`` dentro de
+#: ``worker/inventario.py``, nacidos por ``popen_fork``. Windows siempre
+#: arranca así, y por eso aquí no pasaba.
+ARRANQUE = "spawn"
+
+
 def _nuevo_pool(settings: Settings) -> ProcessPoolExecutor:
-    """El pool de procesos, con cada proceso cambiado tras ``documentos_por_proceso``.
+    """El pool de procesos, con «spawn» y cada proceso cambiado tras ``documentos_por_proceso``.
 
     En días de corrida, la memoria que el código nativo no devuelve se
-    acumula en los mismos pocos procesos; uno nuevo empieza limpio. Reciclar
-    exige arrancar los procesos con «spawn», que es lo que Windows hace siempre.
+    acumula en los mismos pocos procesos; uno nuevo empieza limpio.
     """
     reciclar = max(0, int(getattr(settings, "documentos_por_proceso", 0) or 0))
     return ProcessPoolExecutor(
         max_workers=settings.document_workers,
-        # Cada proceso hijo configura su propio registro al nacer: en Windows
+        # Cada proceso hijo configura su propio registro al nacer: con «spawn»
         # no hereda los manejadores del padre, y es en los hijos donde ocurre
         # todo lo que interesa ver.
         initializer=configurar_worker,
-        **(
-            {"max_tasks_per_child": reciclar, "mp_context": multiprocessing.get_context("spawn")}
-            if reciclar
-            else {}
-        ),
+        mp_context=multiprocessing.get_context(ARRANQUE),
+        **({"max_tasks_per_child": reciclar} if reciclar else {}),
     )
 
 
@@ -196,7 +206,9 @@ async def lifespan(app: FastAPI):
             logger.debug("no se pudo cerrar el pool roto", exc_info=True)
 
     ctx.rehacer_pool = rehacer_pool
-    ctx.manager = multiprocessing.Manager()
+    # Con «spawn» por lo mismo que el pool: un «fork» desde este proceso, con
+    # sus decenas de hilos, puede heredar un cerrojo tomado (``ARRANQUE``).
+    ctx.manager = multiprocessing.get_context(ARRANQUE).Manager()
     ctx.progress_queue = ctx.manager.Queue(maxsize=PROGRESS_QUEUE_SIZE)
     # Lo que el worker consulta entre página y página para saber si sigue. Vive
     # en el Manager y no en este proceso porque quien lo lee está en otro.
