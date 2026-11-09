@@ -28,10 +28,12 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
 from ..application.consumo import Consumo, anotar_uso_json
+from ..application.control import Cancelled
 from ..application.ports import VeredictoDeCostura
 from .turnos import turno
 
@@ -79,8 +81,12 @@ class MistralJuezDeCosturas:
         config: ConfigDelRevisor | None = None,
         consumo: Consumo | None = None,
         turnos: AbstractContextManager | None = None,
+        antes_de_pedir: Callable[[], None] | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get("MISTRAL_API_KEY", "")
+        #: El control del trabajo: ``Cancelled`` si el operador lo detuvo. Se
+        #: pregunta antes de cada petición de pago (2026-11-09).
+        self._antes_de_pedir = antes_de_pedir
         self._config = config or ConfigDelRevisor()
         self._consumo = consumo
         #: El turno común de llamadas a la IA del pool: el revisor de muchas
@@ -139,12 +145,16 @@ class MistralJuezDeCosturas:
                     "Authorization": f"Bearer {self._api_key}",
                 },
             )
+            if self._antes_de_pedir is not None:
+                self._antes_de_pedir()
             try:
-                with (
-                    turno(self._turnos),
-                    urllib.request.urlopen(peticion, timeout=self._config.timeout_seconds) as respuesta,
-                ):
-                    return json.load(respuesta)
+                with turno(self._turnos):
+                    if self._antes_de_pedir is not None:
+                        self._antes_de_pedir()
+                    with urllib.request.urlopen(peticion, timeout=self._config.timeout_seconds) as respuesta:
+                        return json.load(respuesta)
+            except Cancelled:
+                raise
             except urllib.error.HTTPError as error:
                 if error.code in _SE_REINTENTA and intento < self._config.intentos:
                     if self._consumo is not None:

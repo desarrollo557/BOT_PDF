@@ -142,7 +142,7 @@ class Taller:
 
         return OcrEnCascada(
             local=local,
-            remoto=MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia),
+            remoto=MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia, antes_de_pedir=self.control.check),
             consumo=self.consumo,
         )
 
@@ -211,7 +211,7 @@ class Taller:
             return None
         from ...adapters.mistral_revisor import MistralJuezDeCosturas
 
-        return MistralJuezDeCosturas(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
+        return MistralJuezDeCosturas(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia, antes_de_pedir=self.control.check)
 
     def con_ia(self) -> bool:
         """Si el operador pidió la ayuda de pago para este trabajo."""
@@ -266,7 +266,7 @@ class Taller:
 
         from ...adapters.mistral_ocr import MistralOcr
 
-        motor = MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
+        motor = MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia, antes_de_pedir=self.control.check)
         return clase(
             leer=lambda imagen: motor.read(imagen).text,
             # La mitad de los lectores de página: un mosaico son diez caras, y
@@ -348,7 +348,7 @@ class Taller:
 
         from ...adapters.mistral_resumen import MistralResumidor
 
-        return MistralResumidor(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
+        return MistralResumidor(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia, antes_de_pedir=self.control.check)
 
     def nombrador(self):
         """Quien nombra con la IA un documento que nada supo nombrar, si se pidió la IA.
@@ -498,7 +498,7 @@ class Taller:
         from ...adapters.esquinas_del_folio import LectorDeFolios
         from ...adapters.mistral_ocr import MistralOcr
 
-        motor = MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
+        motor = MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia, antes_de_pedir=self.control.check)
         return LectorDeFolios(leer=lambda imagen: motor.read(imagen).text)
 
     def lector_de_pago(self):
@@ -516,7 +516,7 @@ class Taller:
 
         from ...adapters.mistral_ocr import MistralOcr
 
-        return MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia)
+        return MistralOcr(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia, antes_de_pedir=self.control.check)
 
     def motivo_sin_resumidor(self) -> str:
         """Por qué este trabajo no tiene resumidor, dicho para la columna de notas."""

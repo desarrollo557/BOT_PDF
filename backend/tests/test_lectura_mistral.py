@@ -598,3 +598,103 @@ class TestElSobreDeLaTanda:
         from resolutions.adapters.mistral_ocr import _encuadernadas
 
         assert _encuadernadas([b"esto no es una imagen"]) is None
+
+
+class TestDetenerNoPagaMas:
+    """2026-11-09: tras «Detener», Mistral siguió cobrando 8 páginas en 17 s.
+
+    Cada habilidad pregunta al control entre página y página, pero lo que ya
+    estaba en cola en sus hilos se seguía pidiendo. Ahora cada lector de pago
+    pregunta antes de cada petición, también con el turno ya tomado.
+    """
+
+    def _control(self, estados):
+        from resolutions.application.control import FlagRunControl
+
+        return FlagRunControl(lambda: estados[0]).check
+
+    def _nunca(self, monkeypatch):
+        def urlopen_prohibido(peticion, timeout=None):
+            raise AssertionError("se pidió a Mistral con el trabajo detenido")
+
+        monkeypatch.setattr("urllib.request.urlopen", urlopen_prohibido)
+
+    def test_el_ocr_no_pide_con_el_trabajo_detenido(self, monkeypatch):
+        from resolutions.application.control import Cancelled
+
+        self._nunca(monkeypatch)
+        motor = MistralOcr(api_key="llave", antes_de_pedir=self._control(["cancelled"]))
+        with pytest.raises(Cancelled):
+            motor.read(b"\x89PNG imagen")
+        with pytest.raises(Cancelled):
+            motor.read_many([b"uno", b"dos"])
+
+    def test_detenido_mientras_esperaba_turno_tampoco_paga(self, monkeypatch):
+        """El turno común de la IA (8 a la vez): se detiene mientras se espera."""
+        from contextlib import contextmanager
+
+        from resolutions.application.control import Cancelled
+
+        self._nunca(monkeypatch)
+        estados = ["running"]
+
+        @contextmanager
+        def turno_lento():
+            estados[0] = "cancelled"  # el operador pulsó «Detener» mientras esperaba
+            yield
+
+        motor = MistralOcr(api_key="llave", turnos=turno_lento(), antes_de_pedir=self._control(estados))
+        with pytest.raises(Cancelled):
+            motor.read(b"\x89PNG imagen")
+
+    def test_el_juez_de_costuras_y_el_resumidor_tampoco(self, monkeypatch):
+        from resolutions.adapters.mistral_resumen import MistralResumidor
+        from resolutions.adapters.mistral_revisor import MistralJuezDeCosturas
+        from resolutions.application.control import Cancelled
+
+        self._nunca(monkeypatch)
+        detenido = self._control(["cancelled"])
+        with pytest.raises(Cancelled):
+            MistralJuezDeCosturas(api_key="llave", antes_de_pedir=detenido).decidir(
+                [{"pagina": 1, "texto": "a"}, {"pagina": 2, "texto": "b"}], [(1, 2)], "reglas"
+            )
+        with pytest.raises(Cancelled):
+            MistralResumidor(api_key="llave", antes_de_pedir=detenido)._pedir(b"{}")
+
+    def test_sin_control_lee_como_siempre(self, monkeypatch):
+        respuesta = {"pages": [{"index": 0, "markdown": "hola"}], "usage_info": {"pages_processed": 1}}
+
+        class Conexion:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return json.dumps(respuesta).encode()
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda peticion, timeout=None: Conexion())
+        monkeypatch.setattr("json.load", lambda conexion: json.loads(conexion.read()))
+        estados = ["running"]
+        assert MistralOcr(api_key="llave", antes_de_pedir=self._control(estados)).read(b"\x89PNG").text == "hola"
+
+    def test_el_taller_del_trabajo_le_da_su_control(self, monkeypatch, tmp_path):
+        """El cableado de verdad: el lector que arma el taller pregunta al control del trabajo."""
+        from resolutions.api.worker.taller import Taller
+        from resolutions.application.control import Cancelled
+
+        self._nunca(monkeypatch)
+        taller = Taller.desde(
+            {
+                "job_id": "j1",
+                "source": str(tmp_path / "a.pdf"),
+                "lectura": "mistral",
+                "controls": {"j1": "cancelled"},
+                "settings": {"output_dir": str(tmp_path), "mistral_api_key": "llave"},
+            }
+        )
+        lector = taller.lector_de_pago()
+        assert lector is not None
+        with pytest.raises(Cancelled):
+            lector.read(b"\x89PNG imagen")

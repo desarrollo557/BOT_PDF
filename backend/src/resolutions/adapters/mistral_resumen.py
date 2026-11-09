@@ -87,8 +87,12 @@ class MistralResumidor:
         *,
         instrucciones: str = INSTRUCCIONES,
         encabezado: str = "Texto del acta",
+        antes_de_pedir: Callable[[], None] | None = None,
     ) -> None:
         self._api_key = api_key
+        #: El control del trabajo: ``Cancelled`` si el operador lo detuvo. Se
+        #: pregunta antes de cada petición de pago (2026-11-09).
+        self._antes_de_pedir = antes_de_pedir
         #: Lo que se le pide: el resumen de un acta, o -- para la caja de
         #: correspondencia -- el nombre de un documento (``taller.nombrador``).
         self._instrucciones = instrucciones
@@ -164,11 +168,13 @@ class MistralResumidor:
                 "Authorization": f"Bearer {self._api_key}",
             },
         )
-        with (
-            turno(self._turnos),
-            urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as respuesta,
-        ):
-            return json.load(respuesta)
+        if self._antes_de_pedir is not None:
+            self._antes_de_pedir()
+        with turno(self._turnos):
+            if self._antes_de_pedir is not None:
+                self._antes_de_pedir()
+            with urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as respuesta:
+                return json.load(respuesta)
 
     def _espera(self, intento: int) -> float:
         esperas = self._config.esperas or (1.0,)

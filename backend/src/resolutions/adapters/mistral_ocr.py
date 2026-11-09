@@ -35,6 +35,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from io import BytesIO
@@ -42,6 +43,7 @@ from io import BytesIO
 from PIL import Image
 
 from ..application.consumo import Consumo
+from ..application.control import Cancelled
 from ..application.ports import OcrResult
 from .pymupdf_source import CALIDAD_JPEG
 from .turnos import turno
@@ -107,8 +109,15 @@ class MistralOcr:
         config: MistralOcrConfig | None = None,
         consumo: Consumo | None = None,
         turnos: AbstractContextManager | None = None,
+        antes_de_pedir: Callable[[], None] | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get("MISTRAL_API_KEY", "")
+        #: Lo que se pregunta antes de cada petición de pago: el control del
+        #: trabajo, que levanta ``Cancelled`` si el operador lo detuvo. Cada
+        #: habilidad pregunta entre página y página, pero lo que ya estaba en
+        #: cola en sus hilos se seguía pidiendo y pagando: tras «Detener»,
+        #: Mistral cobró 8 páginas más en 17 s (2026-11-09).
+        self._antes_de_pedir = antes_de_pedir
         self._config = config or MistralOcrConfig()
         #: El tope común de llamadas a la vez de todo el servicio, si lo hay. Se
         #: toma sólo mientras la petición está en el aire: esperar un reintento
@@ -257,6 +266,11 @@ class MistralOcr:
             acumulado,
         )
 
+    def _seguir(self) -> None:
+        """Pregunta al trabajo si sigue; ``Cancelled`` si el operador lo detuvo."""
+        if self._antes_de_pedir is not None:
+            self._antes_de_pedir()
+
     def _pedir(self, cuerpo: bytes) -> dict | None:
         """La petición, con la paciencia que el proveedor exige.
 
@@ -267,6 +281,9 @@ class MistralOcr:
         """
         espera = self._config.espera_inicial
         for intento in range(1, self._config.reintentos + 1):
+            # Antes de esperar turno, y otra vez con el turno en la mano: un
+            # trabajo detenido mientras esperaba no paga ni una página más.
+            self._seguir()
             peticion = urllib.request.Request(
                 ENDPOINT,
                 data=cuerpo,
@@ -276,13 +293,12 @@ class MistralOcr:
                 },
             )
             try:
-                with (
-                    turno(self._turnos),
-                    urllib.request.urlopen(
-                        peticion, timeout=self._config.timeout_seconds
-                    ) as conexion,
-                ):
-                    return json.load(conexion)
+                with turno(self._turnos):
+                    self._seguir()
+                    with urllib.request.urlopen(peticion, timeout=self._config.timeout_seconds) as conexion:
+                        return json.load(conexion)
+            except Cancelled:
+                raise
             except urllib.error.HTTPError as error:
                 if error.code in _SE_REINTENTA and intento < self._config.reintentos:
                     if self._consumo is not None:
