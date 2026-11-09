@@ -17,7 +17,15 @@
   import RunStats from '$lib/components/RunStats.svelte';
   import PanelDeRendimiento from '$lib/components/PanelDeRendimiento.svelte';
   import { marcadasEnCinta, sumarConsumos } from '$lib/rendimiento';
-  import { lado, loQueFalta, vaPorLaRed } from '$lib/velocidad';
+  import {
+    avanceDeLaDescarga,
+    bajandoDeLaRed,
+    lado,
+    loQueFalta,
+    resumenDeLasDescargas,
+    tamanoLegible,
+    vaPorLaRed
+  } from '$lib/velocidad';
   import { jobStore } from '$lib/jobs.svelte';
   import { unitFor } from '$lib/format';
   import { STAGE_LABELS } from '$lib/rungs';
@@ -91,14 +99,32 @@
    * Los documentos que la carpeta tiene abiertos ahora, varios a la vez. Un
    * servicio anterior sólo dice el actual, y entonces la lista es ése.
    */
-  const abiertos = $derived(
-    (run.en_curso ??
+  const abiertos = $derived([
+    ...(run.en_curso ??
       (run.current && run.current_job_id
         ? [{ job_id: run.current_job_id, nombre: run.current }]
         : [])
-    ).map((item) => ({ ...item, job: jobStore.get(item.job_id) }))
-  );
+    ).map((item) => {
+      const trabajo = jobStore.get(item.job_id);
+      // Cómo va la descarga de su PDF de la red (2026-11-09); sólo mientras el
+      // trabajo sigue en curso, para que una barra no se quede a medias.
+      const enVuelo = trabajo?.state === 'queued' || trabajo?.state === 'running';
+      return { ...item, job: trabajo, descarga: enVuelo ? (trabajo?.progress.descarga ?? null) : null };
+    }),
+    // Y los que se bajan antes de tener trabajo: al retomar se baja primero para
+    // ver qué falta en el destino.
+    ...(run.bajando ?? []).map((item) => ({
+      job_id: `red:${item.nombre}`,
+      nombre: item.nombre,
+      job: undefined,
+      descarga: item.descarga
+    }))
+  ]);
   const job = $derived(abiertos[0]?.job);
+  /** «Bajando 2 PDF · 246 / 820 MB», en la línea «Red», mientras baja alguno. */
+  const resumenBajando = $derived(
+    active ? resumenDeLasDescargas(abiertos.flatMap((item) => (item.descarga ? [item.descarga] : []))) : null
+  );
 
   /**
    * Los documentos de la carpeta que siguen en pantalla, para sumar de dónde
@@ -474,6 +500,9 @@
       {:else if active && midiendo}
         <span class="falta">Midiendo la red…</span>
       {/if}
+      {#if resumenBajando}
+        <span class="falta tabular">{resumenBajando}</span>
+      {/if}
     </div>
   {/if}
 
@@ -513,7 +542,11 @@
     paginasTotal={0}
     velocidad={rate}
     segundos={elapsedSeconds}
-    etapas={active ? abiertos.map((item) => item.job?.progress.stage) : []}
+    etapas={active
+      ? abiertos.map((item) =>
+          item.descarga?.estado === 'bajando' ? 'downloading' : item.descarga ? 'queued' : item.job?.progress.stage
+        )
+      : []}
     procedencias={[
       ...trabajos.map((trabajo) => trabajo.progress.by_provenance),
       ...(run.retirados ? [run.retirados.procedencias] : [])
@@ -568,7 +601,16 @@
             <div class="line">
               <span class="status-dot status-dot-sm live" aria-hidden="true"></span>
               <span class="file" title={item.nombre}>{item.nombre}</span>
-              {#if item.job}
+              {#if item.descarga}
+                <!-- Bajándose de la red: el tamaño del archivo donde irían las
+                     páginas, que todavía no se saben (2026-11-09). -->
+                <span class="stage">
+                  {item.descarga.estado === 'esperando' ? 'Esperando turno' : STAGE_LABELS.downloading}
+                </span>
+                {#if item.descarga.total}
+                  <span class="pages tabular">{tamanoLegible(item.descarga.total)}</span>
+                {/if}
+              {:else if item.job}
                 <span class="stage">
                   {STAGE_LABELS[item.job.progress.stage] ?? item.job.progress.stage}
                 </span>
@@ -577,7 +619,12 @@
                 </span>
               {/if}
             </div>
-            {#if item.job?.progress.detail}
+            {#if item.descarga}
+              <!-- Lo bajado, el porcentaje, la velocidad y lo que falta, en vivo.
+                   Sin aria-live: se anunciaría cuatro veces por segundo; la barra
+                   lo dice en su aria-valuetext. -->
+              <small class="detalle tabular">{bajandoDeLaRed(item.descarga)}</small>
+            {:else if item.job?.progress.detail}
               <!-- Qué hace dentro de la etapa: con todas las páginas leídas, la
                    barra llena no dice si sigue trabajando o se quedó quieto. -->
               <small class="detalle">
@@ -598,7 +645,23 @@
                 los demás documentos siguen.
               </small>
             {/if}
-            {#if item.job?.progress.page_count}
+            {#if item.descarga}
+              {@const avance = avanceDeLaDescarga(item.descarga)}
+              <!-- Sin porcentaje -- esperando turno o sin tamaño --, la barra
+                   indeterminada de la cola. -->
+              <div
+                class="progress progress-sm"
+                class:progress-indeterminate={avance === null}
+                role="progressbar"
+                aria-label={`Descarga de ${item.nombre}`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={avance ?? undefined}
+                aria-valuetext={bajandoDeLaRed(item.descarga)}
+              >
+                <div class="progress-fill" style:width={avance === null ? undefined : `${avance}%`}></div>
+              </div>
+            {:else if item.job?.progress.page_count}
               <div class="progress progress-sm">
                 <div class="progress-fill" style:width={`${item.job.progress.percent}%`}></div>
               </div>

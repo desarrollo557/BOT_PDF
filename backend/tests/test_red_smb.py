@@ -692,3 +692,142 @@ class TestRetomarNoBajaLoCompleto:
 
         assert run.ya_entregados == 2
         assert servidor.descargas == bajados
+
+
+class _Lenta(io.BytesIO):
+    """Un archivo de la red que tarda en cada bloque, como uno de 400 MB a 4 MB/s."""
+
+    def read(self, n=-1):
+        import time
+
+        time.sleep(0.12)
+        return super().read(n)
+
+
+def _con_red_lenta(servidor, monkeypatch, ruta: str, tamano: int) -> bytes:
+    datos = b"%PDF-1.4 " + b"x" * tamano
+    servidor.archivos = {servidor._clave(ruta): datos}
+    abrir = servidor.open_file
+
+    def lento(ruta, mode="r", share_access=None, **cuenta):
+        return _Lenta(abrir(ruta, mode, share_access, **cuenta).getvalue())
+
+    monkeypatch.setattr(sys.modules["smbclient"], "open_file", lento)
+    return datos
+
+
+def _correr_mirando(motor, registro, origen, destino, **opciones):
+    """Como ``_correr``, y con lo que la pantalla recibe: las tramas publicadas, cuatro veces por segundo."""
+
+    async def ir():
+        cola = registro.subscribe()
+        run = motor.start(origen, str(destino), **opciones)
+        tramas = []
+        for _ in range(800):
+            registro.flush()
+            while not cola.empty():
+                tramas.append(cola.get_nowait())
+            if not run.active:
+                break
+            await asyncio.sleep(0.02)
+        while not cola.empty():
+            tramas.append(cola.get_nowait())
+        return run, tramas
+
+    return asyncio.run(ir())
+
+
+class TestLaDescargaEnVivo:
+    """El operador, 2026-11-09: «cuando esté un archivo o un PDF a procesar en la red y se esté
+    bajando, que se muestre el progreso de descarga, el tamaño del archivo, esos detallitos»."""
+
+    def test_traer_dice_cuanto_lleva_bajado(self, servidor, tmp_path):
+        ruta = rf"{CARPETA}\GRANDE.pdf"
+        datos = b"%PDF-1.4 " + b"x" * (3 * red_smb.BLOQUE + 1000)
+        servidor.archivos[servidor._clave(ruta)] = datos
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        avisos = []
+        red_smb.traer(ruta, tmp_path / "G.pdf", al_avanzar=lambda copiados, total: avisos.append((copiados, total)))
+        total = len(datos)
+        # En cuanto se abre, con su tamaño; después, bloque a bloque hasta el final.
+        assert avisos == [(0, total), *[(n * red_smb.BLOQUE, total) for n in (1, 2, 3)], (total, total)]
+        assert (tmp_path / "G.pdf").read_bytes() == datos
+
+    def test_un_aviso_que_falla_no_corta_la_descarga(self, servidor, tmp_path):
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+
+        def roto(_copiados, _total):
+            raise RuntimeError("la pantalla no contesta")
+
+        copia = red_smb.traer(rf"{CARPETA}\210847\UPD2998726.pdf", tmp_path / "a.pdf", al_avanzar=roto)
+        assert copia.read_bytes() == b"%PDF-1.4 caja 210847"
+
+    def test_el_registro_lo_lleva_en_el_trabajo_y_lo_quita_al_terminar(self, tmp_path):
+        registro = JobRegistry()
+        origen = tmp_path / "a.pdf"
+        origen.write_bytes(b"%PDF-1.4")
+        job = registro.create(filename="a.pdf", source=origen, size=410 * 1024 * 1024)
+        registro.anotar_descarga(job.id, {"estado": "bajando", "bytes": 123 * 1024 * 1024, "total": 410 * 1024 * 1024, "velocidad": "3,5 MB/s"})
+        trama = job.as_dict()["progress"]
+        assert trama["descarga"]["bytes"] == 123 * 1024 * 1024
+        assert trama["detail"] == "Bajando de la red · 123 de 410 MB · 3,5 MB/s"
+        assert [cambiado.id for cambiado in registro.flush()] == [job.id]
+        registro.anotar_descarga(job.id, None)
+        assert job.as_dict()["progress"]["descarga"] is None and not job.as_dict()["progress"]["detail"]
+        # Un trabajo que ya no está en curso no se toca.
+        registro.mark_failed(job, "se detuvo")
+        registro.anotar_descarga(job.id, {"estado": "bajando", "bytes": 1, "total": 2})
+        assert job.progress.descarga is None
+
+    def test_cancelado_a_media_descarga_no_se_queda_congelado(self, tmp_path):
+        """Revisión, 2026-11-09: cancelar el PDF mientras baja dejaba «Bajando de la red · …» para siempre."""
+        registro = JobRegistry()
+        origen = tmp_path / "a.pdf"
+        origen.write_bytes(b"%PDF-1.4")
+        job = registro.create(filename="a.pdf", source=origen, size=10)
+        registro.anotar_descarga(job.id, {"estado": "bajando", "bytes": 5, "total": 10, "velocidad": "1,0 MB/s"})
+        registro.mark_cancelled(job)
+        # Un aviso tardío del hilo no la vuelve a poner; el final la quita.
+        registro.anotar_descarga(job.id, {"estado": "bajando", "bytes": 9, "total": 10, "velocidad": "1,0 MB/s"})
+        assert job.progress.descarga["bytes"] == 5
+        registro.anotar_descarga(job.id, None)
+        assert job.progress.descarga is None and not job.progress.detail
+
+    def test_la_pantalla_ve_bajar_el_pdf(self, servidor, ajustes, tmp_path, monkeypatch):
+        datos = _con_red_lenta(servidor, monkeypatch, rf"{CARPETA}\210847\GRANDE.pdf", 4 * red_smb.BLOQUE)
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        registro = JobRegistry()
+        run, tramas = _correr_mirando(_motor(ajustes, registro, []), registro, rf"{CARPETA}\210847", tmp_path / "destino")
+        assert run.state == "done" and run.processed == 1
+
+        de_trabajos = [t for t in tramas if t.get("kind") == "job"]
+        descargas = [t["progress"]["descarga"] for t in de_trabajos if t["progress"].get("descarga")]
+        # Primero, esperando su turno, con el tamaño del archivo.
+        assert descargas[0]["estado"] == "esperando" and descargas[0]["total"] == len(datos)
+        bajando = [d for d in descargas if d["estado"] == "bajando"]
+        # Después lo bajado, subiendo hasta el total, con la velocidad.
+        copiados = [d["bytes"] for d in bajando]
+        assert len(copiados) >= 3 and copiados == sorted(copiados) and copiados[-1] == len(datos)
+        assert any(d["velocidad"].endswith(("MB/s", "KB/s")) for d in bajando)
+        assert any(t["progress"]["detail"].startswith("Bajando de la red") for t in de_trabajos if t["progress"].get("descarga"))
+        # Y al terminar, nada: la tarjeta sigue con el proceso.
+        ultima = de_trabajos[-1]["progress"]
+        assert ultima["descarga"] is None
+
+    def test_al_retomar_se_ve_en_la_corrida(self, servidor, ajustes, tmp_path, monkeypatch):
+        """Al retomar, el PDF se baja antes de tener trabajo: su avance va en la corrida, una vez por segundo."""
+        datos = _con_red_lenta(servidor, monkeypatch, rf"{CARPETA}\210847\GRANDE.pdf", 12 * red_smb.BLOQUE)
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        registro = JobRegistry()
+        run, tramas = _correr_mirando(
+            _motor(ajustes, registro, []), registro, rf"{CARPETA}\210847", tmp_path / "destino",
+            tipo="diploma", retomar="revisar",
+        )
+        de_la_corrida = [t for t in tramas if t.get("kind") == "folder_run"]
+        bajando = [b["descarga"] for t in de_la_corrida for b in t.get("bajando") or []]
+        assert bajando and bajando[0]["estado"] == "esperando" and bajando[0]["total"] == len(datos)
+        assert any(d["estado"] == "bajando" and d["bytes"] > 0 for d in bajando)
+        # Al terminar de bajarlo, ya no está.
+        assert de_la_corrida[-1]["bajando"] == []
+        assert run.as_dict()["bajando"] == []
+

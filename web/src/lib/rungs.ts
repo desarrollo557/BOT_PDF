@@ -84,6 +84,9 @@ export const STATE_LABELS: Record<string, string> = {
 
 export const STAGE_LABELS: Record<string, string> = {
   queued: 'En cola',
+  // No es una etapa del worker: la pantalla de la carpeta la usa para el tiempo
+  // de los PDF que se bajan de la red, que antes se sumaba a «En cola» (2026-11-09).
+  downloading: 'Bajando de la red',
   paused: 'En pausa, esperando reanudar',
   cancelled: 'Cancelado por el operador',
   analysing: 'Leyendo páginas',

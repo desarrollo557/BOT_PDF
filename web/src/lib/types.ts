@@ -427,6 +427,12 @@ export interface Progress {
   health?: 'ok' | 'slow' | 'stalled' | 'warning' | 'done' | 'failed';
   /** Avisos relevantes para el operador, sin forzar un fallo del documento. */
   warnings?: string[];
+  /**
+   * Mientras su PDF se baja de la red, cómo va (el operador, 2026-11-09).
+   * `null` en cuanto termina, y ausente si no viene de la red o con un
+   * servicio anterior.
+   */
+  descarga?: DescargaDeRed | null;
 }
 
 /**
@@ -609,6 +615,13 @@ export interface FolderRun {
    * `current`.
    */
   en_curso?: { job_id: string; nombre: string }[];
+  /**
+   * Los PDF que se bajan de la red antes de tener trabajo -- al retomar se baja
+   * primero para ver qué falta en el destino --, con cómo va su descarga. Los
+   * que ya tienen trabajo lo llevan en `progress.descarga`. Ausente en un
+   * servicio anterior.
+   */
+  bajando?: { nombre: string; descarga: DescargaDeRed }[];
   /**
    * Los últimos documentos que la corrida creó, en el orden en que los tomó.
    * Sólo los últimos: con veinte mil PDF mandarlos todos en cada aviso eran
@@ -843,6 +856,27 @@ export interface RedDeLaCorrida {
   falta_red: string;
   /** Si el origen aún se está recorriendo: pueden aparecer más PDF. */
   al_menos: boolean;
+}
+
+/**
+ * Cómo va la descarga de un PDF de la red (`domain/ritmo.AvanceDeLaDescarga`).
+ * Llega hasta cuatro veces por segundo mientras baja.
+ */
+export interface DescargaDeRed {
+  /** «esperando» su turno de descarga (tres por servidor) o «bajando». */
+  estado: 'esperando' | 'bajando';
+  /** Lo ya copiado. */
+  bytes: number;
+  /** El tamaño del archivo en el origen; 0 si no se supo. */
+  total: number;
+  /** MB por segundo (MB = 1024²) en los últimos segundos; `null` hasta medir. */
+  mb_s: number | null;
+  /** «3,5 MB/s», ya escrito por el servicio como en la línea «Red» y el Excel; vacío hasta medir. */
+  velocidad: string;
+  /** Segundos que le faltan, o `null` si no se sabe. */
+  falta_s: number | null;
+  /** 1 la primera vez; más si la red se cortó y la copia volvió a empezar. */
+  intento?: number;
 }
 
 /** One source document ever processed, folded back out of the ledger. */

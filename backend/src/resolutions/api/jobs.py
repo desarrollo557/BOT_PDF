@@ -97,6 +97,11 @@ class JobProgress:
     #: última vez que avisó. Es una foto, no una cuenta propia: quien cuenta es
     #: el trabajo, y aquí sólo se guarda lo último que dijo.
     consumo: dict | None = None
+    #: Mientras su PDF se baja de la red, cómo va: estado («esperando» turno o
+    #: «bajando»), bytes, total, velocidad y lo que falta
+    #: (``domain/ritmo.AvanceDeLaDescarga``). ``None`` en cuanto termina, y
+    #: siempre si el PDF no viene de la red (el operador, 2026-11-09).
+    descarga: dict | None = None
 
     @property
     def elapsed_seconds(self) -> float:
@@ -296,6 +301,7 @@ class JobProgress:
             "health": health,
             "warnings": warnings,
             "consumo": self.consumo,
+            "descarga": self.descarga,
         }
 
 
@@ -664,6 +670,27 @@ class JobRegistry:
         if job is None:
             return
         job.progress.apply(event)
+        self._dirty.add(job.id)
+
+    def anotar_descarga(self, job_id: str, datos: dict | None) -> None:
+        """Cómo va la descarga de su PDF de la red, para la próxima trama. Sólo desde el bucle.
+
+        Deja también la frase en ``detail``, para quien no pinta la barra (la
+        tarjeta del trabajo, la consola). ``None`` la quita. No toca el reloj
+        de silencio: esperar el turno de descarga no es un trabajo colgado, y
+        el vigilante empieza a contar cuando el trabajo corre. Un trabajo que
+        ya no está en curso -- la corrida se detuvo con la copia a medias -- no
+        se toca.
+        """
+        from ..domain.ritmo import frase_de_la_descarga
+
+        job = self._jobs.get(job_id)
+        # Quitarla vale siempre: un trabajo cancelado a media descarga se quedaba
+        # con «Bajando de la red · …» congelado (revisión, 2026-11-09).
+        if job is None or (datos is not None and job.state not in IN_FLIGHT):
+            return
+        job.progress.descarga = datos
+        job.progress.detail = frase_de_la_descarga(datos) or None
         self._dirty.add(job.id)
 
     def flush(self) -> list[Job]:

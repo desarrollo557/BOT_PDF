@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime
 from enum import StrEnum
+from functools import partial
 from itertools import islice
 from pathlib import Path
 from uuid import uuid4
@@ -24,7 +25,7 @@ from ..adapters.excel_inventory import (
     NOMBRE_DEL_INVENTARIO_DE_PROCESOS,
 )
 from ..application.revisor_de_cortes import AgenteDeLaCorrida
-from ..domain.ritmo import Ritmo
+from ..domain.ritmo import AvanceDeLaDescarga, Ritmo
 from . import constancia as constancias
 from .constancia import Constancia, EstadoDeEntrega, Vigencia
 from .errores import archivo_en_uso, explicar_fallo
@@ -338,6 +339,13 @@ class FolderRun:
     #: Los que se están procesando ahora, por su trabajo y su ruta. Varios a la
     #: vez: la carpeta toma tantos como ranuras le deje el planificador.
     en_curso: dict[str, str] = field(default_factory=dict)
+    #: Los PDF que se bajan de la red antes de tener trabajo -- al retomar se
+    #: baja primero para ver qué falta en el destino --, por su ruta, con cómo
+    #: va su descarga. Los que ya tienen trabajo lo llevan en él
+    #: (``JobProgress.descarga``). Sólo se toca desde el bucle.
+    bajando: dict[str, dict] = field(default_factory=dict)
+    #: Cuándo se publicó la corrida por última vez por lo que baja: una vez por segundo.
+    bajando_publicado: float = 0.0
     #: Every document this run created, in the order it took them. The screen
     #: needs it to report on the run as a whole once it settles.
     job_ids: list[str] = field(default_factory=list)
@@ -561,6 +569,8 @@ class FolderRun:
             "en_curso": [
                 {"job_id": job_id, "nombre": nombre} for job_id, nombre in self.en_curso.items()
             ],
+            # Lo que se baja de la red sin trabajo todavía (al retomar).
+            "bajando": [{"nombre": nombre, "descarga": dict(datos)} for nombre, datos in self.bajando.items()],
             # Los últimos: los demás ya salieron del registro o están por salir.
             "job_ids": self.job_ids[-JOB_IDS_EN_PANTALLA:],
             "job_count": len(self.job_ids),
@@ -1965,7 +1975,7 @@ class FolderRunner:
                 mirada = await asyncio.to_thread(self._vigencia, run, path)
             if local != path and not (mirada and mirada[0] is Vigencia.VIGENTE):
                 try:
-                    await asyncio.to_thread(red_smb.traer, str(path), local, self._al_bajar(run, path))
+                    await self._bajar_sin_trabajo(run, path, relativa, local)
                 except Exception as error:  # noqa: BLE001 - un PDF que no baja no tumba la carpeta
                     self._avisar(run, f"No se pudo traer «{relativa}» de la red: {explicar_fallo(error)}")
                     run.failed += 1
@@ -2030,12 +2040,23 @@ class FolderRunner:
                 # Dentro del `try`: una red que se corta a mitad de la copia es
                 # un fallo pasajero de este PDF, que vuelve en la vuelta de
                 # reintento, y no de la carpeta.
-                # La tarjeta lo dice: sin esto enseñaba «En cola 0/?» mientras
-                # bajaba, como si no tuviera relación con la corrida.
-                job.progress.detail = "Bajando el PDF de la red"
+                # La tarjeta lo dice, con cifras: el tamaño mientras espera su
+                # turno de descarga, y lo bajado, la velocidad y lo que falta
+                # mientras baja (el operador, 2026-11-09). Sin esto enseñaba
+                # «En cola 0/?» como si no tuviera relación con la corrida.
+                avance = AvanceDeLaDescarga(total=job.bytes)
+                self._registry.anotar_descarga(job.id, avance.esperando())
                 self._registry.publish(job)
-                await asyncio.to_thread(red_smb.traer, str(path), local, self._al_bajar(run, path))
-                job.progress.detail = ""
+                try:
+                    await asyncio.to_thread(
+                        red_smb.traer,
+                        str(path),
+                        local,
+                        self._al_bajar(run, path),
+                        al_avanzar=self._al_avanzar(avance, partial(self._registry.anotar_descarga, job.id)),
+                    )
+                finally:
+                    self._registry.anotar_descarga(job.id, None)
                 self._registry.publish(job)
             # El PDF que tiene abierto otro programa -- el visor de alguien, el
             # antivirus, otra corrida del bot -- se espera un poco antes de darlo
@@ -2298,6 +2319,54 @@ class FolderRunner:
         while run.active and time.monotonic() < limite:
             await asyncio.sleep(min(1.0, max(0.0, limite - time.monotonic())))
         return run.active
+
+    async def _bajar_sin_trabajo(self, run: FolderRun, path: Path, relativa: str, local: Path) -> None:
+        """Baja de la red un PDF que todavía no tiene trabajo -- al retomar --, y dice cómo va.
+
+        Su avance va en la corrida (``FolderRun.bajando``), como mucho una vez
+        por segundo: esa trama pesa mucho más que la de un trabajo.
+        """
+        avance = AvanceDeLaDescarga(total=run.huellas_del_origen.get(str(path), (0, 0))[0], intervalo=1.0)
+        run.bajando[relativa] = avance.esperando()
+        self._publish(run)
+
+        def anotar(datos: dict) -> None:
+            if relativa in run.bajando:
+                run.bajando[relativa] = datos
+                # Una vez por segundo para toda la corrida, aunque bajen varios.
+                ahora = time.monotonic()
+                if ahora - run.bajando_publicado >= 1.0:
+                    run.bajando_publicado = ahora
+                    self._publish(run)
+
+        try:
+            await asyncio.to_thread(
+                red_smb.traer,
+                str(path),
+                local,
+                self._al_bajar(run, path),
+                al_avanzar=self._al_avanzar(avance, anotar),
+            )
+        finally:
+            run.bajando.pop(relativa, None)
+            self._publish(run)
+
+    @staticmethod
+    def _al_avanzar(avance: AvanceDeLaDescarga, entregar: Callable[[dict], None]) -> Callable[[int, int], None]:
+        """Lo que hace el hilo que baja con cada bloque: contarlo y, si toca avisar, pasarlo al bucle.
+
+        Se crea en el bucle y se llama desde el hilo de la descarga: lo que
+        cambia en el trabajo o en la corrida se cambia siempre en el bucle,
+        como ``_publish``.
+        """
+        bucle = asyncio.get_running_loop()
+
+        def avanzar(copiados: int, total: int) -> None:
+            datos = avance.avanzar(copiados, time.monotonic(), total)
+            if datos is not None and not bucle.is_closed():
+                bucle.call_soon_threadsafe(entregar, datos)
+
+        return avanzar
 
     @staticmethod
     def _al_bajar(run: FolderRun, path: Path) -> Callable[[int, float, float], None]:

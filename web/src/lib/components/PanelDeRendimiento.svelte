@@ -213,6 +213,7 @@
   /** Las etapas en el orden en que corren, no en el de cuánto tardaron. */
   const ORDEN_DE_ETAPAS = [
     'queued',
+    'downloading',
     'analysing',
     'identifying',
     'verifying',

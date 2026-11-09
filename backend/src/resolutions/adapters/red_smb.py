@@ -22,10 +22,10 @@ escribe, no se mueve y no se borra.
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import re
-import shutil
 import stat as stat_mod
 import sys
 import threading
@@ -649,7 +649,11 @@ def leer_muestra(ruta: str, tope: int) -> tuple[int, float]:
 
 
 def traer(
-    ruta: str, destino: Path, al_copiar: Callable[[int, float, float], None] | None = None
+    ruta: str,
+    destino: Path,
+    al_copiar: Callable[[int, float, float], None] | None = None,
+    *,
+    al_avanzar: Callable[[int, int], None] | None = None,
 ) -> Path:
     """Copia el archivo de la red a ``destino`` y devuelve la copia.
 
@@ -660,6 +664,12 @@ def traer(
     ``al_copiar`` recibe los bytes y de cuándo a cuándo (reloj monótono) se
     copiaron, con el archivo ya abierto: la velocidad de la red, sin la espera
     del turno de descarga (``domain/ritmo.py``).
+
+    ``al_avanzar`` recibe, mientras copia, lo copiado y el tamaño del archivo
+    (0 si no se supo): la primera vez con 0 en cuanto el archivo se abre -- ya
+    tiene su turno --, y después en cada bloque. Si la copia se repite -- la
+    red se cortó --, vuelve a empezar de 0. Para que la pantalla diga cuánto
+    lleva bajado (el operador, 2026-11-09).
     """
     import time
 
@@ -668,10 +678,24 @@ def traer(
     destino.parent.mkdir(parents=True, exist_ok=True)
     parcial = destino.with_name(destino.name + ".part")
 
+    def avisar(copiados: int, total: int) -> None:
+        if al_avanzar is None:
+            return
+        try:
+            al_avanzar(copiados, total)
+        except Exception:  # noqa: BLE001 - avisar nunca tumba una descarga
+            logger.debug("no se pudo avisar del avance de %s", ruta, exc_info=True)
+
     def copiar(p: Partes, cuenta: dict) -> int:
         with smbclient.open_file(p.unc, mode="rb", share_access=COMPARTIDO, **cuenta) as origen, parcial.open("wb") as copia:
+            total = _tamano_abierto(origen)
             inicio = time.monotonic()
-            shutil.copyfileobj(origen, copia, BLOQUE)
+            copiados = 0
+            avisar(copiados, total)
+            while bloque := origen.read(BLOQUE):
+                copia.write(bloque)
+                copiados += len(bloque)
+                avisar(copiados, total)
             fin = time.monotonic()
         if al_copiar is not None:
             try:
@@ -690,3 +714,14 @@ def traer(
     finally:
         parcial.unlink(missing_ok=True)
     return destino
+
+
+def _tamano_abierto(archivo) -> int:
+    """El tamaño de un archivo ya abierto, sin otra ida a la red; 0 si no se deja medir."""
+    try:
+        tamano = archivo.seek(0, io.SEEK_END)
+        archivo.seek(0)
+        return int(tamano)
+    except Exception:  # noqa: BLE001 - sin tamaño, la barra no dice el porcentaje
+        logger.debug("no se pudo medir el tamaño del archivo abierto", exc_info=True)
+        return 0

@@ -11,9 +11,12 @@ import pytest
 
 from resolutions.domain.ritmo import (
     MB,
+    AvanceDeLaDescarga,
     Ritmo,
     duracion_legible,
     estimar,
+    frase_de_la_descarga,
+    tamano_legible,
     tiempo_ocupado,
     velocidad_legible,
 )
@@ -118,3 +121,61 @@ class TestComoSeDice:
     @pytest.mark.parametrize(("mb_s", "texto"), [(None, "—"), (0.5, "512 KB/s"), (4.25, "4,2 MB/s"), (112.4, "112 MB/s")])
     def test_la_velocidad_con_coma(self, mb_s, texto):
         assert velocidad_legible(mb_s) == texto
+
+
+class TestElAvanceDeUnaDescarga:
+    """El operador, 2026-11-09: «que se muestre el progreso de descarga, el tamaño del archivo, esos detallitos»."""
+
+    def test_esperando_turno_dice_el_tamano(self):
+        datos = AvanceDeLaDescarga(total=410 * MB).esperando()
+        assert datos["estado"] == "esperando" and datos["bytes"] == 0 and datos["total"] == 410 * MB
+        assert datos["mb_s"] is None and datos["falta_s"] is None
+
+    def test_avisa_al_empezar_como_mucho_cuatro_veces_por_segundo_y_al_acabar(self):
+        avance = AvanceDeLaDescarga(total=10 * MB)
+        avisos = [avance.avanzar(mb * MB, 0.1 * mb) for mb in range(11)]
+        # Al empezar, a los 0,3 s, a los 0,6 s, a los 0,9 s y al acabar, aunque no toque.
+        dichos = [a["bytes"] // MB for a in avisos if a is not None]
+        assert dichos == [0, 3, 6, 9, 10]
+
+    def test_la_velocidad_y_lo_que_falta(self):
+        avance = AvanceDeLaDescarga(total=410 * MB)
+        avance.avanzar(0, 0.0)
+        datos = avance.avanzar(14 * MB, 4.0)
+        # La ventana es de dos segundos: los primeros, con la sesión abriéndose, no cuentan.
+        assert datos["mb_s"] == pytest.approx(3.5, abs=0.01)
+        assert datos["velocidad"] == "3,5 MB/s"
+        assert datos["falta_s"] == pytest.approx((410 - 14) / 3.5, abs=0.2)
+
+    def test_si_la_copia_vuelve_a_empezar_es_otro_intento(self):
+        avance = AvanceDeLaDescarga(total=10 * MB)
+        avance.avanzar(0, 0.0)
+        avance.avanzar(6 * MB, 2.0)
+        datos = avance.avanzar(0, 2.1)
+        assert datos is not None and datos["intento"] == 2 and datos["bytes"] == 0
+
+    def test_sin_tamano_no_hay_porcentaje_ni_lo_que_falta(self):
+        avance = AvanceDeLaDescarga()
+        avance.avanzar(0, 0.0)
+        datos = avance.avanzar(5 * MB, 1.0)
+        assert datos["total"] == 0 and datos["falta_s"] is None and datos["mb_s"] == pytest.approx(5.0)
+
+    def test_el_tamano_que_trae_el_archivo_manda(self):
+        avance = AvanceDeLaDescarga(total=0)
+        assert avance.avanzar(0, 0.0, total=8 * MB)["total"] == 8 * MB
+
+    @pytest.mark.parametrize(
+        ("bytes_", "texto"),
+        [(850 * 1024, "850 KB"), (int(2.4 * MB), "2,4 MB"), (410 * MB, "410 MB"), (int(1.6 * 1024 * MB), "1,6 GB"), (int(9.96 * MB), "10 MB"), (int(1023.9 * 1024), "1,0 MB")],
+    )
+    def test_el_tamano_con_coma(self, bytes_, texto):
+        assert tamano_legible(bytes_) == texto
+
+    def test_la_frase(self):
+        avance = AvanceDeLaDescarga(total=410 * MB)
+        assert frase_de_la_descarga(avance.esperando()) == "Esperando turno para bajar de la red · 410 MB"
+        avance.avanzar(0, 0.0)
+        datos = avance.avanzar(123 * MB, 35.0)
+        assert frase_de_la_descarga(datos).startswith("Bajando de la red · 123 de 410 MB · ")
+        assert frase_de_la_descarga(None) == ""
+
