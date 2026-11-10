@@ -454,8 +454,12 @@ class TestLaCajaDePuntaAPunta:
     def test_a_revision_va_solo_la_pagina_sin_fecha_entre_dos_meses(self, pdf, tmp_path):
         """La 2 está entre mayo y junio; la 5 es la última y no tiene con qué dudar."""
         informe = procesar(pdf, tmp_path, agrupar="mes")
-        assert [entrada["page"] for entrada in informe["review_queue"]] == [2]
-        assert "sin fecha legible" in informe["review_queue"][0]["reason"]
+        # Aparte, los documentos cuya fecha no está en el sitio de su clase --
+        # aquí, «fechado el …» suelto al final del cuerpo -- van sin fecha a
+        # Revisión (2026-11-10); no son la página entre dos meses.
+        del_mes = [e for e in informe["review_queue"] if "hoja principal" not in e["reason"]]
+        assert [entrada["page"] for entrada in del_mes] == [2]
+        assert "sin fecha legible" in del_mes[0]["reason"]
 
     def test_el_inventario_dice_lo_mismo_que_la_carpeta(self, pdf, tmp_path):
         """Cada fila nombra su archivo y lleva la fecha más reciente de su mes."""

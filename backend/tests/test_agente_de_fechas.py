@@ -12,7 +12,6 @@ from datetime import date
 from resolutions.application.agente_de_fechas import (
     AgenteDeFechas,
     candidatas,
-    fecha_por_su_tramite,
 )
 
 #: El contrato real: la fecha va en la última hoja, en formato de formulario.
@@ -93,15 +92,19 @@ class TestDondeSeBusca:
         assert candidatas([5, 6, 7], {}) == [7, 5, 6]
 
 
-class TestLaFechaDeSuTramite:
-    def test_primero_el_de_su_mismo_archivo(self):
-        fechas = [date(2021, 1, 1), None, date(2021, 3, 3)]
-        # La cédula (1) viaja en el archivo B con el reclamo (2).
-        assert fecha_por_su_tramite(1, fechas, ["A", "B", "B"]) == (date(2021, 3, 3), 2)
+class TestConLaFechaDeSuEstructura:
+    """La caja de Afinia le pasa con qué fechar y en qué orden mirar (2026-11-10)."""
 
-    def test_si_no_el_mas_cercano_y_a_igual_distancia_el_anterior(self):
-        fechas = [date(2021, 1, 1), None, date(2021, 3, 3)]
-        assert fecha_por_su_tramite(1, fechas, ["A", "B", "C"]) == (date(2021, 1, 1), 0)
+    def test_fecha_con_lo_que_se_le_pasa_y_no_con_la_mas_reciente(self):
+        textos = {1: "Señores AFINIA REF: recurso contra la factura del 05/10/2021"}
+        hallada = AgenteDeFechas(fechar=lambda _texto: None).buscar([1], textos)
+        assert hallada is None
 
-    def test_un_expediente_sin_ninguna_fecha(self):
-        assert fecha_por_su_tramite(0, [None, None], ["A", "A"]) is None
+    def test_en_orden_lee_primero_la_hoja_principal(self):
+        # El pagaré trae más «pistas» de fecha que el reconocimiento; antes la
+        # IA leía primero el pagaré y fechaba con lo que hubiera allí.
+        textos = {1: "PAGARE No. FECHA DE VENCIMIENTO: día mes año fecha", 2: "Reconocimiento de deuda"}
+        ia = _Lector({2: "El Banco, 23 de diciembre de 2020", 1: "Vence el 17/12/2020"})
+        hallada = AgenteDeFechas(leer_con_ia=ia, en_orden=True).buscar([2, 1], textos)
+        assert (hallada.fecha, hallada.pagina) == (date(2020, 12, 23), 2)
+        assert ia.leidas == [2]

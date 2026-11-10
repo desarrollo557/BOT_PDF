@@ -289,8 +289,14 @@ class TestElTrabajo:
         decidida. El reparto de páginas es el mismo -- la duda también unía --
         y lo que cambia es que deja de ocupar sitio en la cola de revisión, que
         es donde el operador mira lo que de verdad le necesita.
+
+        Lo que sí va a la cola es que ninguno de los dos documentos trae una
+        fecha en su papel (2026-11-10: lo que no se lee va sin fecha y a
+        Revisión); eso no es una costura.
         """
-        assert informe["review_queue"] == []
+        costuras = [e for e in informe["review_queue"] if "hoja principal" not in e["reason"]]
+        assert costuras == []
+        assert {e["page"] for e in informe["review_queue"]} == {1, 3}
 
     def test_las_cuentas_dicen_cuanto_resolvio_la_estructura_gratis(self, informe):
         stats = informe["stats"]

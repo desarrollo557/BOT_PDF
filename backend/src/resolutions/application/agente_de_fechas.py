@@ -19,9 +19,10 @@ Un documento sin fecha se busca así, y cada paso sólo si el anterior no la dio
    se gasta nada): primero esas hojas y luego las demás, hasta
    ``MAX_HOJAS_CON_IA``.
 
-Si el papel de verdad no trae ninguna -- la copia de una cédula --, quien llama
-le pone la de su trámite (:func:`fecha_por_su_tramite`), como lo eligió el
-operador: un dato del propio expediente, nunca uno inventado.
+Si el papel no la deja leer, el documento queda sin fecha y quien llama lo
+manda a Revisión. Hasta el 2026-11-10 se le prestaba la de su trámite (el
+documento vecino del expediente); medida contra el papel en 280 documentos de
+Afinia acertó 18 de 65 veces, y el operador eligió «vacía y a Revisión».
 
 Aquí no se lee papel: se recibe con qué releer una hoja.
 """
@@ -74,9 +75,18 @@ class AgenteDeFechas:
         no_fecha: Callable[[str], bool] | None = None,
         max_relecturas: int = MAX_RELECTURAS,
         max_hojas_con_ia: int = MAX_HOJAS_CON_IA,
+        fechar: Callable[[str], date | None] = fecha_de_la_pagina,
+        en_orden: bool = False,
     ) -> None:
         self._releer = releer
         self._leer_con_ia = leer_con_ia
+        #: Con qué se fecha una hoja leída. Por omisión, la de una página suelta;
+        #: la caja de Afinia pasa la de su estructura -- sólo el sitio donde
+        #: cada clase de hoja pone su fecha (2026-11-10) --.
+        self._fechar = fechar
+        #: Si las hojas llegan ya en el orden en que hay que mirarlas -- la
+        #: principal primero, luego sus respaldos -- y no se reordenan por pistas.
+        self._en_orden = en_orden
         #: La hoja que no fecha el documento aunque traiga fechas: la copia de
         #: una cédula (su fecha es la de nacimiento).
         self._no_fecha = no_fecha or (lambda _texto: False)
@@ -94,10 +104,10 @@ class AgenteDeFechas:
         # Las hojas que no fechan nada -- la copia de una cédula -- no se miran.
         paginas = [p for p in paginas if not self._no_fecha(textos.get(p, "") or "")]
         for pagina in paginas:
-            fecha = fecha_de_la_pagina(textos.get(pagina, "") or "")
+            fecha = self._fechar(textos.get(pagina, "") or "")
             if fecha is not None:
                 return FechaHallada(fecha, pagina, "texto")
-        orden = candidatas(paginas, textos)
+        orden = list(paginas) if self._en_orden else candidatas(paginas, textos)
         if self._releer is not None:
             for pagina in orden[: self._max_relecturas]:
                 hallada = self._con(self._releer, "ocr", pagina)
@@ -122,7 +132,7 @@ class AgenteDeFechas:
         # Releída, puede resultar ser una cédula que la primera lectura no dejó ver.
         if self._no_fecha(texto):
             return None
-        fecha = fecha_de_la_pagina(texto)
+        fecha = self._fechar(texto)
         return FechaHallada(fecha, pagina, via) if fecha is not None else None
 
 
@@ -146,25 +156,3 @@ def candidatas(paginas: Sequence[int], textos: Mapping[int, str]) -> list[int]:
             orden.append(pagina)
     return orden
 
-
-def fecha_por_su_tramite(
-    posicion: int, fechas: Sequence[date | None], archivos: Sequence[object]
-) -> tuple[date, int] | None:
-    """La fecha de su trámite para un documento sin ninguna: (fecha, posición de donde salió).
-
-    La del documento con el que viaja: primero uno fechado del mismo archivo
-    (el escrito radicado al que acompaña), y si no hay, el fechado más cercano
-    del expediente -- a igual distancia, el anterior, que es al que se une --.
-    Lo eligió el operador el 2026-10-20: un dato del propio expediente.
-    """
-    mismo = [
-        i for i, fecha in enumerate(fechas) if fecha is not None and archivos[i] == archivos[posicion]
-    ]
-    if mismo:
-        cercano = min(mismo, key=lambda i: (abs(i - posicion), i > posicion))
-        return fechas[cercano], cercano  # type: ignore[return-value]
-    fechadas = [i for i, fecha in enumerate(fechas) if fecha is not None]
-    if not fechadas:
-        return None
-    cercano = min(fechadas, key=lambda i: (abs(i - posicion), i > posicion))
-    return fechas[cercano], cercano  # type: ignore[return-value]

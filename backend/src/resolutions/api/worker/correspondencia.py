@@ -150,22 +150,21 @@ def _completar_las_fechas(
     taller,
     *,
     releidas: dict[int, list[str]] | None = None,
-    prestadas: dict[int, int] | None = None,
+    sin_leer: list[dict] | None = None,
 ) -> list[dict]:
     """Pone fecha a cada documento que salió sin ella. Devuelve de dónde salió cada una.
 
-    Primero el agente (:mod:`~resolutions.application.agente_de_fechas`): el
-    texto, la relectura local y, sólo si el operador eligió una lectura con IA,
-    la IA. Lo que el papel no trae, la fecha de su trámite. Un fallo aquí no
-    tumba la caja: el documento se queda como estaba.
+    El agente (:mod:`~resolutions.application.agente_de_fechas`) relee su hoja
+    principal y sus respaldos -- en local y, sólo si el operador eligió una
+    lectura con IA, con la IA -- y los fecha en el sitio de su clase. Lo que
+    no sale queda sin fecha y, si se pasa ``sin_leer``, anotado ahí para la
+    cola de Revisión. Un fallo aquí no tumba la caja.
 
-    Para el revisor de fechas (2026-11-10), si se le pasan: ``releidas`` guarda
-    lo que se releyó de cada hoja -- es papel ya pagado, y en él se buscará la
-    fecha sin volver a leerlo --, y ``prestadas`` de qué pieza tomó la suya la
-    que no traía ninguna (su posición en ``piezas``).
+    Para el revisor de fechas (2026-11-10): ``releidas`` guarda lo que se
+    releyó de cada hoja -- es papel ya pagado, y en él se buscará la fecha sin
+    volver a leerlo --.
     """
     releidas = releidas if releidas is not None else {}
-    prestadas = prestadas if prestadas is not None else {}
 
     def guardada(leer):
         def leer_y_guardar(pagina: int) -> str:
@@ -176,11 +175,10 @@ def _completar_las_fechas(
 
         return leer_y_guardar
 
-    from datetime import date
-
     from ...adapters.pymupdf_source import PyMuPDFPageSource
     from ...adapters.tesseract_ocr import PSM_AUTO, TesseractConfig, TesseractOcr
-    from ...application.agente_de_fechas import AgenteDeFechas, fecha_por_su_tramite
+    from ...application.agente_de_fechas import AgenteDeFechas
+    from ...domain.fecha_por_estructura import fecha_de_la_hoja
     from ...domain.tramites import es_cedula
 
     sin_fecha = [i for i, pieza in enumerate(piezas) if not pieza.get("fecha")]
@@ -201,9 +199,15 @@ def _completar_las_fechas(
             ),
             # La cédula no fecha nada: su fecha es la de nacimiento.
             no_fecha=es_cedula,
+            # Cada hoja, sólo en el sitio donde su clase pone la fecha; y en
+            # el orden en que llegan: la principal primero, luego sus
+            # respaldos (2026-11-10). La IA ya no lee primero la hoja con más
+            # «fechas» -- la del pagaré -- sino la del reconocimiento.
+            fechar=fecha_de_la_hoja,
+            en_orden=True,
         )
         for i in sin_fecha:
-            hallada = agente.buscar(piezas[i]["pages"], textos)
+            hallada = agente.buscar(piezas[i].get("donde_buscar") or piezas[i]["pages"], textos)
             if hallada is not None:
                 piezas[i]["fecha"] = hallada.fecha.isoformat()
                 piezas[i]["fecha_por"] = hallada.como()
@@ -214,27 +218,28 @@ def _completar_las_fechas(
         if fuente is not None:
             fuente.close()
 
-    # Lo que el papel no trae -- la copia de una cédula, una foto --: la fecha
-    # de su trámite, el documento con que viaja. Sólo de las fechas del propio
-    # papel, para que una prestada no se preste otra vez.
-    propias = [
-        date.fromisoformat(str(p["fecha"])[:10]) if p.get("fecha") else None for p in piezas
-    ]
-    archivos = [p.get("archivo") for p in piezas]
-    for i, pieza in enumerate(piezas):
-        if propias[i] is not None:
-            continue
-        del_tramite = fecha_por_su_tramite(i, propias, archivos)
-        if del_tramite is None:
-            continue
-        fecha, de = del_tramite
-        prestadas[i] = de
-        pieza["fecha"] = fecha.isoformat()
-        pieza["fecha_por"] = (
-            f"la de su trámite: {piezas[de].get('titulo') or piezas[de].get('type') or 'documento'} "
-            f"(pág. {piezas[de]['pages'][0]})"
-        )
-        halladas.append({"pages": pieza["pages"], "fecha": pieza["fecha"], "como": pieza["fecha_por"]})
+    # Lo que su papel no deja leer se queda sin fecha y va a Revisión. Ya no se
+    # presta la de su trámite: medido el 2026-11-10 sobre 280 documentos de
+    # Afinia contra el papel, la prestada acertó 18 de 65 veces (de 1 a 361
+    # días de error), y el operador eligió «vacía y a Revisión»: nunca una
+    # fecha equivocada. Casi siempre es la fecha a mano -- el sello de tinta, el
+    # encabezado del reconocimiento -- que sólo la IA lee.
+    if sin_leer is not None:
+        con_ia = taller.lector_de_pago() is not None
+        for pieza in piezas:
+            if pieza.get("fecha"):
+                continue
+            principal = (pieza.get("donde_buscar") or pieza["pages"])[0]
+            sin_leer.append(
+                {
+                    "page": principal,
+                    "reason": (
+                        "la fecha del documento no se pudo leer en su hoja principal"
+                        + ("" if con_ia else " (a mano: sólo la lee «OCR + IA»)")
+                        + "; va sin fecha"
+                    ),
+                }
+            )
     return halladas
 
 
@@ -296,6 +301,7 @@ def _revisar_cada_pieza(
     from datetime import date
 
     from ...application.revisor_de_fechas import CORREGIDA, anotar_en_el_informe
+    from ...domain.fecha_por_estructura import pieza_de
     from ...domain.fechas_extremas import EXTREMOS, fechas_de_un_par
     from ...domain.naming import DOCUMENT_PREFIX
     from .fechas_aseguradas import (
@@ -338,8 +344,12 @@ def _revisar_cada_pieza(
             control.check()
         fecha = pieza.get("fecha")
         fechas = fechas_de_un_par(str(fecha)[:10], str(fecha)[:10]) if fecha else None
+        # Su papel sin sus anexos (2026-11-10): la fecha de la cédula, de la
+        # factura o del certificado que lleva detrás no es la suya, ni para
+        # confirmarla ni para que la IA la «corrija» hacia ella.
+        propias = [p for p in pieza["pages"] if not pieza_de(textos.get(p, "") or "").anexo] or pieza["pages"]
         revisada = revisar_y_anotar(
-            aparte, nombre(pieza), pieza["pages"][0], fechas, papel(pieza["pages"]), regla=regla, juez=juez,
+            aparte, nombre(pieza), pieza["pages"][0], fechas, papel(propias), regla=regla, juez=juez,
             una_sola=True,
         )
         revisadas[i] = revisada
@@ -986,17 +996,18 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # tiene que poder decir qué trae dentro: es el detalle de cada fila.
     from ...application.clasificacion import describir
 
-    # La fecha de cada uno es la de su primera hoja fechada: la del
-    # encabezado del escrito, «Valledupar, diciembre 02 de 2020», o la de la
-    # citación, «VALLEDUPAR, 2020/12/07». No la más reciente del texto, que en
-    # un reclamo es la de los hechos y en una hoja mal leída es basura. La
-    # cédula no fecha nada: su fecha es la de nacimiento.
+    # La fecha de cada uno, donde su estructura la pone: el sello, o la hoja
+    # principal -- que no siempre es la primera -- en el sitio de su clase
+    # (:mod:`~resolutions.domain.fecha_por_estructura`, 2026-11-10). No la
+    # primera hoja fechada ni la más reciente del texto, que en un acuerdo es
+    # la de un anexo y en un reclamo la de los hechos.
     from ...domain.asunto_del_documento import (
         ACUERDO_DE_PAGO,
         asunto_del_documento,
         titulo_del_documento,
     )
-    from ...domain.tramites import es_cedula, radicado_del_sello
+    from ...domain.fecha_por_estructura import fecha_por_estructura
+    from ...domain.tramites import radicado_del_sello
 
     # Hasta dónde se busca el título: el escrito pide en sus primeras hojas, y
     # lo que viene detrás son sus anexos.
@@ -1022,12 +1033,6 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         if tipo and tipo.upper() != DOCUMENT_PREFIX:
             return nombre_oficial(tipo, asunto) or tipo.upper()
         return DOCUMENT_PREFIX
-
-    def fecha_de_la_hoja(pagina: int):
-        texto = textos.get(pagina, "") or ""
-        if es_cedula(texto):
-            return None
-        return leidas.fechas.get(pagina)
 
     cortados = describir(
         nombrar_sin_soporte(grupos, textos), lambda pagina: textos.get(pagina, "") or ""
@@ -1059,24 +1064,25 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                         for p in paginas
                         if titulo_del_documento(textos.get(p, "") or "") == ACUERDO_DE_PAGO
                     ] or titulares
-                # La fecha del documento, de lo más cierto a lo menos: la que
-                # el mensajero marcó en la guía, la del sello de radicación y,
-                # si no trae ninguna, la de su primera hoja fechada. No la del
+                # La fecha del documento, donde su estructura la pone (lo
+                # dictó el operador el 2026-11-10: «del documento principal…
+                # cuando exista un sello, la fecha que esté dentro del sello»):
+                # el sello; si no, la hoja principal -- que no siempre es la
+                # primera -- en el sitio de su clase; si no, sus respaldos.
+                # Nunca un anexo, ni la guía que acompaña a una carta, ni el
                 # sello de una copia aportada como prueba: ésa es de otro día.
-                primera = (
-                    next((fechas_de_guia[p] for p in paginas if fechas_de_guia.get(p)), None)
-                    or next(
-                        (
-                            sellos[p].fecha
-                            for p in paginas
-                            if p in sellos and sellos[p].fecha and p not in cartas.copias
-                        ),
-                        None,
-                    )
-                    or next(
-                        (f for p in titulares if (f := fecha_de_la_hoja(p)) is not None), None
-                    )
+                estructura = fecha_por_estructura(
+                    paginas,
+                    textos,
+                    sellos={
+                        p: sellos[p].fecha
+                        for p in paginas
+                        if p in sellos and sellos[p].fecha and p not in cartas.copias
+                    },
+                    guias=fechas_de_guia,
+                    con_sello={p for p in paginas if p in sellos and p not in cartas.copias},
                 )
+                primera = estructura.fecha
                 piezas.append(
                     {
                         "pages": paginas,
@@ -1084,7 +1090,15 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                         # primero entre los documentos de su mismo archivo.
                         "archivo": archivo,
                         "type": cortado.kind,
-                        "fecha": primera.isoformat() if primera else cortado.fecha,
+                        # Sin la de su estructura, ninguna: la del corte es la
+                        # más reciente de todas sus hojas, anexos incluidos
+                        # (el certificado de Cámara de Comercio de 2012 en un
+                        # acuerdo de 2020). La busca después el agente.
+                        "fecha": primera.isoformat() if primera else None,
+                        **({"fecha_por": estructura.como()} if primera else {}),
+                        # Dónde releerla si no salió: la hoja principal y
+                        # sus respaldos.
+                        "donde_buscar": list(estructura.donde_buscar),
                         # Lo que el documento dice ser en su primera hoja --
                         # «DERECHO DE PETICION», «RESPUESTA A RECLAMACION» --,
                         # que es el título de su fila en el índice.
@@ -1517,14 +1531,16 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             abren=set(sellos_que_abren),
         )
     piezas = describir_piezas(grupos.groups)
-    # F7. Ningún documento sin fecha (lo dictó el operador el 2026-10-20: «que
-    # el bot en todos los casos tome la fecha»): el agente la busca en el texto,
-    # relee en local y, si se eligió una lectura con IA, se la pide a la IA; lo
-    # que el papel no trae lleva la de su trámite.
+    # F7. La fecha que la estructura no dio en la capa: el agente relee la hoja
+    # principal y sus respaldos, en local y, si se eligió una lectura con IA,
+    # con la IA. Lo que no sale va sin fecha y a Revisión (2026-11-10: la de su
+    # trámite, prestada, acertaba 18 de 65; el operador: «vacía y a Revisión»).
     releidas: dict[int, list[str]] = {}
+    # Ya no se presta ninguna: el revisor la sigue recibiendo, vacía.
     prestadas: dict[int, int] = {}
+    fechas_sin_leer: list[dict] = []
     fechas_halladas = _completar_las_fechas(
-        piezas, textos, tmp_path, taller, releidas=releidas, prestadas=prestadas
+        piezas, textos, tmp_path, taller, releidas=releidas, sin_leer=fechas_sin_leer
     )
     # F7b. El revisor de fechas (2026-11-10): la de cada pieza contra lo que ya
     # se leyó de sus hojas, antes de entregar, para que el índice lleve la
@@ -1595,7 +1611,8 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         en_revision=[boundary.right for boundary in costuras_en_revision]
         + [pagina.page for pagina in sin_fecha_en_revision]
         + sin_titulo
-        + [pagina for pagina, _ in (revisados.en_revision if revisados else ())],
+        + [pagina for pagina, _ in (revisados.en_revision if revisados else ())]
+        + [sin_leer["page"] for sin_leer in fechas_sin_leer],
         estadisticas=estadisticas,
         anexos=anexos,
         # Cada PDF escrito, vuelto a abrir y casado hoja por hoja con el
@@ -1637,6 +1654,8 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         + [{"page": hoja.page, "reason": hoja.motivo} for hoja in tramite_en_revision]
         # El documento que no dejó leer ningún título y se nombró por su caja.
         + [{"page": pagina, "reason": SIN_TITULO} for pagina in sin_titulo]
+        # Y el que no dejó leer su fecha: va sin ella, a que alguien la mire.
+        + fechas_sin_leer
         # Y el escrito que enumera anexos que no aparecen detrás.
         # Dice de qué documento es la lista: una caja trae varios escritos con
         # su propia lista, y «pág. 2» a secas se confundía con la lista de la
