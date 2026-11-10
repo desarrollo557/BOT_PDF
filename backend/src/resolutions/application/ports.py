@@ -197,6 +197,30 @@ class VeredictoDeCostura:
     cita: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class VeredictoDeDato:
+    """Lo que la IA encontró de un dato de una fila del inventario en el texto de su papel.
+
+    ``decision`` es «esta» -- el papel lo dice --, «no_esta» -- el papel dice
+    otra cosa -- o «no_se». ``cita`` es el texto del papel en que se apoya: sin
+    una cita que el texto traiga, no se toma (2026-11-09).
+    """
+
+    decision: str
+    cita: str = ""
+
+
+@runtime_checkable
+class JuezDeDatos(Protocol):
+    """Busca en el texto de una fila del inventario los datos que la auditoría no pudo confirmar.
+
+    Una pregunta por fila: el texto de sus páginas y los datos dudosos, cada
+    uno con su campo y su valor. ``None`` es que no respondió.
+    """
+
+    def verificar(self, texto: str, datos: list[dict[str, str]]) -> dict[str, VeredictoDeDato] | None: ...
+
+
 @runtime_checkable
 class JuezDeCosturas(Protocol):
     """Decide las costuras que salieron del margen de error del revisor.

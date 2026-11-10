@@ -79,12 +79,29 @@ export const ESTADOS_DE_LA_MUESTRA: Record<PdfAuditado['estado'], { etiqueta: st
   'no se pudo auditar': { etiqueta: 'No se pudo auditar', tono: 'neutral' }
 };
 
+/**
+ * Si la muestra es de filas del inventario y no de PDF cortados. Desde el
+ * 2026-11-09 una corrida de «Solo inventario» no entrega PDF cortados, y su
+ * muestra son filas contra sus páginas del original: antes salía «muestra: 0
+ * de 0» y un «< 0 % de error» que no medía nada.
+ */
+export function esDeFilas(algo: { unidad?: MuestraAuditada['unidad'] } | null | undefined): boolean {
+  return algo?.unidad === 'filas';
+}
+
+/** Lo que se cuenta en la muestra: «filas» o «PDF». */
+function queSeCuenta(algo: { unidad?: MuestraAuditada['unidad'] } | null | undefined): string {
+  return esDeFilas(algo) ? 'filas' : 'PDF';
+}
+
 /** Lo que dice la fase en curso: «Revisando la muestra: 37 de 100». */
 export function faseEnCurso(auditoria: AuditoriaDeCierre): string {
   const hechos = auditoria.hechos ?? 0;
   const total = auditoria.total ?? 0;
   if (auditoria.fase === 'muestra') {
-    return total ? `Revisando la muestra al azar: ${hechos} de ${total} PDF` : 'Eligiendo la muestra al azar…';
+    return total
+      ? `Revisando la muestra al azar: ${hechos} de ${total} ${queSeCuenta(auditoria)}`
+      : 'Eligiendo la muestra al azar…';
   }
   return total
     ? `Cuadrando el origen con el destino: ${hechos.toLocaleString('es-CO')} de ${total.toLocaleString('es-CO')} PDF`
@@ -124,6 +141,67 @@ export function habilidadesDeLaMuestra(muestra: MuestraAuditada): MargenDeUnaHab
 export function porCiento(valor: number): string {
   const numero = Math.round(valor * 1000) / 10;
   return `${numero.toLocaleString('es-CO', { maximumFractionDigits: 1 })} %`;
+}
+
+/**
+ * Si la muestra no revisó nada. Una muestra vacía no mide ningún error:
+ * Wilson con cero revisados da un intervalo sin sentido y se leía «< 0 % de
+ * error, sin certeza» (2026-11-09). Se dice en palabras, sin reja ni escala.
+ */
+export function muestraVacia(muestra: MuestraAuditada): boolean {
+  return !muestra.revisados;
+}
+
+/**
+ * Por qué no hay muestra: o la corrida no entregó nada que revisar, o había
+ * candidatos y ninguno se pudo abrir.
+ */
+export function textoSinMuestra(muestra: MuestraAuditada): string {
+  return muestra.candidatos > 0
+    ? 'Sin muestra: no se pudo revisar ningún elemento'
+    : 'Sin muestra: la corrida no entregó PDF cortados ni filas de inventario que revisar';
+}
+
+/** El rótulo de la muestra: «Muestra al azar: 100 filas del inventario». */
+export function rotuloDeLaMuestra(muestra: MuestraAuditada): string {
+  const cuantos = esDeFilas(muestra) ? `${muestra.revisados} filas del inventario` : `${muestra.revisados} PDF`;
+  return `Muestra al azar: ${cuantos}${muestra.ampliada ? ', ampliada por los errores' : ''}`;
+}
+
+/**
+ * La muestra en una línea, para el aviso del Resumen: «muestra: 98 de 100
+ * filas bien · error < 3,7 %, dentro del margen». Vacía, dice por qué; nunca
+ * un «< 0 %».
+ */
+export function avisoDeLaMuestra(muestra: MuestraAuditada): string {
+  if (muestraVacia(muestra)) return textoSinMuestra(muestra);
+  const de = esDeFilas(muestra) ? ' filas' : '';
+  const base = `muestra: ${muestra.bien} de ${muestra.revisados}${de} bien`;
+  const dictamen = DICTAMENES[muestra.margen.dictamen];
+  if (!dictamen) return base;
+  const error = muestra.margen.errores ? porCiento(muestra.margen.tasa) : `< ${porCiento(muestra.margen.hasta)}`;
+  return `${base} · error ${error}, ${dictamen.etiqueta.toLowerCase()}`;
+}
+
+/**
+ * Qué hizo la IA en una muestra de filas: «La IA revisó 4 datos dudosos · 4
+ * peticiones · 3.120 tokens», o que no la hubo porque la corrida se hizo sin
+ * ella (el operador: la IA sólo si la corrida se hizo con ella). `null` en
+ * las muestras que no lo dicen, las de PDF y las anteriores.
+ */
+export function iaDeLaMuestra(muestra: MuestraAuditada): string | null {
+  if (muestra.con_ia === undefined) return null;
+  if (!muestra.con_ia) return 'Sin IA: lo dudoso queda para revisar';
+  const datos = muestra.preguntadas_a_la_ia ?? 0;
+  const consumo = muestra.consumo_ia;
+  const fallos = consumo?.fallos ?? 0;
+  // Una IA caída o con la llave mala no «revisó» nada: se dice (la revisión, 2026-11-09).
+  const sinRespuesta = fallos ? ` · la IA no respondió en ${fallos.toLocaleString('es-CO')} ${fallos === 1 ? 'fila' : 'filas'}` : '';
+  if (!datos && fallos) return `La IA no respondió: lo dudoso queda para revisar${sinRespuesta}`;
+  const revisados = `La IA revisó ${datos.toLocaleString('es-CO')} ${datos === 1 ? 'dato dudoso' : 'datos dudosos'}`;
+  if (!consumo) return revisados;
+  const peticiones = `${consumo.peticiones.toLocaleString('es-CO')} ${consumo.peticiones === 1 ? 'petición' : 'peticiones'}`;
+  return `${revisados} · ${peticiones} · ${consumo.tokens.toLocaleString('es-CO')} tokens${sinRespuesta}`;
 }
 
 /** Los PDF de la muestra que hay que mirar: con error primero, luego los dudosos y los que no se auditaron. */

@@ -2585,7 +2585,15 @@ class FolderRunner:
         se dice y lo entregado queda como está.
         """
         from ..domain.auditoria import TAMANO_DE_LA_MUESTRA
-        from .auditoria import auditar_la_muestra, cuadrar, etapa_de
+        from .auditoria import (
+            UNIDAD_FILAS,
+            UNIDAD_PDF,
+            auditar_la_muestra,
+            auditar_las_filas,
+            cuadrar,
+            etapa_de,
+            filas_candidatas,
+        )
 
         semilla = int(time.time())
         run.auditoria = {"estado": "auditando", "fase": "cuadre", "hechos": 0, "total": 0, "semilla": semilla}
@@ -2622,24 +2630,51 @@ class FolderRunner:
                 await self._procesar_por_lotes(run)
                 comparacion, entregas = await asyncio.to_thread(cuadrar, self, run, detener=detener)
             run.comparacion = comparacion
+            # Sin PDF cortados -- «Solo inventario» -- lo que se entregó son
+            # filas, y la muestra es de filas: cada una contra sus páginas del
+            # original (el operador, 2026-11-09: salía «muestra: 0 de 0»).
+            filas = filas_candidatas(entregas) if not comparacion["pdf_entregados"] else {}
+            de_filas = bool(filas)
             run.auditoria = {
                 "estado": "auditando",
                 "fase": "muestra",
+                "unidad": UNIDAD_FILAS if de_filas else UNIDAD_PDF,
                 "hechos": 0,
-                "total": min(TAMANO_DE_LA_MUESTRA, comparacion["pdf_entregados"]),
+                "total": min(TAMANO_DE_LA_MUESTRA, len(filas) if de_filas else comparacion["pdf_entregados"]),
                 "semilla": semilla,
             }
             self._publish(run)
-            muestra = await asyncio.to_thread(
-                auditar_la_muestra,
-                self,
-                run,
-                entregas,
-                semilla=semilla,
-                juez=self._juez_de_la_auditoria(run),
-                detener=detener,
-                avance=avance_de_la_muestra,
-            )
+            if de_filas:
+                from ..application.consumo import Consumo
+
+                consumo = Consumo()
+                juez = self._juez_de_los_datos(run, consumo)
+                muestra = await asyncio.to_thread(
+                    auditar_las_filas,
+                    self,
+                    run,
+                    entregas,
+                    semilla=semilla,
+                    juez=juez,
+                    detener=detener,
+                    avance=avance_de_la_muestra,
+                )
+                # Lo que costó la IA de la auditoría, a la vista: se paga por
+                # tokens y no se suma al de la corrida, que ya cerró.
+                muestra["con_ia"] = juez is not None
+                if juez is not None:
+                    muestra["consumo_ia"] = consumo.as_dict()
+            else:
+                muestra = await asyncio.to_thread(
+                    auditar_la_muestra,
+                    self,
+                    run,
+                    entregas,
+                    semilla=semilla,
+                    juez=self._juez_de_la_auditoria(run),
+                    detener=detener,
+                    avance=avance_de_la_muestra,
+                )
             run.etapa, run.etapa_detalle = etapa_de(comparacion, muestra)
             run.auditoria = {"estado": "hecha", "semilla": semilla, "muestra": muestra, "fecha": _now()}
             if run.etapa != "Terminado":
@@ -2663,6 +2698,23 @@ class FolderRunner:
         from ..adapters.mistral_revisor import MistralJuezDeCosturas
 
         return MistralJuezDeCosturas(api_key=llave)
+
+    def _juez_de_los_datos(self, run: FolderRun, consumo=None):
+        """La IA que busca en el papel los datos dudosos de la muestra de filas, sólo si la corrida se hizo con ella.
+
+        Con «Detener»: una vez detenida la corrida no se le pide nada más.
+        """
+        llave = getattr(self._settings, "mistral_api_key", None)
+        if run.lectura not in ("mistral", "mistral-nombres") or not llave:
+            return None
+        from ..adapters.mistral_juez_de_datos import MistralJuezDeDatos
+        from ..application.control import Cancelled
+
+        def antes_de_pedir() -> None:
+            if not run.active:
+                raise Cancelled("la corrida se detuvo")
+
+        return MistralJuezDeDatos(api_key=llave, consumo=consumo, antes_de_pedir=antes_de_pedir)
 
     async def _escribir_generales_luego(self, run: FolderRun) -> None:
         while run.generales_pendientes:

@@ -31,11 +31,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import tempfile
+import threading
 from collections import Counter
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,6 +53,7 @@ from ..domain.auditoria import (
     ERROR,
     FUERA_DEL_MARGEN,
     NO_AUDITADO,
+    SIN_CERTEZA,
     TAMANO_DE_LA_MUESTRA,
     PdfAuditado,
     elegir_la_muestra,
@@ -99,7 +102,7 @@ def margen_aceptable(habilidad: str | None = None) -> float:
     return perfil_de(habilidad).margen
 
 
-def margenes_por_habilidad(resultados: list[PdfAuditado]) -> list[dict]:
+def margenes_por_habilidad(resultados: list[PdfAuditado], *, con_dudas: bool = False) -> list[dict]:
     """La muestra partida por habilidad, cada una juzgada contra el margen de su perfil.
 
     Lo pidió el operador el 2026-11-05: «cada habilidad tiene sus patrones; allí
@@ -127,7 +130,14 @@ def margenes_por_habilidad(resultados: list[PdfAuditado]) -> list[dict]:
                 "errores": cuentas.get(ERROR, 0),
                 "dudosos": cuentas.get(DUDOSO, 0),
                 "no_auditados": cuentas.get(NO_AUDITADO, 0),
-                "margen": margen_de_error(cuentas.get(ERROR, 0), revisados, aceptable=perfil.margen).as_dict(),
+                "margen": margen_de_error(
+                    cuentas.get(ERROR, 0),
+                    revisados,
+                    aceptable=perfil.margen,
+                    # En la muestra de filas, lo dudoso sin decidir cuenta en el peor caso.
+                    dudosos=cuentas.get(DUDOSO, 0) if con_dudas else 0,
+                    unidad="fila" if con_dudas else "PDF",
+                ).as_dict(),
             }
         )
     salida.sort(key=lambda h: (-h["revisados"], h["habilidad"]))
@@ -547,11 +557,17 @@ def etapa_de(comparacion: dict | None, muestra: dict | None) -> tuple[str, str]:
         if (h.get("margen") or {}).get("dictamen") == FUERA_DEL_MARGEN
     ]
     if muestra and muestra.get("revisados"):
-        partes.append(f"muestra: {muestra['bien']} de {muestra['revisados']} bien")
+        de_filas = " filas" if muestra.get("unidad") == UNIDAD_FILAS else ""
+        partes.append(f"muestra: {muestra['bien']} de {muestra['revisados']}{de_filas} bien")
         if margen.get("texto_del_dictamen"):
             partes.append(str(margen["texto_del_dictamen"]).split(":")[0].lower())
         if fuera:
             partes.append("fuera de su margen: " + ", ".join(fuera))
+    # Sólo en la muestra de filas: la de PDF termina como siempre -- lo fija la
+    # especificación del operador del 2026-10-28 (test_comprobar_la_entrega) --.
+    de_filas = bool(muestra) and muestra.get("unidad") == UNIDAD_FILAS
+    if de_filas and not muestra.get("revisados") and muestra.get("candidatos"):
+        partes.append(f"muestra: ninguna de {muestra['candidatos']} se pudo auditar")
     detalle = " · ".join(partes)
     if comparacion and not comparacion["completa"]:
         return "Terminado con faltantes", detalle
@@ -561,4 +577,316 @@ def etapa_de(comparacion: dict | None, muestra: dict | None) -> tuple[str, str]:
         if margen.get("dictamen") == DENTRO_DEL_MARGEN:
             return "Terminado: errores dentro del margen", detalle
         return "Terminado con errores en la muestra", detalle
+    # Una muestra que no se pudo auditar, o que quedó en dudas que pueden sacar
+    # el error del margen, no es «Terminado» sin más: se avisa (la segunda
+    # revisión, 2026-11-09: el plazo agotado o un PDF que no abre cerraban así).
+    if de_filas and not muestra.get("revisados") and muestra.get("candidatos"):
+        return "Terminado: muestra sin auditar", detalle
+    if de_filas and muestra.get("dudosos") and margen.get("dictamen") == SIN_CERTEZA:
+        return "Terminado con dudas en la muestra", detalle
     return "Terminado", detalle
+
+
+# -- la muestra de filas del inventario (2026-11-09) ---------------------------------------
+
+#: De qué es la muestra: de PDF cortados o de filas del inventario.
+UNIDAD_PDF = "pdf"
+UNIDAD_FILAS = "filas"
+#: Cuántas páginas sin capa de texto de una fila se leen con Tesseract, las
+#: primeras: el encabezado del acta con su número, su fecha y su sesión; la
+#: ficha. Gratis, pero no instantáneo: con libros escaneados sin capa, doce por
+#: fila eran 2.400 páginas en una muestra de 200 (el operador, 2026-11-09:
+#: «que todo esté optimizado y el flujo no se trabe»).
+OCR_POR_FILA = 6
+#: Cuánto puede durar la muestra de filas, en segundos: lo que falte al
+#: acabarse queda «no auditado» -- no cuenta para el margen -- y la corrida
+#: termina igual. ``BOTPDF_TIEMPO_DE_LA_AUDITORIA`` lo cambia. Medido en
+#: Odontología (227 filas, capa de texto): 20 s sin IA.
+TIEMPO_DE_LA_MUESTRA = 600.0
+
+
+def _tiempo_de_la_muestra() -> float:
+    try:
+        return max(30.0, float(os.environ.get("BOTPDF_TIEMPO_DE_LA_AUDITORIA", TIEMPO_DE_LA_MUESTRA)))
+    except ValueError:
+        return TIEMPO_DE_LA_MUESTRA
+#: Lo mínimo que tiene que traer la capa de una página para no leerla con Tesseract.
+CAPA_MINIMA = 80
+#: Cuántas filas se leen a la vez: Tesseract va en su propio proceso y el
+#: servicio, al cerrar la corrida, ya no tiene documentos en curso.
+FILAS_A_LA_VEZ = max(2, min(8, (os.cpu_count() or 4) // 2))
+
+
+def filas_candidatas(entregas: list[EntregaVista]) -> dict[str, tuple[EntregaVista, dict]]:
+    """Las filas del inventario de las entregas vigentes, cada una con su nombre en la muestra.
+
+    Salen de la constancia de cada PDF -- las filas que aportó, con sus páginas
+    del original --, no del Excel: el FUID no dice de qué páginas salió cada fila.
+    """
+    from ..domain.auditoria_de_filas import id_de_la_fila, paginas_de_la_fila
+
+    candidatas: dict[str, tuple[EntregaVista, dict]] = {}
+    for entrega in entregas:
+        if entrega.vigencia is not Vigencia.VIGENTE or entrega.constancia is None:
+            continue
+        for indice, fila in enumerate(entrega.constancia.actas or []):
+            if not isinstance(fila, dict) or paginas_de_la_fila(fila) is None:
+                continue
+            nombre = id_de_la_fila(entrega.relativa, fila)
+            if nombre in candidatas:
+                nombre = f"{nombre} #{indice + 1}"
+            candidatas[nombre] = (entrega, fila)
+    return candidatas
+
+
+def auditar_las_filas(
+    runner,
+    run,
+    entregas: list[EntregaVista],
+    *,
+    semilla: int,
+    juez=None,
+    cuantos: int = TAMANO_DE_LA_MUESTRA,
+    detener: Callable[[], bool] = lambda: False,
+    avance=None,
+    leer_textos: Callable[[Path, list[tuple[int, int]]], list[tuple[list[str], int]]] | None = None,
+    tiempo_maximo: float | None = None,
+) -> dict:
+    """100 filas del inventario al azar, cada una contra sus páginas; otras 100 si alguna salió con error.
+
+    Es la muestra de una corrida que no corta PDF -- «Solo inventario» --: lo
+    que entrega son filas. Mismo contrato que ``auditar_la_muestra`` -- semilla,
+    Wilson, el margen de cada habilidad --, con ``"unidad": "filas"``.
+    """
+    import time
+
+    from ..application.auditoria_de_filas import auditar_una_fila
+    from ..application.control import Cancelled
+    from ..domain.auditoria_de_filas import paginas_de_la_fila
+
+    candidatas = filas_candidatas(entregas)
+    plazo = tiempo_maximo if tiempo_maximo is not None else _tiempo_de_la_muestra()
+    limite = time.monotonic() + plazo
+
+    def agotado() -> bool:
+        return time.monotonic() > limite
+
+    duracion = f"{plazo / 60:.0f} min" if plazo >= 120 else f"{plazo:.0f} s"
+    agotado_dicho = f"se acabó el tiempo de la auditoría ({duracion})"
+    # La IA tampoco se pasa del plazo: no pide ni reintenta después de él.
+    if juez is not None and hasattr(juez, "hasta"):
+        juez.hasta(agotado)
+
+    resultados: list[PdfAuditado] = []
+    # El original de la red se baja una sola vez, aunque lo pidan varias filas
+    # a la vez: un cerrojo por PDF. Si no baja, no se vuelve a intentar fila a
+    # fila -- veinte filas eran veinte intentos de 5 s, en serie --, y su
+    # temporal se borra cuando termina su última fila, no al final: doscientos
+    # PDF de 100 MB llenaban el disco de Docker (la segunda revisión, 2026-11-09).
+    locales: dict[Path, Path | BaseException] = {}
+    temporales: dict[Path, Path] = {}
+    pendientes: Counter[Path] = Counter()
+    cerrojos: dict[Path, threading.Lock] = {}
+    cerrojo_de_los_cerrojos = threading.Lock()
+
+    def seguir() -> bool:
+        return not (detener() or agotado())
+
+    def local(origen: Path) -> Path:
+        if not red_smb.por_smb(origen):
+            return origen
+        with cerrojo_de_los_cerrojos:
+            cerrojo = cerrojos.setdefault(origen, threading.Lock())
+        with cerrojo:
+            if origen not in locales:
+                if not seguir():
+                    raise TimeoutError("la auditoría ya no baja más PDF")
+                temporal = Path(tempfile.mkdtemp(prefix="auditoria-filas-"))
+                temporales[origen] = temporal
+                try:
+                    locales[origen] = red_smb.traer(str(origen), temporal / origen.name)
+                except Exception as error:  # noqa: BLE001 - el fallo se recuerda para las demás filas
+                    locales[origen] = error
+            guardado = locales[origen]
+            if isinstance(guardado, BaseException):
+                raise guardado
+            return guardado
+
+    def terminada(origen: Path) -> None:
+        """Una fila menos de ese PDF; con la última, su temporal se borra."""
+        with cerrojo_de_los_cerrojos:
+            pendientes[origen] -= 1
+            temporal = temporales.pop(origen, None) if pendientes[origen] <= 0 else None
+        if temporal is not None:
+            shutil.rmtree(temporal, ignore_errors=True)
+
+    def una(nombre: str) -> PdfAuditado:
+        """Una fila: sus páginas leídas y auditadas, en su propio hilo."""
+        try:
+            return _una(nombre)
+        finally:
+            terminada(candidatas[nombre][0].path)
+
+    def _una(nombre: str) -> PdfAuditado:
+        entrega, fila = candidatas[nombre]
+        habilidad = (entrega.constancia.habilidad if entrega.constancia else "") or ""
+        if detener():
+            return PdfAuditado(nombre, NO_AUDITADO, ("la corrida se detuvo antes de auditarla",), habilidad=habilidad)
+        if agotado():
+            return PdfAuditado(nombre, NO_AUDITADO, (agotado_dicho,), habilidad=habilidad)
+        tramo = paginas_de_la_fila(fila) or (1, 1)
+        try:
+            if leer_textos is not None:
+                ((paginas, sin_texto),) = leer_textos(entrega.path, [tramo])
+                saltadas = 0
+            else:
+                paginas, sin_texto, saltadas = _texto_de_una_fila(runner, local(entrega.path), tramo, seguir=seguir)
+        except Exception as error:  # noqa: BLE001 - un original que no se abre se dice
+            logger.warning("no se pudo abrir %s para auditar sus filas", entrega.relativa, exc_info=True)
+            return PdfAuditado(nombre, NO_AUDITADO, (f"no se pudo abrir su PDF: {error}",), habilidad=habilidad)
+        if saltadas:
+            # Las páginas sin capa que ya no se leyeron por el tiempo o por
+            # «Detener»: la fila no se leyó entera, así que no se audita.
+            motivo = "la corrida se detuvo antes de auditarla" if detener() else agotado_dicho
+            return PdfAuditado(nombre, NO_AUDITADO, (motivo,), habilidad=habilidad)
+        try:
+            # Con el tiempo acabado, la regla sí -- es inmediata -- pero no la
+            # IA: lo dudoso se queda en duda y la muestra cierra.
+            return auditar_una_fila(
+                nombre,
+                fila,
+                paginas,
+                habilidad=habilidad,
+                juez=None if agotado() else juez,
+                sin_texto=sin_texto,
+                paginas_pedidas=tramo,
+            )
+        except Cancelled:
+            return PdfAuditado(nombre, NO_AUDITADO, ("la corrida se detuvo",), habilidad=habilidad)
+        except Exception as error:  # noqa: BLE001 - una fila que no se deja auditar se dice
+            logger.warning("no se pudo auditar la fila %s", nombre, exc_info=True)
+            return PdfAuditado(nombre, NO_AUDITADO, (f"no se pudo auditar: {error}",), habilidad=habilidad)
+
+    def ronda(elegidas: list[str]) -> None:
+        """Las filas elegidas, varias a la vez, con el avance contado fila a fila según terminan.
+
+        Por fila y no por PDF: con las cien filas de un mismo libro escaneado,
+        un hilo por PDF las leía todas en fila y la pantalla se quedaba en «0
+        de 100» hasta el final (la revisión, 2026-11-09).
+        """
+        hechas: dict[str, PdfAuditado] = {}
+        with cerrojo_de_los_cerrojos:
+            pendientes.update(candidatas[nombre][0].path for nombre in elegidas)
+        with ThreadPoolExecutor(max_workers=FILAS_A_LA_VEZ) as hilos:
+            futuros = {hilos.submit(una, nombre): nombre for nombre in elegidas}
+            for futuro in as_completed(futuros):
+                resultado = futuro.result()
+                hechas[futuros[futuro]] = resultado
+                if avance is not None:
+                    avance(len(resultados) + len(hechas), resultado)
+        resultados.extend(hechas[nombre] for nombre in elegidas)
+
+    def medir():
+        cuentas = Counter(r.estado for r in resultados)
+        revisados = len(resultados) - cuentas.get(NO_AUDITADO, 0)
+        # Contra el más estricto de las habilidades de la muestra: el margen
+        # que se acepta en una no tapa el de otra.
+        aceptable = min(
+            (margen_aceptable(r.habilidad) for r in resultados if r.estado != NO_AUDITADO),
+            default=margen_aceptable(),
+        )
+        # Las dudas sin decidir cuentan en el peor caso: cien dudas no son
+        # «dentro del margen» porque no haya errores (la revisión, 2026-11-09).
+        return cuentas, revisados, margen_de_error(
+            cuentas.get(ERROR, 0), revisados, aceptable=aceptable, dudosos=cuentas.get(DUDOSO, 0), unidad="fila"
+        )
+
+    try:
+        primera = elegir_la_muestra(list(candidatas), cuantos, semilla)
+        ronda(primera)
+        ampliada = False
+        _, _, margen = medir()
+        if margen.errores and margen.dictamen != DENTRO_DEL_MARGEN and not detener() and not agotado():
+            # Con errores y sin poder asegurar que la corrida esté dentro del
+            # margen: otras 100, sin repetir (lo eligió el operador, 2026-11-05).
+            segunda = elegir_la_muestra(list(candidatas), cuantos, semilla + 1, excluir=primera)
+            if segunda:
+                antes = len(resultados)
+                ronda(segunda)
+                # Ampliada si de verdad se revisó algo más: con el tiempo
+                # acabado, la segunda ronda puede quedar entera sin auditar.
+                ampliada = any(r.estado != NO_AUDITADO for r in resultados[antes:])
+    finally:
+        for temporal in list(temporales.values()):
+            shutil.rmtree(temporal, ignore_errors=True)
+
+    cuentas, revisados, margen = medir()
+    return {
+        "unidad": UNIDAD_FILAS,
+        "semilla": semilla,
+        "candidatos": len(candidatas),
+        "revisados": revisados,
+        "bien": cuentas.get(BIEN, 0),
+        "errores": cuentas.get(ERROR, 0),
+        "dudosos": cuentas.get(DUDOSO, 0),
+        "no_auditados": cuentas.get(NO_AUDITADO, 0),
+        "ampliada": ampliada,
+        "margen": margen.as_dict(),
+        "por_habilidad": margenes_por_habilidad(resultados, con_dudas=True),
+        "preguntadas_a_la_ia": sum(r.preguntadas_a_la_ia for r in resultados),
+        "pdfs": [r.as_dict() for r in resultados],
+    }
+
+
+def _capa_util(texto: str) -> bool:
+    """Si la capa de texto de una página se puede leer: con las letras suficientes y palabras de verdad.
+
+    La capa del escáner sobre letra a mano son a veces ochenta caracteres de
+    basura («Ii,~ lI' ¡¡ :'.»), y con sólo contarlos no se releía con Tesseract
+    (la revisión, 2026-11-09: 50 de 60 historias de Enfermería, dudosas).
+    """
+    if len(texto.strip()) < CAPA_MINIMA:
+        return False
+    fichas = re.findall(r"\S+", texto)
+    palabras = [f for f in fichas if re.fullmatch(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{3,}[.,;:]?", f) and re.search(r"[AEIOUaeiouÁÉÍÓÚáéíóú]", f)]
+    return len(palabras) >= 8 and len(palabras) >= 0.35 * len(fichas)
+
+
+def _texto_de_una_fila(
+    runner, origen: Path, tramo: tuple[int, int], *, seguir: Callable[[], bool] = lambda: True
+) -> tuple[list[str], int, int]:
+    """El texto de las páginas de una fila, cuántas quedaron sin texto y cuántas sin leer por el tiempo.
+
+    La capa de texto primero, que es gratis y es lo que leyó la corrida. Las
+    páginas sin capa útil -- escaneadas, o con basura sobre letra a mano -- se
+    leen con Tesseract, gratis también, y sólo las ``OCR_POR_FILA`` primeras:
+    nunca el OCR de pago. Cada fila abre el original por su cuenta -- abrirlo es
+    inmediato -- y así varias se leen a la vez.
+    """
+    from ..adapters.pymupdf_source import PyMuPDFPageSource
+    from ..adapters.tesseract_ocr import HeaderAndPageOcr
+
+    desde, hasta = tramo
+    textos: list[str] = []
+    sin_texto = saltadas = leidas_con_ocr = 0
+    ocr = None
+    with PyMuPDFPageSource(Path(origen)) as fuente:
+        total = fuente.page_count
+        for pagina in range(max(1, desde), min(hasta, total) + 1):
+            texto = fuente.text_of(pagina) or ""
+            if not _capa_util(texto) and leidas_con_ocr < OCR_POR_FILA:
+                if not seguir():
+                    saltadas += 1
+                else:
+                    leidas_con_ocr += 1
+                    try:
+                        if ocr is None:
+                            ocr = HeaderAndPageOcr(language=getattr(runner._settings, "ocr_language", "spa"))
+                        leido = ocr.read(fuente.render(pagina, None, dpi=200)).text or ""
+                        texto = f"{texto}\n{leido}" if texto.strip() else leido
+                    except Exception:  # noqa: BLE001 - una página que Tesseract no lee se cuenta
+                        logger.debug("Tesseract no leyó la página %s de %s", pagina, origen, exc_info=True)
+            if len(texto.strip()) < CAPA_MINIMA:
+                sin_texto += 1
+            textos.append(texto)
+    return textos, sin_texto, saltadas

@@ -10,16 +10,26 @@
    * un cuadro por PDF revisado; el error de la corrida en una escala con su
    * intervalo y la raya del margen aceptable; y lo que hay que mirar, con su
    * evidencia. Todo sale de `run.comparacion` y `run.auditoria`.
+   *
+   * Desde el 2026-11-09 la muestra puede ser de filas del inventario (una
+   * corrida de «Solo inventario» no entrega PDF cortados): se dice «filas», se
+   * dice qué hizo la IA con lo dudoso y cuánto costó, y una muestra vacía se
+   * explica en palabras en vez de dibujar una reja vacía y un «< 0 %».
    */
   import Icono from '$lib/components/Icono.svelte';
   import {
     DICTAMENES,
     ESTADOS_DE_LA_MUESTRA,
+    esDeFilas,
     faseEnCurso,
     filasDelCuadre,
     habilidadesDeLaMuestra,
+    iaDeLaMuestra,
+    muestraVacia,
     paraMirar,
     porCiento,
+    rotuloDeLaMuestra,
+    textoSinMuestra,
     tonoDeLaEtapa,
     topeDeLaEscala,
     topeDelMargen
@@ -36,12 +46,16 @@
   let { auditoria, comparacion = null, etapa = null, detalle = '' }: Props = $props();
 
   const muestra = $derived(auditoria.muestra ?? null);
+  const vacia = $derived(muestra ? muestraVacia(muestra) : false);
+  const deFilas = $derived(esDeFilas(muestra));
+  const ia = $derived(muestra ? iaDeLaMuestra(muestra) : null);
   const filas = $derived(comparacion ? filasDelCuadre(comparacion) : []);
-  const margen = $derived(muestra?.margen ?? null);
+  // Sin nada revisado no hay error que medir: ni escala ni dictamen.
+  const margen = $derived(muestra && !vacia ? muestra.margen : null);
   const dictamen = $derived(margen ? DICTAMENES[margen.dictamen] : null);
   const tope = $derived(muestra ? topeDeLaEscala(muestra) : 0.1);
   const mirar = $derived(muestra ? paraMirar(muestra) : []);
-  const habilidades = $derived(muestra ? habilidadesDeLaMuestra(muestra) : []);
+  const habilidades = $derived(muestra && !vacia ? habilidadesDeLaMuestra(muestra) : []);
   const avance = $derived(
     auditoria.total ? Math.min(100, Math.round(((auditoria.hechos ?? 0) / auditoria.total) * 100)) : 0
   );
@@ -130,12 +144,17 @@
     </ul>
   {/if}
 
-  {#if muestra}
-    <div class="caps rotulo">
-      Muestra al azar: {muestra.revisados} PDF{muestra.ampliada ? ', ampliada por los errores' : ''}
-    </div>
+  {#if muestra && vacia}
+    <div class="caps rotulo">Muestra al azar</div>
+    <p class="sin-muestra">{textoSinMuestra(muestra)}.</p>
+  {:else if muestra}
+    <div class="caps rotulo">{rotuloDeLaMuestra(muestra)}</div>
     <div class="muestra">
-      <div class="reja" role="list" aria-label="Los PDF de la muestra y cómo salió cada uno">
+      <div
+        class="reja"
+        role="list"
+        aria-label={deFilas ? 'Las filas de la muestra y cómo salió cada una' : 'Los PDF de la muestra y cómo salió cada uno'}
+      >
         {#each muestra.pdfs as pdf, i (pdf.pdf)}
           <span
             class="cuadro"
@@ -154,6 +173,10 @@
           {/if}
         {/each}
       </ul>
+      {#if ia}
+        <!-- En filas no hay costuras: lo que se dice es qué hizo la IA con los datos dudosos. -->
+        <p class="ia" data-con-ia={muestra.con_ia ? 'si' : 'no'}>{ia}</p>
+      {/if}
     </div>
 
     {#if margen && dictamen}
@@ -580,6 +603,19 @@
     font-size: var(--text-sm);
     color: var(--ink-2);
     overflow-wrap: anywhere;
+  }
+  .ia {
+    margin: var(--space-2) 0 0;
+    font-size: var(--text-sm);
+    color: var(--ink-2);
+  }
+  .ia[data-con-ia='no'] {
+    color: var(--muted);
+  }
+  .sin-muestra {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--ink-2);
   }
   .semilla {
     margin: var(--space-3) 0 0;

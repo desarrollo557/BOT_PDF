@@ -60,6 +60,14 @@ class MargenDeError:
     hasta: float
     confianza: float = CONFIANZA
     aceptable: float = MARGEN_ACEPTABLE
+    #: Los revisados que quedaron en duda, sin decidir: si todos fueran error,
+    #: el error llegaría hasta ``hasta_con_dudas``. Una muestra con 85 dudas de
+    #: 100 no puede decir «dentro del margen» porque no tenga errores (la
+    #: revisión de la auditoría de filas, 2026-11-09).
+    dudosos: int = 0
+    hasta_con_dudas: float = 0.0
+    #: De qué es la muestra, para decirlo: «PDF» o «fila».
+    unidad: str = "PDF"
 
     @property
     def dictamen(self) -> str:
@@ -67,6 +75,8 @@ class MargenDeError:
         if not self.revisados:
             return SIN_CERTEZA
         if self.hasta <= self.aceptable:
+            if self.dudosos and self.hasta_con_dudas > self.aceptable:
+                return SIN_CERTEZA
             return DENTRO_DEL_MARGEN
         if self.desde > self.aceptable:
             return FUERA_DEL_MARGEN
@@ -81,19 +91,25 @@ class MargenDeError:
             return f"Fuera del margen aceptable ({aceptable}): aun en el mejor caso, el error queda por encima"
         if not self.revisados:
             return "Sin muestra que juzgar"
+        if self.hasta <= self.aceptable and self.dudosos:
+            return (
+                f"Sin certeza frente al margen aceptable ({aceptable}): {self.dudosos} sin decidir; "
+                f"si fueran errores, el error llegaría al {_por_ciento(self.hasta_con_dudas)}"
+            )
         return f"Sin certeza frente al margen aceptable ({aceptable}): el intervalo lo cruza"
 
     def texto(self) -> str:
         """«0 de 100 con error: el de la corrida, menos del 3,7 % (95 % de confianza)»."""
         if not self.revisados:
-            return "No se revisó ningún PDF."
+            return "No se revisó ninguna fila." if self.unidad == "fila" else "No se revisó ningún PDF."
         base = f"{self.errores} de {self.revisados} con error"
         confianza = f"{round(self.confianza * 100)} % de confianza"
+        dudas = f"; {self.dudosos} en duda, sin decidir" if self.dudosos else ""
         if not self.errores:
-            return f"{base}: el de la corrida, menos del {_por_ciento(self.hasta)} ({confianza})"
+            return f"{base}: el de la corrida, menos del {_por_ciento(self.hasta)} ({confianza}){dudas}"
         return (
             f"{base} ({_por_ciento(self.tasa)}): el de la corrida, entre el {_por_ciento(self.desde)} "
-            f"y el {_por_ciento(self.hasta)} ({confianza})"
+            f"y el {_por_ciento(self.hasta)} ({confianza}){dudas}"
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -106,13 +122,21 @@ class MargenDeError:
             "confianza": self.confianza,
             "aceptable": self.aceptable,
             "dictamen": self.dictamen,
+            "dudosos": self.dudosos,
+            "hasta_con_dudas": round(self.hasta_con_dudas, 4),
             "texto": self.texto(),
             "texto_del_dictamen": self.texto_del_dictamen(),
         }
 
 
 def margen_de_error(
-    errores: int, revisados: int, confianza: float = CONFIANZA, *, aceptable: float = MARGEN_ACEPTABLE
+    errores: int,
+    revisados: int,
+    confianza: float = CONFIANZA,
+    *,
+    aceptable: float = MARGEN_ACEPTABLE,
+    dudosos: int = 0,
+    unidad: str = "PDF",
 ) -> MargenDeError:
     """La tasa de error de la muestra y su intervalo de Wilson.
 
@@ -121,16 +145,33 @@ def margen_de_error(
     cuando no se vio ninguno.
     """
     if revisados <= 0:
-        return MargenDeError(0, 0, 0.0, 0.0, 0.0, confianza, aceptable)
+        return MargenDeError(0, 0, 0.0, 0.0, 0.0, confianza, aceptable, unidad=unidad)
     errores = max(0, min(errores, revisados))
+    dudosos = max(0, min(dudosos, revisados - errores))
     z = _Z.get(confianza, 1.96)
+    desde, hasta = _wilson(errores, revisados, z)
+    hasta_con_dudas = _wilson(errores + dudosos, revisados, z)[1] if dudosos else hasta
+    return MargenDeError(
+        errores,
+        revisados,
+        errores / revisados,
+        desde,
+        hasta,
+        confianza,
+        aceptable,
+        dudosos=dudosos,
+        hasta_con_dudas=hasta_con_dudas,
+        unidad=unidad,
+    )
+
+
+def _wilson(errores: int, revisados: int, z: float) -> tuple[float, float]:
+    """El intervalo de Wilson de ``errores`` en ``revisados``."""
     p = errores / revisados
     denominador = 1 + z * z / revisados
     centro = (p + z * z / (2 * revisados)) / denominador
     radio = z * math.sqrt(p * (1 - p) / revisados + z * z / (4 * revisados * revisados)) / denominador
-    return MargenDeError(
-        errores, revisados, p, max(0.0, centro - radio), min(1.0, centro + radio), confianza, aceptable
-    )
+    return max(0.0, centro - radio), min(1.0, centro + radio)
 
 
 def elegir_la_muestra(
@@ -175,6 +216,9 @@ class PdfAuditado:
             "dentro_del_margen": self.dentro_del_margen,
             "preguntadas_a_la_ia": self.preguntadas_a_la_ia,
             "habilidad": self.habilidad,
+            # De una fila del inventario: qué confirmó el papel y qué no traía
+            # la fila (2026-11-09). Un PDF no los lleva.
+            **{k: list(self.extra[k]) for k in ("confirmados", "sin_dato") if self.extra.get(k)},
         }
 
 

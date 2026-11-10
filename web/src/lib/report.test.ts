@@ -422,4 +422,54 @@ describe('la auditoría de cierre en el informe', () => {
     expect(cortada?.auditoria.estado).toBe('no se pudo');
     expect(cortada?.auditoria.error).toContain('se detuvo');
   });
+
+  it('la muestra de filas llega al informe con su unidad y lo que costó la IA (2026-11-09)', () => {
+    const consumo_ia = { peticiones: 2, tokens_entrada: 900, tokens_salida: 100, tokens: 1000 };
+    const deFilas = auditoriaDelInforme(
+      'A',
+      { estado: 'auditando', fase: 'muestra', unidad: 'filas', hechos: 3, total: 100 },
+      null,
+      null,
+      undefined
+    );
+    expect(deFilas?.auditoria.unidad).toBe('filas');
+    const conMuestra = auditoriaDelInforme(
+      'A',
+      {
+        ...hecha,
+        muestra: {
+          semilla: 7,
+          candidatos: 3,
+          revisados: 3,
+          bien: 3,
+          errores: 0,
+          dudosos: 0,
+          no_auditados: 0,
+          ampliada: false,
+          margen: {
+            errores: 0,
+            revisados: 3,
+            tasa: 0,
+            desde: 0,
+            hasta: 0.56,
+            confianza: 0.95,
+            aceptable: 0.05,
+            dictamen: 'sin certeza',
+            texto: '0 de 3 con error',
+            texto_del_dictamen: 'Sin certeza'
+          },
+          unidad: 'filas',
+          con_ia: true,
+          preguntadas_a_la_ia: 2,
+          consumo_ia,
+          pdfs: []
+        }
+      },
+      null,
+      'Terminado',
+      ''
+    );
+    expect(conMuestra?.auditoria.muestra?.unidad).toBe('filas');
+    expect(conMuestra?.auditoria.muestra?.consumo_ia).toEqual(consumo_ia);
+  });
 });

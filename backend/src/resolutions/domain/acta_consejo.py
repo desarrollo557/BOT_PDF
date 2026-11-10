@@ -629,6 +629,58 @@ def _fecha_en(
     return fecha, dia_semana.lower() if dia_semana else None
 
 
+#: Un número dicho con letras y luego en cifras entre paréntesis: «diecisiete
+#: (17)», «dos mil doce (2012)», «mil novecientos noventa y ocho (1998)». Sólo
+#: palabras de número: el mes de «17 de diciembre de dos mil doce (2012)» se queda.
+_PALABRA_DE_NUMERO = (
+    r"(?:un[oa]?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince"
+    r"|dieci\w+|veint\w*|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento"
+    r"|doscientos|trescientos|cuatrocientos|quinientos|seiscientos|setecientos|ochocientos"
+    r"|novecientos|mil|y|primero)"
+)
+_CON_LETRAS_Y_CIFRAS = re.compile(
+    rf"\b{_PALABRA_DE_NUMERO}(?:\s+{_PALABRA_DE_NUMERO})*\s*\(\s*(\d{{1,4}})\s*\)", re.IGNORECASE
+)
+_DIAS_DEL_MES = re.compile(r"\b(\d{1,2})\s+d[ií]as?\s+del\s+mes\s+de\s+", re.IGNORECASE)
+#: Una fecha en cifras en cualquier parte del texto: «17/12/2012», «17-12-2012».
+_EN_CIFRAS_EN_EL_TEXTO = re.compile(r"(?<!\d)(\d{1,2})\s*[/.-]\s*(\d{1,2})\s*[/.-]\s*(\d{4})(?!\d)")
+
+
+def fechas_del_texto(texto: str, *, hoy: date | None = None) -> set[date]:
+    """Todas las fechas válidas que trae el texto, escritas con letras o en cifras.
+
+    La usa la auditoría de las filas del inventario (2026-11-09) para saber si
+    la fecha de una fila está en el papel de su acta: con las mismas formas que
+    reconoce ``leer_acta`` -- «17 de diciembre de 2012», «diciembre 17 de
+    2012» -- y con los meses y los años que el OCR desfiguró, devueltos.
+    """
+    # «diecisiete (17) de diciembre de dos mil doce (2012)»: las actas dicen el
+    # número con letras y en cifras; se queda la cifra.
+    texto = _CON_LETRAS_Y_CIFRAS.sub(r"\1", texto or "")
+    # «a los 17 días del mes de diciembre»: el día y el mes, como «17 de diciembre».
+    texto = _DIAS_DEL_MES.sub(r"\1 de ", texto)
+    plano = _fechas_sin_ocr(_plano(texto))
+    fechas: set[date] = set()
+    for match in _FECHA_DIA_MES.finditer(plano):
+        _, dia, mes, anio = match.groups()
+        if (fecha := _valida(int(dia), MESES[mes.lower()], int(anio), hoy)) is not None:
+            fechas.add(fecha)
+    for match in _FECHA_MES_DIA.finditer(plano):
+        _, mes, dia, anio = match.groups()
+        if (fecha := _valida(int(dia), MESES[mes.lower()], int(anio), hoy)) is not None:
+            fechas.add(fecha)
+    for match in _EN_CIFRAS_EN_EL_TEXTO.finditer(plano):
+        if (fecha := _valida(int(match.group(1)), int(match.group(2)), int(match.group(3)), hoy)) is not None:
+            fechas.add(fecha)
+    return fechas
+
+
+def primera_fecha(texto: str, *, hoy: date | None = None) -> date | None:
+    """La primera fecha válida del texto, con las formas de ``fechas_del_texto``: la que abre una hoja."""
+    texto = _DIAS_DEL_MES.sub(r"\1 de ", _CON_LETRAS_Y_CIFRAS.sub(r"\1", texto or ""))
+    return _fecha_en(texto, hoy=hoy)[0]
+
+
 def _valida(dia: int, mes: int, anio: int, hoy: date | None) -> date | None:
     try:
         fecha = date(anio, mes, dia)

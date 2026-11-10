@@ -796,7 +796,33 @@ export interface MuestraAuditada {
   margen: MargenDeLaCorrida;
   /** La muestra partida por habilidad, cada una contra el margen de su perfil. */
   por_habilidad?: MargenDeUnaHabilidad[];
+  /**
+   * Qué se muestreó (2026-11-09): PDF cortados o, si la corrida sólo levantó
+   * inventario, filas del inventario contra sus páginas. Ausente = PDF, que es
+   * lo que traen las auditorías anteriores.
+   */
+  unidad?: UnidadDeLaMuestra;
+  /** Sólo en filas: si la corrida se hizo con IA y por eso la IA juzgó lo dudoso. */
+  con_ia?: boolean;
+  /** Sólo en filas: cuántos datos dudosos se le preguntaron a la IA. */
+  preguntadas_a_la_ia?: number;
+  /** Sólo en filas y con IA: lo que costó, que no se suma al de la corrida. */
+  consumo_ia?: ConsumoDeLaAuditoria;
+  /** En filas, cada elemento es una fila: «carpeta/archivo.pdf · págs. 1-22 · acta 022». */
   pdfs: PdfAuditado[];
+}
+
+/** Lo que muestrea la auditoría: PDF cortados o filas del inventario. */
+export type UnidadDeLaMuestra = 'pdf' | 'filas';
+
+/** Lo que costó la IA de la auditoría: se paga por token. */
+export interface ConsumoDeLaAuditoria {
+  peticiones: number;
+  tokens_entrada: number;
+  tokens_salida: number;
+  tokens: number;
+  /** Las peticiones que la IA no contestó: una llave mala, una caída (2026-11-09). */
+  fallos?: number;
 }
 
 /** Lo que la muestra dice de una habilidad, juzgada contra su propio margen aceptable. */
@@ -814,6 +840,8 @@ export interface MargenDeUnaHabilidad {
 export interface AuditoriaDeCierre {
   estado: 'auditando' | 'hecha' | 'no se pudo';
   fase?: 'cuadre' | 'muestra';
+  /** Durante la fase muestra: si se están revisando PDF o filas del inventario. */
+  unidad?: UnidadDeLaMuestra;
   hechos?: number;
   total?: number;
   semilla?: number;

@@ -5,7 +5,7 @@
   import { formatBytes, formatDuration } from '$lib/format';
   import { jobStore } from '$lib/jobs.svelte';
   import AuditoriaDeCierre from '$lib/components/AuditoriaDeCierre.svelte';
-  import { DICTAMENES, porCiento, tonoDeLaEtapa } from '$lib/auditoria';
+  import { avisoDeLaMuestra, tonoDeLaEtapa } from '$lib/auditoria';
   import { auditoriasDe, reports, type Completion } from '$lib/report.svelte';
   import { RUNGS, UNREADABLE } from '$lib/rungs';
 
@@ -403,7 +403,6 @@
       {#if tab === 'resumen'}
         {#each auditorias as auditoria (auditoria.nombre)}
           {@const muestra = auditoria.auditoria.muestra}
-          {@const dictamen = muestra ? DICTAMENES[muestra.margen.dictamen] : null}
           <!-- Lo primero del resumen: cómo salió la auditoría de cierre, y el
                camino a su detalle. -->
           <section class="auditoria-aviso" data-tono={tonoDeLaEtapa(auditoria.etapa)}>
@@ -420,12 +419,8 @@
                   {auditoria.comparacion.pdf_entregados} de {auditoria.comparacion.pdf_origen} PDF entregados enteros
                 {/if}
                 {#if muestra}
-                  · muestra: {muestra.bien} de {muestra.revisados} bien
-                  {#if dictamen}
-                    · error {muestra.margen.errores
-                      ? porCiento(muestra.margen.tasa)
-                      : `< ${porCiento(muestra.margen.hasta)}`}, {dictamen.etiqueta.toLowerCase()}
-                  {/if}
+                  <!-- «muestra: 98 de 100 filas bien · error < 3,7 %…»; vacía, por qué no la hubo. -->
+                  · {avisoDeLaMuestra(muestra)}
                 {/if}
               </span>
             </div>

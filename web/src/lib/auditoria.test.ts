@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  avisoDeLaMuestra,
+  esDeFilas,
   faseEnCurso,
   filasDelCuadre,
   habilidadesDeLaMuestra,
+  iaDeLaMuestra,
+  muestraVacia,
   paraMirar,
   porCiento,
+  rotuloDeLaMuestra,
+  textoSinMuestra,
   tonoDeLaEtapa,
   topeDeLaEscala,
   topeDelMargen
@@ -159,5 +165,122 @@ describe('cada habilidad contra su margen', () => {
 
   it('la escala de una habilidad, como la de la corrida', () => {
     expect(topeDelMargen({ ...muestra().margen, aceptable: 0.02, hasta: 0.3 })).toBeCloseTo(0.375);
+  });
+});
+
+describe('la muestra de filas del inventario (2026-11-09)', () => {
+  const fila = {
+    pdf: '00C003284/UPD3859771/1N°22.pdf · págs. 1-22 · acta 022',
+    estado: 'bien' as const,
+    hallazgos: [],
+    paginas: 22,
+    archivos: 0,
+    costuras: 0,
+    dentro_del_margen: 0,
+    preguntadas_a_la_ia: 0,
+    habilidad: 'actas'
+  };
+
+  it('sin unidad es de PDF, como las auditorías anteriores', () => {
+    expect(esDeFilas(muestra())).toBe(false);
+    expect(esDeFilas(muestra({ unidad: 'filas' }))).toBe(true);
+    expect(esDeFilas(null)).toBe(false);
+  });
+
+  it('el rótulo dice filas del inventario o PDF', () => {
+    expect(rotuloDeLaMuestra(muestra())).toBe('Muestra al azar: 100 PDF');
+    expect(rotuloDeLaMuestra(muestra({ unidad: 'filas', pdfs: [fila] }))).toBe('Muestra al azar: 100 filas del inventario');
+    expect(rotuloDeLaMuestra(muestra({ unidad: 'filas', revisados: 200, ampliada: true }))).toBe(
+      'Muestra al azar: 200 filas del inventario, ampliada por los errores'
+    );
+  });
+
+  it('la fase en curso cuenta filas', () => {
+    expect(faseEnCurso({ estado: 'auditando', fase: 'muestra', unidad: 'filas', hechos: 12, total: 100 })).toBe(
+      'Revisando la muestra al azar: 12 de 100 filas'
+    );
+    expect(faseEnCurso({ estado: 'auditando', fase: 'muestra', unidad: 'pdf', hechos: 12, total: 100 })).toBe(
+      'Revisando la muestra al azar: 12 de 100 PDF'
+    );
+  });
+
+  it('el aviso del resumen dice filas', () => {
+    const deFilas = muestra({ unidad: 'filas', bien: 98, revisados: 100 });
+    expect(avisoDeLaMuestra(deFilas)).toBe('muestra: 98 de 100 filas bien · error < 3,7 %, dentro del margen');
+    expect(avisoDeLaMuestra(muestra())).toBe('muestra: 99 de 100 bien · error < 3,7 %, dentro del margen');
+  });
+
+  it('la IA de la muestra: lo que revisó y lo que costó', () => {
+    const conIa = muestra({
+      unidad: 'filas',
+      con_ia: true,
+      preguntadas_a_la_ia: 4,
+      consumo_ia: { peticiones: 4, tokens_entrada: 2500, tokens_salida: 620, tokens: 3120 }
+    });
+    const texto = iaDeLaMuestra(conIa);
+    expect(texto).toBe('La IA revisó 4 datos dudosos · 4 peticiones · 3.120 tokens');
+    expect(iaDeLaMuestra(muestra({ unidad: 'filas', con_ia: true, preguntadas_a_la_ia: 1 }))).toBe(
+      'La IA revisó 1 dato dudoso'
+    );
+  });
+
+  it('una IA caída no «revisó» nada: se dice (la revisión, 2026-11-09)', () => {
+    const caida = muestra({
+      unidad: 'filas',
+      con_ia: true,
+      preguntadas_a_la_ia: 0,
+      consumo_ia: { peticiones: 0, tokens_entrada: 0, tokens_salida: 0, tokens: 0, fallos: 2 }
+    });
+    expect(iaDeLaMuestra(caida)).toBe('La IA no respondió: lo dudoso queda para revisar · la IA no respondió en 2 filas');
+    const aMedias = muestra({
+      unidad: 'filas',
+      con_ia: true,
+      preguntadas_a_la_ia: 3,
+      consumo_ia: { peticiones: 3, tokens_entrada: 900, tokens_salida: 100, tokens: 1000, fallos: 1 }
+    });
+    expect(iaDeLaMuestra(aMedias)).toBe(
+      'La IA revisó 3 datos dudosos · 3 peticiones · 1.000 tokens · la IA no respondió en 1 fila'
+    );
+  });
+
+  it('sin IA lo dice: lo dudoso queda para revisar', () => {
+    expect(iaDeLaMuestra(muestra({ unidad: 'filas', con_ia: false }))).toBe('Sin IA: lo dudoso queda para revisar');
+  });
+
+  it('una muestra de PDF no habla de la IA de filas', () => {
+    expect(iaDeLaMuestra(muestra())).toBeNull();
+  });
+});
+
+describe('una muestra vacía no se dibuja como «< 0 %»', () => {
+  const vacia = muestra({
+    candidatos: 0,
+    revisados: 0,
+    bien: 0,
+    dudosos: 0,
+    pdfs: [],
+    margen: { ...muestra().margen, revisados: 0, hasta: 0, dictamen: 'sin certeza' }
+  });
+
+  it('sin nada revisado está vacía', () => {
+    expect(muestraVacia(vacia)).toBe(true);
+    expect(muestraVacia(muestra())).toBe(false);
+  });
+
+  it('sin candidatos: la corrida no entregó nada que revisar', () => {
+    expect(textoSinMuestra(vacia)).toBe(
+      'Sin muestra: la corrida no entregó PDF cortados ni filas de inventario que revisar'
+    );
+  });
+
+  it('con candidatos que no se pudieron abrir', () => {
+    expect(textoSinMuestra({ ...vacia, candidatos: 30 })).toBe('Sin muestra: no se pudo revisar ningún elemento');
+  });
+
+  it('el aviso del resumen no dice «error < 0 %, sin certeza»', () => {
+    const aviso = avisoDeLaMuestra(vacia);
+    expect(aviso).toContain('Sin muestra');
+    expect(aviso).not.toContain('< 0');
+    expect(aviso).not.toContain('sin certeza');
   });
 });
