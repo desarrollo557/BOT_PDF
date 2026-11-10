@@ -16,12 +16,21 @@ from __future__ import annotations
 
 import errno
 import logging
-from dataclasses import asdict
+import re
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict, replace
+from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ...application.progress import Stage
 from .planillas import _escribir_fuid, _escribir_fuid_de_archivo
 from .taller import Taller, _anunciar
+
+if TYPE_CHECKING:
+    from ...application.acta_consejo import FilaDeActa, SesionDeActa
+    from ...application.fuid import FuidRow
+    from ...application.revisor_de_fechas import FechasRevisadas
 
 logger = logging.getLogger(__name__)
 
@@ -106,10 +115,30 @@ def _inventory_job(payload: dict) -> dict:
         )
         return _inventory_file_job(payload)
 
+    # 2. El revisor de fechas (2026-11-10): la fecha inicial y la final de cada
+    #    fila contra el papel de sus páginas, con la regla de su habilidad, antes
+    #    de escribir el FUID. El texto que leyó la lectura no se guarda, así que
+    #    se toma la capa de texto -- sin OCR: nada se vuelve a pagar ni a leer
+    #    con Tesseract --, y lo que salió de una página leída por OCR no se da
+    #    por contradicho sólo porque la capa no lo traiga.
+    revisor = _RevisorDeFechas(taller, _HABILIDAD_DEL_TIPO.get(str(outcome.document_type)))
+    paginas = _paginas_de_cada_fila(outcome)
+    _anunciar(payload, Stage.INVENTORYING, detail="revisando las fechas de cada documento")
+    outcome.rows = _revisar_las_filas_del_fuid(
+        revisor,
+        outcome.rows,
+        paginas,
+        _capa_de_texto(taller, (p for suyas in paginas.values() for p in suyas)),
+        # Todas las páginas por la capa: es justo lo que se leyó.
+        completas=_todo_por_la_capa(outcome.provenance),
+        minimo=_MIN_CHARS_DE_LA_CAPA,
+    )
+
     report = outcome.as_dict()
     report["task"] = str(TaskKind.INVENTORY)
+    revisor.anotar(report)
 
-    # 2. La planilla: aquí no hay PDF que escribir, sólo el FUID.
+    # 3. La planilla: aquí no hay PDF que escribir, sólo el FUID.
     _escribir_fuid(
         report,
         outcome.rows,
@@ -201,6 +230,19 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
     finally:
         source.close()
 
+    # El revisor de fechas (2026-11-10), con la regla de lo que de verdad es --
+    # la apertura de la sesión o la fecha del acta de grado --: cada fila contra
+    # el texto de sus páginas, el que ya se leyó para el inventario. **Antes de
+    # dividir**: el PDF de cada sesión se llama por su acta y su fecha
+    # («03_ACTA-…-16-08-2012.pdf»), y revisada después salía con la fecha vieja
+    # mientras su fila y el FUID llevaban la corregida (la revisión adversarial,
+    # 2026-11-10). Y antes del informe y del FUID, que también la llevan.
+    revisor = _RevisorDeFechas(taller, outcome.tipo_documental)
+    _anunciar(payload, Stage.INVENTORYING, detail="revisando las fechas de cada acta")
+    leidas = list(outcome.filas)
+    outcome.filas, primera_corregida = _revisar_las_actas(revisor, outcome.filas, outcome.textos)
+    outcome.sesiones = _sesiones_con_su_fecha(outcome.sesiones, leidas, outcome.filas)
+
     # Dividir sólo lo que hay que dividir: un libro con varias actas. Un PDF
     # que ya es un acta -- porque alguien lo dividió antes -- se inventaría y
     # nada más; partirlo daría el mismo PDF con otro nombre.
@@ -270,6 +312,10 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
     )
 
     report = outcome.as_dict()
+    if primera_corregida:
+        # La pantalla de Archivo lee la fecha de la primera acta del informe.
+        report["fecha_inicial"] = report["fecha_final"] = outcome.filas[0].fecha
+    revisor.anotar(report)
     # Para el libro mayor es un archivo inventariado entero, que es lo que es:
     # así aparece en la pantalla de Archivo con su acta y su fecha.
     report["task"] = str(TaskKind.INVENTORY_FILE)
@@ -410,8 +456,26 @@ def _inventory_file_job(payload: dict) -> dict:
     finally:
         source.close()
 
+    # El revisor de fechas (2026-11-10): las fechas extremas del archivo contra
+    # su papel, con la regla de los archivos ya separados -- la más antigua y la
+    # más reciente --. La capa de texto es exactamente lo que se leyó si ninguna
+    # página pasó por OCR; si alguna pasó, lo que la capa no traiga no prueba
+    # nada en contra.
+    revisor = _RevisorDeFechas(taller, "archivos-separados")
+    paginas = list(range(1, outcome.page_count + 1))
+    _anunciar(payload, Stage.INVENTORYING, detail="revisando las fechas del archivo")
+    (outcome.row,) = _revisar_las_filas_del_fuid(
+        revisor,
+        [outcome.row],
+        {outcome.row.pagina_inicial: paginas},
+        _capa_de_texto(taller, paginas),
+        completas=outcome.ocr_pages == 0,
+        minimo=0,
+    )
+
     report = outcome.as_dict()
     report["task"] = str(TaskKind.INVENTORY_FILE)
+    revisor.anotar(report)
 
     _escribir_fuid_de_archivo(
         report,
@@ -424,3 +488,298 @@ def _inventory_file_job(payload: dict) -> dict:
     )
     _anunciar(payload, Stage.DONE)
     return report
+
+
+# -----------------------------------------------------------------------------
+#  El revisor de fechas (2026-11-10)
+# -----------------------------------------------------------------------------
+#  El operador: «necesito estar muy seguro de cada fecha en cada documento, sin
+#  importar la habilidad», «corregir sólo con prueba» y «saber manejar un margen
+#  de errores». La decisión es de ``application/revisor_de_fechas.py`` y la
+#  misma en todas las habilidades; aquí sólo se le da a cada fila lo suyo -- la
+#  regla de su habilidad, el texto de sus páginas, un juez por trabajo -- y se
+#  escribe lo corregido con el formato de su fila.
+#
+#  Optimizado: el texto es el que ya se leyó (las actas lo guardan) o la capa
+#  de texto del PDF, nunca una lectura nueva con OCR; la IA sólo ve lo dudoso,
+#  una pregunta por documento, y sólo si la corrida se hizo con «OCR + IA».
+
+#: La habilidad de cada tipo que reconoce `_inventory_job`: su regla de fechas.
+_HABILIDAD_DEL_TIPO = {
+    "diploma": "diplomas",
+    "resolucion": "resoluciones",
+    "matricula": "matriculas",
+    "acta": "actas-de-grado",
+}
+
+#: Desde cuántos caracteres la capa de texto de una página es lo que se leyó:
+#: el umbral con que la lectura decide no pasar la página por OCR
+#: (``application/inventory_file.MIN_CHARS``).
+_MIN_CHARS_DE_LA_CAPA = 80
+
+
+class _RevisorDeFechas:
+    """El revisor de fechas de un trabajo: la regla de su habilidad, un juez y lo decidido.
+
+    Nunca tumba el trabajo: un fallo deja la fila como se leyó, con un aviso
+    en el registro. La cancelación sí se propaga.
+    """
+
+    def __init__(self, taller: Taller, habilidad: str | None) -> None:
+        from ...application.perfiles_de_revision import perfil_de
+        from ...domain.fechas_extremas import EXTREMOS
+
+        # La regla del perfil; sin ella, la de cualquier papel (las puntas), que
+        # sólo confirma o pregunta y nunca corrige sin la IA.
+        self.regla = getattr(perfil_de(habilidad), "regla_de_fechas", None) or EXTREMOS
+        self._control = taller.control
+        # Un juez para todo el trabajo, con su plazo: con «Solo OCR», ninguno.
+        # El de las rutas que parten (``juez_del_trabajo``), que deja subir la
+        # cancelación: aquí se la tragaba un ``except Exception`` (la revisión
+        # adversarial, 2026-11-10).
+        from .fechas_aseguradas import juez_del_trabajo
+
+        self._juez = juez_del_trabajo(taller)
+        self.revisiones: list[tuple[str, int | None, FechasRevisadas]] = []
+
+    def revisar(
+        self,
+        documento: str,
+        pagina: int | None,
+        fila: Mapping[str, object],
+        textos: Sequence[str],
+        *,
+        completo: bool = True,
+    ) -> FechasRevisadas | None:
+        """Las fechas de una fila contra sus páginas; ``None`` si el revisor falló.
+
+        Con ``completo=False`` -- el texto no es todo lo que se leyó -- sólo
+        cuenta lo que el papel confirma: sin la página que se leyó por OCR no
+        hay prueba para corregir ni motivo para mandar a Revisión, y la IA no
+        se paga sobre medio texto.
+        """
+        from ...application.control import Cancelled
+        from ...application.revisor_de_fechas import revisar_las_fechas
+        from ...domain.fechas_extremas import fechas_de_la_fila
+        from .fechas_aseguradas import sin_repetir, solo_lo_confirmado
+
+        try:
+            self._control.check()
+            fechas = fechas_de_la_fila(fila)
+            # Cada hoja una vez: la IA se paga por token (2026-11-10).
+            revisadas = revisar_las_fechas(
+                fechas, sin_repetir(textos), regla=self.regla, juez=self._juez if completo else None
+            )
+            if not completo:
+                revisadas = solo_lo_confirmado(revisadas, fechas)
+        except Cancelled:
+            raise
+        except Exception:  # noqa: BLE001 - la fila queda como se leyó
+            logger.warning(
+                "el revisor de fechas falló en %s; queda como se leyó", documento, exc_info=True
+            )
+            return None
+        self.revisiones.append((documento, pagina, revisadas))
+        return revisadas
+
+    def anotar(self, report: dict) -> None:
+        """Lo decidido, en el informe: cuentas, avisos de lo corregido y la cola de Revisión."""
+        from ...application.revisor_de_fechas import anotar_en_el_informe
+
+        for documento, pagina, revisadas in self.revisiones:
+            try:
+                anotar_en_el_informe(report, documento, pagina, revisadas)
+            except Exception:  # noqa: BLE001 - el informe sale igual
+                logger.warning(
+                    "no se pudo anotar la revisión de fechas de %s", documento, exc_info=True
+                )
+
+
+def _revisar_las_actas(
+    revisor: _RevisorDeFechas, filas: Sequence[FilaDeActa], textos: Mapping[int, str]
+) -> tuple[list[FilaDeActa], bool]:
+    """Las filas de actas con su fecha revisada, y si se corrigió la de la primera.
+
+    El texto es el que ya se leyó para el inventario (``outcome.textos``): está
+    entero, así que el revisor trabaja con todo su margen.
+    """
+    from ...application.revisor_de_fechas import CORREGIDA
+
+    revisadas_filas: list[FilaDeActa] = []
+    primera_corregida = False
+    for orden, fila in enumerate(filas):
+        suyas = range(fila.pagina_inicial, max(fila.pagina_inicial, fila.pagina_final) + 1)
+        revisadas = revisor.revisar(
+            fila.acta or fila.nombre or fila.archivo,
+            fila.pagina_inicial,
+            asdict(fila),
+            [textos.get(pagina, "") for pagina in suyas],
+        )
+        if revisadas is not None and revisadas.estado == CORREGIDA:
+            inicial, final = _corregidas(revisadas, fila.fecha, fila.fecha)
+            # Las actas llevan una sola fecha: la que el papel corrigió. Su nota
+            # no va a «Observaciones»: el Excel de actas se entrega, y ahí salía
+            # el texto de la prueba, dos veces, y la fila contaba «POR REVISAR»
+            # (la revisión, 2026-11-10). La corrección queda en los avisos del
+            # trabajo y en ``revision_de_fechas``, como la de las demás filas.
+            fila = replace(fila, fecha=inicial if inicial != fila.fecha else final)
+            primera_corregida = primera_corregida or orden == 0
+        revisadas_filas.append(fila)
+    return revisadas_filas, primera_corregida
+
+
+
+def _sesiones_con_su_fecha(
+    sesiones: Sequence[SesionDeActa], leidas: Sequence[FilaDeActa], revisadas: Sequence[FilaDeActa]
+) -> list[SesionDeActa]:
+    """Las sesiones del libro con el nombre de su acta revisada: el PDF se llama por su acta y su fecha.
+
+    La sesión ``orden`` es la fila ``orden - 1`` (las páginas previas, la 0, no
+    llevan fecha). Sólo se renombra la que el revisor corrigió y conserva el
+    nombre que se le dio por su fila: un nombre puesto de otro modo -- el del
+    graduado, que no lleva fecha -- queda como estaba (2026-11-10).
+    """
+    from ...application.acta_consejo import nombre_de_la_sesion
+
+    nuevas: list[SesionDeActa] = []
+    for sesion in sesiones:
+        indice = sesion.orden - 1
+        if 0 <= indice < min(len(leidas), len(revisadas)):
+            antes, ahora = leidas[indice], revisadas[indice]
+            if antes.fecha != ahora.fecha and sesion.nombre == nombre_de_la_sesion(antes):
+                sesion = replace(sesion, nombre=nombre_de_la_sesion(ahora))
+        nuevas.append(sesion)
+    return nuevas
+
+def _revisar_las_filas_del_fuid(
+    revisor: _RevisorDeFechas,
+    filas: Sequence[FuidRow],
+    paginas: Mapping[int | None, Sequence[int]],
+    textos: Mapping[int, str],
+    *,
+    completas: bool,
+    minimo: int,
+) -> list[FuidRow]:
+    """Las filas del FUID con sus fechas revisadas; lo corregido, en el formato de su fila.
+
+    ``completas`` dice si el trabajo leyó todo por la capa de texto; ``minimo``,
+    desde cuántos caracteres la capa de una página es lo que se leyó de ella.
+    """
+    from ...application.revisor_de_fechas import CORREGIDA
+
+    revisadas_filas: list[FuidRow] = []
+    for fila in filas:
+        suyos = [textos.get(pagina, "") for pagina in paginas.get(fila.pagina_inicial, ())]
+        revisadas = revisor.revisar(
+            fila.asunto or f"fila {fila.orden}",
+            fila.pagina_inicial,
+            {
+                "fecha_inicial": fila.fecha_inicial,
+                "fecha_final": fila.fecha_final,
+                "observaciones": fila.notas,
+            },
+            suyos,
+            completo=completas and all(len(texto.strip()) >= minimo for texto in suyos),
+        )
+        if revisadas is not None and revisadas.estado == CORREGIDA:
+            inicial, final = _corregidas(revisadas, fila.fecha_inicial, fila.fecha_final)
+            fila = replace(
+                fila,
+                fecha_inicial=inicial,
+                fecha_final=final,
+                notas=_con_nota(fila.notas, revisadas.nota),
+            )
+        revisadas_filas.append(fila)
+    return revisadas_filas
+
+
+def _paginas_de_cada_fila(outcome) -> dict[int | None, list[int]]:
+    """Las páginas de cada fila de `_inventory_job`, por la página que la abre.
+
+    Las de su grupo si la lectura agrupó (diplomas, resoluciones, matrículas);
+    si no, de la que la abre a la anterior a la siguiente fila.
+    """
+    suyas: dict[int | None, list[int]] = {}
+    for grupo in outcome.grouping.groups if outcome.grouping else ():
+        if grupo.page_numbers:
+            suyas.setdefault(grupo.page_numbers[0], list(grupo.page_numbers))
+    inicios = sorted({fila.pagina_inicial for fila in outcome.rows if fila.pagina_inicial})
+    for orden, inicio in enumerate(inicios):
+        if inicio not in suyas:
+            fin = inicios[orden + 1] - 1 if orden + 1 < len(inicios) else outcome.page_count
+            suyas[inicio] = list(range(inicio, fin + 1))
+    return suyas
+
+
+def _todo_por_la_capa(procedencia: Mapping[str, int]) -> bool:
+    """Si la lectura sacó todas las páginas de la capa de texto: la capa es lo que se leyó."""
+    from ...domain.page import Provenance
+
+    return bool(procedencia) and all(
+        cantidad == 0
+        for peldano, cantidad in procedencia.items()
+        if peldano != str(Provenance.TEXT_LAYER)
+    )
+
+
+def _capa_de_texto(taller: Taller, paginas: Iterable[int]) -> dict[int, str]:
+    """La capa de texto de esas páginas, sin OCR: lo que ya trae el PDF, nada que pagar.
+
+    Si el PDF no se deja abrir, ninguna: las filas quedan sin dato y el
+    trabajo sigue.
+    """
+    from ...adapters.pymupdf_source import PyMuPDFPageSource
+
+    textos: dict[int, str] = {}
+    try:
+        source = PyMuPDFPageSource(taller.source, taller.name)
+    except Exception:  # noqa: BLE001 - sin texto, el revisor no tiene en qué buscar
+        logger.warning("no se pudo abrir %s para revisar sus fechas", taller.name, exc_info=True)
+        return textos
+    try:
+        for pagina in sorted(set(paginas)):
+            try:
+                textos[pagina] = source.text_of(pagina)
+            except Exception:  # noqa: BLE001 - una página sin capa es una página sin texto
+                textos[pagina] = ""
+    finally:
+        source.close()
+    return textos
+
+
+def _corregidas(revisadas: FechasRevisadas, inicial: str, final: str) -> tuple[str, str]:
+    """La fecha inicial y la final con lo corregido, cada una en el formato de su fila."""
+    from ...domain.fechas_extremas import leer_fecha
+
+    hechas = {c.campo: c.dice_el_papel for c in revisadas.correcciones}
+
+    def una(campo: str, original: str, la_otra: str) -> str:
+        if campo not in hechas:
+            return original
+        # El formato de la fila: el suyo, o el de su pareja si era N/A.
+        molde = original if leer_fecha(original)[0] is not None else la_otra
+        return _en_su_formato(molde, hechas[campo], revisadas.precision, campo)
+
+    return una("fecha_inicial", inicial, final), una("fecha_final", final, inicial)
+
+
+def _en_su_formato(molde: str, fecha: date, precision: str, campo: str) -> str:
+    """La fecha como la escribe su fila: «AAAA», ISO, «dd/mm/aaaa» o «dd-mm-aaaa» (el del FUID)."""
+    from ...domain.fechas_extremas import ANIO
+
+    texto = str(molde or "").strip()
+    if re.fullmatch(r"\d{4}", texto):
+        return str(fecha.year)
+    if precision == ANIO:
+        # Un año escrito como día lleva el relleno del año: 01/01 y 31/12.
+        fecha = date(fecha.year, 1, 1) if campo == "fecha_inicial" else date(fecha.year, 12, 31)
+    if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}.*", texto):
+        return fecha.isoformat()
+    # Con barras sólo si es una fecha: «N/A» también lleva una.
+    if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", texto):
+        return fecha.strftime("%d/%m/%Y")
+    return fecha.strftime("%d-%m-%Y")
+
+
+def _con_nota(texto: str, nota: str) -> str:
+    return "; ".join(parte for parte in (texto, nota) if parte)

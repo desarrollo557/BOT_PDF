@@ -10,7 +10,7 @@
    */
   import DatosDelAgente from '$lib/components/DatosDelAgente.svelte';
   import Icono from '$lib/components/Icono.svelte';
-  import { ESTADOS, porcentaje, repartoDePdf } from '$lib/agente';
+  import { ESTADOS, fraseDeFechas, notaDeFechas, porcentaje, repartoDePdf } from '$lib/agente';
   import type { AgenteDeLaCorrida } from '$lib/types';
 
   interface Props {
@@ -22,6 +22,11 @@
   let { agente, activo }: Props = $props();
 
   const tramos = $derived(repartoDePdf(agente));
+  /** El revisor de fechas (2026-11-10): «Fechas: N confirmadas · N corregidas · N a revisión». */
+  const fechas = $derived(fraseDeFechas(agente.fechas));
+  const tonoDeFechas = $derived(
+    agente.fechas?.a_revision ? 'warn' : agente.fechas?.corregidas ? 'accent' : 'good'
+  );
   /** El registro, sin repetir: el mismo PDF relanzado contaría dos veces lo mismo. */
   const sucesos = $derived.by(() => {
     const vistos = new Set<string>();
@@ -93,6 +98,16 @@
       </dd>
     </div>
   </dl>
+
+  {#if fechas && agente.fechas}
+    <!-- La fecha inicial y la final de cada documento contra su papel
+         (2026-11-10): confirmadas, corregidas con prueba o a revisión. -->
+    <p class="fechas" data-tono={tonoDeFechas} aria-live="polite">
+      <span class="status-dot" aria-hidden="true"></span>
+      <strong class="tabular">{fechas}</strong>
+      <span class="nota tabular">{notaDeFechas(agente.fechas)}</span>
+    </p>
+  {/if}
 
   {#if agente.datos?.documentos}
     <!-- Los datos de cada documento de la corrida -- nombre, identificación,
@@ -241,6 +256,31 @@
   }
   .stat[data-tono='accent'] .stat-value {
     color: var(--accent);
+  }
+
+  /* Las fechas de los documentos: una línea, con el tono de lo peor que haya. */
+  .fechas {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-3);
+    margin: var(--space-4) 0 0;
+    padding: 6px var(--space-3);
+    border-left: 2px solid var(--tono);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    background: color-mix(in srgb, var(--tono) 6%, var(--surface-2));
+    font-size: var(--text-sm);
+  }
+  .fechas .status-dot {
+    background: var(--tono);
+  }
+  .fechas strong {
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .fechas .nota {
+    font-size: var(--text-xs);
+    color: var(--muted);
   }
 
   /* El registro en vivo: lo último arriba, y cada suceso entra al llegar. */

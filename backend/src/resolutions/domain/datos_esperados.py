@@ -19,7 +19,8 @@ su última nota. Cada cosa que no cuadra es un ``Hallazgo``:
   nombre o sin fechas (ninguna fila sin fecha) --;
 - **duda**: lo que puede faltar en el papel y hay que mirar -- una ficha sin
   cédula, sin tarjeta y sin libreta; sin código; un código que dice otro año de
-  ingreso; una historia de más de doce años --.
+  ingreso; una historia de más de doce años; un año fuera de los de su caja o
+  su libro (2026-11-10) --.
 
 Sin leer nada: sólo con lo que ya se leyó, al procesar, o con lo que dice el
 FUID entregado, al auditar.
@@ -488,7 +489,58 @@ def revisar_entre_documentos(
                 )
     for i, hallazgo in _fuera_del_orden(datos).items():
         hallazgos.setdefault(i, []).append(hallazgo)
+    for i, hallazgo in fuera_de_los_anios_de_la_caja(datos).items():
+        hallazgos.setdefault(i, []).append(hallazgo)
     return hallazgos
+
+
+# -- los años de la caja (2026-11-10) -------------------------------------------------------
+
+#: Desde cuántos documentos con sus dos años se sabe en qué años cae una caja o
+#: un libro, y cuántos años de holgura se le dan por cada lado.
+DOCUMENTOS_PARA_LOS_ANIOS = 8
+HOLGURA_DE_LA_CAJA = 3
+
+
+def anios_de_la_caja(datos: Sequence[DatosDeUnaHistoria]) -> tuple[int, int] | None:
+    """En qué años cae una caja o un libro, de los años de sus documentos; ``None`` si son pocos para decirlo.
+
+    Del décimo de las fechas iniciales al noveno décimo de las finales: un
+    documento con los años mal leídos no ensancha la caja.
+    """
+    pares = [(d.anio_inicial, d.anio_final) for d in datos if d.anio_inicial and d.anio_final]
+    if len(pares) < DOCUMENTOS_PARA_LOS_ANIOS:
+        return None
+    iniciales = sorted(inicial for inicial, _ in pares)
+    finales = sorted(final for _, final in pares)
+    return iniciales[int(0.1 * (len(pares) - 1))], finales[int(0.9 * (len(pares) - 1))]
+
+
+def fuera_de_los_anios_de_la_caja(datos: Sequence[DatosDeUnaHistoria]) -> dict[int, Hallazgo]:
+    """Los documentos con un año fuera de los de su caja o su libro, con holgura: para mirar sus fechas.
+
+    ACOSTA BELLO ADOLFO MANUEL (UPD3859727) salió con 1994-2001 en un libro de
+    1978-1988: el año inicial, del código; el final, de la IA. Ninguna regla de
+    una sola historia lo veía -- son años posibles y en su orden -- y la
+    auditoría tampoco (2026-11-10). Es una duda, no un error: un reingreso puede
+    caer fuera. Sirve al procesar y al auditar el FUID entregado, que no trae la
+    ventana del PDF: la caja se mide con sus propios documentos.
+    """
+    caja = anios_de_la_caja(datos)
+    if caja is None:
+        return {}
+    bajo, alto = caja[0] - HOLGURA_DE_LA_CAJA, caja[1] + HOLGURA_DE_LA_CAJA
+    fuera: dict[int, Hallazgo] = {}
+    for i, d in enumerate(datos):
+        anios = [anio for anio in (d.anio_inicial, d.anio_final) if anio is not None]
+        if any(not bajo <= anio <= alto for anio in anios):
+            fuera[i] = Hallazgo(
+                FECHAS,
+                DUDA,
+                f"los años {'-'.join(map(str, anios))} caen fuera de los de la caja ({caja[0]}-{caja[1]}): "
+                "revisar las fechas en el papel",
+            )
+    return fuera
 
 
 # -- las nóminas ---------------------------------------------------------------------------
@@ -567,4 +619,7 @@ def revisar_nominas_entre_si(
             hallazgos.setdefault(i, []).append(
                 Hallazgo(IDENTIFICACION, DUDA, f"la cédula {numero} sale también en {otros}, con otro nombre: revísela")
             )
+    # Los años fuera de los del libro, como en las historias (2026-11-10).
+    for i, hallazgo in fuera_de_los_anios_de_la_caja(datos).items():
+        hallazgos.setdefault(i, []).append(hallazgo)
     return hallazgos

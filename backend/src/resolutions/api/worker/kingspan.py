@@ -103,8 +103,15 @@ def _merece_ocr(texto: str) -> bool:
     return any(pista in mayusculas for pista in _PISTAS_DE_ENCABEZADO) and "MERO" in mayusculas
 
 
-def _leer(taller: Taller, source) -> tuple[list[str], list[Documento], int]:
-    """El texto de cada página y los documentos que abren alguna, en orden."""
+def _leer(
+    taller: Taller, source, releidas: dict[int, list[str]] | None = None
+) -> tuple[list[str], list[Documento], int]:
+    """El texto de cada página y los documentos que abren alguna, en orden.
+
+    ``releidas`` guarda lo que el OCR leyó de la franja del encabezado de una
+    página que sí traía capa: es el papel donde está la fecha del documento, y
+    el revisor de fechas la busca ahí sin volver a leerla (2026-11-10).
+    """
     textos: list[str] = []
     documentos: list[Documento] = []
     ocr_usado = 0
@@ -139,6 +146,8 @@ def _leer(taller: Taller, source) -> tuple[list[str], list[Documento], int]:
                 documento = documento_de(leido, pagina)
                 if not texto.strip():
                     texto = leido
+                elif releidas is not None and leido:
+                    releidas.setdefault(pagina, []).append(leido)
             except Exception as error:  # noqa: BLE001 - el OCR es una ayuda, no un requisito
                 logger.warning("el OCR de la página %s falló: %s", pagina, error)
 
@@ -149,7 +158,7 @@ def _leer(taller: Taller, source) -> tuple[list[str], list[Documento], int]:
 
 
 def _confirmar(
-    taller: Taller, source, documentos: list[Documento]
+    taller: Taller, source, documentos: list[Documento], releidas: dict[int, list[str]] | None = None
 ) -> tuple[list[Documento], dict[str, list[str]], int]:
     """Relee en la imagen los documentos que van al inventario y corrige la capa.
 
@@ -163,6 +172,9 @@ def _confirmar(
     Si las dos lecturas no coinciden manda la de la imagen, y se anota para que
     alguien lo mire con el papel delante. Si Tesseract no lee nada, se queda la
     de la capa: no es una contradicción, es una lectura que falta.
+
+    Lo releído queda en ``releidas``, si se pasa: el revisor de fechas busca
+    ahí la fecha de cada punta sin releerla (2026-11-10).
     """
     a_releer: dict[int, Documento] = {}
     for fila in filas_de(documentos):
@@ -183,7 +195,10 @@ def _confirmar(
     for pagina, documento in sorted(a_releer.items()):
         taller.control.check()
         try:
-            leido = documento_de(ocr.read(source.render(pagina, ENCABEZADO, dpi=300)).text, pagina)
+            franja = ocr.read(source.render(pagina, ENCABEZADO, dpi=300)).text
+            if releidas is not None and franja:
+                releidas.setdefault(pagina, []).append(franja)
+            leido = documento_de(franja, pagina)
         except Exception as error:  # noqa: BLE001 - confirmar es una ayuda, no un requisito
             logger.warning("no se pudo releer la página %s: %s", pagina, error)
             continue
@@ -204,6 +219,95 @@ def _confirmar(
             f" y el texto del escaneo {documento.codigo}"
         )
     return [corregidos.get(d.pagina, d) for d in documentos], notas, len(a_releer)
+
+
+def _asegurar_las_fechas(
+    filas: list[FilaKingspan], textos: list[str], releidas: dict[int, list[str]], taller: Taller
+) -> tuple[list[FilaKingspan], dict]:
+    """El revisor de fechas sobre cada fila de la UPD, antes de escribirla; devuelve las filas y lo anotado.
+
+    Lo pidió el operador el 2026-11-10: «estar muy seguro de cada fecha en cada
+    documento». En Kingspan la fecha inicial es la del documento DESDE y la
+    final la del HASTA -- cada punta conserva la suya, aunque la final sea
+    anterior: el oficial trae 65 filas así --, así que se revisa **cada punta
+    como el documento que es**, contra su hoja (la capa, o el OCR que la
+    sustituyó) y la franja del encabezado que se releyó: nada se relee aquí. La
+    fila sin documentos numerados va de punta a punta del archivo, contra todo
+    él. Lo corregido va a la fila; su porqué, a los avisos y lo dudoso a
+    Revisión, por el informe -- no a ``fila.notas``, que también acaba en los
+    avisos y lo diría dos veces; la columna NOTAS es del archivista --. Un fallo
+    deja la fila como estaba.
+    """
+    from ...application.control import Cancelled
+    from ...application.revisor_de_fechas import CORREGIDA
+    from ...domain.fechas_extremas import EXTREMOS, fechas_de_un_par
+    from .fechas_aseguradas import (
+        con_lo_que_leyeron,
+        juez_del_trabajo,
+        regla_de,
+        revisar_y_anotar,
+    )
+
+    aparte: dict = {}
+    regla = regla_de("kingspan", EXTREMOS)
+    juez = juez_del_trabajo(taller)
+
+    def papel(paginas) -> list[str]:
+        suyo: list[str] = []
+        for pagina in paginas:
+            if 1 <= pagina <= len(textos):
+                suyo.append(con_lo_que_leyeron(textos[pagina - 1]))
+            suyo.extend(con_lo_que_leyeron(t) for t in releidas.get(pagina, ()))
+        return suyo
+
+    aseguradas: list[FilaKingspan] = []
+    # «Detener» entre una fila y la siguiente (la revisión adversarial, 2026-11-10).
+    control = getattr(taller, "control", None)
+    for fila in filas:
+        if control is not None:
+            control.check()
+        try:
+            if fila.documentos:
+                puntas = {d.codigo: d for d in fila.documentos}
+                for codigo in dict.fromkeys((fila.desde, fila.hasta)):
+                    documento = puntas.get(codigo)
+                    if documento is None:
+                        continue
+                    revisadas = revisar_y_anotar(
+                        aparte,
+                        documento.codigo,
+                        documento.pagina,
+                        fechas_de_un_par(documento.fecha, documento.fecha),
+                        papel([documento.pagina]),
+                        regla=regla,
+                        juez=juez,
+                        una_sola=True,
+                    )
+                    if revisadas is None:
+                        continue
+                    if revisadas.estado == CORREGIDA and revisadas.inicial:
+                        if codigo == fila.desde:
+                            fila = replace(fila, fecha_inicial=revisadas.inicial)
+                        if codigo == fila.hasta:
+                            fila = replace(fila, fecha_final=revisadas.inicial)
+            else:
+                revisadas = revisar_y_anotar(
+                    aparte,
+                    fila.asunto,
+                    1,
+                    fechas_de_un_par(fila.fecha_inicial, fila.fecha_final),
+                    papel(range(1, len(textos) + 1)),
+                    regla=regla,
+                    juez=juez,
+                )
+                if revisadas is not None and revisadas.estado == CORREGIDA:
+                    fila = replace(fila, fecha_inicial=revisadas.inicial, fecha_final=revisadas.final)
+        except Cancelled:
+            raise
+        except Exception:  # noqa: BLE001 - el revisor no tumba la UPD: la fila queda como estaba
+            logger.warning("el revisor de fechas falló en la fila %s; queda como estaba", fila.asunto, exc_info=True)
+        aseguradas.append(fila)
+    return aseguradas, aparte
 
 
 def _sin_numeros(textos: list[str]) -> FilaKingspan:
@@ -366,8 +470,11 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
     notices = list(avisos)
 
     source = _open_source(taller)
+    #: Lo que el OCR leyó de la franja del encabezado de cada hoja: el papel de
+    #: la fecha de cada documento, para el revisor de fechas.
+    releidas: dict[int, list[str]] = {}
     try:
-        textos, documentos, ocr_usado = _leer(taller, source)
+        textos, documentos, ocr_usado = _leer(taller, source, releidas)
         taller.progress.emit(
             ProgressEvent(
                 stage=Stage.IDENTIFYING,
@@ -376,7 +483,7 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
                 detail="confirmando en la imagen el primer y el último documento",
             )
         )
-        documentos, discrepancias, releidas = _confirmar(taller, source, documentos)
+        documentos, discrepancias, confirmados = _confirmar(taller, source, documentos, releidas)
     finally:
         source.close()
 
@@ -384,6 +491,9 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
         replace(fila, notas="; ".join(filter(None, [fila.notas, *discrepancias.get(_serie(fila), [])])))
         for fila in filas_de(documentos)
     ] or [_sin_numeros(textos)]
+    # El revisor de fechas (2026-11-10): cada punta contra su hoja, antes de
+    # escribir la fila. Lo anotado pasa al informe cuando éste se arma.
+    filas, fechas_revisadas = _asegurar_las_fechas(filas, textos, releidas, taller)
 
     taller.progress.emit(
         ProgressEvent(
@@ -467,10 +577,10 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
         )
     if ocr_usado:
         notices.append(f"{ocr_usado} página(s) se leyeron por OCR.")
-    if releidas:
+    if confirmados:
         corregidas = sum(len(notas) for notas in discrepancias.values())
         notices.append(
-            f"se confirmaron en la imagen {releidas} documento(s) del inventario"
+            f"se confirmaron en la imagen {confirmados} documento(s) del inventario"
             + (f"; {corregidas} no coincidía(n) con el texto del escaneo (ver NOTAS)." if corregidas else ".")
         )
 
@@ -515,6 +625,10 @@ def _kingspan_job(payload: dict, task, *, avisos: list[str] = ()) -> dict:
     }
     if revision is not None or aviso_del_revisor or comprobacion:
         anotar_en_el_informe(report, revision, aviso_del_revisor, comprobacion, perfil=PERFIL.as_dict())
+    # Y lo que dijo el revisor de fechas de cada punta.
+    from .fechas_aseguradas import pasar_al_informe
+
+    pasar_al_informe(report, fechas_revisadas)
     return report
 
 

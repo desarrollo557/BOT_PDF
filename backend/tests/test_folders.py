@@ -981,3 +981,22 @@ class TestLaCarpetaDeLaCorrida:
         )
         assert FolderRunner._en_destino(run, r"MAGANGUE\7720382") == run.destination / "7720382"
         assert FolderRunner._en_destino(run, "MAGANGUE") == run.destination
+
+    def test_la_clave_de_la_carpeta_es_una_con_cualquier_barra(self, tmp_path):
+        """Entrega empezada en Windows y seguida en Docker (Linux): la misma carpeta, una sola clave (2026-11-10).
+
+        Con dos claves se escriben dos FUID en el mismo archivo y el segundo pisa
+        al primero (la 3303, 2026-11-05).
+        """
+        from resolutions.api.folders import FolderRun, FolderRunner
+
+        run = FolderRun(id="r", source=tmp_path / "3303", destination=tmp_path / "3303 - PROCESADO")
+        de_windows = FolderRunner._carpeta_canonica(run, "3303\\00C003303")
+        de_linux = FolderRunner._carpeta_canonica(run, "3303/00C003303")
+        desde_el_destino = FolderRunner._carpeta_canonica(run, "00C003303")
+
+        assert de_windows == de_linux == desde_el_destino == str(Path("3303", "00C003303"))
+        assert FolderRunner._en_destino(run, de_windows) == run.destination / "00C003303"
+        # Sin quitar la raíz, la carpeta tampoco lleva la barra en su nombre.
+        otra = FolderRun(id="o", source=tmp_path / "3303", destination=tmp_path / "ENTREGAS")
+        assert FolderRunner._en_destino(otra, "3303\\00C003303") == otra.destination / "3303" / "00C003303"

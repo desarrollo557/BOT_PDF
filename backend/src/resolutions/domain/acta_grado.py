@@ -277,13 +277,32 @@ def _decena_y_unidad(
 _EN_CARTAGENA_A = re.compile(r"EN\s+(?:LA\s+C\w{4}D\s+DE\s+)?CARTAGENA\W{0,3}\s+A\s+(?!LOS\b)")
 
 
+#: Cómo leyó ``fecha_de_grado_y_como`` la fecha: la forma entera, la frase en
+#: letras, o las piezas sueltas del OCR revuelto (el respaldo).
+POR_LA_FORMA = "forma"
+POR_LAS_LETRAS = "letras"
+POR_PIEZAS = "piezas"
+
+
 def fecha_de_grado(texto: str) -> date | None:
     """La fecha de la ceremonia escrita en el cuerpo del acta, o ``None``."""
+    return fecha_de_grado_y_como(texto)[0]
+
+
+def fecha_de_grado_y_como(texto: str) -> tuple[date | None, str]:
+    """La fecha de la ceremonia y cómo se leyó (``POR_LA_FORMA``, ``POR_LAS_LETRAS``, ``POR_PIEZAS``); ``(None, "")`` si no.
+
+    El revisor de fechas (2026-11-10) sólo corrige con la forma entera o la
+    frase en letras: el respaldo por piezas junta un día suelto, un año suelto
+    y la primera palabra que se parezca a un mes, y en «15 ( ) DIAS … 1987 …
+    JULIO» corregía la ceremonia del 23/01/1987 al 15/07/1987. La fecha que
+    devuelve es la misma de siempre.
+    """
     plano = _plano(texto)
     for match in _FECHA.finditer(plano):
         fecha = _fecha(int(match.group("dia")), _mes(match.group("mes")), match.group("anio"))
         if fecha is not None:
-            return fecha
+            return fecha, POR_LA_FORMA
     # En letras: el formulario de los libros viejos, con las cifras rotas.
     # Primero detrás de «a los»; y si el día quedó delante -- la capa pone
     # «Diez y siete ( J días del mes de» antes de «En la ciudad» --, la frase
@@ -299,7 +318,7 @@ def fecha_de_grado(texto: str) -> date | None:
         fin = _FIN_DE_LA_FRASE.search(frase)
         fecha = fecha_en_letras(frase[: fin.start()] if fin else frase)
         if fecha is not None:
-            return fecha
+            return fecha, POR_LAS_LETRAS
     # El OCR de los libros viejos mezcla la frase: se busca cada pieza por su lado.
     inicio = plano.find("EN LA CIUDAD")
     trozo = plano[inicio : inicio + 400] if inicio >= 0 else plano[:600]
@@ -307,8 +326,9 @@ def fecha_de_grado(texto: str) -> date | None:
     anio = _ANIO_SUELTO.search(trozo)
     mes = next((m for m in (_mes(p) for p in _PALABRA.findall(trozo)) if m), None)
     if dia and anio:
-        return _fecha(int(dia.group(1)), mes, anio.group(1) or anio.group(2))
-    return None
+        fecha = _fecha(int(dia.group(1)), mes, anio.group(1) or anio.group(2))
+        return (fecha, POR_PIEZAS) if fecha is not None else (None, "")
+    return None, ""
 
 
 @dataclass(frozen=True, slots=True)

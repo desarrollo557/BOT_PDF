@@ -39,8 +39,10 @@ from .nominas import (
     _fecha,
     _letras,
     _reparto,
+    asegurar_las_fechas,
     escribir_paginas,
     nombre_del_pdf,
+    tomada_del_libro,
 )
 from .taller import Taller, _anunciar
 
@@ -172,6 +174,13 @@ def certificados_job(payload: dict) -> dict:
         salidas: list[str] = []
         filas: list[dict] = []
         cola: list[dict] = []
+        # Para el revisor de fechas (2026-11-10): el texto de sus hojas de
+        # certificado -- no de los anexos, como sus fechas -- y si sus fechas
+        # salieron del libro, o si las leyó el mismo lector de la firma sobre
+        # ese mismo texto (2026-11-10: confirmarlas no es una segunda prueba).
+        textos_de_las_filas: list[list[str]] = []
+        derivadas: list[tuple[bool, bool]] = []
+        de_su_lector: list[bool] = []
         carpeta_de_salida = taller.destination / document_folder(nombre)
         if pidio_dividir:
             carpeta_de_salida.mkdir(parents=True, exist_ok=True)
@@ -190,6 +199,15 @@ def certificados_job(payload: dict) -> dict:
                 if inicial is None and ventana:
                     inicial, final = (1, 1, ventana[0]), (31, 12, ventana[1])
                     de_donde = f"los años {ventana[0]} a {ventana[1]} del libro: no se leyó la fecha de la firma"
+                # Sólo el texto con que se juzgó cada hoja de certificado: el
+                # lector de la firma lo lee igual que al procesar. Si de él salió
+                # la fecha, confirmarla es su propio lector (``de_su_lector``).
+                textos_de_las_filas.append(
+                    [texto_de[p] for p in documento.paginas if hojas[p - 1].plantilla == n.CERTIFICADO]
+                )
+                del_libro = tomada_del_libro(de_donde)
+                derivadas.append((del_libro, del_libro))
+                de_su_lector.append(bool(documento.fechas) and not del_libro)
                 notas = []
                 if not documento.nombre:
                     notas.append("no se leyó el nombre" + ("" if de_pago else " (sin la IA)"))
@@ -256,6 +274,16 @@ def certificados_job(payload: dict) -> dict:
             "Con «Solo OCR» el nombre, la cédula y la fecha de cada certificado salen de Tesseract, que lee mal "
             "estas copias: con «OCR + IA» se leen bien."
         )
+    # El revisor de fechas (el operador, 2026-11-10): la firma de cada
+    # certificado contra el texto de sus hojas, antes del agente de los datos.
+    # El lector de la regla es el mismo que fechó la fila sobre el mismo texto:
+    # lo que confirma se cuenta aparte, «confirmadas por su lector» (la
+    # revisión adversarial, 2026-11-10). Lo que sí aporta: la ventana del
+    # libro, la fecha que no salió de la firma y la duda que va a Revisión.
+    asegurar_las_fechas(
+        report, filas, textos_de_las_filas, habilidad="certificados", taller=taller,
+        ventana=ventana, derivadas=derivadas, de_su_lector=de_su_lector,
+    )
     integridad = revisar_los_datos(filas, del_revisor.datos, aceptable=del_revisor.margen) if del_revisor.datos else None
     if revision is not None or aviso_del_revisor or comprobacion or integridad is not None:
         anotar_en_el_informe(

@@ -4,6 +4,8 @@ import {
   cinta,
   filasDeLosDatos,
   frase,
+  fraseDeFechas,
+  notaDeFechas,
   porQuien,
   porcentaje,
   queMovio,
@@ -152,5 +154,31 @@ describe('los datos de cada documento', () => {
 
   it('un dato con error en el registro en vivo se dice como tal', () => {
     expect(ESTADOS.datos).toEqual({ etiqueta: 'Dato con error', tono: 'bad' });
+  });
+});
+
+describe('las fechas de cada documento (2026-11-10)', () => {
+  const fechas = { revisados: 199, confirmadas: 189, corregidas: 0, a_revision: 5, sin_dato: 5, preguntadas_a_la_ia: 7 };
+
+  it('la frase dice confirmadas, corregidas y a revisión', () => {
+    expect(fraseDeFechas(fechas)).toBe('Fechas: 189 confirmadas · 0 corregidas · 5 a revisión');
+    expect(fraseDeFechas({ ...fechas, confirmadas: 1, corregidas: 1, a_revision: 0 })).toBe(
+      'Fechas: 1 confirmada · 1 corregida · 0 a revisión'
+    );
+  });
+
+  it('sin nada revisado no se dice nada', () => {
+    expect(fraseDeFechas(undefined)).toBeNull();
+    expect(fraseDeFechas({ ...fechas, revisados: 0 })).toBeNull();
+  });
+
+  it('la nota cuenta los documentos, los que no traen fechas y lo que decidió la IA', () => {
+    expect(notaDeFechas(fechas)).toBe('199 documentos revisados · 5 sin fechas en su papel · 7 decididas por la IA');
+    expect(notaDeFechas({ ...fechas, revisados: 1, sin_dato: 0, preguntadas_a_la_ia: 0 })).toBe('1 documento revisado');
+  });
+
+  it('los sucesos de fechas tienen su etiqueta y su tono', () => {
+    expect(ESTADOS['fecha corregida']).toEqual({ etiqueta: 'Fecha corregida', tono: 'accent' });
+    expect(ESTADOS['fecha a revisión']).toEqual({ etiqueta: 'Fecha a revisión', tono: 'warn' });
   });
 });

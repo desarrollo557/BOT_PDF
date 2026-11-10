@@ -418,22 +418,38 @@ class AgenteDeLaCorrida:
     datos_con_errores: int = 0
     datos_con_en_blanco: int = 0
     datos_por_campo: dict = field(default_factory=dict)
+    #: El revisor de fechas (2026-11-10): de cada documento, si su fecha inicial
+    #: y su final se confirmaron en el papel, se corrigieron con prueba o van a
+    #: revisión. Cuenta documentos, no PDF: un libro trae muchos.
+    fechas_revisadas: int = 0
+    fechas_confirmadas: int = 0
+    fechas_corregidas: int = 0
+    fechas_a_revision: int = 0
+    fechas_sin_dato: int = 0
+    fechas_preguntadas_a_la_ia: int = 0
     #: Lo último que merece contarse -- una corrección, una revisión, un
     #: problema en el disco --, lo más nuevo primero.
     sucesos: deque = field(default_factory=lambda: deque(maxlen=SUCESOS_EN_VIVO))
     _candado: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def sumar(self, pdf: str, informe: Mapping[str, object]) -> None:
-        """Suma lo que dijeron el revisor y la comprobación del disco de un PDF terminado."""
+        """Suma lo que dijeron el revisor, la comprobación del disco y el revisor de fechas de un PDF terminado."""
         revision = informe.get("revision_de_cortes") or {}
         comprobacion = informe.get("comprobacion_de_la_entrega") or {}
         datos = informe.get("integridad_de_los_datos") or {}
+        fechas = informe.get("revision_de_fechas") or {}
+        if fechas:
+            # Las fechas cuentan en todas las habilidades, también en las que
+            # no parten PDF (2026-11-10): un inventario sin dividir también
+            # tiene fechas que asegurar.
+            self._sumar_las_fechas(pdf, fechas, solo_ellas=not (revision or comprobacion or datos))
         if not revision and not comprobacion and not datos:
             # Una habilidad que no parte PDF -- un inventario sin dividir --
             # no tiene costuras que revisar: no cuenta.
             return
         estado = str(revision.get("estado") or "no corrió")
         problemas = list(comprobacion.get("problemas") or [])
+        de_las_fechas = _lo_de_las_fechas(fechas)
         with self._candado:
             self.pdf += 1
             if estado == "validado":
@@ -474,8 +490,27 @@ class AgenteDeLaCorrida:
                 self.sucesos.appendleft(
                     {"pdf": pdf, "estado": "datos", "texto": f"{primero.get('documento')}: {primero.get('texto')}{mas}"}
                 )
+            elif de_las_fechas and de_las_fechas["estado"] == "fecha corregida":
+                # Una fecha corregida es un cambio en lo entregado: pesa más
+                # que una costura que sólo hay que mirar.
+                self.sucesos.appendleft({"pdf": pdf, **de_las_fechas})
             elif texto:
                 self.sucesos.appendleft({"pdf": pdf, "estado": estado, "texto": texto})
+            elif de_las_fechas:
+                self.sucesos.appendleft({"pdf": pdf, **de_las_fechas})
+
+    def _sumar_las_fechas(self, pdf: str, fechas: Mapping[str, object], *, solo_ellas: bool) -> None:
+        """Las cuentas del revisor de fechas de un PDF; y su suceso, si el PDF no trae otra cosa que contar."""
+        de_las_fechas = _lo_de_las_fechas(fechas) if solo_ellas else None
+        with self._candado:
+            self.fechas_revisadas += int(fechas.get("revisados") or 0)
+            self.fechas_confirmadas += int(fechas.get("confirmada") or 0)
+            self.fechas_corregidas += int(fechas.get("corregida") or 0)
+            self.fechas_a_revision += int(fechas.get("a revisión") or 0)
+            self.fechas_sin_dato += int(fechas.get("sin dato") or 0)
+            self.fechas_preguntadas_a_la_ia += int(fechas.get("preguntadas_a_la_ia") or 0)
+            if de_las_fechas:
+                self.sucesos.appendleft({"pdf": pdf, **de_las_fechas})
 
     def as_dict(self) -> dict[str, object]:
         with self._candado:
@@ -500,8 +535,34 @@ class AgenteDeLaCorrida:
                     "con_en_blanco": self.datos_con_en_blanco,
                     "por_campo": {campo: dict(cuentas) for campo, cuentas in self.datos_por_campo.items()},
                 },
+                "fechas": {
+                    "revisados": self.fechas_revisadas,
+                    "confirmadas": self.fechas_confirmadas,
+                    "corregidas": self.fechas_corregidas,
+                    "a_revision": self.fechas_a_revision,
+                    "sin_dato": self.fechas_sin_dato,
+                    "preguntadas_a_la_ia": self.fechas_preguntadas_a_la_ia,
+                },
                 "sucesos": list(self.sucesos),
             }
+
+
+def _lo_de_las_fechas(fechas: Mapping[str, object]) -> dict[str, str] | None:
+    """El suceso del revisor de fechas de un PDF: la primera corrección, si no lo primero a revisión; o nada.
+
+    Las claves de ``fechas`` son las de ``revisor_de_fechas.anotar_en_el_informe``.
+    """
+    detalle = [d for d in fechas.get("detalle") or [] if isinstance(d, Mapping)]
+    if not detalle:
+        return None
+    corregidas = [d for d in detalle if d.get("estado") == "corregida"]
+    primero = (corregidas or detalle)[0]
+    otros = len(corregidas or detalle) - 1
+    mas = f" (y {otros} más)" if otros else ""
+    return {
+        "estado": "fecha corregida" if corregidas else "fecha a revisión",
+        "texto": f"{primero.get('documento')}: {primero.get('nota')}{mas}",
+    }
 
 
 def _lo_que_paso(estado: str, revision: Mapping, movimientos: list, problemas: list) -> str | None:

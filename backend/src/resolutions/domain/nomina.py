@@ -626,6 +626,17 @@ def fechas_del_certificado(textos: Sequence[str], ventana: tuple[int, int] | Non
     return firmas or ([ultima] if ultima else [])
 
 
+def firmas_del_certificado(textos: Sequence[str], ventana: tuple[int, int] | None = None) -> list[Fecha]:
+    """Sólo las fechas de la firma o la expedición del certificado, sin el respaldo de «la última fecha».
+
+    Para el revisor de fechas (2026-11-10): la última fecha del texto es un
+    respaldo para fechar el documento, no una prueba de su firma. Con la firma
+    ilegible, en «servicios del 29 de Marzo de 1979 al 30 de Junio de 1985» el
+    respaldo es el fin del servicio, y el revisor corregía la fila hacia él.
+    """
+    return _fechas_del_certificado(textos, ventana)[0]
+
+
 def _fechas_del_certificado(textos: Sequence[str], ventana: tuple[int, int] | None) -> tuple[list[Fecha], Fecha | None]:
     """Las fechas de firma y la última fecha de los años del libro, en el texto seguido de sus hojas.
 

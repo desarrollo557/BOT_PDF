@@ -14,6 +14,29 @@ habilidad» --:
 - **Una persona** -- historia académica, acta de grado, nómina, certificado --:
   su cédula, tarjeta, libreta, código o número, y su nombre.
 - **Una fila del FUID** -- resoluciones, matrículas --: su número.
+- **Sus fechas extremas**, en toda clase de fila (2026-11-10, el revisor de
+  fechas): la inicial y la final contra su papel con la regla de su habilidad
+  (``fechas_extremas.contrastar_las_fechas``). Lo pidió el operador: «estar muy
+  seguro de cada fecha en cada documento, sin importar la habilidad», y que los
+  auditores cubran «todas las habilidades, todos los documentos, todos los
+  patrones, todo el margen de errores». Una fecha que el papel corrige con dos
+  pruebas es **error**; la que sólo no confirma -- o se aparta como el OCR -- es
+  ``Pregunta`` para la IA. El acta conserva su regla de la apertura de la
+  sesión, y la corrección con prueba la vuelve error.
+
+**Tras la revisión adversarial del revisor de fechas** (2026-11-10) dos guardas,
+para que el margen mida errores y no la letra:
+
+- **Un texto que no se deja leer no prueba nada en contra** (``texto_legible``).
+  La capa de un escaneo sobre letra a mano son las etiquetas impresas del
+  formulario y basura donde va lo escrito: las 88 filas de dos PDF de
+  Enfermería salían «en duda» sin alterar nada. Con más de ``BASURA_MAXIMA`` de
+  palabras rotas, lo que el papel confirma cuenta, y lo que no encuentra queda
+  **sin dato** con su motivo: ni duda ni error. Medido (2026-11-10): ninguna de
+  las 88 filas de Enfermería pasa por legible, y 214 de las 227 actas de
+  Odontología sí; la capa de Afinia y de Kingspan, también.
+- **La ventana de años del libro** (``ventana``) llega a la revisión de las
+  fechas: la fecha fuera de ella es duda sin pagar la IA, como al procesar.
 
 Error es lo que el papel **contradice**: los encabezados que abren sesión en
 esas páginas dicen otro número u otra clase de sesión, o los folios no suman.
@@ -29,8 +52,9 @@ import difflib
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
+from functools import lru_cache
 
 from .acta_consejo import (
     MARGEN_DE_FOLIOS,
@@ -40,6 +64,17 @@ from .acta_consejo import (
     fechas_del_texto,
     leer_acta,
     primera_fecha,
+)
+from .fechas_extremas import (
+    ANIO,
+    EXTREMOS,
+    SESION,
+    Correccion,
+    FechasDeLaFila,
+    RevisionDeFechas,
+    contrastar_las_fechas,
+    fechas_de_la_fila,
+    texto_acotado,
 )
 
 #: Lo que no se leyó, como va en el inventario.
@@ -96,6 +131,31 @@ _FRASE_PROPIA = re.compile(
 #: encuentra en cualquier parte y no prueba nada.
 CIFRAS_MINIMAS = 4
 
+#: Los campos de las fechas extremas, como se le preguntan a la IA (2026-11-10).
+CAMPOS_DE_FECHA = ("fecha_inicial", "fecha_final")
+
+#: Desde qué parte de palabras rotas el texto de un documento ya no prueba lo
+#: que no trae (2026-11-10). Medido por documento, con ``basura_del_texto``:
+#: las 88 filas de Enfermería escritas a mano dan de 0,193 a 0,6 (mediana
+#: 0,367); las 227 actas de Odontología, mediana 0,04 y el 90 % bajo 0,118;
+#: Afinia, de 0,05 a 0,09; Kingspan, de 0,10 a 0,14 con sus códigos y facturas.
+BASURA_MAXIMA = 0.18
+#: Por qué una fecha o un dato que el texto no trae queda sin dato y no en duda.
+TEXTO_ILEGIBLE = (
+    "el texto de sus hojas no se deja leer (letra a mano o capa con basura): lo que no "
+    "trae no prueba nada en contra"
+)
+_PALABRA = re.compile(r"[(«\"'¿¡]?[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{2,}[.,;:)»\"'?!]{0,2}")
+_VOCAL = re.compile(r"[AEIOUYaeiouyÁÉÍÓÚáéíóú]")
+_NUMERO = re.compile(r"[($#Nº°]{0,2}\d[\d.,:/\-°º]*[%)]?[.,;:]?")
+#: Un código: «RE2310202405234», «001-FC-00012345», «UPD3859724». Su primer
+#: tramo, hasta el primer «-», «/» o «.», lleva alguna cifra: lo mira la
+#: búsqueda por delante, que no vuelve atrás. Con ``[A-Z0-9]*\d[A-Z0-9]*`` cada
+#: reparto del tramo entre los dos asteriscos se probaba: «1» × 12 000 + «x»
+#: tardaba 2,9 s en ``basura_del_texto`` y crecía al cuadrado (la revisión
+#: adversarial, 2026-11-10). Las fichas que reconoce son las mismas.
+_CODIGO = re.compile(r"(?=[A-Z0-9]*\d)[A-Z0-9]+(?:[-/.][A-Z0-9]+)*[.,;:]?")
+
 #: Los campos de una fila de persona que son números, en el orden en que se dicen.
 _CAMPOS_DE_NUMERO = (
     ("cedula", "la cédula"),
@@ -114,6 +174,13 @@ class Pregunta:
     valor: str
     #: Qué se le dice al operador si queda sin confirmar.
     duda: str
+    #: De una fecha (2026-11-10): la que dice el lector de la regla de su
+    #: habilidad, si dice alguna. La IA sólo la vuelve error citando ésa: una
+    #: cita con la próxima reunión o con la fecha de la plantilla no basta.
+    dice_el_papel: date | None = None
+    #: ``False`` si va derecho a duda, sin pagar la IA (2026-11-10): una fecha
+    #: fuera de los años del libro no la decide una cita.
+    para_la_ia: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +206,41 @@ def plano(texto: object) -> str:
 
 def cifras(valor: object) -> str:
     return re.sub(r"\D", "", str(valor or ""))
+
+
+def basura_del_texto(textos: Sequence[str]) -> float:
+    """La parte de las fichas del texto que no es una palabra, un número ni un código: lo que deja el OCR de la letra a mano.
+
+    No cuentan los signos sueltos («—», «•») ni las letras solas; una palabra
+    es de dos letras o más con alguna vocal. Sin fichas, 1: no hay qué leer.
+
+    Una vez por documento (2026-11-10): las puntas de Kingspan que se miran
+    contra todo el original lo pedían, cada una, de las mismas cientos de hojas.
+    """
+    return _basura(tuple(texto or "" for texto in textos))
+
+
+@lru_cache(maxsize=8)
+def _basura(textos: tuple[str, ...]) -> float:
+    total = rotas = 0
+    for texto in textos:
+        for ficha in texto.split():
+            if not any(c.isalnum() for c in ficha):
+                continue
+            total += 1
+            if len(ficha) == 1:
+                continue
+            if _PALABRA.fullmatch(ficha) and _VOCAL.search(ficha):
+                continue
+            if _NUMERO.fullmatch(ficha) or _CODIGO.fullmatch(ficha):
+                continue
+            rotas += 1
+    return rotas / total if total else 1.0
+
+
+def texto_legible(textos: Sequence[str]) -> bool:
+    """Si el texto de un documento se deja leer: hasta ``BASURA_MAXIMA`` de fichas rotas (2026-11-10)."""
+    return basura_del_texto(textos) <= BASURA_MAXIMA
 
 
 def _leido(valor: object) -> str | None:
@@ -266,20 +368,163 @@ def revisar_la_fila(
     *,
     de_pila: frozenset[str] | None = None,
     apellidos: frozenset[str] | None = None,
+    regla_de_fechas: str = EXTREMOS,
+    ventana: tuple[int, int] | None = None,
+    legible: bool | None = None,
 ) -> RevisionDeLaFila:
     """La fila contra el texto de sus páginas (``textos``, en orden desde su primera página).
 
     ``de_pila`` y ``apellidos`` dicen qué frases del resumen de un acta son
-    nombres de persona (``frases_propias``).
+    nombres de persona (``frases_propias``). ``regla_de_fechas`` es la de su
+    habilidad (``perfil.regla_de_fechas``): con ella se contrastan las fechas
+    extremas de toda fila que las traiga (2026-11-10). El acta lleva siempre la
+    de la sesión, dentro de su propia revisión de la fecha.
+
+    ``ventana`` son los años del libro para las fechas; ``legible``, si el texto
+    se deja leer (``texto_legible`` si no se dice). Con un texto que no se deja
+    leer, lo que el papel no trae -- la fecha, la cédula, el nombre -- queda
+    sin dato y no en duda: la letra a mano no es un error de la entrega
+    (2026-11-10). Lo que no depende del texto -- los folios contra las
+    páginas, una fecha fuera de los años del libro -- se sigue diciendo.
     """
+    if legible is None:
+        legible = texto_legible(textos)
     clase = clase_de_la_fila(fila)
     if clase == "acta":
-        return _revisar_un_acta(fila, textos, de_pila=de_pila, apellidos=apellidos)
+        return _revisar_un_acta(fila, textos, de_pila=de_pila, apellidos=apellidos, legible=legible)
     if clase == "persona":
-        return _revisar_una_persona(fila, textos)
-    if clase == "fuid":
-        return _revisar_una_fila_del_fuid(fila, textos)
-    return RevisionDeLaFila(sin_dato=("la fila no trae datos que buscar en el papel",))
+        revision = _revisar_una_persona(fila, textos)
+    elif clase == "fuid":
+        revision = _revisar_una_fila_del_fuid(fila, textos)
+    else:
+        revision = RevisionDeLaFila()
+    if not legible:
+        revision = _sin_lo_que_no_se_lee(revision)
+    juntas = juntar(
+        revision,
+        revisar_las_fechas_de_la_fila(fila, textos, regla=regla_de_fechas, ventana=ventana, legible=legible),
+    )
+    if not (juntas.errores or juntas.preguntas or juntas.confirmados or juntas.sin_dato):
+        return RevisionDeLaFila(sin_dato=("la fila no trae datos que buscar en el papel",))
+    return juntas
+
+
+def juntar(*revisiones: RevisionDeLaFila) -> RevisionDeLaFila:
+    """Lo que dicen varias revisiones de la misma fila, en una."""
+    return RevisionDeLaFila(
+        tuple(e for r in revisiones for e in r.errores),
+        tuple(p for r in revisiones for p in r.preguntas),
+        tuple(c for r in revisiones for c in r.confirmados),
+        tuple(s for r in revisiones for s in r.sin_dato),
+    )
+
+
+def _sin_lo_que_no_se_lee(revision: RevisionDeLaFila) -> RevisionDeLaFila:
+    """Lo que el texto no confirmó, sin dato: con un texto que no se deja leer no es duda (2026-11-10)."""
+    return RevisionDeLaFila(
+        errores=revision.errores,
+        preguntas=tuple(p for p in revision.preguntas if not p.para_la_ia),
+        confirmados=revision.confirmados,
+        sin_dato=revision.sin_dato
+        + tuple(f"{p.duda}: {TEXTO_ILEGIBLE}" for p in revision.preguntas if p.para_la_ia),
+    )
+
+
+def fechas_sin_prueba_si_no_se_leen(revision: RevisionDeFechas, *, legible: bool) -> RevisionDeFechas:
+    """Las fechas de un documento cuyo texto no se deja leer: lo confirmado vale, lo demás queda sin dato.
+
+    La guarda que ya tiene el revisor al procesar con el texto a medias
+    (``inventario.SIN_TODO_EL_TEXTO``), ahora en las dos muestras de la
+    auditoría (2026-11-10): sin ella, las 88 filas de dos PDF de Enfermería
+    escritos a mano salían «en duda» sin alterar nada. Una corrección tampoco
+    vale: sus dos pruebas salen de un texto que no se lee. Lo que no depende
+    del texto -- la fecha fuera de los años del libro (``para_la_ia=False``) --
+    sigue en duda.
+    """
+    if legible:
+        return revision
+    sueltas = [c.campo for c in revision.correcciones]
+    sueltas += [p.campo for p in revision.preguntas if getattr(p, "para_la_ia", True)]
+    dichos = {"fecha_inicial": "la fecha inicial", "fecha_final": "la fecha final"}
+    return replace(
+        revision,
+        correcciones=(),
+        preguntas=tuple(p for p in revision.preguntas if not getattr(p, "para_la_ia", True)),
+        sin_dato=revision.sin_dato
+        + tuple(f"{dichos.get(campo, campo)}: {TEXTO_ILEGIBLE}" for campo in dict.fromkeys(sueltas)),
+    )
+
+
+# -- las fechas extremas de toda fila (2026-11-10) ------------------------------------------
+
+
+def revisar_las_fechas_de_la_fila(
+    fila: Mapping[str, object],
+    textos: Sequence[str],
+    *,
+    regla: str = EXTREMOS,
+    ventana: tuple[int, int] | None = None,
+    legible: bool = True,
+) -> RevisionDeLaFila:
+    """La fecha inicial y la final de la fila contra su papel, con la regla de su habilidad.
+
+    Es ``contrastar_las_fechas`` -- el mismo margen que el revisor de fechas al
+    procesar: un dígito del OCR o la precisión son duda -- dicho como la
+    auditoría dice una fila:
+
+    - lo que el papel **corrige con prueba** es error («la fecha inicial dice
+      01/02/2005 y el papel 15/03/2005 (…)»): lo entregado no es lo que dice;
+    - lo que no confirma es una ``Pregunta`` para la IA, con lo que dice el
+      lector de la regla;
+    - la fila sin fechas no se mira ni dice nada: no toda habilidad las lleva.
+
+    Si la fila trae una sola fecha -- un acta de grado, un certificado -- se
+    revisa una vez y se dice «la fecha», no «la inicial» y «la final»: dos
+    preguntas iguales a la IA son tokens pagados dos veces.
+
+    La fecha que la fila tomó de otra parte -- el libro, la serie -- la deja sin
+    dato el contraste, y sólo pregunta si cae fuera de la ``ventana``: no infla
+    el margen ni paga la IA (2026-11-10). Con ``legible=False``, lo que el texto
+    no confirma queda sin dato (``fechas_sin_prueba_si_no_se_leen``).
+    """
+    fechas = fechas_de_la_fila(fila)
+    if fechas is None:
+        return RevisionDeLaFila()
+    revision = fechas_sin_prueba_si_no_se_leen(
+        contrastar_las_fechas(fechas, textos, regla=regla, ventana=ventana), legible=legible
+    )
+    una_sola = fechas.inicial is not None and fechas.inicial == fechas.final
+
+    def dicho(texto: str) -> str:
+        return texto.replace("la fecha inicial", "la fecha") if una_sola else texto
+
+    def suya(campo_o_dicho: str) -> bool:
+        return not una_sola or campo_o_dicho in ("fecha_inicial", "la fecha inicial")
+
+    return RevisionDeLaFila(
+        errores=tuple(dicho(error_de_fecha(c, fechas)) for c in revision.correcciones if suya(c.campo)),
+        preguntas=tuple(
+            Pregunta(p.campo, p.valor, dicho(p.duda), p.dice_el_papel, getattr(p, "para_la_ia", True))
+            for p in revision.preguntas
+            if suya(p.campo)
+        ),
+        confirmados=tuple(dicho(c) for c in revision.confirmadas if suya(c)),
+        sin_dato=tuple(dicho(s) for s in revision.sin_dato if not una_sola or not s.startswith("la fecha final")),
+    )
+
+
+def error_de_fecha(correccion: Correccion, fechas: FechasDeLaFila, *, dicho: str | None = None) -> str:
+    """«la fecha inicial dice X y el papel Y (prueba)»: una corrección con prueba, dicha como error de la auditoría."""
+    dicho = dicho or ("la fecha inicial" if correccion.campo == "fecha_inicial" else "la fecha final")
+    papel = fecha_escrita(correccion.dice_el_papel, fechas.precision)
+    if correccion.dice_la_fila is None:
+        return f"{dicho} falta en la fila y el papel dice {papel} ({correccion.prueba})"
+    return f"{dicho} dice {fecha_escrita(correccion.dice_la_fila, fechas.precision)} y el papel {papel} ({correccion.prueba})"
+
+
+def fecha_escrita(fecha: date, precision: str) -> str:
+    """Una fecha como va en el informe: «17/12/2012», o el año solo."""
+    return str(fecha.year) if precision == ANIO else fecha.strftime("%d/%m/%Y")
 
 
 def _revisar_un_acta(
@@ -288,6 +533,7 @@ def _revisar_un_acta(
     *,
     de_pila: frozenset[str] | None = None,
     apellidos: frozenset[str] | None = None,
+    legible: bool = True,
 ) -> RevisionDeLaFila:
     errores: list[str] = []
     preguntas: list[Pregunta] = []
@@ -341,6 +587,14 @@ def _revisar_un_acta(
         escrita = fecha.strftime("%d/%m/%Y")
         if leida.fecha == fecha or fecha in fechas_de_la_apertura(textos, fuertes):
             confirmados.append("la fecha de la sesión")
+        elif not legible:
+            # Un acta cuyo texto no se deja leer no prueba otra fecha (2026-11-10).
+            sin_dato.append(f"la fecha de la sesión: {TEXTO_ILEGIBLE}")
+        elif corregida := _corregida_por_la_sesion(fecha, textos):
+            # La regla de la sesión del revisor de fechas (2026-11-10): con dos
+            # pruebas del papel -- la apertura dice otra, y ésta no está escrita
+            # en el acta, ni su mes y su año -- lo entregado está mal: error.
+            errores.append(error_de_fecha(corregida, FechasDeLaFila(fecha, fecha), dicho="la fecha de la sesión"))
         else:
             preguntas.append(Pregunta("fecha", escrita, f"la fecha {escrita} no es la de la apertura de su acta"))
 
@@ -471,15 +725,29 @@ def _revisar_una_fila_del_fuid(fila: Mapping[str, object], textos: Sequence[str]
     )
 
 
+def _corregida_por_la_sesion(fecha: date, textos: Sequence[str]) -> Correccion | None:
+    """La corrección con prueba de la fecha de un acta, por la regla de la sesión; ``None`` si no la hay.
+
+    La misma pieza que el revisor de fechas al procesar, no otra: el margen de
+    las actas es uno solo (2026-11-10).
+    """
+    revision = contrastar_las_fechas(FechasDeLaFila(fecha, fecha), textos, regla=SESION)
+    return next((c for c in revision.correcciones if c.campo == "fecha_inicial"), None)
+
+
 def fechas_de_la_apertura(textos: Sequence[str], fuertes: Sequence) -> set[date]:
     """Las fechas que van detrás de los encabezados que abren sesión, o de «FECHA:» en sus hojas.
 
     Es donde va la fecha de la sesión. Sin encabezados que la abran, las hojas
     que se miran son las dos primeras.
+
+    La primera hoja entera se lee con su costo acotado (``texto_acotado``): con
+    las mismas regex que ``fechas_del_texto``, «y » × 10 000 en ella pasaba de 5 s
+    (la revisión adversarial, 2026-11-10). La primera fecha es la misma.
     """
     fechas: set[date] = set()
     hojas = sorted({e.pagina for e in fuertes[:3]}) or [1, 2]
-    if not fuertes and textos and (abre := primera_fecha(textos[0])) is not None:
+    if not fuertes and textos and (abre := primera_fecha(texto_acotado(textos[0] or ""))) is not None:
         # Sin encabezado que abra la sesión, la primera fecha de la primera
         # hoja: «Cartagena, 17 de diciembre de 2012».
         fechas.add(abre)

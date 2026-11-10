@@ -174,6 +174,8 @@ def historias_academicas_job(payload: dict) -> dict:
         de_medicina = es_de_medicina(textos)
         de_hojas = not de_medicina and es_de_hojas_sueltas(textos)
         hojas, portada = {}, ""
+        #: Lo que la IA leyó de cada hoja suelta: el papel del revisor de fechas (2026-11-10).
+        leidas_de_las_hojas: dict[int, str] = {}
         # Las lecturas del nombre de cada estudiante -- por su primera página --
         # y los renglones de donde salieron, para votarlas y corregirlas.
         lecturas: dict[int, list[str]] = {}
@@ -181,7 +183,9 @@ def historias_academicas_job(payload: dict) -> dict:
         if de_medicina:
             unidades, lecturas, renglones = _expedientes_de_medicina(payload, taller, source, local, textos, nombre)
         elif de_hojas:
-            unidades, hojas, portada = _hojas_sueltas(payload, taller, source, de_pago, textos, nombre)
+            unidades, hojas, portada = _hojas_sueltas(
+                payload, taller, source, de_pago, textos, nombre, lo_leido=leidas_de_las_hojas
+            )
             lecturas = {u.paginas[0]: [u.ficha.nombre] for u in unidades if u.ficha is not None and u.ficha.nombre}
         else:
             unidades = expedientes(textos, conocidas=conocidas)
@@ -311,6 +315,12 @@ def historias_academicas_job(payload: dict) -> dict:
         comprobacion = None
         salidas: list[str] = []
         filas: list[dict] = []
+        # Para el revisor de fechas (2026-11-10): lo ya leído de cada estudiante
+        # y si su fecha inicial o su final salieron de fuera de sus hojas.
+        from .nominas import el_papel_de_la_fila
+
+        textos_de_las_filas: list[list[str]] = []
+        derivadas: list[tuple[bool, bool]] = []
         carpeta_de_salida = taller.destination / document_folder(nombre)
         if pidio_dividir:
             carpeta_de_salida.mkdir(parents=True, exist_ok=True)
@@ -386,6 +396,37 @@ def historias_academicas_job(payload: dict) -> dict:
                     )
                     unidad.ficha = replace(unidad.ficha, codigo=corregido)
                 ficha = unidad.ficha
+                # Lo ya leído de sus hojas -- la capa, el OCR de casa, la ficha y
+                # las notas que leyó la IA --, cada texto una vez y con sus años
+                # cortos («AÑO 90», «IPA/05», «1977-83») escritos enteros desde
+                # ese mismo texto. No lo que dedujeron los lectores de la
+                # historia: la fila se confirmaba consigo misma (la revisión
+                # adversarial, 2026-11-10). Fuera de sus hojas: el año del
+                # código y los años del legajo de una hoja sin fecha.
+                # Y sin la ficha, como los años del propio trabajo: trae el
+                # nacimiento y el bachillerato, que mandaban a Revisión filas
+                # buenas y, con IA, las «corregían» a ese año (la revisión, otra
+                # vez el 2026-11-10). En las hojas sueltas lo que la IA leyó como
+                # ficha es la hoja misma, con su fecha: ahí sí vale.
+                textos_de_las_filas.append(
+                    el_papel_de_la_fila(
+                        [
+                            *(asegurador.propios(unidad) if de_hojas else ()),
+                            notas_de_la_ia.get(unidad.pagina_de_la_ficha) or "",
+                            *sin_la_ficha(unidad.paginas),
+                            *(
+                                leida
+                                for p in unidad.paginas
+                                if (leida := leidas_de_las_hojas.get(p))
+                                and not es_la_ficha(textos[p - 1])
+                                and not es_la_ficha(leida)
+                            ),
+                        ],
+                        ventana,
+                    )
+                )
+                del_legajo = de_hojas and not (hoja and (hoja.anio or hoja.fecha))
+                derivadas.append((bool(del_codigo) or del_legajo, del_legajo))
                 faltan = []
                 if ficha is not None and de_hojas:
                     # Una matrícula, un certificado o un recibo no traen cédula.
@@ -490,6 +531,16 @@ def historias_academicas_job(payload: dict) -> dict:
     if pidio_dividir:
         report["outputs"] = salidas
         report["dividido"] = True
+    # El revisor de fechas (el operador, 2026-11-10: «estar muy seguro de cada
+    # fecha en cada documento»), antes del agente de los datos y del FUID: los
+    # años de cada estudiante contra lo ya leído de sus hojas, con la ventana
+    # de años del PDF. Lo corregido con prueba va a la fila; lo dudoso, a Revisión.
+    from .nominas import asegurar_las_fechas
+
+    asegurar_las_fechas(
+        report, filas, textos_de_las_filas, habilidad="historias", taller=taller,
+        ventana=ventana, derivadas=derivadas,
+    )
     # El agente también en los datos (2026-11-06): de cada estudiante, el
     # nombre, la cédula -- o la tarjeta, o la libreta militar --, el código y
     # las fechas extremas, antes de que vayan al FUID. Lo que no cuadra, a la
@@ -846,12 +897,14 @@ def _leer_paginas_con_la_ia(
     return leidas
 
 
-def _hojas_sueltas(payload, taller, source, de_pago, textos, nombre):
+def _hojas_sueltas(payload, taller, source, de_pago, textos, nombre, *, lo_leido: dict[int, str] | None = None):
     """Un expediente por hoja suelta, y lo que dice cada una: nombre, código y fecha.
 
     Con «OCR + IA» la IA lee cada hoja entera: los nombres van a máquina en
     tablas que la capa de texto revuelve, o a mano en los recibos. Una página
-    facturada por hoja. Con «Solo OCR», lo que deje leer la capa.
+    facturada por hoja. Con «Solo OCR», lo que deje leer la capa. ``lo_leido``
+    recoge lo que leyó la IA de cada hoja: el papel del revisor de fechas
+    (2026-11-10).
     """
     from ...domain.historia_academica import Ficha
     from ...domain.historia_medicina import (
@@ -866,6 +919,8 @@ def _hojas_sueltas(payload, taller, source, de_pago, textos, nombre):
         leidas = _leer_paginas_con_la_ia(
             payload, taller, source, de_pago, list(range(1, len(textos) + 1)), nombre, "leyendo con la IA cada hoja"
         )
+        if lo_leido is not None:
+            lo_leido.update(leidas)
     tipos = [tipo_de_hoja(leidas.get(numero, "")) or tipo_de_hoja(texto) for numero, texto in enumerate(textos, start=1)]
     unidades = hojas_sueltas(tipos)
     # La portada, si la hay: lo de antes de la primera hoja.

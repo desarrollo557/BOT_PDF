@@ -49,7 +49,18 @@ def _split_job(payload: dict, task) -> dict:
     if task.writes_inventory:
         from ...application.fuid import con_los_archivos
         from ...application.resolution_fuid import filas_de_resoluciones
+        from ...domain.fechas_extremas import EXPEDICION
+        from .fechas_aseguradas import (
+            asegurar_las_filas_del_fuid,
+            juez_del_trabajo,
+            regla_de,
+        )
 
+        archivos = (
+            {item.first_page: item.file_name for item in resultado.inventory.items}
+            if resultado.inventory is not None
+            else {}
+        )
         # El texto de las páginas, para el asunto: lo que ordena el RESUELVE.
         fuente = PyMuPDFDocumentStore(taller.name).open(taller.source)
         try:
@@ -59,19 +70,29 @@ def _split_job(payload: dict, task) -> dict:
                 ubicacion=taller.ubicacion(),
                 texto_de=fuente.text_of,
             )
+            # El revisor de fechas (2026-11-10), con la fuente todavía abierta:
+            # la fecha de cada resolución contra su fórmula «Dada en…», en el
+            # mismo texto de sus páginas con que se fechó y se le leyó el
+            # asunto (la fuente lo guarda: no se relee). La de la serie, que no
+            # está en su papel, va a Revisión con su motivo.
+            filas = asegurar_las_filas_del_fuid(
+                report,
+                filas,
+                resultado.grouping.groups,
+                fuente.text_of,
+                regla=regla_de("resoluciones", EXPEDICION),
+                juez=juez_del_trabajo(taller),
+                # «Detener» entre una fila y la siguiente (2026-11-10).
+                control=taller.control,
+                archivos=archivos,
+            )
         finally:
             fuente.close()
         # Cada fila diciendo cómo se llama su archivo, cuando se escribió alguno.
         # El inventario y la carpeta son las dos mitades de la misma entrega, y
         # esto es lo que permite cruzarlas sin contar filas.
-        if resultado.inventory is not None:
-            filas = con_los_archivos(
-                filas,
-                {
-                    item.first_page: item.file_name
-                    for item in resultado.inventory.items
-                },
-            )
+        if archivos:
+            filas = con_los_archivos(filas, archivos)
 
         _escribir_fuid(
             report,

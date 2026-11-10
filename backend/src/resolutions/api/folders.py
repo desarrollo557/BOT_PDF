@@ -1686,11 +1686,17 @@ class FolderRunner:
             run.manifest.extend(constancia.unidades)
         nombre_del_indice = self._nombre_del_indice(run, path, NOMBRE_DEL_INDICE)
         entregados = {str(archivo.get("ruta")) for archivo in constancia.archivos}
+        prefijo = f"{path.stem}_"
         if self._plana(run) and (
-            nombre_del_indice in entregados or any(r.startswith(f"{path.stem}_") for r in entregados)
+            nombre_del_indice in entregados
+            # `_sin_el_prefijo` y no `startswith`: de «01.pdf», «01_RECLAMO.pdf»
+            # ya está en su puesto y no se ordena en cada relanzamiento.
+            or any(_sin_el_prefijo(r, prefijo) != r for r in entregados)
         ):
             # Entregado a la manera de antes -- su UPD delante y su propio
-            # índice --: se ordena la carpeta del NIC sin volver a procesarlo.
+            # índice --, o mal numerado con el nombre de su origen dentro
+            # («01_NIC 5940155-11_01_DOCUMENTO.pdf», 2026-11-10): se ordena la
+            # carpeta del NIC sin volver a procesarlo.
             run.cajas_por_ordenar.add(carpeta)
         elif self._plana(run) and constancia.indice is not None:
             run.indices[carpeta.name] = carpeta / NOMBRE_DEL_INDICE
@@ -2633,7 +2639,12 @@ class FolderRunner:
             # Sin PDF cortados -- «Solo inventario» -- lo que se entregó son
             # filas, y la muestra es de filas: cada una contra sus páginas del
             # original (el operador, 2026-11-09: salía «muestra: 0 de 0»).
-            filas = filas_candidatas(entregas) if not comparacion["pdf_entregados"] else {}
+            # Por los PDF **entregados** (``documentos_entregados``), no por los
+            # PDF del origen ya entregados (``pdf_entregados``): con éstos, una
+            # corrida de «Solo inventario» con todo entregado nunca iba a la
+            # muestra de filas -- ni las historias, ni el inventario de
+            # Kingspan -- y salía la de PDF, sin ninguno que abrir (2026-11-10).
+            filas = filas_candidatas(entregas) if not comparacion["documentos_entregados"] else {}
             de_filas = bool(filas)
             run.auditoria = {
                 "estado": "auditando",
@@ -2644,11 +2655,14 @@ class FolderRunner:
                 "semilla": semilla,
             }
             self._publish(run)
-            if de_filas:
-                from ..application.consumo import Consumo
+            from ..application.consumo import Consumo
 
-                consumo = Consumo()
-                juez = self._juez_de_los_datos(run, consumo)
+            # La IA que busca en el papel los datos dudosos -- y, desde el
+            # 2026-11-10, las fechas dudosas de las dos muestras --, sólo si
+            # la corrida se hizo con ella.
+            consumo = Consumo()
+            juez = self._juez_de_los_datos(run, consumo)
+            if de_filas:
                 muestra = await asyncio.to_thread(
                     auditar_las_filas,
                     self,
@@ -2659,11 +2673,6 @@ class FolderRunner:
                     detener=detener,
                     avance=avance_de_la_muestra,
                 )
-                # Lo que costó la IA de la auditoría, a la vista: se paga por
-                # tokens y no se suma al de la corrida, que ya cerró.
-                muestra["con_ia"] = juez is not None
-                if juez is not None:
-                    muestra["consumo_ia"] = consumo.as_dict()
             else:
                 muestra = await asyncio.to_thread(
                     auditar_la_muestra,
@@ -2672,9 +2681,15 @@ class FolderRunner:
                     entregas,
                     semilla=semilla,
                     juez=self._juez_de_la_auditoria(run),
+                    juez_de_datos=juez,
                     detener=detener,
                     avance=avance_de_la_muestra,
                 )
+            # Lo que costó la IA de los datos en la auditoría, a la vista: se
+            # paga por tokens y no se suma al de la corrida, que ya cerró.
+            muestra["con_ia"] = juez is not None
+            if juez is not None:
+                muestra["consumo_ia"] = consumo.as_dict()
             run.etapa, run.etapa_detalle = etapa_de(comparacion, muestra)
             run.auditoria = {"estado": "hecha", "semilla": semilla, "muestra": muestra, "fecha": _now()}
             if run.etapa != "Terminado":
@@ -3240,7 +3255,15 @@ class FolderRunner:
 
         rehacer = run.a_rehacer.pop(str(origin), None)
         if rehacer is not None:
-            self._apartar_lo_anterior(run, carpeta, rehacer[1] if prefijo else None, rehacer[0], prefijo=prefijo)
+            anterior = None
+            if prefijo:
+                # La constancia del disco y no la de cuando se descubrió el PDF:
+                # entretanto `_ordenar_la_caja` pudo renumerar sus PDF y
+                # reescribirla. Con los nombres viejos no se apartaba nada, y lo
+                # entregado quedaba sin constancia junto a lo nuevo con «(2)»
+                # (la revisión, 2026-11-10). Bajo `run.cerrojo`, como el orden.
+                anterior = constancias.leer(ruta_de_la_constancia) or rehacer[1]
+            self._apartar_lo_anterior(run, carpeta, anterior, rehacer[0], prefijo=prefijo)
             run.rehechos += 1
         if prefijo:
             self._apartar_la_entrega_de_antes(run, origin, carpeta)
@@ -3598,11 +3621,22 @@ class FolderRunner:
         «MAGANGUE PROCESADO» (``FolderRun.en_su_carpeta``).
         """
         raiz = FolderRunner._raiz(run)
-        if FolderRunner._quita_la_raiz(run):
-            partes = Path(carpeta).parts
-            if partes and partes[0] == raiz:
-                return run.destination.joinpath(*partes[1:])
-        return run.destination / carpeta
+        partes = FolderRunner._partes(carpeta)
+        if FolderRunner._quita_la_raiz(run) and partes and partes[0] == raiz:
+            return run.destination.joinpath(*partes[1:])
+        return run.destination.joinpath(*partes)
+
+    @staticmethod
+    def _partes(carpeta: str) -> tuple[str, ...]:
+        """Las carpetas de ``carpeta``, venga con la barra de Windows o con la de Linux.
+
+        Una entrega empezada en Windows y seguida en Docker (Linux) trae sus
+        carpetas como «MAGANGUE\\7720382». En Linux la barra invertida no
+        separa: salía una carpeta con la barra en el nombre, y la clave de
+        ``_carpeta_canonica`` con la elegida dos veces (la suite en Linux,
+        como la CI, 2026-11-10). En Windows las dos barras ya separaban.
+        """
+        return Path(carpeta.replace("\\", "/")).parts
 
     @staticmethod
     def _quita_la_raiz(run: FolderRun) -> bool:
@@ -3624,9 +3658,11 @@ class FolderRunner:
         if not carpeta or not FolderRunner._quita_la_raiz(run):
             return carpeta
         raiz = FolderRunner._raiz(run)
-        partes = Path(carpeta).parts
+        partes = FolderRunner._partes(carpeta)
         if partes and partes[0] == raiz:
-            return carpeta
+            # Con la barra del sistema: «3303\\00C003303» escrita en Windows y
+            # «3303/00C003303» calculada en Linux son una sola clave, un solo FUID.
+            return str(Path(*partes))
         return str(Path(raiz, *partes))
 
     def _carpeta_de(self, run: FolderRun, origin: Path) -> str:
@@ -4152,7 +4188,10 @@ class FolderRunner:
             ]
             if not leidas:
                 return
-            leidas.sort(key=lambda par: par[1].origen.casefold())
+            # Con la barra de Linux: una constancia escrita en Windows -- «5940155\NIC…» --
+            # y otra en Docker -- «5940155/NIC…» -- se ordenan por su nombre y no por la
+            # barra, que en el texto pone «/» antes que «\» (la revisión, 2026-11-10).
+            leidas.sort(key=lambda par: par[1].origen.replace("\\", "/").casefold())
             sello = datetime.now().strftime("%Y%m%d-%H%M%S")
             try:
                 # 0. Lo que un orden cortado a medias dejó con su nombre de paso,
@@ -4178,20 +4217,25 @@ class FolderRunner:
                             _mover(hoja, apartado)
                         constancia.archivos.remove(archivo)
                 # 2. Los PDF, numerados seguidos por el orden de su UPD.
+                # El prefijo que llevan mientras tanto es el nombre de su PDF de
+                # origen, sea «UPD2998726» o «NIC 5940155-11»: se quita el de
+                # verdad, no uno que se suponga. Con «NIC …» salía
+                # «01_NIC 5940155-11_01_DOCUMENTO.pdf» (el operador, 2026-11-10).
                 pdfs = [
-                    archivo
+                    (archivo, _prefijo_de_la_constancia(constancia))
                     for _, constancia in leidas
                     for archivo in sorted(
                         (a for a in constancia.archivos if str(a.get("ruta") or "").lower().endswith(".pdf")),
-                        key=_orden_del_archivo,
+                        key=lambda a, c=constancia: _orden_del_archivo(a, _prefijo_de_la_constancia(c)),
                     )
                 ]
                 ancho = max(2, len(str(len(pdfs))))
                 cambios = []
-                for numero, archivo in enumerate(pdfs, start=1):
+                for numero, (archivo, prefijo) in enumerate(pdfs, start=1):
                     actual = Path(str(archivo["ruta"]))
-                    hallado = _NUMERO_DEL_ARCHIVO.match(actual.name)
-                    nuevo = actual.with_name(f"{numero:0{ancho}d}_{hallado.group(2) if hallado else actual.name}")
+                    hallado = _NUMERO_DEL_ARCHIVO.match(_sin_el_prefijo(actual.name, prefijo))
+                    titulo = hallado.group(2) if hallado else _sin_el_prefijo(actual.name, prefijo)
+                    nuevo = actual.with_name(f"{numero:0{ancho}d}_{titulo}")
                     if nuevo != actual and (carpeta / actual).exists():
                         cambios.append((archivo, actual, nuevo))
                 # Primero todos a un nombre de paso, después a su número: así el
@@ -4329,8 +4373,14 @@ class FolderRunner:
                     and ruta.suffix.lower() in EXTENSIONES_DEL_BOT
                     # El bloqueo de un Excel abierto no es una entrega.
                     and not constancias.es_ajeno(ruta.name)
-                    # En la carpeta compartida de una caja, sólo lo de este PDF.
-                    and (not prefijo or ruta.name.startswith(prefijo) or ruta.stem.endswith(prefijo.rstrip("_")))
+                    # En la carpeta compartida de una caja, sólo lo de este PDF. Con
+                    # `_sin_el_prefijo`: al entregar «02.pdf», el «02_RESPUESTA.pdf»
+                    # ya numerado de «01.pdf» no es suyo (la revisión, 2026-11-10).
+                    and (
+                        not prefijo
+                        or _sin_el_prefijo(ruta.name, prefijo) != ruta.name
+                        or ruta.stem.endswith(prefijo.rstrip("_"))
+                    )
                 ]
             except OSError:
                 rutas = []
@@ -4399,11 +4449,41 @@ _NUMERO_DEL_ARCHIVO = re.compile(r"^(?:UPD\d+_)?(\d+)_(.+)$", re.IGNORECASE)
 _INDICE_POR_UPD = re.compile(r"^00\.INDICE ELECTRONICO \S+\.xlsx$", re.IGNORECASE)
 
 
-def _orden_del_archivo(archivo: dict) -> tuple[int, str]:
-    """El puesto de un PDF entre los de su UPD: el número con que empieza su nombre."""
+def _orden_del_archivo(archivo: dict, prefijo: str = "") -> tuple[int, str]:
+    """El puesto de un PDF entre los de su UPD: el número con que empieza su nombre, sin su prefijo."""
     ruta = str(archivo.get("ruta") or "")
-    hallado = _NUMERO_DEL_ARCHIVO.match(Path(ruta).name)
+    hallado = _NUMERO_DEL_ARCHIVO.match(_sin_el_prefijo(Path(ruta).name, prefijo))
     return (int(hallado.group(1)) if hallado else 10**6, ruta)
+
+
+def _prefijo_de_la_constancia(constancia) -> str:
+    """El prefijo con que se entregaron los archivos de un PDF en la carpeta de su NIC: «NIC 5940155-11_»."""
+    origen = str(getattr(constancia, "origen", "") or "").replace("\\", "/")
+    return f"{Path(origen).stem}_" if origen else ""
+
+
+def _sin_el_prefijo(nombre: str, prefijo: str) -> str:
+    """El nombre sin el prefijo de su PDF de origen, si lo lleva: «01_DOCUMENTO.pdf».
+
+    También como quedó mal numerado hasta el 2026-11-10 -- el número delante
+    del prefijo, «01_NIC 5940155-11_01_DOCUMENTO.pdf» --: al relanzar la
+    carpeta se arregla sin volver a procesarla.
+    """
+    if not prefijo:
+        return nombre
+    # De un origen de sólo dígitos -- «01.pdf» --, el prefijo «01_» es igual al
+    # puesto en la caja de «01_RECLAMO.pdf». Sólo es prefijo si detrás viene el
+    # número del documento, «01_01_RECLAMO.pdf» (los títulos nunca llevan «_»).
+    # Sin esto cada relanzamiento lo quitaba y la caja cambiaba de orden (la
+    # revisión, 2026-11-10).
+    solo_digitos = prefijo[:-1].isdigit()
+    numerado = re.match(r"^\d+_", nombre)
+    for candidato in (nombre, nombre[numerado.end():] if numerado else ""):
+        if candidato and candidato.casefold().startswith(prefijo.casefold()):
+            resto = candidato[len(prefijo):]
+            if not solo_digitos or re.match(r"^\d+_", resto):
+                return resto
+    return nombre
 
 
 def _indice_a_dict(indice) -> dict:

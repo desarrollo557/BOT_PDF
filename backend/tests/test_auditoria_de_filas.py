@@ -1373,3 +1373,328 @@ class TestLoQueCazoElRevisorDeRobustez:
         """«MALRICIO RLBZ» por Mauricio Rivas (acta 05 de 2000-2006): duda, no error."""
         assert parece_del_ocr("Mauricio Rivas", "MALRICIO RLBZ")
         assert not parece_del_ocr("Eduardo Ordóñez Ordoñez", "Dr. EDUARDO ORDOGOITIA Decano")
+
+
+# -- las fechas extremas de toda fila (el revisor de fechas, 2026-11-10) -----------------------
+#
+# El operador: «estar muy seguro de cada fecha en cada documento, sin importar la
+# habilidad», con los dos agentes, y que los auditores cubran «todas las
+# habilidades, todos los documentos, todos los patrones, todo el margen de
+# errores». La auditoría de filas contrasta la fecha inicial y la final de toda
+# fila con la regla de su habilidad: lo corregido con prueba es error, lo
+# dudoso va a la IA en la misma pregunta que los demás datos.
+
+from datetime import date  # noqa: E402
+
+import resolutions.application.auditoria_de_filas as auditoria_de_filas_app  # noqa: E402
+from resolutions.domain.auditoria_de_filas import (  # noqa: E402
+    Pregunta,
+    basura_del_texto,
+    texto_legible,
+)
+from resolutions.domain.fechas_extremas import ANIOS, EXPEDICION  # noqa: E402
+
+#: Una resolución con su fórmula de expedición: la fecha está donde va.
+RESOLUCION_EXPEDIDA = (
+    "UNIVERSIDAD DE CARTAGENA\nRESOLUCIÓN No. 031 DE 2005\n"
+    "Por la cual se reconoce un título. EL RECTOR DE LA UNIVERSIDAD DE CARTAGENA, en uso de sus facultades...\n"
+    "RESUELVE: ARTÍCULO PRIMERO: reconocer.\n"
+    "Dada en Cartagena de Indias, a los quince (15) días del mes de marzo de 2005."
+)
+
+
+def _resolucion(fecha: str) -> dict:
+    return {
+        "tipo": "FILA DEL FUID",
+        "fuid": {"consecutivo_inicial": "031", "fecha_inicial": fecha, "fecha_final": fecha, "pagina_inicial": 1},
+    }
+
+
+HISTORIA = {"nombre": "MARIA FERNANDA PEREZ GOMEZ", "anio_inicial": "1986", "anio_final": "1991", "pagina_inicial": 1}
+FICHA_CON_ANIOS = "Nombre: MARIA FERNANDA PEREZ GOMEZ\nIngresó en 1986. Grado: 1991"
+
+
+class TestLasFechasDeTodaFila:
+    def test_la_fecha_que_dice_la_formula_de_expedicion_se_confirma_una_vez(self):
+        revision = revisar_la_fila(_resolucion("15/03/2005"), [RESOLUCION_EXPEDIDA], regla_de_fechas=EXPEDICION)
+        # Una sola fecha en las dos puntas: se dice una vez, «la fecha».
+        assert revision.confirmados == ("el número del documento", "la fecha")
+        assert not revision.preguntas and not revision.errores
+
+    def test_otra_fecha_con_dos_pruebas_del_papel_es_error(self):
+        revision = revisar_la_fila(_resolucion("01/02/2005"), [RESOLUCION_EXPEDIDA], regla_de_fechas=EXPEDICION)
+        assert revision.errores == (
+            "la fecha dice 01/02/2005 y el papel 15/03/2005 (la fórmula de expedición («Dada en…») dice "
+            "15/03/2005 y 01/02/2005 no está escrita en el documento)",
+        )
+        assert not revision.preguntas
+
+    def test_un_digito_del_ocr_es_pregunta_con_lo_que_dice_el_lector(self):
+        """El margen de error: 15/03/2006 frente a 15/03/2005 es la lectura, no el papel."""
+        revision = revisar_la_fila(_resolucion("15/03/2006"), [RESOLUCION_EXPEDIDA], regla_de_fechas=EXPEDICION)
+        assert not revision.errores
+        [pregunta] = revision.preguntas
+        assert (pregunta.campo, pregunta.valor) == ("fecha_inicial", "15/03/2006")
+        assert pregunta.duda == "la fecha 15/03/2006, pero la fórmula de expedición («Dada en…») dice 15/03/2005"
+        assert pregunta.dice_el_papel == date(2005, 3, 15)
+
+    def test_sin_lector_fuerte_nunca_corrige_solo_pregunta(self):
+        """La regla genérica (los extremos) confirma o pregunta: nunca da por error lo que no sabe leer."""
+        revision = revisar_la_fila(_resolucion("01/02/2005"), [RESOLUCION_EXPEDIDA])
+        assert not revision.errores
+        assert [p.campo for p in revision.preguntas] == ["fecha_inicial"]
+
+    def test_los_anios_de_una_historia(self):
+        confirmada = revisar_la_fila(HISTORIA, [FICHA_CON_ANIOS], regla_de_fechas=ANIOS)
+        assert {"el nombre", "la fecha inicial", "la fecha final"} == set(confirmada.confirmados)
+        sin_el_final = revisar_la_fila(HISTORIA, ["Nombre: MARIA FERNANDA PEREZ GOMEZ\nIngresó en 1986."], regla_de_fechas=ANIOS)
+        assert [(p.campo, p.valor, p.duda) for p in sin_el_final.preguntas] == [
+            ("fecha_final", "1991", "la fecha final 1991 no está escrita en el documento")
+        ]
+
+    def test_la_fila_sin_otra_cosa_que_sus_fechas_tambien_se_audita(self):
+        """Antes «la fila no trae datos que buscar en el papel»: no auditada, fuera del margen."""
+        fila = {"fecha_inicial": "12/01/2023", "fecha_final": "12/01/2023", "pagina_inicial": 1}
+        assert clase_de_la_fila(fila) == "otra"
+        resultado = auditar_una_fila("caja/UPD1.pdf · pág. 1", fila, ["Magangué 12 de enero de 2023"])
+        assert resultado.estado == BIEN
+        assert resultado.extra["confirmados"] == ["la fecha"]
+        assert resultado.extra["fechas"] == {"confirmadas": 1}
+
+    def test_la_fecha_tomada_de_otra_parte_no_infla_el_margen(self):
+        """Tras la revisión adversarial (2026-11-10): no está en su papel a propósito; ni duda ni IA, sin dato."""
+        fila = {
+            "fecha_inicial": "12/01/2023",
+            "fecha_final": "12/01/2023",
+            "pagina_inicial": 1,
+            "observaciones": "fecha de su trámite",
+        }
+        revision = revisar_la_fila(fila, ["Señores: reclamo por el cobro de la factura de energía del mes"])
+        assert not revision.preguntas and not revision.errores
+        assert any("de su trámite" in s for s in revision.sin_dato)
+        juez = _JuezFalso({})
+        resultado = auditar_una_fila("UPD1.pdf · pág. 1", fila, ["Señores: reclamo por el cobro"], juez=juez)
+        assert resultado.estado == NO_AUDITADO and not juez.preguntas
+
+    def test_la_fecha_fuera_de_los_anios_del_libro_es_duda_sin_la_ia(self):
+        """ACOSTA BELLO: 1994-2001 en «HISTORIAS ACADEMICAS 1986»; se veía al procesar y no al cerrar (2026-11-10)."""
+        fila = {**HISTORIA, "anio_inicial": "1994", "anio_final": "2001"}
+        papel = "Nombre: MARIA FERNANDA PEREZ GOMEZ\nIngresó en 1994. Grado: 2001"
+        ventana = auditoria_de_filas_app.ventana_de_la_auditoria("historias", "CAJA/UPD1-HISTORIAS ACADEMICAS 1986.pdf")
+        juez = _JuezFalso({})
+        resultado = auditar_una_fila("UPD1.pdf", fila, [papel], habilidad="historias", juez=juez, ventana=ventana)
+        assert resultado.estado == DUDOSO
+        assert any("2001 cae fuera de los años del libro" in h for h in resultado.hallazgos)
+        assert not juez.preguntas
+        # Sin la ventana, el papel la confirma.
+        assert auditar_una_fila("UPD1.pdf", fila, [papel], habilidad="historias").estado == BIEN
+
+    def test_la_ventana_de_la_auditoria_es_la_del_libro_y_mas_ancha(self):
+        """Medido en 404 filas de Enfermería (2026-11-10): con la de procesar caían fuera 19; con ésta, 2."""
+        ventana = auditoria_de_filas_app.ventana_de_la_auditoria
+        assert ventana("historias", "CAJA/UPD3859727-1HISTORIAS ACADEMICAS 1986.pdf") == (1974, 1992)
+        assert ventana("historias", "CAJA/UPD1-HISTORIAS ACADEMICAS.pdf") is None
+        assert ventana("historias", "UPD1.pdf", ["NOTAS 1980", "1981 1982", "1983 1984 1985", "1986 1987 1988"]) is not None
+        assert ventana("nominas", "NOMINA 1977-1984.pdf") == (1976, 1985)
+        assert ventana("actas-de-consejo", "ACTAS 2007-2009.pdf") is None
+
+    def test_la_letra_a_mano_deja_sin_dato_lo_que_no_encuentra(self):
+        """#10: las 88 filas de Enfermería escritas a mano salían «en duda» sin alterar nada."""
+        a_mano = (
+            "REGISTRO DEL ESTUDIANTE ¿i/eJuyU /c<úy¿ir/ Nombre del estudiante. ^^y^AjiUAA. 3 2 &0 - <s> "
+            "Luga/ A/^'cu y/r> A-S\" ^ B/c At - Ji/é Cy pó í/íP íU i-í J44^ dS4 3a<f Í4í/ ;«*»* 7i^ rwv, "
+            "/■■?f/- ¿// - i»W /-gf/ ^JLuccdd^ -tf 17 / ;■ - ■/ 'X -rrtc-i iíjJl í^6~> f^cy ¡O^ ií^"
+        )
+        assert not texto_legible([a_mano])
+        juez = _JuezFalso({})
+        resultado = auditar_una_fila("UPD1.pdf · págs. 1-2", HISTORIA, [a_mano], habilidad="historias", juez=juez)
+        assert resultado.estado == NO_AUDITADO
+        assert "no se dejan leer" in resultado.hallazgos[0]
+        assert not juez.preguntas
+        # Lo que sí trae, lo confirma igual.
+        con_el_nombre = f"{a_mano}\nMARIA FERNANDA PEREZ GOMEZ"
+        assert auditar_una_fila("UPD1.pdf", HISTORIA, [con_el_nombre]).extra["confirmados"] == ["el nombre"]
+
+    def test_la_capa_impresa_se_deja_leer(self):
+        """Las actas de Odontología, Afinia y Kingspan, con sus códigos, pasan por legibles."""
+        assert texto_legible([RESOLUCION_EXPEDIDA, FICHA_CON_ANIOS])
+        assert texto_legible(["COMPROBANTE DE EGRESO 001-CEE-00000557 Fecha: 2023/10/14 NIT 802014471 $70.000.000"])
+        assert basura_del_texto([""]) == 1.0
+
+    def test_la_fila_sin_fechas_no_dice_nada_de_ellas(self):
+        """Las filas sin fechas siguen igual: nada de más en ``sin_dato`` ni en los confirmados."""
+        revision = revisar_la_fila(
+            {"fuid": {"consecutivo_inicial": "N/A"}}, [RESOLUCION_EXPEDIDA], regla_de_fechas=EXPEDICION
+        )
+        assert revision.sin_dato == ("el número del documento",)
+        assert revisar_la_fila({"tipo": "OTRA"}, [RESOLUCION_EXPEDIDA]).sin_dato == (
+            "la fila no trae datos que buscar en el papel",
+        )
+
+    def test_el_acta_corregida_por_la_apertura_es_error_sin_otra_pregunta(self):
+        """La regla de la sesión, la misma que al procesar: la apertura dice otra y ésta no está escrita."""
+        revision = revisar_la_fila(_acta(fecha="05-03-2012"), [APERTURA_022, CORRIDA_022])
+        assert revision.errores == (
+            "la fecha de la sesión dice 05/03/2012 y el papel 17/12/2012 (la apertura de la sesión dice "
+            "17/12/2012 y 05/03/2012 no está escrita en el documento)",
+        )
+        assert not any(p.campo.startswith("fecha") for p in revision.preguntas)
+
+    def test_el_acta_del_mismo_mes_sigue_siendo_pregunta(self):
+        """El 18 por el 17 de diciembre: el mes y el año están escritos, no hay dos pruebas."""
+        revision = revisar_la_fila(_acta(fecha="18-12-2012"), [APERTURA_022, CORRIDA_022])
+        assert not revision.errores
+        assert [p.campo for p in revision.preguntas] == ["fecha"]
+
+
+class TestLasFechasConLaIa:
+    def test_van_en_la_misma_pregunta_que_los_demas_datos(self):
+        fila = {**HISTORIA, "cedula": "45466498"}
+        papel = "Nombre: MARIA FERNANDA PEREZ GOMEZ\nC.C. 45.466.499\nIngresó en 1986. Grado: mil novecientos noventa y uno"
+        juez = _JuezFalso({})
+        resultado = auditar_una_fila("UPD1.pdf", fila, [papel], juez=juez)
+        # Una pregunta por fila: la cédula y la fecha final juntas, no dos.
+        [(_, datos)] = juez.preguntas
+        assert datos == [{"campo": "cedula", "valor": "45466498"}, {"campo": "fecha_final", "valor": "1991"}]
+        assert resultado.estado == DUDOSO
+        assert resultado.extra["fechas"] == {"en duda": 1}
+
+    def test_lo_que_el_papel_confirma_no_se_pregunta(self):
+        juez = _JuezFalso({})
+        resultado = auditar_una_fila("UPD1.pdf", HISTORIA, [FICHA_CON_ANIOS], juez=juez)
+        assert resultado.estado == BIEN and juez.preguntas == []
+
+    def test_la_ia_que_cita_otra_fecha_lo_vuelve_error(self):
+        fila = {"fecha_inicial": "12/01/2023", "fecha_final": "12/01/2023", "pagina_inicial": 1}
+        papel = "Señores: reclamo.\nMagangué, 30 de agosto de 2021"
+        juez = _JuezFalso({"fecha_inicial": VeredictoDeDato("no_esta", "Magangué, 30 de agosto de 2021")})
+        resultado = auditar_una_fila("UPD1.pdf", fila, [papel], juez=juez)
+        # La misma fecha en las dos puntas se pregunta una vez.
+        assert juez.preguntas[0][1] == [{"campo": "fecha_inicial", "valor": "12/01/2023"}]
+        assert resultado.estado == ERROR
+        assert resultado.hallazgos == (
+            "la fecha 12/01/2023 no está escrita en el documento: la IA lo confirma, "
+            "el papel dice «Magangué, 30 de agosto de 2021»",
+        )
+        assert resultado.extra["fechas"] == {"con error": 1}
+
+    def test_un_esta_cuya_cita_no_trae_la_fecha_no_vale(self):
+        fila = {"fecha_inicial": "12/01/2023", "fecha_final": "12/01/2023", "pagina_inicial": 1}
+        papel = "Señores: reclamo.\nMagangué, 30 de agosto de 2021"
+        juez = _JuezFalso({"fecha_inicial": VeredictoDeDato("esta", "Señores: reclamo")})
+        assert auditar_una_fila("UPD1.pdf", fila, [papel], juez=juez).estado == DUDOSO
+
+    def test_un_anio_con_un_digito_del_ocr_no_es_error_y_dos_si(self):
+        papel = "Nombre: MARIA FERNANDA PEREZ GOMEZ\nIngresó en 1986. Grado en 1997. Libro de 1975"
+        del_ocr = _JuezFalso({"fecha_final": VeredictoDeDato("no_esta", "Grado en 1997")})
+        resultado = auditar_una_fila("UPD1.pdf", HISTORIA, [papel], juez=del_ocr)
+        # 1991 y 1997: un dígito, lo que el OCR cambia: duda, no error.
+        assert resultado.estado == DUDOSO
+        assert "puede ser el OCR" in resultado.hallazgos[0]
+        otro = _JuezFalso({"fecha_final": VeredictoDeDato("no_esta", "Libro de 1975")})
+        assert auditar_una_fila("UPD1.pdf", HISTORIA, [papel], juez=otro).estado == ERROR
+
+    def test_la_cita_tiene_que_traer_la_del_lector_de_la_regla(self):
+        """La próxima reunión o la fecha de la plantilla no contradicen: si el lector dijo una, la cita trae ésa."""
+        lector = date(2005, 3, 15)
+        plantilla = Pregunta("fecha_inicial", "01/02/2005", "", lector)
+        assert not auditoria_de_filas_app.contradice(plantilla, "VERSIÓN 00 FECHA 04-05-2011")
+        assert auditoria_de_filas_app.contradice(plantilla, "a los quince (15) días del mes de marzo de 2005")
+        assert auditoria_de_filas_app.cita_con_el_dato(Pregunta("fecha_final", "1991", ""), "Grado: 1.991")
+        assert not auditoria_de_filas_app.cita_con_el_dato(Pregunta("fecha_final", "1991", ""), "Grado")
+
+    def test_la_regla_es_la_del_perfil_de_su_habilidad(self, monkeypatch):
+        """La de la constancia: con la expedición, la fecha que el papel contradice con prueba es error."""
+        monkeypatch.setattr(auditoria_de_filas_app, "regla_de_fechas_de", lambda habilidad: EXPEDICION)
+        resultado = auditar_una_fila(
+            "UPD1.pdf", _resolucion("01/02/2005"), [RESOLUCION_EXPEDIDA], habilidad="resoluciones"
+        )
+        assert resultado.estado == ERROR
+        assert resultado.hallazgos[0].startswith("la fecha dice 01/02/2005 y el papel 15/03/2005")
+
+    def test_un_perfil_sin_regla_audita_con_la_de_los_extremos(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from resolutions.application import perfiles_de_revision
+
+        monkeypatch.setattr(perfiles_de_revision, "perfil_de", lambda habilidad: SimpleNamespace(datos=None))
+        assert auditoria_de_filas_app.regla_de_fechas_de("lo que sea") == "extremos"
+
+
+@pytest.mark.usefixtures("margen_de_fabrica")
+class TestLasFechasEnLaMuestraDeFilas:
+    def test_la_muestra_dice_como_quedaron_las_fechas_en_total_y_por_habilidad(self):
+        muestra = auditar_las_filas(None, None, _libros(2, actas_por_libro=5), semilla=1, leer_textos=_leer_actas)
+        # Las diez actas, todas del 17 de diciembre de 2012 como su apertura.
+        assert muestra["fechas"] == {
+            "documentos": 10,
+            "revisados": 10,
+            "confirmadas": 10,
+            "con error": 0,
+            "en duda": 0,
+            "sin fechas": 0,
+        }
+        [suya] = muestra["por_habilidad"]
+        assert suya["fechas"]["confirmadas"] == 10
+
+    def test_un_acta_con_otra_fecha_cuenta_como_error_de_la_muestra(self):
+        libros = _libros(1, actas_por_libro=3)
+        libros[0].constancia.actas[1]["fecha"] = "05-03-2012"
+        muestra = auditar_las_filas(None, None, libros, semilla=1, leer_textos=_leer_actas)
+        assert (muestra["errores"], muestra["fechas"]["con error"], muestra["fechas"]["confirmadas"]) == (1, 1, 2)
+        [mala] = [p for p in muestra["pdfs"] if p["estado"] == ERROR]
+        assert mala["hallazgos"][0].startswith("la fecha de la sesión dice 05/03/2012 y el papel 17/12/2012")
+
+
+# -- que la auditoría no trabe la corrida (2026-11-10) ----------------------------------------
+#
+# La revisión adversarial del revisor de fechas midió ``_CODIGO`` creciendo al
+# cuadrado con una ficha larga sin espacios -- «1» × 12 000 + «x», 2,9 s en
+# ``basura_del_texto`` --, las puntas de Kingspan pidiendo la basura de las
+# mismas cientos de hojas una vez cada una, y la primera hoja de un acta sin
+# encabezado leída con las regex cuadráticas de ``fechas_del_texto``.
+
+import re  # noqa: E402
+import time  # noqa: E402
+
+from resolutions.domain import auditoria_de_filas as filas_del_dominio  # noqa: E402
+
+
+class TestLaAuditoriaDeFilasNoTrabaLaCorrida:
+    def test_el_codigo_reconoce_las_mismas_fichas(self):
+        """La búsqueda por delante no vuelve atrás; el primer tramo sigue necesitando una cifra."""
+        viejo = re.compile(r"[A-Z0-9]*\d[A-Z0-9]*(?:[-/.][A-Z0-9]+)*[.,;:]?")
+        fichas = [
+            "RE2310202405234", "001-FC-00012345", "UPD3859724;", "001-CEE-00000557", "ABC", "AB-1", "1-AB",
+            "A1.B2.", "X1Y", "x1", "1.", "1..", "-1", "1/2/3", "1-", "A-1", "2023/10/14", "NIT802014471",
+            "1" * 300 + "x", "1A" * 50 + "!", "1" * 300, "Ñ1", "1,", "1;:", "ABC-",
+        ]
+        for ficha in fichas:
+            assert bool(filas_del_dominio._CODIGO.fullmatch(ficha)) == bool(viejo.fullmatch(ficha)), ficha
+
+    def test_una_ficha_de_200_000_cifras_no_traba_la_basura(self):
+        """«1» × 12 000 + «x» tardaba 2,9 s y crecía al cuadrado: 200 000 eran minutos."""
+        inicio = time.perf_counter()
+        assert basura_del_texto(["1" * 200_000 + "x"]) == 1.0
+        assert time.perf_counter() - inicio < 3.0
+
+    def test_la_basura_de_un_documento_se_cuenta_una_vez(self):
+        """Cada punta de Kingspan contra todo el original la pedía de las mismas hojas."""
+        hojas = [f"COMPROBANTE DE EGRESO 001-CEE-{p:08d} pago a proveedores" for p in range(1, 41)]
+        cuenta = filas_del_dominio._basura
+        cuenta.cache_clear()
+        primera = basura_del_texto(hojas)
+        for _ in range(3):
+            assert texto_legible(list(hojas)) and basura_del_texto(tuple(hojas)) == primera
+        assert (cuenta.cache_info().misses, cuenta.cache_info().hits) == (1, 6)
+
+    def test_la_primera_hoja_de_un_acta_sin_encabezado_no_traba_su_apertura(self):
+        """Sin encabezado, la apertura es la primera fecha de la primera hoja: «y » × 10 000 en ella pasaba de 5 s."""
+        from resolutions.domain.acta_consejo import primera_fecha
+
+        hoja = "Cartagena, 17 de diciembre de 2012\nSe reunió el Consejo de Facultad. Próxima: 6 de marzo de 2013"
+        apertura = filas_del_dominio.fechas_de_la_apertura
+        assert apertura([hoja], []) == {primera_fecha(hoja)} == {date(2012, 12, 17)}
+        inicio = time.perf_counter()
+        assert apertura(["y " * 100_000 + "\n" + hoja], []) == {date(2012, 12, 17)}
+        assert time.perf_counter() - inicio < 3.0

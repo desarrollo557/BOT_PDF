@@ -143,14 +143,39 @@ PPP_PARA_LA_FECHA_LOCAL = 300
 PPP_PARA_LA_FECHA_CON_IA = 200
 
 
-def _completar_las_fechas(piezas: list[dict], textos: dict, ruta_pdf, taller) -> list[dict]:
+def _completar_las_fechas(
+    piezas: list[dict],
+    textos: dict,
+    ruta_pdf,
+    taller,
+    *,
+    releidas: dict[int, list[str]] | None = None,
+    prestadas: dict[int, int] | None = None,
+) -> list[dict]:
     """Pone fecha a cada documento que salió sin ella. Devuelve de dónde salió cada una.
 
     Primero el agente (:mod:`~resolutions.application.agente_de_fechas`): el
     texto, la relectura local y, sólo si el operador eligió una lectura con IA,
     la IA. Lo que el papel no trae, la fecha de su trámite. Un fallo aquí no
     tumba la caja: el documento se queda como estaba.
+
+    Para el revisor de fechas (2026-11-10), si se le pasan: ``releidas`` guarda
+    lo que se releyó de cada hoja -- es papel ya pagado, y en él se buscará la
+    fecha sin volver a leerlo --, y ``prestadas`` de qué pieza tomó la suya la
+    que no traía ninguna (su posición en ``piezas``).
     """
+    releidas = releidas if releidas is not None else {}
+    prestadas = prestadas if prestadas is not None else {}
+
+    def guardada(leer):
+        def leer_y_guardar(pagina: int) -> str:
+            texto = leer(pagina)
+            if texto:
+                releidas.setdefault(pagina, []).append(texto)
+            return texto
+
+        return leer_y_guardar
+
     from datetime import date
 
     from ...adapters.pymupdf_source import PyMuPDFPageSource
@@ -168,9 +193,9 @@ def _completar_las_fechas(piezas: list[dict], textos: dict, ruta_pdf, taller) ->
         local = TesseractOcr(TesseractConfig(min_word_confidence=0, psm=PSM_AUTO, timeout_seconds=SEGUNDOS_PARA_UNA_HOJA))
         de_pago = taller.lector_de_pago()
         agente = AgenteDeFechas(
-            releer=lambda p: local.read(fuente.render(p, None, PPP_PARA_LA_FECHA_LOCAL)).text,
+            releer=guardada(lambda p: local.read(fuente.render(p, None, PPP_PARA_LA_FECHA_LOCAL)).text),
             leer_con_ia=(
-                (lambda p: de_pago.read(fuente.render(p, None, PPP_PARA_LA_FECHA_CON_IA, "jpeg")).text)
+                guardada(lambda p: de_pago.read(fuente.render(p, None, PPP_PARA_LA_FECHA_CON_IA, "jpeg")).text)
                 if de_pago is not None
                 else None
             ),
@@ -203,6 +228,7 @@ def _completar_las_fechas(piezas: list[dict], textos: dict, ruta_pdf, taller) ->
         if del_tramite is None:
             continue
         fecha, de = del_tramite
+        prestadas[i] = de
         pieza["fecha"] = fecha.isoformat()
         pieza["fecha_por"] = (
             f"la de su trámite: {piezas[de].get('titulo') or piezas[de].get('type') or 'documento'} "
@@ -210,6 +236,136 @@ def _completar_las_fechas(piezas: list[dict], textos: dict, ruta_pdf, taller) ->
         )
         halladas.append({"pages": pieza["pages"], "fecha": pieza["fecha"], "como": pieza["fecha_por"]})
     return halladas
+
+
+def _asegurar_las_fechas(
+    piezas: list[dict],
+    textos: dict,
+    taller,
+    *,
+    releidas: dict[int, list[str]],
+    prestadas: dict[int, int],
+    sellos: dict,
+    fechas_de_guia: dict,
+) -> dict:
+    """El revisor de fechas sobre cada pieza de la caja; devuelve lo anotado, para el informe.
+
+    Lo pidió el operador el 2026-11-10: «estar muy seguro de cada fecha en cada
+    documento». Va después de ``_completar_las_fechas`` y antes de entregar:
+    lo corregido llega así al índice. Una pieza tiene una fecha, la inicial y
+    la final.
+
+    - **Su papel es lo que ya se leyó de sus hojas**: la capa y el OCR de la
+      caja, lo que se releyó buscando su fecha, el sello de radicación y la
+      fecha marcada en la guía de LECTA, que tienen lector propio. Nada se
+      relee aquí. Una fecha que no está en sus hojas -- la del documento del
+      corte, que pudo venir de otra pieza -- va a la IA (si se eligió) y si no
+      a Revisión.
+    - **La prestada de su trámite** (``prestadas``) no se busca en su papel,
+      que por definición no la trae: sigue a la pieza de la que se tomó. Si a
+      ésa se le corrige, a ella también; si va a Revisión, ella con el mismo
+      motivo.
+    """
+    from ...application.control import Cancelled
+
+    aparte: dict = {}
+    try:
+        _revisar_cada_pieza(
+            aparte, piezas, textos, taller, releidas=releidas, prestadas=prestadas, sellos=sellos,
+            fechas_de_guia=fechas_de_guia,
+        )
+    except Cancelled:
+        raise
+    except Exception:  # noqa: BLE001 - el revisor no tumba la caja: las fechas quedan como estaban
+        logger.warning("el revisor de fechas no pudo terminar la caja; las fechas quedan como estaban", exc_info=True)
+    return aparte
+
+
+def _revisar_cada_pieza(
+    aparte: dict,
+    piezas: list[dict],
+    textos: dict,
+    taller,
+    *,
+    releidas: dict[int, list[str]],
+    prestadas: dict[int, int],
+    sellos: dict,
+    fechas_de_guia: dict,
+) -> None:
+    """Las propias primero, cada una contra sus hojas; luego las prestadas, detrás de la suya."""
+    from datetime import date
+
+    from ...application.revisor_de_fechas import CORREGIDA, anotar_en_el_informe
+    from ...domain.fechas_extremas import EXTREMOS, fechas_de_un_par
+    from ...domain.naming import DOCUMENT_PREFIX
+    from .fechas_aseguradas import (
+        con_lo_que_leyeron,
+        juez_del_trabajo,
+        regla_de,
+        revisar_y_anotar,
+    )
+
+    regla = regla_de(PERFIL, EXTREMOS)
+    juez = juez_del_trabajo(taller)
+    revisadas: dict[int, object] = {}
+
+    def nombre(pieza: dict) -> str:
+        return f"{pieza.get('titulo') or pieza.get('type') or DOCUMENT_PREFIX} (pág. {pieza['pages'][0]})"
+
+    def papel(paginas: list[int]) -> list[str]:
+        suyo: list[str] = []
+        for pagina in paginas:
+            suyo.append(con_lo_que_leyeron(textos.get(pagina, "") or ""))
+            suyo.extend(con_lo_que_leyeron(t) for t in releidas.get(pagina, ()))
+            if pagina in sellos and sellos[pagina].fecha:
+                suyo.append(f"SELLO DE RADICACION: {sellos[pagina].fecha:%d/%m/%Y}")
+            if fechas_de_guia.get(pagina):
+                suyo.append(f"FECHA MARCADA EN LA GUIA: {fechas_de_guia[pagina]:%d/%m/%Y}")
+        return suyo
+
+    def corregir(pieza: dict, revisada) -> None:
+        if revisada is not None and revisada.estado == CORREGIDA and revisada.inicial:
+            pieza["fecha"] = revisada.inicial.isoformat()
+            pieza["fecha_por"] = f"corregida por el revisor de fechas: {revisada.nota}"
+
+    # «Detener» entre una pieza y la siguiente: una caja trae cientos, y cada
+    # una puede costar una pregunta a la IA (la revisión adversarial, 2026-11-10).
+    control = getattr(taller, "control", None)
+    for i, pieza in enumerate(piezas):
+        if i in prestadas:
+            continue
+        if control is not None:
+            control.check()
+        fecha = pieza.get("fecha")
+        fechas = fechas_de_un_par(str(fecha)[:10], str(fecha)[:10]) if fecha else None
+        revisada = revisar_y_anotar(
+            aparte, nombre(pieza), pieza["pages"][0], fechas, papel(pieza["pages"]), regla=regla, juez=juez,
+            una_sola=True,
+        )
+        revisadas[i] = revisada
+        corregir(pieza, revisada)
+    for i, de in prestadas.items():
+        pieza = piezas[i]
+        de_quien = revisadas.get(de)
+        if de_quien is None:
+            continue
+        donde = f"la de su trámite (pág. {piezas[de]['pages'][0]})"
+        heredada = _heredada(de_quien, donde, date.fromisoformat(str(pieza["fecha"])[:10]) if pieza.get("fecha") else None)
+        anotar_en_el_informe(aparte, nombre(pieza), pieza["pages"][0], heredada)
+        corregir(pieza, heredada)
+
+
+def _heredada(de_quien, donde: str, la_suya):
+    """Lo que el revisor decidió de la pieza que prestó la fecha, dicho de la que la tomó."""
+    from dataclasses import replace
+
+    return replace(
+        de_quien,
+        correcciones=tuple(
+            replace(c, dice_la_fila=la_suya, prueba=f"{donde}: {c.prueba}") for c in de_quien.correcciones
+        ),
+        motivos=tuple(f"{donde}: {m}" for m in de_quien.motivos),
+    )
 
 
 def _poner_el_re_en_el_nombre(grupos, anexos: dict, *, textos: dict, sellos: dict, sin_re: set, abren: set):
@@ -1365,7 +1521,23 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # el bot en todos los casos tome la fecha»): el agente la busca en el texto,
     # relee en local y, si se eligió una lectura con IA, se la pide a la IA; lo
     # que el papel no trae lleva la de su trámite.
-    fechas_halladas = _completar_las_fechas(piezas, textos, tmp_path, taller)
+    releidas: dict[int, list[str]] = {}
+    prestadas: dict[int, int] = {}
+    fechas_halladas = _completar_las_fechas(
+        piezas, textos, tmp_path, taller, releidas=releidas, prestadas=prestadas
+    )
+    # F7b. El revisor de fechas (2026-11-10): la de cada pieza contra lo que ya
+    # se leyó de sus hojas, antes de entregar, para que el índice lleve la
+    # corregida. Lo anotado pasa al informe cuando éste se arma.
+    fechas_revisadas = _asegurar_las_fechas(
+        piezas,
+        textos,
+        taller,
+        releidas=releidas,
+        prestadas=prestadas,
+        sellos=sellos,
+        fechas_de_guia=fechas_de_guia,
+    )
     _anunciar(
         payload,
         Stage.ASSEMBLING,
@@ -1526,6 +1698,10 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     from ...application.revisor_de_cortes import anotar_en_el_informe
 
     anotar_en_el_informe(report, revisados, revisor_roto, entregado.comprobacion, perfil=perfil_de(PERFIL).as_dict())
+    # Y lo que dijo el revisor de fechas de cada pieza (F7b).
+    from .fechas_aseguradas import pasar_al_informe
+
+    pasar_al_informe(report, fechas_revisadas)
     # 4. El Índice Electrónico del cliente, junto a los PDF de la caja y sin
     #    que nadie lo pida. Es el inventario de toda caja de correspondencia y
     #    ocupa el lugar de la planilla de las otras rutas: el archivo recibe un

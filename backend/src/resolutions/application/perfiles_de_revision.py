@@ -61,6 +61,11 @@ class PerfilDeRevision:
     #: fechas extremas --, que el agente revisa al procesar y la auditoría
     #: contra el FUID entregado (2026-11-06). ``None``: sólo se revisan los cortes.
     datos: DatosEsperados | None = None
+    #: Qué fecha del papel es la inicial y la final de un documento de esta
+    #: habilidad (``domain/fechas_extremas.REGLAS``): la del revisor de fechas
+    #: de los dos agentes (el operador, 2026-11-10: «estar muy seguro de cada
+    #: fecha en cada documento, sin importar la habilidad»).
+    regla_de_fechas: str = "extremos"
 
     @property
     def margen(self) -> float:
@@ -124,6 +129,7 @@ def _cruces_del_acuerdo(textos: Mapping[int, str]) -> frozenset[int]:
 PERFILES: tuple[PerfilDeRevision, ...] = (
     PerfilDeRevision(
         clave="correspondencia",
+        regla_de_fechas="extremos",
         nombre="Caja de correspondencia",
         reglas=REGLAS_DE_LA_CORRESPONDENCIA,
         corrige=True,
@@ -132,6 +138,7 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
     ),
     PerfilDeRevision(
         clave="diplomas",
+        regla_de_fechas="extremos",
         nombre="Libro de diplomas",
         reglas=(
             "Libro de registro de diplomas: cada diploma es de un graduado. El encabezado impreso abre un diploma; "
@@ -142,6 +149,7 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
     ),
     PerfilDeRevision(
         clave="actas-de-grado",
+        regla_de_fechas="grado",
         nombre="Actas de grado",
         reglas=(
             "Libro de actas de grado: una por graduado, con su número de acta, su nombre, su título y su cédula. "
@@ -153,6 +161,7 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
     ),
     PerfilDeRevision(
         clave="actas-de-consejo",
+        regla_de_fechas="sesion",
         nombre="Actas de consejo",
         reglas=(
             "Libro de actas de consejo: un PDF por sesión, con su portada separadora, su citación, su asistencia, "
@@ -163,6 +172,7 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
     ),
     PerfilDeRevision(
         clave="historias",
+        regla_de_fechas="anios",
         nombre="Historias académicas",
         reglas=(
             "Historias académicas: un expediente por estudiante. Su ficha abre; las notas, certificados y "
@@ -174,6 +184,7 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
     ),
     PerfilDeRevision(
         clave="nominas",
+        regla_de_fechas="anios",
         nombre="Nóminas",
         reglas=(
             "Libro de nómina de la Universidad: una tarjeta u hoja por persona, y la misma persona en hojas "
@@ -187,6 +198,7 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
     ),
     PerfilDeRevision(
         clave="certificados",
+        regla_de_fechas="firma",
         nombre="Certificados de tiempo de servicio",
         reglas=(
             "Libro de certificados de tiempo de servicio: un PDF por certificado, que es su número. Su segunda "
@@ -201,6 +213,7 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
     ),
     PerfilDeRevision(
         clave="matriculas",
+        regla_de_fechas="anios",
         nombre="Legajo de matrículas",
         reglas=(
             "Legajo de matrículas: un expediente por persona, abierto por su carátula. Lo que sigue sin "
@@ -211,6 +224,7 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
     ),
     PerfilDeRevision(
         clave="resoluciones",
+        regla_de_fechas="expedicion",
         nombre="Legajo de resoluciones",
         reglas=(
             "Legajo de resoluciones: un PDF por resolución. Su número impreso en el encabezado abre; sus "
@@ -220,6 +234,7 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
     ),
     PerfilDeRevision(
         clave="kingspan",
+        regla_de_fechas="extremos",
         nombre="Kingspan",
         reglas=(
             "Inventario de Kingspan: un PDF por documento de la serie (001-XX-NNNNNNNN), con las facturas y "
@@ -229,6 +244,7 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
     ),
     PerfilDeRevision(
         clave="archivos-separados",
+        regla_de_fechas="extremos",
         nombre="Archivos ya separados",
         reglas="PDF que ya son un documento cada uno: no se dividen.",
         alias=("archivos ya separados", "inventory", "inventario"),

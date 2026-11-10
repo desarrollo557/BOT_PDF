@@ -169,7 +169,7 @@ def _letras(texto: str) -> int:
 LARGO_DEL_NOMBRE = 80
 
 
-def nombre_del_pdf(orden: int, documento, *, carpeta: Path | None = None) -> str:
+def nombre_del_pdf(orden: int, documento, *, carpeta: Path | None = None, inicial=None) -> str:
     """El nombre del PDF de un documento, en mayúsculas y con su orden delante.
 
     - Una persona: sólo su nombre y su cédula, como las historias académicas
@@ -179,6 +179,9 @@ def nombre_del_pdf(orden: int, documento, *, carpeta: Path | None = None) -> str
     - Un listado: «NOMINA» y su fecha, «05_NOMINA-03-07-1984.pdf»; un mes de
       comprobantes, «NOMINA-01-1991»; el del hablador, «LISTADO-DE-NOMINA-PERSONAL-1991».
     - El índice: «01_INDICE.pdf».
+
+    ``inicial`` (día, mes, año) es la fecha inicial que aseguró el revisor de
+    fechas cuando corrigió la leída: el listado se llama por ella (2026-11-10).
     """
     from ...domain import nomina as n
     from ...domain.naming import WINDOWS_PATH_LIMIT
@@ -187,9 +190,12 @@ def nombre_del_pdf(orden: int, documento, *, carpeta: Path | None = None) -> str
     if documento.clase == n.DEL_INDICE:
         cuerpo, cola = "INDICE", ""
     elif documento.clase == n.PAQUETE:
+        asegurada = inicial
         inicial = min(documento.fechas, key=lambda f: (f[2], f[1], f[0])) if documento.fechas else None
+        if asegurada is not None and inicial is not None:
+            inicial = asegurada
         if documento.anio is not None and not documento.fechas:
-            cuerpo = f"LISTADO-DE-NOMINA-PERSONAL-{documento.anio}"
+            cuerpo = f"LISTADO-DE-NOMINA-PERSONAL-{asegurada[2] if asegurada else documento.anio}"
         elif inicial and documento.plantilla == n.COMPROBANTE:
             cuerpo = f"NOMINA-{inicial[1]:02d}-{inicial[2]}"
         elif inicial:
@@ -212,6 +218,158 @@ def nombre_del_pdf(orden: int, documento, *, carpeta: Path | None = None) -> str
 
 def _fecha(fecha) -> str | None:
     return f"{fecha[0]:02d}/{fecha[1]:02d}/{fecha[2]}" if fecha else None
+
+
+# -- el revisor de fechas (2026-11-10) -----------------------------------------------------
+
+#: La fecha que la fila tomó del libro -- de su nombre o de su índice -- porque
+#: sus hojas no la dicen, y que la fila ya declara («el año 1975 del libro: la
+#: hoja no lo dice», «los años 1993 a 1994 del libro»).
+_DEL_LIBRO = re.compile(r"(?:el año \d{4}|los años \d{4} a \d{4}) del libro")
+
+
+def tomada_del_libro(de_donde: str | None) -> bool:
+    """Si las fechas de la fila salieron del libro y no de sus hojas, como lo dice ``de_donde``."""
+    return bool(de_donde and _DEL_LIBRO.search(de_donde))
+
+
+def el_papel_de_la_fila(textos, ventana: tuple[int, int] | None = None) -> list[str]:
+    """Lo ya leído de las hojas de un documento, cada texto una vez y con sus fechas cortas escritas enteras.
+
+    El contraste del revisor de fechas (``domain/fechas_extremas``) sólo
+    entiende años de cuatro cifras y fechas enteras; los papeles de estas
+    habilidades las dicen cortas -- «14.06.82» en el listado, «910125» en el
+    comprobante, «AÑO 90» en la hoja de notas --. ``con_lo_que_leyeron`` las
+    escribe enteras **desde el texto crudo**, con la ventana del libro para el
+    siglo. Antes se añadía lo que los lectores de la habilidad habían deducido
+    (``lo_leido_en_sus_hojas``): la fecha de la fila, el año del hablador o del
+    libro, y la fila se confirmaba a sí misma -- «2.07.81» en el papel, leído
+    02/07/1984, salía confirmada (la revisión adversarial, 2026-11-10) --.
+    """
+    from .fechas_aseguradas import con_lo_que_leyeron, sin_repetir
+
+    return [con_lo_que_leyeron(texto, ventana) for texto in sin_repetir(textos)]
+
+
+def asegurar_las_fechas(
+    report: dict,
+    filas: list[dict],
+    textos: list[list[str]],
+    *,
+    habilidad: str,
+    taller: Taller,
+    ventana: tuple[int, int] | None = None,
+    derivadas: list[tuple[bool, bool]] | None = None,
+    de_su_lector: list[bool] | None = None,
+) -> None:
+    """El revisor de fechas sobre cada fila del PDF, antes del agente de los datos y del FUID.
+
+    Lo pidió el operador el 2026-11-10: «estar muy seguro de cada fecha en cada
+    documento, sin importar la habilidad», corrigiendo sólo con prueba. La
+    misma pieza en las historias, las nóminas y los certificados:
+
+    - ``textos``, por fila, lo que **ya se leyó** de sus hojas -- la capa, el
+      OCR de casa, la IA --, con sus fechas cortas escritas enteras desde ese
+      mismo texto (``el_papel_de_la_fila``): nada se relee aquí, y nada de lo
+      que dedujo el trabajo, que confirmaría a la fila consigo misma.
+    - ``derivadas``, por fila, si su fecha inicial y su final salieron de fuera
+      de sus hojas -- el año del libro, el del código -- y la fila ya lo dice.
+      Esas no se buscan en un papel que no las trae ni se le preguntan a la IA
+      (se paga por documento): sólo se miran si caen fuera de ``ventana``. Así
+      salió ACOSTA BELLO (UPD3859727): 1994-2001 en un libro de 1978-1988,
+      del código y de la IA.
+    - La regla es la del perfil de la habilidad (``regla_de_fechas``); la IA,
+      la del trabajo si se eligió «OCR + IA», con su plazo
+      (``juez_del_trabajo``): una pregunta por documento, sólo con lo dudoso y
+      cada hoja una vez. Entre una fila y la siguiente se puede detener.
+    - ``de_su_lector``, por fila, si su fecha la leyó el mismo lector de la
+      regla sobre el mismo texto -- la firma de un certificado --: confirmarla
+      no es una segunda prueba, y se cuenta aparte
+      (``confirmadas_por_su_lector``) para que nadie la lea como tal.
+
+    Lo corregido se escribe en la fila con su formato y su nota; lo dudoso va a
+    Revisión con su motivo (``anotar_en_el_informe``). Un fallo del revisor se
+    anota y la fila sigue como estaba: nunca tumba el trabajo.
+    """
+    from dataclasses import replace
+
+    from ...application.control import Cancelled
+    from ...application.perfiles_de_revision import perfil_de
+    from ...application.revisor_de_fechas import (
+        CLAVE_DEL_INFORME,
+        CONFIRMADA,
+        CORREGIDA,
+        anotar_en_el_informe,
+        revisar_las_fechas,
+    )
+    from ...domain.fechas_extremas import fechas_de_la_fila
+    from .fechas_aseguradas import juez_del_trabajo, sin_repetir
+
+    if not filas:
+        return
+    regla = perfil_de(habilidad).regla_de_fechas
+    juez = juez_del_trabajo(taller)
+    control = getattr(taller, "control", None)
+
+    def fuera(fecha) -> bool:
+        return fecha is not None and ventana is not None and not ventana[0] <= fecha.year <= ventana[1]
+
+    for indice, fila in enumerate(filas):
+        if control is not None:
+            control.check()
+        documento = str(fila.get("archivo_generado") or "") or (
+            f"{fila.get('archivo') or ''} págs. {fila.get('pagina_inicial')}-{fila.get('pagina_final')}"
+        )
+        try:
+            fechas = fechas_de_la_fila(fila)
+            if fechas is not None and derivadas and indice < len(derivadas):
+                inicial_de_fuera, final_de_fuera = derivadas[indice]
+                fechas = replace(
+                    fechas,
+                    inicial=None if inicial_de_fuera and not fuera(fechas.inicial) else fechas.inicial,
+                    final=None if final_de_fuera and not fuera(fechas.final) else fechas.final,
+                )
+            suyos = sin_repetir(textos[indice] if indice < len(textos) else [])
+            revisadas = revisar_las_fechas(fechas, suyos, regla=regla, juez=juez, ventana=ventana)
+            anotar_en_el_informe(report, documento, fila.get("pagina_inicial"), revisadas)
+            if revisadas.estado == CONFIRMADA and de_su_lector and indice < len(de_su_lector) and de_su_lector[indice]:
+                resumen = report[CLAVE_DEL_INFORME]
+                resumen["confirmadas_por_su_lector"] = resumen.get("confirmadas_por_su_lector", 0) + 1
+            if revisadas.estado == CORREGIDA:
+                _con_las_fechas_corregidas(fila, revisadas)
+        except Cancelled:
+            raise
+        except Exception:  # noqa: BLE001 - el revisor no tumba el trabajo: la fila sigue como estaba
+            logger.warning("el revisor de fechas falló en %s; la fila sigue como estaba", documento, exc_info=True)
+
+
+def _con_las_fechas_corregidas(fila: dict, revisadas) -> None:
+    """Las fechas corregidas, en la fila con su formato, y la nota en sus observaciones.
+
+    Historias: ``anio_inicial``/``anio_final`` o ``fecha_exacta``; nóminas y
+    certificados: ``fecha_inicial``/``fecha_final`` «dd/mm/aaaa» (un año es del
+    1 de enero al 31 de diciembre); actas: ``fecha`` «dd-mm-aaaa».
+    """
+    from ...domain.fechas_extremas import ANIO
+
+    for correccion in revisadas.correcciones:
+        inicial = correccion.campo == "fecha_inicial"
+        fecha = correccion.dice_el_papel
+        if fila.get("fecha_exacta") and revisadas.precision != ANIO:
+            fila["fecha_exacta"] = fecha.strftime("%d/%m/%Y")
+            if "anio_inicial" in fila:
+                fila["anio_inicial" if inicial else "anio_final"] = fecha.year
+        elif "anio_inicial" in fila or "anio_final" in fila:
+            fila["anio_inicial" if inicial else "anio_final"] = fecha.year
+        elif "fecha_inicial" in fila or "fecha_final" in fila:
+            if revisadas.precision == ANIO:
+                escrita = f"01/01/{fecha.year}" if inicial else f"31/12/{fecha.year}"
+            else:
+                escrita = fecha.strftime("%d/%m/%Y")
+            fila["fecha_inicial" if inicial else "fecha_final"] = escrita
+        elif "fecha" in fila:
+            fila["fecha"] = fecha.strftime("%d-%m-%Y")
+    fila["observaciones"] = "; ".join(texto for texto in (fila.get("observaciones"), revisadas.nota) if texto)
 
 
 def nominas_job(payload: dict) -> dict:
@@ -323,6 +481,10 @@ def nominas_job(payload: dict) -> dict:
                 hoja.fechas = pagos(lo_leido(hoja.numero))
         listados = [h.numero for h in hojas if h.plantilla == n.LISTADO]
         leidas_por_la_ia: set[int] = set()
+        #: Lo que se leyó de cada hoja fuera de su capa y su cabecera -- la IA --:
+        #: el papel en que el revisor de fechas busca las de cada documento,
+        #: sin releer nada (2026-11-10).
+        leido_aparte: dict[int, list[str]] = {}
         if de_pago is not None:
             # Con la IA, la cabecera de cada hoja de listado: Tesseract lee mal
             # una fecha de cada tres en esa impresión de matriz («2.07.84» por
@@ -336,6 +498,7 @@ def nominas_job(payload: dict) -> dict:
                 if not texto.strip():
                     continue
                 leidas_por_la_ia.add(numero)
+                leido_aparte.setdefault(numero, []).append(texto)
                 # El hablador o el índice que la muestra no vio: lo dice lo leído.
                 if (otra := n.plantilla_de(texto)) in (n.HABLADOR, n.INDICE):
                     hoja.plantilla, hoja.anio = otra, n.anio_del_hablador(texto)
@@ -407,7 +570,7 @@ def nominas_job(payload: dict) -> dict:
 
         # 5. El nombre, la cédula y el año de cada persona: la cabecera de su
         # tarjeta u hoja con la IA, si se pidió.
-        sin_leer_la_cabecera, copiadas, rotulos = _leer_las_personas(payload, taller, source, hojas)
+        sin_leer_la_cabecera, copiadas, rotulos = _leer_las_personas(payload, taller, source, hojas, lo_leido=leido_aparte)
 
         # 6. Los certificados: de su capa; con la IA, la hoja entera si falta algo.
         for hoja in hojas:
@@ -418,12 +581,15 @@ def nominas_job(payload: dict) -> dict:
                 try:
                     leido = de_pago.read(source.render(hoja.numero, dpi=200, formato="jpeg")).text or ""
                     hoja.datos = n.leer_el_certificado(leido)
+                    leido_aparte.setdefault(hoja.numero, []).append(leido)
                 except Exception:  # noqa: BLE001 - sin la relectura, lo de la capa
                     logger.warning("la IA no pudo leer el certificado de la página %s", hoja.numero, exc_info=True)
 
         # 7. Los documentos, y la fecha de cada paquete confirmada por la IA.
         documentos = n.documentos(hojas, tolerante=de_pago is None)
-        notas_de_la_fecha = _confirmar_las_fechas(payload, taller, source, de_pago, hojas, documentos)
+        notas_de_la_fecha = _confirmar_las_fechas(
+            payload, taller, source, de_pago, hojas, documentos, lo_leido=leido_aparte
+        )
         documentos, notas_de_la_fecha = _juntar_los_paquetes_iguales(documentos, notas_de_la_fecha)
         _las_tarjetas_sin_cedula(payload, taller, source, documentos)
 
@@ -464,68 +630,114 @@ def nominas_job(payload: dict) -> dict:
         salidas: list[str] = []
         filas: list[dict] = []
         cola: list[dict] = []
+        # Para el revisor de fechas: lo leído de cada documento y si sus fechas
+        # salieron del libro (2026-11-10).
+        textos_de_las_filas: list[list[str]] = []
+        derivadas: list[tuple[bool, bool]] = []
         carpeta_de_salida = taller.destination / document_folder(nombre)
         if pidio_dividir:
             carpeta_de_salida.mkdir(parents=True, exist_ok=True)
+        # La ventana del revisor de fechas, con el año de holgura con que
+        # ``fechas_extremas`` toma los de la hoja.
+        ventana_del_revisor = (ventana[0] - 1, ventana[1] + 1) if ventana else None
+        #: Lo que falta para escribir cada documento: su orden, su nombre y la fecha
+        #: inicial que se leyó. Las
+        #: filas primero; los PDF, con la fecha ya asegurada (2026-11-10).
+        por_escribir: list[tuple[int, object, str, str | None]] = []
+        for orden, documento in enumerate(documentos, start=1):
+            taller.control.check()
+            archivo = nombre_del_pdf(orden, documento, carpeta=carpeta_de_salida)
+            inicial, final, de_donde = n.fechas_extremas(documento, anio_del_libro=anio_del_libro, ventana=ventana)
+            textos_de_las_filas.append(
+                el_papel_de_la_fila(
+                    [
+                        *(lo_leido(p) for p in documento.paginas),
+                        *(t for p in documento.paginas for t in leido_aparte.get(p, ())),
+                        *(de_pago_leido[p] for p in documento.paginas if p in de_pago_leido),
+                    ],
+                    ventana_del_revisor,
+                )
+            )
+            # Lo que no salió de sus hojas: el año del libro, y el del índice
+            # que no dice el suyo (``fechas_extremas`` le pone el del libro sin
+            # decirlo).
+            del_libro = tomada_del_libro(de_donde) or (
+                documento.clase == n.DEL_INDICE and not documento.anio and anio_del_libro is not None
+            )
+            derivadas.append((del_libro, del_libro))
+            en_blanco, pide_cedula = _la_cedula_que_pide(documento, piden_cedula, rotulos)
+            notas = _lo_que_falta(documento, inicial, pide_cedula, sin_leer_la_cabecera, con_ia=de_pago is not None)
+            if en_blanco:
+                notas.append(NOTA_DE_CEDULA_EN_BLANCO)
+            if de_donde:
+                notas.append(f"fechas: {de_donde}")
+            notas.extend(notas_de_la_fecha.get(id(documento), []))
+            notas.extend(f"{duda}: revísela" for duda in documento.dudas)
+            notas.extend(
+                f"en la página {pagina} la IA leyó la cédula {copiadas[pagina]}, la de la hoja siguiente: no se tomó"
+                for pagina in documento.paginas
+                if pagina in copiadas
+            )
+            donde = (
+                f"la página {documento.paginas[0]}"
+                if len(documento.paginas) == 1
+                else f"las páginas {documento.paginas[0]} a {documento.paginas[-1]}"
+            )
+            filas.append(
+                {
+                    "tipo": n.NOMINA,
+                    "clase": documento.clase,
+                    "plantilla": documento.plantilla,
+                    "asunto": n.asunto(documento, tipo_de_hoja=tipo_de_hoja),
+                    "nombre": documento.nombre,
+                    "cedula": documento.cedula,
+                    "pide_cedula": pide_cedula,
+                    "fecha_inicial": _fecha(inicial),
+                    "fecha_final": _fecha(final),
+                    "folios": len(documento.paginas),
+                    "pagina_inicial": documento.paginas[0],
+                    "pagina_final": documento.paginas[-1],
+                    "archivo": nombre,
+                    "carpeta": carpeta,
+                    "archivo_generado": archivo if pidio_dividir else None,
+                    "observaciones": "; ".join(
+                        [*([f"{', '.join(notas)} ({donde} del PDF)"] if notas else [])]
+                    ),
+                }
+            )
+            # A la cola de revisión, lo que hay que mirar; no el año que se
+            # tomó del libro o del hablador porque la hoja no lo dice, que
+            # es lo normal en la tarjeta (la casilla del año va vacía), ni
+            # la «C.C.» que la hoja deja en blanco, que se miró con zoom.
+            cola.extend(
+                {"page": documento.paginas[0], "reason": f"{archivo}: {nota}"}
+                for nota in notas
+                if not nota.startswith(NOTA_DEL_ANIO) and nota != NOTA_DE_CEDULA_EN_BLANCO
+            )
+            por_escribir.append((orden, documento, archivo, _fecha(inicial)))
+
+        # El revisor de fechas (el operador, 2026-11-10), antes de escribir los
+        # PDF, del agente de los datos y del FUID: cada fecha contra lo ya leído
+        # de sus hojas. **Antes de escribir**: un listado se llama por su fecha
+        # («05_NOMINA-03-07-1984.pdf») y, revisada después, salía con la vieja
+        # mientras su fila llevaba la corregida (la revisión adversarial).
+        _anunciar(payload, Stage.ASSEMBLING, detail="revisando las fechas de cada documento")
+        fechas_revisadas: dict = {}
+        asegurar_las_fechas(
+            fechas_revisadas, filas, textos_de_las_filas, habilidad="nominas", taller=taller,
+            ventana=ventana_del_revisor, derivadas=derivadas,
+        )
+        if pidio_dividir:
+            por_escribir = _con_el_nombre_asegurado(por_escribir, filas, cola, fechas_revisadas, carpeta_de_salida)
+
         _anunciar(payload, Stage.ASSEMBLING, detail=f"escribiendo {len(documentos)} PDF", done=0, total=len(documentos))
         with pymupdf.open(taller.source) as original:
-            for orden, documento in enumerate(documentos, start=1):
+            for orden, documento, archivo, _leida in por_escribir:
                 taller.control.check()
-                archivo = nombre_del_pdf(orden, documento, carpeta=carpeta_de_salida)
                 if pidio_dividir:
                     escribir_paginas(original, taller.source, list(documento.paginas), carpeta_de_salida / archivo)
                     esperado[archivo] = list(documento.paginas)
                     salidas.append((carpeta_de_salida / archivo).relative_to(taller.destination).as_posix())
-                inicial, final, de_donde = n.fechas_extremas(documento, anio_del_libro=anio_del_libro, ventana=ventana)
-                en_blanco, pide_cedula = _la_cedula_que_pide(documento, piden_cedula, rotulos)
-                notas = _lo_que_falta(documento, inicial, pide_cedula, sin_leer_la_cabecera, con_ia=de_pago is not None)
-                if en_blanco:
-                    notas.append(NOTA_DE_CEDULA_EN_BLANCO)
-                if de_donde:
-                    notas.append(f"fechas: {de_donde}")
-                notas.extend(notas_de_la_fecha.get(id(documento), []))
-                notas.extend(f"{duda}: revísela" for duda in documento.dudas)
-                notas.extend(
-                    f"en la página {pagina} la IA leyó la cédula {copiadas[pagina]}, la de la hoja siguiente: no se tomó"
-                    for pagina in documento.paginas
-                    if pagina in copiadas
-                )
-                donde = (
-                    f"la página {documento.paginas[0]}"
-                    if len(documento.paginas) == 1
-                    else f"las páginas {documento.paginas[0]} a {documento.paginas[-1]}"
-                )
-                filas.append(
-                    {
-                        "tipo": n.NOMINA,
-                        "clase": documento.clase,
-                        "plantilla": documento.plantilla,
-                        "asunto": n.asunto(documento, tipo_de_hoja=tipo_de_hoja),
-                        "nombre": documento.nombre,
-                        "cedula": documento.cedula,
-                        "pide_cedula": pide_cedula,
-                        "fecha_inicial": _fecha(inicial),
-                        "fecha_final": _fecha(final),
-                        "folios": len(documento.paginas),
-                        "pagina_inicial": documento.paginas[0],
-                        "pagina_final": documento.paginas[-1],
-                        "archivo": nombre,
-                        "carpeta": carpeta,
-                        "archivo_generado": archivo if pidio_dividir else None,
-                        "observaciones": "; ".join(
-                            [*([f"{', '.join(notas)} ({donde} del PDF)"] if notas else [])]
-                        ),
-                    }
-                )
-                # A la cola de revisión, lo que hay que mirar; no el año que se
-                # tomó del libro o del hablador porque la hoja no lo dice, que
-                # es lo normal en la tarjeta (la casilla del año va vacía), ni
-                # la «C.C.» que la hoja deja en blanco, que se miró con zoom.
-                cola.extend(
-                    {"page": documento.paginas[0], "reason": f"{archivo}: {nota}"}
-                    for nota in notas
-                    if not nota.startswith(NOTA_DEL_ANIO) and nota != NOTA_DE_CEDULA_EN_BLANCO
-                )
                 _anunciar(payload, Stage.ASSEMBLING, detail=f"escribiendo {len(documentos)} PDF", done=orden, total=len(documentos))
         if pidio_dividir:
             comprobacion = comprobar_archivos(
@@ -557,6 +769,10 @@ def nominas_job(payload: dict) -> dict:
             "Con «Solo OCR» no se leen los nombres escritos a mano: cada tarjeta u hoja salió aparte, con sus "
             "páginas por nombre. Con «OCR + IA» se leen y se unen las de la misma persona."
         )
+    # Lo que dijo el revisor de fechas, que ya corrió antes de escribir los PDF.
+    from .fechas_aseguradas import pasar_al_informe
+
+    pasar_al_informe(report, fechas_revisadas)
     integridad = revisar_los_datos(filas, del_revisor.datos, aceptable=del_revisor.margen) if del_revisor.datos else None
     if revision is not None or aviso_del_revisor or comprobacion or integridad is not None:
         anotar_en_el_informe(
@@ -656,7 +872,7 @@ class LoLeidoDeLasPersonas(NamedTuple):
     rotulos: dict[int, str]
 
 
-def _leer_las_personas(payload, taller, source, hojas) -> LoLeidoDeLasPersonas:
+def _leer_las_personas(payload, taller, source, hojas, *, lo_leido: dict[int, list[str]] | None = None) -> LoLeidoDeLasPersonas:
     """El nombre, la cédula y el año de cada tarjeta y hoja manuscrita, de su cabecera leída por la IA.
 
     Las que no vuelven con nombre se miran otra vez, una por imagen y con más
@@ -666,7 +882,8 @@ def _leer_las_personas(payload, taller, source, hojas) -> LoLeidoDeLasPersonas:
     arriba es el reverso o la continuación de la anterior: se marca vacía y va
     con ella. Devuelve las páginas que no se pudieron leer, por página la
     cédula que la IA copió de la hoja de abajo y no se tomó, y cómo está la
-    cédula de cada hoja manuscrita con rótulo.
+    cédula de cada hoja manuscrita con rótulo. ``lo_leido`` recoge, por
+    página, lo que leyó la IA: el papel del revisor de fechas (2026-11-10).
     """
     from ...domain import nomina as n
 
@@ -729,6 +946,8 @@ def _leer_las_personas(payload, taller, source, hojas) -> LoLeidoDeLasPersonas:
                 sin_leer.add(hoja.numero)
                 continue
             texto = leidas[hoja.numero]
+            if lo_leido is not None and texto.strip():
+                lo_leido.setdefault(hoja.numero, []).append(texto)
             hoja.datos = n.leer_los_datos(texto, plantilla)
             hoja.vacia = _nada_escrito(texto, hoja.datos)
         if plantilla == n.HOJA:
@@ -887,12 +1106,15 @@ def _mas_alta(banda):
     return otra
 
 
-def _confirmar_las_fechas(payload, taller, source, de_pago, hojas, documentos) -> dict[int, list[str]]:
+def _confirmar_las_fechas(
+    payload, taller, source, de_pago, hojas, documentos, *, lo_leido: dict[int, list[str]] | None = None
+) -> dict[int, list[str]]:
     """Con la IA, la fecha de cada paquete leída en su primera hoja: Tesseract confunde cifras.
 
     Una página facturada por paquete. Lo que la IA lee manda; si no coincide
     con lo de Tesseract, la fila lo dice. Sin la IA, la nota dice que la fecha
-    salió del OCR de casa. Devuelve las notas de cada documento, por su ``id``.
+    salió del OCR de casa. Devuelve las notas de cada documento, por su ``id``;
+    ``lo_leido`` recoge lo que leyó la IA, para el revisor de fechas (2026-11-10).
     """
     from ...domain import nomina as n
 
@@ -917,6 +1139,8 @@ def _confirmar_las_fechas(payload, taller, source, de_pago, hojas, documentos) -
         except Exception:  # noqa: BLE001 - sin la IA, lo de Tesseract
             logger.warning("la IA no pudo leer la página %s para confirmar su fecha", primera, exc_info=True)
             continue
+        if lo_leido is not None and leido.strip():
+            lo_leido.setdefault(primera, []).append(leido)
         antes = list(documento.fechas)
         if documento.plantilla == n.COMPROBANTE:
             de_la_ia = n.fechas_de_pago(leido)
@@ -965,6 +1189,34 @@ def _juntar_los_paquetes_iguales(documentos, notas):
             continue
         juntos.append(documento)
     return juntos, notas
+
+
+def _con_el_nombre_asegurado(por_escribir, filas: list[dict], cola: list[dict], aparte: dict, carpeta: Path):
+    """Cada documento con el nombre que le da su fecha asegurada; la fila, la cola y lo anotado dicen ése.
+
+    Sólo cambia el de un listado cuya fecha inicial corrigió el revisor de
+    fechas: los demás no se llaman por su fecha (2026-11-10).
+    """
+    from ...domain.fechas_extremas import leer_fecha
+    from .fechas_aseguradas import renombrar_en_lo_anotado
+
+    nuevos = []
+    for indice, (orden, documento, archivo, leida) in enumerate(por_escribir):
+        fila = filas[indice]
+        nombre = archivo
+        asegurada, _precision = leer_fecha(fila.get("fecha_inicial"))
+        if asegurada is not None and fila.get("fecha_inicial") != leida:
+            nombre = nombre_del_pdf(
+                orden, documento, carpeta=carpeta, inicial=(asegurada.day, asegurada.month, asegurada.year)
+            )
+        if nombre != archivo:
+            fila["archivo_generado"] = nombre
+            for entrada in cola:
+                if str(entrada.get("reason") or "").startswith(f"{archivo}: "):
+                    entrada["reason"] = nombre + entrada["reason"][len(archivo):]
+            renombrar_en_lo_anotado(aparte, archivo, nombre)
+        nuevos.append((orden, documento, nombre, leida))
+    return nuevos
 
 
 def _lo_que_falta(documento, inicial, pide_cedula: bool, sin_leer, *, con_ia: bool) -> list[str]:

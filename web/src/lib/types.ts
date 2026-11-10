@@ -202,6 +202,34 @@ export interface Report {
   comprobacion_de_la_entrega?: ComprobacionDeLaEntrega | null;
   /** Los datos de cada documento contra lo que espera su habilidad (2026-11-06). */
   integridad_de_los_datos?: IntegridadDeLosDatos | null;
+  /** La fecha inicial y la final de cada documento contra su papel (2026-11-10). */
+  revision_de_fechas?: RevisionDeFechas | null;
+}
+
+/**
+ * Lo que el revisor de fechas decidió de los documentos de un trabajo (lo pidió
+ * el operador el 2026-11-10: «estar muy seguro de cada fecha en cada documento»).
+ * Las claves son las del servicio (`revisor_de_fechas.anotar_en_el_informe`).
+ */
+export interface RevisionDeFechas {
+  revisados: number;
+  confirmada: number;
+  corregida: number;
+  'a revisión': number;
+  'sin dato': number;
+  preguntadas_a_la_ia: number;
+  /** Sólo lo corregido y lo que va a revisión, con su nota. */
+  detalle: { documento: string; pagina: number | null; estado: 'corregida' | 'a revisión'; nota: string }[];
+}
+
+/** Las fechas de los documentos de una corrida, sumadas PDF a PDF (2026-11-10). */
+export interface FechasDeLaCorrida {
+  revisados: number;
+  confirmadas: number;
+  corregidas: number;
+  a_revision: number;
+  sin_dato: number;
+  preguntadas_a_la_ia: number;
 }
 
 /** En cuántos documentos un dato está bien, para mirar o con error. */
@@ -329,9 +357,14 @@ export interface AgenteDeLaCorrida {
   problemas_de_entrega: number;
   /** Los datos de cada documento de la corrida (2026-11-06). Ausente en las anteriores. */
   datos?: CuentasDeLosDatos;
+  /** Las fechas de cada documento de la corrida (2026-11-10). Ausente en las anteriores. */
+  fechas?: FechasDeLaCorrida;
   /** Lo último que corrigió, mandó a revisión o no cuadró en el disco; lo más nuevo primero. */
-  sucesos: { pdf: string; estado: EstadoDelRevisor | 'problema' | 'datos'; texto: string }[];
+  sucesos: { pdf: string; estado: EstadoDelSuceso; texto: string }[];
 }
+
+/** Lo que cuenta un suceso del registro en vivo del agente. */
+export type EstadoDelSuceso = EstadoDelRevisor | 'problema' | 'datos' | 'fecha corregida' | 'fecha a revisión';
 
 /** Una fila del inventario de actas de consejo: lo que se ve de cada PDF. */
 export interface FilaDeActa {

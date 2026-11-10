@@ -98,6 +98,63 @@ def _nombres(carpeta: Path) -> list[str]:
     return sorted(p.name for p in carpeta.iterdir() if p.name != REEMPLAZADOS_DIR)
 
 
+def _motor_de(ajustes, registro, hechos, documentos: dict[str, list[str]]):
+    """Como `_motor`, con los documentos que da cada PDF de origen (por su nombre sin «.pdf»)."""
+
+    async def run_job(job):
+        hechos.append(job.filename)
+        origen = Path(job.filename).stem
+        salida = ajustes.output_dir / job.id / origen
+        salida.mkdir(parents=True, exist_ok=True)
+        suyos = documentos[origen]
+        for orden, documento in enumerate(suyos, start=1):
+            (salida / f"{orden:02d}_{documento}.pdf").write_bytes(
+                b"%PDF-1.4 " + f"{origen} {documento} (procesado)".encode()
+            )
+        _indice(salida, origen, *(f"{documento} DE {origen}" for documento in suyos))
+        registro.mark_done(job, {"groups": [{"code": "01"}], "review_queue": [], "indice_electronico": INDICE})
+
+    return FolderRunner(registro, ajustes, run_job, watch_interval=0.01)
+
+
+def _caja_mal_numerada(tmp_path: Path, documentos: dict[str, list[str]]) -> Path:
+    """La caja de Afinia como salió el 2026-11-10 -- «01_NIC 5940155-11_01_DOCUMENTO.pdf» --, con sus constancias."""
+    _caja(tmp_path / "origen", "5940155", *documentos)
+    caja = tmp_path / "destino" / "5940155"
+    caja.mkdir(parents=True)
+    numero = 0
+    for origen, suyos in documentos.items():
+        archivos = []
+        for orden, documento in enumerate(suyos, start=1):
+            numero += 1
+            pdf = caja / f"{numero:02d}_{origen}_{orden:02d}_{documento}.pdf"
+            pdf.write_bytes(b"%PDF-1.4 " + f"{origen} {documento}".encode())
+            archivos.append(pdf)
+        tamano, modificado = constancias.huella_del_origen(tmp_path / "origen" / "5940155" / f"{origen}.pdf")
+        constancias.escribir(
+            caja / f".bot-entrega-{origen}.json",
+            constancias.Constancia(
+                origen=f"5940155/{origen}.pdf",
+                tamano=tamano,
+                modificado_ns=modificado,
+                estado=constancias.EstadoDeEntrega.COMPLETA,
+                archivos=constancias.archivos_de(caja, archivos),
+                habilidad="Caja de correspondencia",
+            ),
+        )
+    return caja
+
+
+def _huerfanos(caja: Path) -> list[str]:
+    """Los PDF de la caja que ninguna constancia nombra: lo que el cliente recibe sin que el bot lo sepa."""
+    nombrados = {
+        str(archivo.get("ruta"))
+        for ruta in caja.glob(".bot-entrega-*.json")
+        for archivo in constancias.leer(ruta).archivos
+    }
+    return [n for n in _nombres(caja) if n.endswith(".pdf") and n not in nombrados]
+
+
 class TestLaEntregaPlana:
     def test_un_nic_con_dos_upd_numerado_seguido_y_un_solo_indice(self, ajustes, tmp_path):
         _caja(tmp_path / "origen", "1000265", "UPD1", "UPD2")
@@ -125,6 +182,20 @@ class TestLaEntregaPlana:
         assert indice.nombre_del_expediente == "1000265"
         assert indice.nic == "1000265"
         assert _nombres(tmp_path / "destino" / "210847") == [".bot-entrega-UPD3.json", INDICE, "01_RECLAMO.pdf"]
+
+    def test_un_origen_que_no_se_llama_upd_tampoco_deja_su_nombre_delante(self, ajustes, tmp_path):
+        """Afinia (2026-11-10): los PDF de origen se llamaban «NIC 5940155-11», «-13» y «-15», y salía
+        «01_NIC 5940155-11_01_DOCUMENTO.pdf». Sólo se quitaba el prefijo si era «UPD…»."""
+        _caja(tmp_path / "origen", "5940155", "NIC 5940155-11", "NIC 5940155-13", "NIC 5940155-15")
+        hechos: list[str] = []
+        run = _correr(_motor(ajustes, JobRegistry(), hechos), tmp_path / "origen", tmp_path / "destino", task="segment")
+
+        assert run.state is RunState.DONE and run.processed == 3
+        caja = tmp_path / "destino" / "5940155"
+        pdfs = [n for n in _nombres(caja) if n.endswith(".pdf")]
+        assert pdfs == ["01_RECLAMO.pdf", "02_RECLAMO.pdf", "03_RECLAMO.pdf"]
+        assert (caja / "01_RECLAMO.pdf").read_bytes().endswith(b"NIC 5940155-11.pdf")
+        assert (caja / "03_RECLAMO.pdf").read_bytes().endswith(b"NIC 5940155-15.pdf")
 
     def test_el_indice_del_nic_va_por_fecha_y_los_pdf_conservan_su_numero(self, ajustes, tmp_path):
         """Lo dictó el operador el 2026-11-04: lo antiguo primero, sólo en el índice."""
@@ -314,6 +385,159 @@ class TestLaEntregaDeAntes:
         assert hechos == []
         assert (caja / INDICE).exists()
         assert {"01_CONSTANCIA.pdf", "02_RECLAMO.pdf"} <= set(_nombres(caja))
+
+    def test_la_caja_mal_numerada_de_afinia_se_arregla_al_relanzar(self, ajustes, tmp_path):
+        """«01_NIC 5940155-11_01_DOCUMENTO.pdf», como salió el 2026-11-10: al relanzar, sin procesar otra vez."""
+        _caja(tmp_path / "origen", "5940155", "NIC 5940155-11", "NIC 5940155-13")
+        caja = tmp_path / "destino" / "5940155"
+        caja.mkdir(parents=True)
+        numero = 0
+        for origen, documentos in (("NIC 5940155-11", ["DOCUMENTO", "RECONOCIMIENTO"]), ("NIC 5940155-13", ["RECLAMO"])):
+            archivos = []
+            for orden, documento in enumerate(documentos, start=1):
+                numero += 1
+                pdf = caja / f"{numero:02d}_{origen}_{orden:02d}_{documento}.pdf"
+                pdf.write_bytes(b"%PDF-1.4 " + f"{origen} {documento}".encode())
+                archivos.append(pdf)
+            tamano, modificado = constancias.huella_del_origen(tmp_path / "origen" / "5940155" / f"{origen}.pdf")
+            constancias.escribir(
+                caja / f".bot-entrega-{origen}.json",
+                constancias.Constancia(
+                    origen=f"5940155/{origen}.pdf",
+                    tamano=tamano,
+                    modificado_ns=modificado,
+                    estado=constancias.EstadoDeEntrega.COMPLETA,
+                    archivos=constancias.archivos_de(caja, archivos),
+                    habilidad="Caja de correspondencia",
+                ),
+            )
+        hechos: list[str] = []
+        run = _correr(_motor(ajustes, JobRegistry(), hechos), tmp_path / "origen", tmp_path / "destino", task="segment")
+
+        assert hechos == [] and run.ya_entregados == 2
+        assert [n for n in _nombres(caja) if n.endswith(".pdf")] == [
+            "01_DOCUMENTO.pdf",
+            "02_RECONOCIMIENTO.pdf",
+            "03_RECLAMO.pdf",
+        ]
+        assert (caja / "03_RECLAMO.pdf").read_bytes().endswith(b"NIC 5940155-13 RECLAMO")
+
+    def test_rehacer_un_pdf_de_la_caja_mal_numerada_aparta_lo_suyo_sin_duplicar(self, ajustes, tmp_path):
+        """Ordenar la caja renombraba sus PDF antes de rehacerlo, y apartar buscaba los nombres viejos:
+        lo viejo quedaba sin constancia junto a lo nuevo con «(2)» (la revisión, 2026-11-10)."""
+        documentos = {"NIC 5940155-11": ["DOCUMENTO", "RECONOCIMIENTO"], "NIC 5940155-13": ["RECLAMO", "RESPUESTA"]}
+        caja = _caja_mal_numerada(tmp_path, documentos)
+        # Se volvió a escanear: otra huella, así que se rehace.
+        (tmp_path / "origen" / "5940155" / "NIC 5940155-13.pdf").write_bytes(b"%PDF-1.4 otro escaneo, mas largo")
+        hechos: list[str] = []
+        run = _correr(
+            _motor_de(ajustes, JobRegistry(), hechos, documentos),
+            tmp_path / "origen",
+            tmp_path / "destino",
+            task="segment",
+        )
+
+        assert run.state is RunState.DONE
+        assert hechos == [str(Path("5940155") / "NIC 5940155-13.pdf")]
+        assert [n for n in _nombres(caja) if n.endswith(".pdf")] == [
+            "01_DOCUMENTO.pdf",
+            "02_RECONOCIMIENTO.pdf",
+            "03_RECLAMO.pdf",
+            "04_RESPUESTA.pdf",
+        ]
+        assert _huerfanos(caja) == []
+        assert (caja / "03_RECLAMO.pdf").read_bytes().endswith(b"RECLAMO (procesado)")
+        # Lo de antes, apartado y no borrado: es trabajo entregado.
+        apartados = list((caja / REEMPLAZADOS_DIR).rglob("*.pdf"))
+        assert len(apartados) == 2
+        assert not any(p.read_bytes().endswith(b"(procesado)") for p in apartados)
+
+    def test_un_origen_de_solo_digitos_conserva_su_orden_al_relanzar(self, ajustes, tmp_path):
+        """De «01.pdf» el prefijo es «01_», como el puesto en la caja de «01_RECLAMO.pdf»: cada
+        relanzamiento lo quitaba y cambiaba el orden de la caja (la revisión, 2026-11-10)."""
+        documentos = {"01": ["RECLAMO", "RESPUESTA"]}
+        _caja(tmp_path / "origen", "5940155", "01")
+        registro = JobRegistry()
+        _correr(_motor_de(ajustes, registro, [], documentos), tmp_path / "origen", tmp_path / "destino", task="segment")
+        caja = tmp_path / "destino" / "5940155"
+        primera = {n: (caja / n).read_bytes() for n in _nombres(caja) if n.endswith(".pdf")}
+        assert sorted(primera) == ["01_RECLAMO.pdf", "02_RESPUESTA.pdf"]
+        assert primera["01_RECLAMO.pdf"].endswith(b"RECLAMO (procesado)")
+
+        for vuelta in range(3):
+            hechos: list[str] = []
+            run = _correr(
+                _motor_de(ajustes, registro, hechos, documentos), tmp_path / "origen", tmp_path / "destino", task="segment"
+            )
+            assert hechos == [] and run.ya_entregados == 1, vuelta
+            assert {n: (caja / n).read_bytes() for n in _nombres(caja) if n.endswith(".pdf")} == primera, vuelta
+
+    def test_dos_origenes_de_solo_digitos_no_se_apartan_lo_ajeno(self, ajustes, tmp_path):
+        """Al entregar «02.pdf», el «02_RESPUESTA.pdf» de «01.pdf» parecía suyo: se apartaba, y la
+        auditoría veía un PDF de menos y el relanzamiento pagaba otra vez «01.pdf» (la revisión, 2026-11-10)."""
+        documentos = {"01": ["RECLAMO", "RESPUESTA"], "02": ["CONSTANCIA", "NOTIFICACION"]}
+        _caja(tmp_path / "origen", "5940155", *documentos)
+        run = _correr(
+            _motor_de(ajustes, JobRegistry(), [], documentos),
+            tmp_path / "origen",
+            tmp_path / "destino",
+            task="segment",
+            paralelo=1,
+        )
+
+        caja = tmp_path / "destino" / "5940155"
+        assert run.state is RunState.DONE
+        assert [n for n in _nombres(caja) if n.endswith(".pdf")] == [
+            "01_RECLAMO.pdf",
+            "02_RESPUESTA.pdf",
+            "03_CONSTANCIA.pdf",
+            "04_NOTIFICACION.pdf",
+        ]
+        assert _huerfanos(caja) == []
+        assert not list(caja.glob(f"{REEMPLAZADOS_DIR}/**/*.pdf"))
+        hechos: list[str] = []
+        _correr(_motor_de(ajustes, JobRegistry(), hechos, documentos), tmp_path / "origen", tmp_path / "destino", task="segment")
+        assert hechos == []
+
+    def test_el_orden_de_sus_upd_no_depende_de_la_barra_de_su_constancia(self, ajustes, tmp_path):
+        """Una caja empezada en Windows y seguida en Docker: la constancia del -11 dice «5940155\\NIC…»
+        y la del -13 «5940155/NIC…». Por el texto «/» va antes que «\\», y el -13 quedaba primero
+        (la revisión, 2026-11-10)."""
+        from resolutions.api.folders import FolderRun
+
+        caja = tmp_path / "destino" / "5940155"
+        caja.mkdir(parents=True)
+        for origen, barra, nombres in (
+            ("NIC 5940155-11", "\\", ["01_DOCUMENTO.pdf", "02_RECONOCIMIENTO.pdf"]),
+            ("NIC 5940155-13", "/", ["NIC 5940155-13_01_RECLAMO.pdf"]),
+        ):
+            archivos = []
+            for nombre in nombres:
+                (caja / nombre).write_bytes(b"%PDF-1.4 " + f"{origen} {nombre}".encode())
+                archivos.append(caja / nombre)
+            constancias.escribir(
+                caja / f".bot-entrega-{origen}.json",
+                constancias.Constancia(
+                    origen=f"5940155{barra}{origen}.pdf",
+                    tamano=1,
+                    modificado_ns=1,
+                    estado=constancias.EstadoDeEntrega.COMPLETA,
+                    archivos=constancias.archivos_de(caja, archivos),
+                    habilidad="Caja de correspondencia",
+                ),
+            )
+        motor = _motor(ajustes, JobRegistry(), [])
+        run = FolderRun(id="r", source=tmp_path / "origen", destination=tmp_path / "destino")
+
+        motor._ordenar_la_caja(run, caja)
+
+        assert [n for n in _nombres(caja) if n.endswith(".pdf")] == [
+            "01_DOCUMENTO.pdf",
+            "02_RECONOCIMIENTO.pdf",
+            "03_RECLAMO.pdf",
+        ]
+        assert (caja / "01_DOCUMENTO.pdf").read_bytes().endswith(b"NIC 5940155-11 01_DOCUMENTO.pdf")
+        assert _huerfanos(caja) == []
 
     def test_la_caja_con_el_upd_delante_se_ordena_sin_volver_a_procesarla(self, ajustes, tmp_path):
         """Como se entregaba el 2026-10-21: «UPD1_01_…», «00.INDICE ELECTRONICO UPD1.xlsx»."""

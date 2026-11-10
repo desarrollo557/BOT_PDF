@@ -171,6 +171,31 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
     #    para un libro de folios o un legajo de matrículas -- quien recibe la
     #    carpeta necesita el listado, se haya cortado como se haya cortado.
     if task.writes_inventory:
+        # El revisor de fechas (2026-11-10): la de cada diploma o los años de
+        # cada expediente contra sus hojas, con la regla de su perfil. Sobre lo
+        # ya leído -- la capa guardada con la fuente abierta y lo que la IA
+        # contestó de cada cara --, sin releer nada.
+        from ...domain.fechas_extremas import ANIOS, EXTREMOS
+        from .fechas_aseguradas import (
+            asegurar_las_filas_del_fuid,
+            juez_del_trabajo,
+            regla_de,
+        )
+
+        filas = asegurar_las_filas_del_fuid(
+            report,
+            filas,
+            agrupacion.groups if agrupacion is not None else [],
+            textos.get,
+            regla=regla_de(perfil.clave, ANIOS if perfil.clave == "matriculas" else EXTREMOS),
+            juez=juez_del_trabajo(taller),
+            # «Detener» entre una fila y la siguiente (2026-11-10).
+            control=taller.control,
+            archivos={item.first_page: item.file_name for item in entregado.inventario.items}
+            if task.writes_documents and agrupacion is not None
+            else None,
+            aparte=getattr(outcome.reading, "lecturas", None),
+        )
         _escribir_fuid(
             report,
             filas,

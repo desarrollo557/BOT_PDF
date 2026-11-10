@@ -687,6 +687,70 @@ class TestElAgenteDeLaCorrida:
         assert agente.as_dict()["sin_revisar"] == 1
         assert agente.as_dict()["sucesos"][0]["texto"] == "El revisor falló"
 
+    def test_las_fechas_de_cada_documento_se_suman_en_vivo(self):
+        # 2026-11-10: el revisor de fechas, en la misma pantalla que el de cortes.
+        from resolutions.application.revisor_de_cortes import AgenteDeLaCorrida
+
+        agente = AgenteDeLaCorrida()
+        bueno = revisar_los_cortes(_grupos(*CORTE_BUENO), TEXTOS, Patrones(abren=ABREN))
+        fechas = {
+            "revisados": 4,
+            "confirmada": 2,
+            "corregida": 1,
+            "a revisión": 1,
+            "sin dato": 0,
+            "preguntadas_a_la_ia": 1,
+            "detalle": [
+                {"documento": "02_ACTA.pdf", "pagina": 5, "estado": "a revisión", "nota": "fechas: la fecha inicial 06/03/2012, pero …"},
+                {"documento": "03_ACTA.pdf", "pagina": 9, "estado": "corregida", "nota": "fecha inicial corregida: 22/05/2013 → 21/02/2012"},
+            ],
+        }
+        agente.sumar("UPD1.pdf", {**self._informe(bueno), "revision_de_fechas": fechas})
+        agente.sumar("UPD2.pdf", {**self._informe(bueno), "revision_de_fechas": fechas})
+        datos = agente.as_dict()
+        assert datos["fechas"] == {
+            "revisados": 8,
+            "confirmadas": 4,
+            "corregidas": 2,
+            "a_revision": 2,
+            "sin_dato": 0,
+            "preguntadas_a_la_ia": 2,
+        }
+        assert datos["pdf"] == 2
+        # Lo corregido llega al registro antes que lo que sólo hay que mirar.
+        assert datos["sucesos"][0] == {
+            "pdf": "UPD2.pdf",
+            "estado": "fecha corregida",
+            "texto": "03_ACTA.pdf: fecha inicial corregida: 22/05/2013 → 21/02/2012",
+        }
+
+    def test_un_inventario_sin_dividir_cuenta_sus_fechas_y_no_sus_pdf(self):
+        from resolutions.application.revisor_de_cortes import AgenteDeLaCorrida
+
+        agente = AgenteDeLaCorrida()
+        fechas = {
+            "revisados": 3,
+            "confirmada": 2,
+            "a revisión": 1,
+            "detalle": [{"documento": "fila 7", "pagina": 13, "estado": "a revisión", "nota": "fechas: la fecha final 1994 cae fuera"}],
+        }
+        agente.sumar("LIBRO.pdf", {"document_type": "historia", "revision_de_fechas": fechas})
+        datos = agente.as_dict()
+        assert (datos["pdf"], datos["sin_revisar"]) == (0, 0)
+        assert (datos["fechas"]["revisados"], datos["fechas"]["a_revision"]) == (3, 1)
+        assert datos["sucesos"] == [
+            {"pdf": "LIBRO.pdf", "estado": "fecha a revisión", "texto": "fila 7: fechas: la fecha final 1994 cae fuera"}
+        ]
+
+    def test_sin_revisor_de_fechas_las_cuentas_quedan_en_cero(self):
+        from resolutions.application.revisor_de_cortes import AgenteDeLaCorrida
+
+        agente = AgenteDeLaCorrida()
+        bueno = revisar_los_cortes(_grupos(*CORTE_BUENO), TEXTOS, Patrones(abren=ABREN))
+        agente.sumar("UPD1.pdf", self._informe(bueno))
+        assert set(agente.as_dict()["fechas"].values()) == {0}
+        assert agente.as_dict()["sucesos"] == []
+
     def test_el_registro_en_vivo_guarda_los_ultimos(self):
         from resolutions.application.revisor_de_cortes import (
             SUCESOS_EN_VIVO,

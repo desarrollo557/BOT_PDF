@@ -213,6 +213,23 @@ class Taller:
 
         return MistralJuezDeCosturas(api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia, antes_de_pedir=self.control.check)
 
+    def juez_de_datos(self):
+        """Quién busca en el papel, citándolo, los datos dudosos -- las fechas -- de cada documento, o nadie.
+
+        El del revisor de fechas al procesar (el operador, 2026-11-10). Con
+        «Solo OCR», nadie: lo dudoso va a Revisión con su motivo.
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+        from ...adapters.mistral_juez_de_datos import MistralJuezDeDatos
+
+        return MistralJuezDeDatos(
+            api_key=llave, consumo=self.consumo, turnos=self.turnos_de_ia, antes_de_pedir=self.control.check
+        )
+
     def con_ia(self) -> bool:
         """Si el operador pidió la ayuda de pago para este trabajo."""
         return self._con_ia()

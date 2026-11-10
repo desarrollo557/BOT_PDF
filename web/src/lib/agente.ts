@@ -10,7 +10,8 @@
 import type {
   AgenteDeLaCorrida,
   CuentasDeLosDatos,
-  EstadoDelRevisor,
+  EstadoDelSuceso,
+  FechasDeLaCorrida,
   MovimientoDelRevisor,
   RevisionDeCortes
 } from './types';
@@ -18,14 +19,42 @@ import type {
 /** El tono de cada estado, con su palabra: nada depende sólo del color. */
 export type Tono = 'good' | 'accent' | 'warn' | 'bad' | 'ia' | 'neutral';
 
-export const ESTADOS: Record<EstadoDelRevisor | 'problema' | 'datos', { etiqueta: string; tono: Tono }> = {
+export const ESTADOS: Record<EstadoDelSuceso, { etiqueta: string; tono: Tono }> = {
   validado: { etiqueta: 'Validado', tono: 'good' },
   corregido: { etiqueta: 'Corregido', tono: 'accent' },
   'en revisión': { etiqueta: 'En revisión', tono: 'warn' },
   'no corrió': { etiqueta: 'Sin revisar', tono: 'bad' },
   problema: { etiqueta: 'No cuadra en el disco', tono: 'bad' },
-  datos: { etiqueta: 'Dato con error', tono: 'bad' }
+  datos: { etiqueta: 'Dato con error', tono: 'bad' },
+  // El revisor de fechas (2026-11-10): corregida con prueba, o a revisión con su motivo.
+  'fecha corregida': { etiqueta: 'Fecha corregida', tono: 'accent' },
+  'fecha a revisión': { etiqueta: 'Fecha a revisión', tono: 'warn' }
 };
+
+/**
+ * «Fechas: 189 confirmadas · 0 corregidas · 5 a revisión» (lo pidió el
+ * operador el 2026-11-10: ver que cada fecha inicial y final es la que es).
+ * `null` si el revisor de fechas aún no revisó nada: no se dice «0 de 0».
+ */
+export function fraseDeFechas(fechas: FechasDeLaCorrida | null | undefined): string | null {
+  if (!fechas?.revisados) return null;
+  const partes = [
+    `${fechas.confirmadas} ${fechas.confirmadas === 1 ? 'confirmada' : 'confirmadas'}`,
+    `${fechas.corregidas} ${fechas.corregidas === 1 ? 'corregida' : 'corregidas'}`,
+    `${fechas.a_revision} a revisión`
+  ];
+  return `Fechas: ${partes.join(' · ')}`;
+}
+
+/** La nota de la frase: los documentos sin fechas que revisar y lo que preguntó a la IA. */
+export function notaDeFechas(fechas: FechasDeLaCorrida): string {
+  const partes = [`${fechas.revisados} ${fechas.revisados === 1 ? 'documento revisado' : 'documentos revisados'}`];
+  if (fechas.sin_dato) partes.push(`${fechas.sin_dato} sin fechas en su papel`);
+  if (fechas.preguntadas_a_la_ia) {
+    partes.push(`${fechas.preguntadas_a_la_ia} ${fechas.preguntadas_a_la_ia === 1 ? 'decidida' : 'decididas'} por la IA`);
+  }
+  return partes.join(' · ');
+}
 
 /** Cómo se llama cada dato que el agente revisa, en el orden en que se dice (2026-11-06). */
 export const CAMPOS_DE_LOS_DATOS: Record<string, string> = {

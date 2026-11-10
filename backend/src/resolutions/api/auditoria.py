@@ -23,6 +23,17 @@ Dos pasos, con lo que hay en el disco y no con lo que la corrida recuerda:
    otra vez con los patrones y el margen (``application/auditoria_de_la_entrega``).
    Si alguno sale con error, otros 100. De ahí, el margen de error de la corrida.
 
+**Las fechas** (2026-11-10, el revisor de fechas): en las dos muestras, cada
+documento -- cada PDF entregado de la muestra de PDF, cada fila de la de filas --
+contrasta su fecha inicial y su final con su papel, con la regla de su
+habilidad y el mismo margen que al procesar. El operador: que los auditores
+cubran «todas las habilidades, todos los documentos, todos los patrones, todo
+el margen de errores, de una manera muy optimizada y súper estructurada». Lo
+que el papel corrige con prueba es error del documento; lo dudoso, a la IA de
+los datos si la corrida se hizo con ella (una pregunta por PDF o por fila), y si
+no, duda. Cada muestra dice cómo quedaron (``"fechas"``), en total y por
+habilidad.
+
 Nunca reprocesa ni lee con OCR: el origen y lo entregado se abren para su huella
 y su capa de texto. Lo que no se deja leer se dice; nada de esto tumba la corrida.
 """
@@ -102,6 +113,29 @@ def margen_aceptable(habilidad: str | None = None) -> float:
     return perfil_de(habilidad).margen
 
 
+#: Los estados de las fechas de un documento auditado, en el orden en que se dicen.
+ESTADOS_DE_LAS_FECHAS = ("confirmadas", "con error", "en duda", "sin fechas")
+
+
+def resumen_de_las_fechas(resultados: list[PdfAuditado]) -> dict:
+    """Cómo quedaron las fechas de los documentos auditados: cuántos en cada estado (2026-11-10).
+
+    Cuenta documentos -- los PDF entregados de la muestra de PDF, las filas de
+    la de filas --, no PDF de la muestra: un original con veinte cartas son
+    veinte fechas revisadas. ``revisados`` son los que traían fechas y texto.
+    """
+    cuentas: Counter[str] = Counter()
+    for resultado in resultados:
+        for estado, cuantos in (resultado.extra.get("fechas") or {}).items():
+            cuentas[estado] += int(cuantos)
+    documentos = sum(cuentas.values())
+    return {
+        "documentos": documentos,
+        "revisados": documentos - cuentas.get("sin fechas", 0),
+        **{estado: cuentas.get(estado, 0) for estado in ESTADOS_DE_LAS_FECHAS},
+    }
+
+
 def margenes_por_habilidad(resultados: list[PdfAuditado], *, con_dudas: bool = False) -> list[dict]:
     """La muestra partida por habilidad, cada una juzgada contra el margen de su perfil.
 
@@ -138,6 +172,7 @@ def margenes_por_habilidad(resultados: list[PdfAuditado], *, con_dudas: bool = F
                     dudosos=cuentas.get(DUDOSO, 0) if con_dudas else 0,
                     unidad="fila" if con_dudas else "PDF",
                 ).as_dict(),
+                "fechas": resumen_de_las_fechas(suyos),
             }
         )
     salida.sort(key=lambda h: (-h["revisados"], h["habilidad"]))
@@ -357,11 +392,26 @@ def auditar_la_muestra(
     *,
     semilla: int,
     juez=None,
+    juez_de_datos=None,
     cuantos: int = TAMANO_DE_LA_MUESTRA,
     detener: Callable[[], bool] = lambda: False,
     avance=None,
+    tiempo_maximo: float | None = None,
 ) -> dict:
-    """100 PDF entregados al azar, abiertos y revisados; otros 100 si alguno salió con error."""
+    """100 PDF entregados al azar, abiertos y revisados; otros 100 si alguno salió con error.
+
+    ``juez_de_datos`` es la IA que decide las fechas dudosas de sus PDF
+    entregados (2026-11-10). No pregunta más allá del plazo de la auditoría
+    (``tiempo_maximo``, el de la muestra de filas): pasado, lo dudoso se queda
+    en duda y la muestra sigue -- la huella y los cortes no cuestan nada --.
+    """
+    import time
+
+    from ..application.control import Cancelled
+
+    if juez_de_datos is not None and hasattr(juez_de_datos, "hasta"):
+        limite = time.monotonic() + (tiempo_maximo if tiempo_maximo is not None else _tiempo_de_la_muestra())
+        juez_de_datos.hasta(lambda: time.monotonic() > limite)
     por_relativa = {
         e.relativa: e
         for e in entregas
@@ -377,7 +427,10 @@ def auditar_la_muestra(
                 relativa, NO_AUDITADO, ("la corrida se detuvo antes de auditarlo",), habilidad=habilidad
             )
         try:
-            return _auditar_uno(por_relativa[relativa], juez, indices)
+            return _auditar_uno(por_relativa[relativa], juez, indices, juez_de_datos=juez_de_datos)
+        except Cancelled:
+            # «Detener» mientras se le preguntaba a la IA: no se audita, no es un fallo.
+            return PdfAuditado(relativa, NO_AUDITADO, ("la corrida se detuvo",), habilidad=habilidad)
         except Exception as error:  # noqa: BLE001 - un PDF que no se deja auditar se dice
             logger.warning("no se pudo auditar %s", relativa, exc_info=True)
             return PdfAuditado(relativa, NO_AUDITADO, (f"no se pudo auditar: {error}",), habilidad=habilidad)
@@ -427,12 +480,18 @@ def auditar_la_muestra(
         "ampliada": ampliada,
         "margen": margen.as_dict(),
         "por_habilidad": margenes_por_habilidad(resultados),
+        "fechas": resumen_de_las_fechas(resultados),
+        "preguntadas_a_la_ia": sum(r.preguntadas_a_la_ia for r in resultados),
         "pdfs": [r.as_dict() for r in resultados],
     }
 
 
-def _auditar_uno(entrega: EntregaVista, juez, indices: dict) -> PdfAuditado:
-    """Abre el original y lo que se entregó de él, y los audita."""
+def _auditar_uno(entrega: EntregaVista, juez, indices: dict, *, juez_de_datos=None) -> PdfAuditado:
+    """Abre el original y lo que se entregó de él, y los audita.
+
+    Las filas que el PDF aportó al inventario van con él (2026-11-10): con ellas
+    se auditan las fechas de cada PDF entregado contra sus hojas.
+    """
     assert entrega.constancia is not None and entrega.base is not None
     temporal = None
     try:
@@ -487,7 +546,136 @@ def _auditar_uno(entrega: EntregaVista, juez, indices: dict) -> PdfAuditado:
             for fila in entrega.constancia.actas or []
             if fila.get("archivo_generado") and (tipo := _tipo_de_identificacion(fila))
         },
+        filas_de_la_constancia=[fila for fila in entrega.constancia.actas or [] if isinstance(fila, dict)]
+        # Kingspan no deja filas en la constancia: sus puntas, del inventario
+        # que se entregó, contra todo el original (2026-11-10).
+        + _filas_de_kingspan(entrega, len(huellas)),
+        juez_de_datos=juez_de_datos,
+        # Ni la caja de correspondencia: su Índice Electrónico (2026-11-10).
+        filas_del_indice_electronico=_filas_del_indice_electronico(entrega, indices),
     )
+
+
+def _filas_del_indice_electronico(entrega: EntregaVista, indices: dict) -> list[dict]:
+    """Las filas del Índice Electrónico de un PDF: las de su constancia, o las del índice que se entregó con él.
+
+    En la carpeta de un NIC la constancia guarda las de su UPD (``indice``);
+    entregado aparte, el índice va entre sus archivos. El que se lee se guarda
+    en ``indices`` (una vez por archivo). Sin índice, ninguna.
+    """
+    constancia = entrega.constancia
+    if constancia is None:
+        return []
+    if isinstance(constancia.indice, dict):
+        return [fila for fila in constancia.indice.get("filas") or [] if isinstance(fila, dict)]
+    for archivo in constancia.archivos:
+        ruta = str(archivo.get("ruta") or "")
+        nombre = Path(ruta.replace("\\", "/")).name
+        if not (nombre.upper().startswith("00.INDICE ELECTRONICO") and nombre.lower().endswith(".xlsx")):
+            continue
+        destino = constancias.ruta_de_entrega(entrega.base, ruta) if entrega.base is not None else None
+        if destino is None:
+            return []
+        clave = ("indice", destino)
+        if clave not in indices:
+            try:
+                leido = leer_indice(destino)
+                indices[clave] = [
+                    {
+                        "nombre": fila.nombre,
+                        "fecha_creacion": fila.fecha_creacion.isoformat() if fila.fecha_creacion else None,
+                        "paginas": fila.paginas,
+                    }
+                    for fila in leido.filas
+                ]
+            except Exception:  # noqa: BLE001 - un índice que no se lee deja sus fechas sin auditar
+                logger.warning("no se pudo leer el índice %s para auditar sus fechas", destino, exc_info=True)
+                indices[clave] = []
+        return indices[clave]
+    return []
+
+
+#: Las columnas del inventario de Kingspan que dicen sus puntas (``celdas_kingspan``):
+#: el asunto (J), el DESDE (K), el HASTA (L) y sus fechas (M y N).
+_ASUNTO, _DESDE, _HASTA, _INICIAL, _FINAL = 9, 10, 11, 12, 13
+
+
+def es_de_kingspan(entrega: EntregaVista) -> bool:
+    """Si lo que se entregó de un PDF es un inventario de Kingspan."""
+    from .worker.kingspan import INVENTORY_SUFFIX
+
+    return entrega.constancia is not None and any(
+        str(archivo.get("ruta") or "").upper().endswith(INVENTORY_SUFFIX.upper())
+        for archivo in entrega.constancia.archivos
+    )
+
+
+def _filas_de_kingspan(entrega: EntregaVista, paginas: int | None) -> list[dict]:
+    """Las puntas del inventario de Kingspan de un PDF, cada una una fecha contra todo el original (2026-11-10).
+
+    Kingspan no deja filas en la constancia: su inventario es el Excel que se
+    entregó, una fila por paquete con el DESDE y el HASTA y la fecha de cada
+    uno. Al procesar se revisa **cada punta como el documento que es**; aquí,
+    contra todo el original -- la regla de los extremos: la fecha propia de
+    alguna de sus hojas --, porque el Excel no dice en qué hoja va cada una.
+    Por separado: la final puede ser anterior a la inicial (el oficial trae 65
+    filas así) y no es un error. La fila sin documentos numerados va entera:
+    sus fechas son las puntas de todo el archivo. Un inventario que no se deja
+    leer no da ninguna.
+    """
+    from ..application.auditoria_de_la_entrega import DE_TODO_EL_ORIGINAL
+    from .worker.kingspan import INVENTORY_SUFFIX, _filas_escritas
+
+    if entrega.constancia is None or entrega.base is None:
+        return []
+    filas: list[dict] = []
+    for archivo in entrega.constancia.archivos:
+        ruta = str(archivo.get("ruta") or "")
+        if not ruta.upper().endswith(INVENTORY_SUFFIX.upper()):
+            continue
+        destino = constancias.ruta_de_entrega(entrega.base, ruta)
+        try:
+            valores = _filas_escritas(destino) if destino is not None else []
+        except Exception:  # noqa: BLE001 - un inventario que no se lee deja sus fechas sin auditar
+            logger.warning("no se pudo leer el inventario %s para auditar sus fechas", destino, exc_info=True)
+            continue
+        for fila in valores:
+            fila = list(fila) + [None] * max(0, _FINAL + 1 - len(fila))
+            asunto = str(fila[_ASUNTO] or "").strip()
+            # «punta» y no «nombre»: con «nombre» la fila pasaba por la de una
+            # persona y se buscaba el asunto como un nombre en el papel.
+            comun = {
+                DE_TODO_EL_ORIGINAL: True,
+                "pagina_inicial": 1,
+                "pagina_final": paginas or 10**6,
+                "archivo": entrega.path.name,
+            }
+            if not (_dicho(fila[_DESDE]) or _dicho(fila[_HASTA])):
+                # Sin documentos numerados la fila va de punta a punta del
+                # archivo (``_sin_numeros``): sus dos fechas son la más antigua
+                # y la más reciente de todo él, como las de un archivo entero.
+                if _dicho(fila[_INICIAL]) or _dicho(fila[_FINAL]):
+                    filas.append(
+                        {
+                            **comun,
+                            "punta": asunto or "sin documentos numerados",
+                            "fecha_inicial": fila[_INICIAL] if _dicho(fila[_INICIAL]) else None,
+                            "fecha_final": fila[_FINAL] if _dicho(fila[_FINAL]) else None,
+                        }
+                    )
+                continue
+            for codigo, fecha in dict.fromkeys(((fila[_DESDE], fila[_INICIAL]), (fila[_HASTA], fila[_FINAL]))):
+                if _dicho(fecha):
+                    punta = " · ".join(str(p) for p in (asunto, codigo) if _dicho(p))
+                    filas.append(
+                        {**comun, "punta": punta, "su_numero": codigo, "fecha_inicial": fecha, "fecha_final": fecha}
+                    )
+    return filas
+
+
+def _dicho(valor: object) -> bool:
+    """Si una celda del inventario dice algo: ni vacía ni «N/A»."""
+    return valor not in (None, "") and str(valor).strip().upper() != "N/A"
 
 
 def _tipo_de_identificacion(fila: dict) -> str | None:
@@ -617,17 +805,37 @@ CAPA_MINIMA = 80
 FILAS_A_LA_VEZ = max(2, min(8, (os.cpu_count() or 4) // 2))
 
 
+#: La fila candidata que es todo el inventario de Kingspan de un PDF.
+_DE_KINGSPAN = "inventario_de_kingspan"
+
+
 def filas_candidatas(entregas: list[EntregaVista]) -> dict[str, tuple[EntregaVista, dict]]:
     """Las filas del inventario de las entregas vigentes, cada una con su nombre en la muestra.
 
     Salen de la constancia de cada PDF -- las filas que aportó, con sus páginas
     del original --, no del Excel: el FUID no dice de qué páginas salió cada fila.
     """
+    from ..application.auditoria_de_la_entrega import DE_TODO_EL_ORIGINAL
     from ..domain.auditoria_de_filas import id_de_la_fila, paginas_de_la_fila
 
     candidatas: dict[str, tuple[EntregaVista, dict]] = {}
     for entrega in entregas:
         if entrega.vigencia is not Vigencia.VIGENTE or entrega.constancia is None:
+            continue
+        if not entrega.constancia.actas and es_de_kingspan(entrega):
+            # Kingspan no deja filas en la constancia (2026-11-10): su
+            # inventario -- una fila por paquete -- se lee al auditarlo, contra
+            # todo el original. Se elige como una fila; abrir aquí el Excel de
+            # cada UPD de la corrida sería leer mil para auditar cien.
+            paginas = int((entrega.constancia.proceso or {}).get("paginas") or 0)
+            fila = {
+                _DE_KINGSPAN: True,
+                DE_TODO_EL_ORIGINAL: True,
+                "pagina_inicial": 1,
+                "pagina_final": paginas or 10**6,
+                "archivo": entrega.path.name,
+            }
+            candidatas[f"{entrega.relativa} · inventario de Kingspan"] = (entrega, fila)
             continue
         for indice, fila in enumerate(entrega.constancia.actas or []):
             if not isinstance(fila, dict) or paginas_de_la_fila(fila) is None:
@@ -660,7 +868,7 @@ def auditar_las_filas(
     """
     import time
 
-    from ..application.auditoria_de_filas import auditar_una_fila
+    from ..application.auditoria_de_filas import auditar_una_fila, ventana_de_la_auditoria
     from ..application.control import Cancelled
     from ..domain.auditoria_de_filas import paginas_de_la_fila
 
@@ -749,9 +957,17 @@ def auditar_las_filas(
             # «Detener»: la fila no se leyó entera, así que no se audita.
             motivo = "la corrida se detuvo antes de auditarla" if detener() else agotado_dicho
             return PdfAuditado(nombre, NO_AUDITADO, (motivo,), habilidad=habilidad)
+        # Los años de su libro, del nombre de su PDF: la misma ventana que en la
+        # muestra de PDF (2026-11-10).
+        ventana = ventana_de_la_auditoria(habilidad, entrega.relativa)
         try:
             # Con el tiempo acabado, la regla sí -- es inmediata -- pero no la
             # IA: lo dudoso se queda en duda y la muestra cierra.
+            if fila.get(_DE_KINGSPAN):
+                return _auditar_el_inventario_de_kingspan(
+                    nombre, entrega, paginas, habilidad=habilidad, juez=None if agotado() else juez,
+                    sin_texto=sin_texto, ventana=ventana,
+                )
             return auditar_una_fila(
                 nombre,
                 fila,
@@ -760,6 +976,7 @@ def auditar_las_filas(
                 juez=None if agotado() else juez,
                 sin_texto=sin_texto,
                 paginas_pedidas=tramo,
+                ventana=ventana,
             )
         except Cancelled:
             return PdfAuditado(nombre, NO_AUDITADO, ("la corrida se detuvo",), habilidad=habilidad)
@@ -833,9 +1050,74 @@ def auditar_las_filas(
         "ampliada": ampliada,
         "margen": margen.as_dict(),
         "por_habilidad": margenes_por_habilidad(resultados, con_dudas=True),
+        "fechas": resumen_de_las_fechas(resultados),
         "preguntadas_a_la_ia": sum(r.preguntadas_a_la_ia for r in resultados),
         "pdfs": [r.as_dict() for r in resultados],
     }
+
+
+def _auditar_el_inventario_de_kingspan(
+    nombre: str,
+    entrega: EntregaVista,
+    textos: list[str],
+    *,
+    habilidad: str,
+    juez=None,
+    sin_texto: int = 0,
+    ventana: tuple[int, int] | None = None,
+) -> PdfAuditado:
+    """Las puntas del inventario de Kingspan de un PDF, cada una contra sus hojas, dichas como una fila (2026-11-10).
+
+    Cada punta se audita por su lado (``_filas_de_kingspan``) contra las hojas
+    que traen su número (``hojas_de_la_punta``), o todo el original si ninguna
+    lo trae, y se juntan: el estado más grave, sus hallazgos y cuántas fechas
+    quedaron en cada estado.
+    """
+    from ..application.auditoria_de_filas import auditar_una_fila
+    from ..application.auditoria_de_la_entrega import hojas_de_la_punta
+
+    puntas = _filas_de_kingspan(entrega, len(textos))
+    if not puntas:
+        return PdfAuditado(
+            nombre, NO_AUDITADO, ("su inventario no trae fechas que auditar",), paginas=len(textos), habilidad=habilidad
+        )
+    por_hoja = dict(enumerate(textos, start=1))
+    resultados = []
+    for punta in puntas:
+        suyas = list(hojas_de_la_punta(punta, por_hoja, (1, len(textos))))
+        resultados.append(
+            auditar_una_fila(
+                f"{nombre} · {punta['punta']}",
+                punta,
+                suyas,
+                habilidad=habilidad,
+                juez=juez,
+                # Las de sus hojas, no las de todo el original.
+                sin_texto=sin_texto if len(suyas) == len(textos) else sum(len(t.strip()) < CAPA_MINIMA for t in suyas),
+                ventana=ventana,
+            )
+        )
+    auditadas = [r for r in resultados if r.estado != NO_AUDITADO]
+    if not auditadas:
+        return PdfAuditado(nombre, NO_AUDITADO, resultados[0].hallazgos, paginas=len(textos), habilidad=habilidad)
+    estados = {r.estado for r in auditadas}
+    fechas: Counter[str] = Counter()
+    for resultado in auditadas:
+        fechas.update(resultado.extra.get("fechas") or {})
+    return PdfAuditado(
+        pdf=nombre,
+        estado=ERROR if ERROR in estados else DUDOSO if DUDOSO in estados else BIEN,
+        hallazgos=tuple(
+            f"«{punta['punta']}»: {hallazgo}"
+            for punta, resultado in zip(puntas, resultados, strict=True)
+            if resultado.estado != NO_AUDITADO
+            for hallazgo in resultado.hallazgos
+        ),
+        paginas=len(textos),
+        preguntadas_a_la_ia=sum(r.preguntadas_a_la_ia for r in auditadas),
+        habilidad=habilidad,
+        extra={"fechas": dict(fechas)},
+    )
 
 
 def _capa_util(texto: str) -> bool:
