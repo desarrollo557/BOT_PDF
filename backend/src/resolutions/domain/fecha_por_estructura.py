@@ -52,6 +52,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from .anexos_declarados import clase_de_la_hoja
+from .carta import abre_carta
 from .fechas import (
     _FORMULARIO,
     _LUGAR_Y_FECHA,
@@ -588,6 +589,7 @@ _CEDULA = Pieza("documento de identidad", RANGO_DE_ANEXO)
 _FACTURA = Pieza("factura", RANGO_DE_ANEXO, _de_la_factura)
 _OTRO_ANEXO = Pieza("anexo", RANGO_DE_ANEXO)
 _ESCRITO = Pieza("escrito", RANGO_SIN_RECONOCER, _del_escrito)
+_CARTA = Pieza("carta", ABRE, _del_escrito)
 #: Cuánto texto es la cabeza de una hoja para reconocerla como anexo (la misma
 #: medida que ``CABEZA_DEL_SOPORTE`` de la aplicación).
 _CABEZA_DEL_ANEXO = 700
@@ -615,6 +617,14 @@ def pieza_de(texto: str) -> Pieza:
         return _CEDULA
     if numero_del_acta_de_suspension(texto or ""):
         return Pieza("acta de suspensión", ABRE, _de_la_suspension)
+    # La primera hoja de una carta -- el saludo o la fecha, y su «REF:» o
+    # «ASUNTO:» -- abre su documento como cualquier pieza conocida. Si no, la
+    # copia de una publicación que el cliente aporta como prueba detrás de su
+    # recurso le ganaba y lo fechaba (RESOLUCION_010-2020 p50 con la p56). Va
+    # antes que los anexos: una factura no abre carta, y la basura que la OCR
+    # deja del sello en la cabeza de la p50 la hacía pasar por una.
+    if abre_carta(texto or ""):
+        return _CARTA
     # Un anexo se reconoce en su cabeza, como en ``clase_de_soporte``: un
     # recurso que en su cuerpo nombra la factura y las fotografías que aporta
     # no es una factura (DOCUMENTO_35 p5).

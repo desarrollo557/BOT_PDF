@@ -33,6 +33,7 @@ from ..domain.sello import (
     Sello,
     con_los_conocidos,
     fecha_del_sello_de_tinta,
+    folios_del_sello_de_tinta,
     leer_sello,
     radicado_aproximado,
     radicado_del_texto,
@@ -426,6 +427,14 @@ def leer_sellos(
             if sello.clase == "tinta" and pagados.get(pagina)
             else None
         )
+        # Y sus folios a mano, «DOCE (12)», si la palabra y la cifra coinciden
+        # (2026-11-11): con ellos la regla F2b deja el recurso entero, y su
+        # fecha llega a todas sus hojas (UPD2365925 págs. 36-47).
+        folios_a_mano = (
+            folios_del_sello_de_tinta(pagados[pagina])
+            if sello.clase == "tinta" and pagados.get(pagina)
+            else None
+        )
         if del_pago is not None and del_pago.radicado:
             # La lectura de pago manda: no se corrige contra los conocidos,
             # que podrían ser el radicado vecino de otro trámite.
@@ -433,7 +442,7 @@ def leer_sellos(
                 sello.clase if sello.clase == "tinta" else del_pago.clase,
                 del_pago.radicado,
                 a_mano or del_pago.fecha or sello.fecha,
-                del_pago.folios or sello.folios,
+                folios_a_mano or del_pago.folios or sello.folios,
             )
             continue
         radicado = None
@@ -477,7 +486,8 @@ def leer_sellos(
             sello.clase,
             radicado,
             fecha,
-            sello.folios
+            folios_a_mano
+            or sello.folios
             or (releido.folios if releido else None)
             or (del_pago.folios if del_pago else None)
             or (de_la_capa_leido.folios if de_la_capa_leido else None),

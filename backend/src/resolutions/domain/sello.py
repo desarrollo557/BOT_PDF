@@ -407,6 +407,33 @@ def fecha_del_sello_de_tinta(texto: str, *, hoy: date | None = None) -> date | N
     return distintas.pop() if len(distintas) == 1 else None
 
 
+_NUMEROS_EN_LETRA = {
+    "UNO": 1, "UN": 1, "DOS": 2, "TRES": 3, "CUATRO": 4, "CINCO": 5, "SEIS": 6, "SIETE": 7, "OCHO": 8,
+    "NUEVE": 9, "DIEZ": 10, "ONCE": 11, "DOCE": 12, "TRECE": 13, "CATORCE": 14, "QUINCE": 15,
+    "DIECISEIS": 16, "DIECISIETE": 17, "DIECIOCHO": 18, "DIECINUEVE": 19, "VEINTE": 20,
+}
+#: «No DE FOLIOS: DOCE (12) FOLIOS», «DOS(2)», «(Cuatro (4) Folios)»: la
+#: palabra y la cifra entre paréntesis, como se llena a mano el sello de tinta.
+_FOLIOS_A_MANO = re.compile(r"\b([A-Z]{2,12})\s*\(\s*(\d{1,2})\s*\)")
+
+
+def folios_del_sello_de_tinta(texto: str) -> int | None:
+    """Los folios escritos a mano en el sello de tinta, leídos por la IA del recorte.
+
+    Sólo si la palabra y la cifra dicen lo mismo: un «DOCE (42)» -- así lo
+    dejó Tesseract en UPD2365925 p36 -- retendría treinta hojas ajenas detrás
+    del escrito (regla F2b). Con «OCR + IA», 2026-11-11.
+    """
+    plano = _plano(texto or "")
+    if not _TINTA.search(plano):
+        return None
+    for hallado in _FOLIOS_A_MANO.finditer(plano):
+        palabra, cifra = hallado.group(1), int(hallado.group(2))
+        if _NUMEROS_EN_LETRA.get(palabra) == cifra and cifra > 0:
+            return cifra
+    return None
+
+
 def _fecha(plano: str) -> date | None:
     for hallado in (*_FECHA_CON_HORA.finditer(plano), *_FECHA_DEL_SELLO.finditer(plano)):
         try:

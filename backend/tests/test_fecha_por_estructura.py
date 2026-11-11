@@ -259,6 +259,14 @@ class TestElSelloManda:
         )
         assert fecha_por_estructura([1], _paginas(escrito), hoy=HOY).fecha is None
 
+    def test_la_carta_del_cliente_abre_aunque_detras_venga_una_publicacion(self) -> None:
+        # RESOLUCION_010-2020 p50-56: la copia de la publicación que el cliente aporta detrás de
+        # su derecho de petición le ganaba como hoja principal y lo fechaba con el 09/11/2022.
+        carta = "Agustín Codazzi, 31 de agosto de 2022\nSeñores:\nafinia Grupo EPM\nREF: Derecho de Petición según el Artículo 23"
+        publicacion = "Consecutivo No. PA 202270451135 PUBLICACIÓN DEL AVISO … El presente aviso se publica el día 09/11/2022 08:00:00.0"
+        r = fecha_por_estructura([1, 2], _paginas(carta, publicacion), hoy=HOY)
+        assert (r.principal, r.fecha) == (1, date(2022, 8, 31))
+        assert pieza_de(carta).nombre == "carta"
     def test_una_hoja_con_sello_nunca_es_un_anexo(self) -> None:
         # DOCUMENTO_35 p5: el recurso nombra en su cabeza la factura que aporta; su sello, leído
         # por la IA (21/07/2022), no llegaba al documento porque la hoja se tomaba por factura.

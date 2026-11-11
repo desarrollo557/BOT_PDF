@@ -442,3 +442,20 @@ class TestLaFechaDelSelloDeTinta:
         assert leer_sellos(_Fuente({1: casa}), _Ocr(), [1])[1].fecha is None
         con_ia = leer_sellos(_Fuente({1: casa}), _Ocr(), [1], de_pago=_Ocr({casa: pago}))
         assert (con_ia[1].clase, con_ia[1].fecha) == ("tinta", date(2023, 12, 20))
+    def test_los_folios_a_mano_solo_si_la_palabra_y_la_cifra_coinciden(self):
+        # UPD2365925 p36: la IA leyó «DOCE (12)»; Tesseract, «DOCE (42)», que retendría 30 hojas ajenas.
+        from resolutions.domain.sello import folios_del_sello_de_tinta
+
+        pago = "RECIBIDO NO IMPLICA ACEPTACIÓN FECHA DE RECIBIDO: 21-02-2022. No DE FOLIOS: DOCE (12) FOLIOS"
+        assert folios_del_sello_de_tinta(pago) == 12
+        assert folios_del_sello_de_tinta("RECIBIDO NO IMPLICA ACEPTACIÓN No DE FOLIOS: DOCE (42)") is None
+        assert folios_del_sello_de_tinta("RECIBIDO NO IMPLICA ACEPTACIÓN (Cuatro (4) Folios)") == 4
+        assert folios_del_sello_de_tinta("Folios: DOS (2)") is None  # sin sello de tinta
+
+    def test_leer_los_sellos_toma_los_folios_a_mano_de_la_ia(self):
+        from resolutions.application.sellos import leer_sellos
+
+        casa = "OFICINA AGUSTIN CODAZZI RECIBIDO NO IMPLICA ACEPTACIÓN veoeroios _ DOCE (42) 10"
+        pago = "RECIBIDO NO IMPLICA ACEPTACIÓN FECHA DE RECIBIDO: 21-02-2022. No DE FOLIOS: DOCE (12) FOLIOS"
+        assert leer_sellos(_Fuente({1: casa}), _Ocr(), [1])[1].folios is None
+        assert leer_sellos(_Fuente({1: casa}), _Ocr(), [1], de_pago=_Ocr({casa: pago}))[1].folios == 12
