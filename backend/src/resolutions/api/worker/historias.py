@@ -1376,7 +1376,7 @@ def _nombre_por_la_ia(nombrador, texto: str, nombre: str) -> str | None:
 
 def _escribir_el_fuid(payload: dict, taller: Taller, nombre: str, filas: list[dict], report: dict) -> None:
     """El FUID del PDF junto al trabajo, con la oficina de su carpeta. Que falle no deshace lo leído."""
-    from ...adapters.excel_actas import SUFIJO
+    from ...adapters.fuid_de_la_entrega import SUFIJO_JUNTO_AL_TRABAJO as SUFIJO
     from ...adapters.fuid_de_la_entrega import escribir_fuid
     from ...domain.naming import sheet_filename
 

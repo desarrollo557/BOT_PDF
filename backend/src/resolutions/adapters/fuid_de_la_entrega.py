@@ -49,6 +49,19 @@ from .fuid_inventory import FuidInventory
 #: cada libro de diplomas.
 SUFIJO_DEL_FUID = "__FUID.xlsx"
 
+#: Y el del FUID que deja cada PDF junto a su trabajo: «libro__inventario.xlsx».
+#: Es el sufijo que busca el botón «Inventario en Excel» de la pantalla
+#: (``routers/salidas.py``). Vivía en el Excel de actas de consejo, que se quitó
+#: el 2026-11-11: el inventario de la Universidad es el FUID y nada más.
+SUFIJO_JUNTO_AL_TRABAJO = "__inventario.xlsx"
+
+#: Cómo firmaba el bot el Excel de actas de consejo que escribía hasta el
+#: 2026-11-11: el nombre, la hoja y el autor del libro. Por los tres se
+#: reconoce lo suyo para retirarlo sin tocar un Excel que dejó otro.
+_EXCEL_DE_ACTAS = "ACTAS *__inventario*.xlsx"
+_HOJA_DE_ACTAS = "Inventario de actas"
+_AUTOR_DE_ACTAS = "División de documentos AFINIA"
+
 _DIVIDIDO = re.compile(r"^Dividido en (.+\.pdf)$", re.IGNORECASE)
 _FECHA = re.compile(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})")
 
@@ -361,3 +374,39 @@ def ruta_del_fuid(carpeta: Path) -> Path:
     from ..domain.naming import sheet_filename
 
     return carpeta / sheet_filename(carpeta.name, SUFIJO_DEL_FUID, directory_length=len(str(carpeta)))
+
+
+def es_el_excel_de_actas(ruta: Path) -> bool:
+    """Si es el Excel de actas de consejo que escribía el bot: su hoja y su autor, no sólo su nombre."""
+    from openpyxl import load_workbook
+
+    try:
+        libro = load_workbook(ruta, read_only=True)
+    except Exception:  # noqa: BLE001 - lo que no se abre como Excel no es suyo
+        return False
+    try:
+        return libro.sheetnames[:1] == [_HOJA_DE_ACTAS] and (libro.properties.creator or "") == _AUTOR_DE_ACTAS
+    finally:
+        libro.close()
+
+
+def retirar_el_excel_de_actas(carpeta: Path) -> list[tuple[Path, OSError]]:
+    """Borra de ``carpeta`` el Excel de actas de consejo que escribió el bot. Devuelve los que no pudo.
+
+    Desde el 2026-11-11 el inventario de la Universidad es el FUID y nada más
+    («quita el de actas, ya que todo se unificará en uno solo y es el FUID»), y
+    el operador eligió que una entrega de antes quede así al volver a pasar la
+    carpeta. Sólo los de esta carpeta, no los de sus subcarpetas, y sólo los
+    que llevan la firma del bot (``es_el_excel_de_actas``).
+    """
+    no_se_pudo: list[tuple[Path, OSError]] = []
+    for ruta in sorted(carpeta.glob(_EXCEL_DE_ACTAS)):
+        if not ruta.is_file() or not es_el_excel_de_actas(ruta):
+            continue
+        try:
+            ruta.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            no_se_pudo.append((ruta, error))
+    return no_se_pudo

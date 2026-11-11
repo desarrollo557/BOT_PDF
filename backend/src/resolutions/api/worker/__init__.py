@@ -215,11 +215,41 @@ def _despachar(payload: dict) -> dict:
             )
         return _kingspan_job(payload, task)
 
-    # Sin tipo declarado, lo primero: si es de la familia de las historias
-    # académicas -- Medicina, Enfermería, las hojas sueltas de matrícula --, va
-    # a esa habilidad. El reconocedor general las toma por matrículas y la ruta
-    # vieja entregaba 9 PDF donde había 60 estudiantes. Lo pidió el operador el
-    # 2026-11-03: «que sepa detectar la habilidad automáticamente».
+    # Sin tipo declarado, lo primero: el patrón gratis de la capa de texto y del
+    # nombre (``sugerir``). Si dice acta de consejo, va a su habilidad antes que
+    # a ninguna otra. Odontología, 2026-11-11, con «No estoy seguro» y «Solo
+    # inventariar»: seis actas se fueron dos a «Historias académicas» -- sus
+    # anexos con el membrete de la Universidad parecían hojas sueltas, y salieron
+    # siete filas «MATRICULA ACADEMICA» -- y cuatro a «Archivos ya separados»
+    # con un asunto de basura de OCR, porque «Solo inventariar» sólo mira los
+    # marcadores. El patrón decía acta de consejo en las 64 de la carpeta, y en
+    # ningún PDF de historias, nóminas, certificados ni grados de las otras
+    # siete carpetas de la Universidad.
+    parece = None
+    if TipoPedido.parse(payload.get("tipo")) is TipoPedido.AUTO:
+        from ...domain.doctype import DocumentType as _Tipo
+
+        parece = _reconocimiento_gratis(payload)
+        if parece is not None and parece.tipo is _Tipo.ACTA_CONSEJO:
+            _anunciar(
+                payload,
+                Stage.IDENTIFYING,
+                detail="actas de consejo: se inventarían enteras, sin partir nada",
+            )
+            payload["reconocimiento"] = {
+                "tipo": str(parece.tipo),
+                "etiqueta": parece.tipo.label,
+                "decidido_por": "patron",
+                "por": parece.por,
+                "motivo": parece.motivo,
+            }
+            return _acta_consejo_job(payload)
+
+    # Después, si es de la familia de las historias académicas -- Medicina,
+    # Enfermería, las hojas sueltas de matrícula --, va a esa habilidad. El
+    # reconocedor general las toma por matrículas y la ruta vieja entregaba 9
+    # PDF donde había 60 estudiantes. Lo pidió el operador el 2026-11-03: «que
+    # sepa detectar la habilidad automáticamente».
     if TipoPedido.parse(payload.get("tipo")) is TipoPedido.AUTO and (familia := _familia_de_historias(payload)):
         from .historias import historias_academicas_job
 
@@ -230,10 +260,10 @@ def _despachar(payload: dict) -> dict:
     if not task.writes_documents:
         # Sin tipo declarado, una mirada gratis al patrón antes del inventario:
         # un acta de grado reconocida allí iba al borrador roto de `acta_split`.
-        if TipoPedido.parse(payload.get("tipo")) is TipoPedido.AUTO:
+        if parece is not None:
             from ...domain.doctype import DocumentType as _Tipo
 
-            if _lo_que_parece(payload) is _Tipo.ACTA:
+            if parece.tipo is _Tipo.ACTA:
                 return _actas_de_grado(payload)
         return _inventory_job(payload)
 
@@ -476,15 +506,15 @@ def _actas_de_grado(payload: dict) -> dict:
     return _acta_consejo_job(payload, grado=True)
 
 
-def _lo_que_parece(payload: dict):
-    """El tipo que dice el patrón del PDF, sobre su capa de texto; ``None`` si falla."""
+def _reconocimiento_gratis(payload: dict):
+    """Lo que dice el patrón del PDF, sobre su capa de texto y su nombre, con el motivo; ``None`` si falla."""
     from ...adapters.pymupdf_source import PyMuPDFPageSource
     from ...application.sugerencia import sugerir
 
     try:
         source = PyMuPDFPageSource(Path(payload["source"]), payload.get("filename"))
         try:
-            return sugerir(source, str(payload.get("filename") or "")).tipo
+            return sugerir(source, str(payload.get("filename") or ""))
         finally:
             source.close()
     except Exception:  # noqa: BLE001 - sin mirar, sigue el camino de siempre

@@ -6,8 +6,7 @@ from datetime import date
 
 from openpyxl import load_workbook
 
-from resolutions.adapters.excel_actas import escribir_inventario_de_actas
-from resolutions.application.acta_consejo import CONSEJO, GRADO, FilaDeActa
+from resolutions.application.acta_consejo import GRADO, FilaDeActa
 from resolutions.domain.acta_grado import (
     actas_de_grado_del_pdf,
     apertura,
@@ -68,31 +67,6 @@ def _fila(**cambios) -> FilaDeActa:
         carpeta="00C003290",
     )
     return FilaDeActa(**{**datos, **cambios})
-
-
-class TestElExcelDeGrado:
-    def test_sin_resumen_y_con_su_titulo(self, tmp_path):
-        fila = _fila(acta="ACTA DE GRADO No. 054231116", tipo=GRADO.tipo_documental)
-        destino = escribir_inventario_de_actas(
-            [fila], tmp_path / "grado.xlsx", titulo=GRADO.titulo, con_resumen=GRADO.con_resumen
-        )
-        hoja = load_workbook(destino).active
-        assert hoja["A1"].value == "INVENTARIO DE ACTAS DE GRADO"
-        columnas = [c.value for c in hoja[8]]
-        assert "Acta" in columnas
-        assert not any(c and "Resumen" in c for c in columnas)
-        assert "no debe salir" not in [c.value for c in hoja[9]]
-
-    def test_el_de_consejo_sigue_con_resumen(self, tmp_path):
-        destino = escribir_inventario_de_actas(
-            [_fila(acta="ACTA ORDINARIA No. 001")],
-            tmp_path / "consejo.xlsx",
-            titulo=CONSEJO.titulo,
-            con_resumen=CONSEJO.con_resumen,
-        )
-        hoja = load_workbook(destino).active
-        assert hoja["A1"].value == "INVENTARIO DE ACTAS DE CONSEJO"
-        assert any(c.value and "Resumen" in c.value for c in hoja[8])
 
 
 class TestLosNumerosDudosos:
@@ -317,15 +291,6 @@ class TestLosNombres:
         )
         assert sheet_filename("libro.pdf", "__inventario.xlsx") == "libro__inventario.xlsx"
         assert document_folder("UPD3859797-ACTAS.pdf") == "UPD3859797-ACTAS"
-
-    def test_la_leyenda_del_de_grado_no_habla_del_resumen(self, tmp_path):
-        destino = escribir_inventario_de_actas(
-            [_fila(acta="ACTA DE GRADO No. 1")], tmp_path / "g.xlsx", titulo=GRADO.titulo, con_resumen=False
-        )
-        hoja = load_workbook(destino).active
-        textos = [c.value for fila in hoja.iter_rows() for c in fila if isinstance(c.value, str)]
-        leyenda = next(t for t in textos if t.startswith("El acta y la fecha"))
-        assert "resumen" not in leyenda
 
 
 # -- una fila por graduado ------------------------------------------------------

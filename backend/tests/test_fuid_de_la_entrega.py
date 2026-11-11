@@ -135,14 +135,18 @@ def test_la_carpeta_lee_el_suyo_y_no_el_del_bot(tmp_path):
 # -- la fila de cada habilidad -------------------------------------------------
 
 
-def test_un_acta_de_consejo_lleva_su_consejo_su_numero_y_su_sesion():
+def test_un_acta_de_consejo_lleva_su_consejo_y_su_sesion_sin_el_numero():
+    """El operador, 2026-11-11: «que quede sin el número de acta». El número va en el consecutivo."""
+    fila = fila_de_acta({"acta": "ACTA EXTRAORDINARIA No. 011", "numero": "011", "resumen": "El Consejo sesionó."})
+    assert fila.asunto == "ACTA DE CONSEJO DE FACULTAD - EXTRAORDINARIA - El Consejo sesionó."
+    assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("011", "011")
     assert asunto_del_acta({"acta": "Acta ordinaria", "numero": "022"}) == (
-        "ACTA DE CONSEJO DE FACULTAD No. 022 - ORDINARIA"
+        "ACTA DE CONSEJO DE FACULTAD - ORDINARIA"
     )
     assert asunto_del_acta({"acta": "CONSEJO ACADÉMICO, sesión extraordinaria", "numero": "5"}) == (
-        "ACTA DE CONSEJO ACADEMICO No. 5 - EXTRAORDINARIA"
+        "ACTA DE CONSEJO ACADEMICO - EXTRAORDINARIA"
     )
-    assert asunto_del_acta({"acta": "", "numero": ""}) == "ACTA DE CONSEJO DE FACULTAD No. N/A"
+    assert asunto_del_acta({"acta": "", "numero": ""}) == "ACTA DE CONSEJO DE FACULTAD"
 
 
 def test_la_fila_de_un_acta_de_consejo():
@@ -167,17 +171,17 @@ def test_la_fila_de_un_acta_de_consejo():
 
 
 def test_el_asunto_del_acta_lleva_su_sesion_y_su_resumen_con_los_nombres():
-    """El operador, 2026-11-09: «ACTA DE CONSEJO DE FACULTAD No. 09 - ORDINARIA - RESUMEN», con
-    «el nombre de las personas que mencionan». El número, como lo dice el papel."""
+    """El operador, 2026-11-09: «ACTA DE CONSEJO DE FACULTAD - ORDINARIA - RESUMEN», con
+    «el nombre de las personas que mencionan». Sin el número del acta desde el 2026-11-11."""
     resumen = (
         "El Consejo de Facultad de Odontología, presidido por la doctora Luisa Leonor Arévalo Tovar, "
         "otorgó la distinción Ivo Seni Canata al docente investigador Antonio Díaz Caballero."
     )
     fila = fila_de_acta({"acta": "ACTA ORDINARIA", "numero": "022", "resumen": f"  {resumen}\n"})
-    assert fila.asunto == f"ACTA DE CONSEJO DE FACULTAD No. 022 - ORDINARIA - {resumen}"
+    assert fila.asunto == f"ACTA DE CONSEJO DE FACULTAD - ORDINARIA - {resumen}"
     # Sin resumen («Solo OCR»), el asunto como antes: sin un «- N/A» colgando.
     sin_resumen = fila_de_acta({"acta": "ACTA EXTRAORDINARIA", "numero": "09"})
-    assert sin_resumen.asunto == "ACTA DE CONSEJO DE FACULTAD No. 09 - EXTRAORDINARIA"
+    assert sin_resumen.asunto == "ACTA DE CONSEJO DE FACULTAD - EXTRAORDINARIA"
     # Y al resumidor se le pide nombrar a las personas, no la lista de asistentes.
     from resolutions.adapters.mistral_resumen import INSTRUCCIONES
 
@@ -345,7 +349,7 @@ def test_el_fuid_lleva_la_oficina_de_su_carpeta_y_las_filas_de_todas_las_habilid
     assert planilla.oficina_productora.endswith("FACULTAD DE DERECHO Y CIENCIAS POLITICAS")
     assert [fila[0] for fila in planilla.filas] == ["1", "2"]
     assert planilla.filas[0][2].startswith("RESOLUCION 00031")
-    assert planilla.filas[1][2] == "ACTA DE CONSEJO DE FACULTAD No. 02 - ORDINARIA"
+    assert planilla.filas[1][2] == "ACTA DE CONSEJO DE FACULTAD - ORDINARIA"
     assert planilla.filas[1][15] == ""  # NOTAS va vacía (2026-10-30)
 
 
@@ -392,13 +396,13 @@ def test_el_fuid_de_actas_es_el_formato_original_con_el_resumen_en_el_asunto(tmp
     # Nada a la derecha de NOTAS: ni títulos ni filas.
     assert all(hoja.cell(row=f, column=c).value is None for f in (12, 13, 14, 15) for c in range(17, 21))
     # El asunto, entero y sin «...» al final.
-    esperado = "ACTA DE CONSEJO DE FACULTAD No. 022 - ORDINARIA - " + resumen[:-3] + "."
+    esperado = "ACTA DE CONSEJO DE FACULTAD - ORDINARIA - " + resumen[:-3] + "."
     assert hoja["C14"].value == esperado
     assert "..." not in hoja["C14"].value and "…" not in hoja["C14"].value
     # Se ajusta y la fila crece para que se lea; el acta sin resumen, como siempre.
     assert hoja["C14"].alignment.wrap_text
     assert hoja.row_dimensions[14].height > 20
-    assert hoja["C15"].value == "ACTA DE CONSEJO DE FACULTAD No. 023 - EXTRAORDINARIA"
+    assert hoja["C15"].value == "ACTA DE CONSEJO DE FACULTAD - EXTRAORDINARIA"
     assert hoja.row_dimensions[15].height == 20
     # Las de siempre siguen donde estaban: fechas extremas y folios.
     assert (hoja["F14"].value, hoja["L14"].value) == ("13/12/2016", 15)
@@ -423,11 +427,11 @@ def test_un_fuid_viejo_como_plantilla_pierde_las_columnas_de_actas(tmp_path):
     viejo = tmp_path / "viejo__FUID.xlsx"
     libro.save(viejo)
 
-    destino = FuidInventory(viejo).write([FuidRow(orden=1, asunto="ACTA DE CONSEJO DE FACULTAD No. 1")], tmp_path / "x.xlsx")
+    destino = FuidInventory(viejo).write([FuidRow(orden=1, asunto="ACTA DE CONSEJO DE FACULTAD")], tmp_path / "x.xlsx")
     nuevo = load_workbook(destino)["INVENTARIO"]
     assert all(nuevo.cell(row=f, column=c).value is None for f in (12, 13, 14) for c in range(17, 21))
     assert not [str(r) for r in nuevo.merged_cells.ranges if r.min_col >= 17 and r.min_row in (12, 13)]
-    assert nuevo["C14"].value == "ACTA DE CONSEJO DE FACULTAD No. 1"
+    assert nuevo["C14"].value == "ACTA DE CONSEJO DE FACULTAD"
 
 
 def test_sin_actas_el_fuid_no_lleva_esas_columnas(tmp_path):

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections import Counter
 
+import pytest
+
 from resolutions.domain.doctype import DocumentType as T
 from resolutions.domain.doctype import TypeVerdict, classify_pages
 from resolutions.domain.patrones import (
@@ -210,6 +212,30 @@ class TestDetectarAutomaticamente:
         assert _familia_de_historias({"source": str(consejo)}) is None
         assert _familia_de_historias({"source": str(grado)}) is None
         assert _familia_de_historias({"source": str(tmp_path / "no-existe.pdf")}) is None
+
+    @pytest.mark.parametrize("task", ["inventory", "both"])
+    def test_un_acta_con_anexos_de_matricula_va_a_actas_de_consejo(self, tmp_path, monkeypatch, task):
+        """Odontología, 2026-11-11: la sesión 019 traía de anexos certificados de matrícula con el
+        membrete de la Universidad, y con «No estoy seguro» se fue a «Historias académicas» (siete
+        filas «MATRICULA ACADEMICA»). El patrón gratis decía acta de consejo y se pregunta primero.
+        """
+        from resolutions.api import worker
+        from resolutions.api.worker import historias
+
+        # Como la 019: catorce hojas, siete de acta y siete certificados.
+        sesion = _pdf(tmp_path / "1SESION EXTRAORDINARIA N° 019.pdf", [ACTA_DE_CONSEJO, *[SESION] * 6, *[CERTIFICADO] * 7])
+        # Lo que pasaba: la familia de historias la reclamaba.
+        assert worker._familia_de_historias({"source": str(sesion), "filename": sesion.name}) is not None
+
+        llamadas: list[str] = []
+        monkeypatch.setattr(worker, "_acta_consejo_job", lambda payload: llamadas.append("actas") or {"ok": 1})
+        monkeypatch.setattr(historias, "historias_academicas_job", lambda payload: llamadas.append("historias"))
+        payload = {"source": str(sesion), "filename": sesion.name, "task": task, "tipo": "auto", "settings": {}}
+
+        assert worker._despachar(payload) == {"ok": 1}
+        assert llamadas == ["actas"]
+        assert payload["reconocimiento"]["tipo"] == "acta-consejo"
+        assert payload["reconocimiento"]["decidido_por"] == "patron"
 
 
 RESOLUCION_INTERNA = (

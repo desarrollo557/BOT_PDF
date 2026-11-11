@@ -1068,10 +1068,14 @@ class TestUnExcelAbiertoEnLaRaiz:
         assert any("CONTROL DE ENTREGA" in aviso for aviso in run.avisos)
 
 
-class TestElExcelDeActasDeUnaSubcarpetaAbierto:
+class TestElFuidDeUnaSubcarpetaAbierto:
     def test_se_escribe_con_otro_nombre_una_sola_vez(self, ajustes, tmp_path, monkeypatch):
-        """Abierto en Excel, cada acta nueva dejaba otro «(2)», «(3)», «(4)»… al lado (2026-10-27)."""
-        from resolutions.adapters import excel_actas
+        """Abierto en Excel, cada acta nueva dejaba otro «(2)», «(3)», «(4)»… al lado (2026-10-27).
+
+        Era el Excel de actas, que se quitó el 2026-11-11; el FUID de la
+        subcarpeta, que es el que queda, se porta igual.
+        """
+        from resolutions.adapters import fuid_de_la_entrega
         from resolutions.application import acta_consejo
 
         bloqueados: set[str] = set()
@@ -1082,15 +1086,17 @@ class TestElExcelDeActasDeUnaSubcarpetaAbierto:
                 raise PermissionError(errno.EACCES, "Permission denied", str(destino))
             destino.write_bytes(b"xlsx")
             escritos.append(destino.name)
+            return destino
 
-        monkeypatch.setattr(excel_actas, "escribir_inventario_de_actas", escribir)
+        monkeypatch.setattr(fuid_de_la_entrega, "escribir_fuid", escribir)
+        monkeypatch.setattr(fuid_de_la_entrega, "filas_del_fuid", lambda filas: list(filas))
         monkeypatch.setattr(acta_consejo, "inventario_de_la_carpeta", lambda filas: list(filas))
         monkeypatch.setattr(acta_consejo, "validar_inventario", lambda filas: {})
 
         destino = tmp_path / "destino"
         run = FolderRun(id="r", source=tmp_path / "CAJA", destination=destino)
         motor, _ = _motor(ajustes, JobRegistry())
-        abierto = motor._ruta_de_un_excel(destino / "CAJA" / "UPD1")
+        abierto = fuid_de_la_entrega.ruta_del_fuid(destino / "CAJA" / "UPD1")
         abierto.parent.mkdir(parents=True)
         abierto.write_bytes(b"el que el operador tiene abierto")
         canonico = abierto.name

@@ -364,12 +364,6 @@
             <code title={run.inventario_ruta ?? run.inventario}>{run.inventario}</code>, y cada
             subcarpeta lleva el suyo
           </small>
-          {#if run.actas}
-            <small>
-              Las actas de consejo van además en
-              <code title={run.actas_ruta ?? run.actas}>{run.actas}</code>, con el resumen de cada una.
-            </small>
-          {/if}
           {#if validacion && validacion.filas}
             <!-- El control de calidad antes de entregar: qué tan completo va. -->
             <small class="validacion" data-pendientes={validacion.pendientes ? 'si' : 'no'}>

@@ -714,9 +714,6 @@ export interface FolderRun {
    * plantilla.
    */
   oficina?: string | null;
-  /** El Excel de las actas de consejo con su resumen, que acompaña al FUID. */
-  actas?: string | null;
-  actas_ruta?: string | null;
   /** Por qué no se pudo escribir, si falló. */
   inventario_error?: string | null;
   /**

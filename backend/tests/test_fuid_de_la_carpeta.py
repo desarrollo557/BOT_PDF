@@ -121,7 +121,7 @@ def test_cada_fuid_va_con_sus_pdf_y_el_general_las_junta_todas(corrida):
     assert de_las_resoluciones.oficina_productora.endswith("FACULTAD DE DERECHO Y CIENCIAS POLITICAS")
 
     de_las_actas = leer_fuid(run.destination / CARPETA / CAJA / f"{CAJA}__FUID.xlsx")
-    assert [fila[2] for fila in de_las_actas.filas] == ["ACTA DE CONSEJO DE FACULTAD No. 02 - ORDINARIA"]
+    assert [fila[2] for fila in de_las_actas.filas] == ["ACTA DE CONSEJO DE FACULTAD - ORDINARIA"]
 
     runner._escribir_el_fuid_general(run, [], list(run.inventario_filas))
     general = run.destination / CARPETA / "00.FUID GENERAL.xlsx"
@@ -130,7 +130,7 @@ def test_cada_fuid_va_con_sus_pdf_y_el_general_las_junta_todas(corrida):
     assert planilla.oficina_productora.endswith("FACULTAD DE DERECHO Y CIENCIAS POLITICAS")
     assert [fila[0] for fila in planilla.filas] == ["1", "2", "3"]
     assert sorted(fila[2] for fila in planilla.filas) == [
-        "ACTA DE CONSEJO DE FACULTAD No. 02 - ORDINARIA",
+        "ACTA DE CONSEJO DE FACULTAD - ORDINARIA",
         "RESOLUCION 00030 POR LA CUAL SE CONVOCA",
         "RESOLUCION 00031 POR LA CUAL SE CONVOCA",
     ]
@@ -173,7 +173,7 @@ def test_en_la_carpeta_de_la_corrida_un_solo_fuid_con_las_dos_y_su_resumen(tmp_p
     fuid = leer_fuid(ruta)
     # El asunto del acta lleva detrás su resumen (el operador, 2026-11-09).
     assert sorted(fila[2] for fila in fuid.filas) == [
-        "ACTA DE CONSEJO DE FACULTAD No. 02 - ORDINARIA - SE APROBO EL PLAN DE ESTUDIOS",
+        "ACTA DE CONSEJO DE FACULTAD - ORDINARIA - SE APROBO EL PLAN DE ESTUDIOS",
         "RESOLUCION 00030 POR LA CUAL SE CONVOCA",
         "RESOLUCION 00031 POR LA CUAL SE CONVOCA",
     ]
@@ -286,3 +286,41 @@ def test_los_pdf_sueltos_en_la_raiz_dejan_su_fuid_junto_al_general(tmp_path):
     runner._escribir_el_fuid_general(run, [], list(run.inventario_filas))
     general = leer_fuid(run.destination / carpeta / "00.FUID GENERAL.xlsx")
     assert [(fila[7], fila[8]) for fila in general.filas] == [("00C003362", "UPD3860000")]
+    # Y ninguna planilla suelta al lado: el FUID es el único Excel (2026-11-11).
+    assert not list(run.destination.rglob("*__inventario.xlsx"))
+
+
+def test_en_la_universidad_dos_tipos_en_una_carpeta_un_solo_fuid(corrida, tmp_path):
+    """El operador, 2026-11-11: «documentos de Universidad de Cartagena, un único FUID»; «para aquellas
+    carpetas en las que existan diferentes tipos de documentos, agruparlo en un solo FUID manejando el
+    mismo formato».
+
+    Con el destino de toda corrida, «<carpeta> - PROCESADO» (``destino_de_la_corrida``): la caja con
+    resoluciones y actas lleva un FUID con las dos, y nada más que él y el general. Ni la planilla de
+    la resolución ni el Excel de actas.
+    """
+    runner, run, settings = corrida
+    run.destination = tmp_path / f"{CARPETA} - PROCESADO"
+    run.destination.mkdir()
+    _entregar_las_dos(runner, run, settings)
+    runner._escribir_el_fuid_general(run, [], list(run.inventario_filas))
+
+    excels = sorted(p.relative_to(run.destination).as_posix() for p in run.destination.rglob("*.xlsx"))
+    assert excels == ["00.FUID GENERAL.xlsx", f"{CAJA}/{CAJA}__FUID.xlsx"]
+    de_la_caja = leer_fuid(run.destination / CAJA / f"{CAJA}__FUID.xlsx")
+    assert sorted(fila[2] for fila in de_la_caja.filas) == [
+        "ACTA DE CONSEJO DE FACULTAD - ORDINARIA",
+        "RESOLUCION 00030 POR LA CUAL SE CONVOCA",
+        "RESOLUCION 00031 POR LA CUAL SE CONVOCA",
+    ]
+    # El mismo formato para los dos: el FO-GD-008 con la oficina de la carpeta.
+    assert de_la_caja.oficina_productora.endswith("FACULTAD DE DERECHO Y CIENCIAS POLITICAS")
+
+
+def test_fuera_de_la_universidad_la_planilla_sigue(corrida):
+    """Sin la oficina de una facultad, la corrida no es de la Universidad: su planilla se entrega como siempre."""
+    runner, run, settings = corrida
+    run.oficina = None
+    _entregar_las_dos(runner, run, settings)
+
+    assert list((run.destination / CAJA).rglob("*__inventario.xlsx"))

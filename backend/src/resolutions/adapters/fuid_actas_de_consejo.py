@@ -5,10 +5,11 @@ resumen. Ese día el operador pidió el mismo FUID para todas las habilidades
 («estandarízame todas esas habilidades»), y para las actas de consejo, una fila
 por acta:
 
-* **Nombre o asunto**: «ACTA DE CONSEJO DE FACULTAD No. 022 - ORDINARIA», con
-  el consejo que diga el papel: académico, superior o, si no dice, de facultad.
+* **Nombre o asunto**: «ACTA DE CONSEJO DE FACULTAD - ORDINARIA», con el
+  consejo que diga el papel: académico, superior o, si no dice, de facultad.
   Desde el 2026-11-09, seguido del resumen del acta, que nombra a las personas
-  que menciona: «… No. 022 - ORDINARIA - El Consejo de Facultad… sesionó…».
+  que menciona: «… - ORDINARIA - El Consejo de Facultad… sesionó…». Sin el
+  número del acta desde el 2026-11-11: va sólo en el consecutivo.
 * **Consecutivo inicial y final**: el número del acta, «022».
 * **Fechas extremas**: la de la sesión en las dos, «17/12/2012».
 * **Caja** y **carpeta**: «00C003284» y «UPD3859771», de dónde está el PDF.
@@ -58,16 +59,20 @@ def _entero(valor: object) -> int | None:
 
 
 def asunto_del_acta(fila: Mapping[str, object]) -> str:
-    """«ACTA DE CONSEJO DE FACULTAD No. 022 - ORDINARIA»."""
+    """«ACTA DE CONSEJO DE FACULTAD - ORDINARIA», sin el número del acta.
+
+    El número va en el consecutivo inicial y final, que es su columna; en el
+    asunto lo quitó el operador el 2026-11-11: «que quede sin el número de
+    acta», «ACTA DE CONSEJO DE FACULTAD - EXTRAORDINARIA - El Consejo…».
+    """
     acta = _plano(fila.get("acta"))
     serie = next((nombre for palabra, nombre in _CONSEJOS if palabra in acta), _DE_FACULTAD)
-    numero = str(fila.get("numero") or "").strip() or NO_LEIDO
     sesion = "EXTRAORDINARIA" if "EXTRAORDINARI" in acta else "ORDINARIA" if "ORDINARI" in acta else ""
-    return f"{serie} No. {numero}" + (f" - {sesion}" if sesion else "")
+    return serie + (f" - {sesion}" if sesion else "")
 
 
 def asunto_con_resumen(fila: Mapping[str, object], resumen: str | None = None) -> str:
-    """«ACTA DE CONSEJO DE FACULTAD No. 022 - ORDINARIA - El Consejo de Facultad… sesionó…».
+    """«ACTA DE CONSEJO DE FACULTAD - ORDINARIA - El Consejo de Facultad… sesionó…».
 
     El operador, 2026-11-09: el asunto es el acta, su sesión y su resumen, con
     el nombre de las personas que menciona. Sin resumen -- «Solo OCR» -- el

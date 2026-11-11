@@ -262,10 +262,6 @@ NO_APLICA = "N/A"
 #: Lo que se dice cuando el folio no se pudo leer porque no se pidió la IA.
 SIN_IA_PARA_EL_FOLIO = "el folio está escrito a mano y sólo se lee con «OCR + IA»"
 
-#: Lo que dice la cabecera del Excel de una corrida leída sin la ayuda de pago,
-#: una sola vez en vez de en cada fila.
-SIN_IA = "Leído con «Solo OCR»: el folio manuscrito y el resumen se leen con «OCR + IA»"
-
 #: Cuántas lecturas de pago van a la vez en un libro: folios y resúmenes de
 #: varias actas. Cuatro mantienen el ritmo sin que el proveedor pida esperar.
 LECTURAS_A_LA_VEZ = 4
@@ -653,8 +649,6 @@ class PerfilDeActas:
     """
 
     tipo_documental: str
-    #: El título del Excel.
-    titulo: str
     repartir: Callable[[Sequence[str]], ActasDelPdf]
     leer: Callable[[Sequence[str]], ActaDeConsejo]
     #: Cómo se reparten en piezas las páginas de un acta; sin esto, el acta es
@@ -685,11 +679,10 @@ class PerfilDeActas:
 
 
 #: Las actas de consejo: una por sesión, con su folio manuscrito y su resumen.
-#: Desde el 2026-10-29 van además en el FUID, que no tiene dónde poner el
-#: resumen: se queda en su Excel de actas, que se sigue entregando.
+#: Su inventario es el FUID, con el resumen en el asunto (2026-11-09); el Excel
+#: de actas que lo acompañaba se quitó el 2026-11-11.
 CONSEJO = PerfilDeActas(
     tipo_documental=TIPO_DOCUMENTAL,
-    titulo="INVENTARIO DE ACTAS DE CONSEJO",
     repartir=actas_del_pdf,
     leer=leer_acta,
     piezas=piezas_de_la_sesion,
@@ -703,7 +696,6 @@ CONSEJO = PerfilDeActas(
 #: la IA.
 GRADO = PerfilDeActas(
     tipo_documental=TIPO_DE_GRADO,
-    titulo="INVENTARIO DE ACTAS DE GRADO",
     repartir=actas_de_grado_del_pdf,
     leer=leer_acta_de_grado,
     piezas=None,
@@ -3319,11 +3311,6 @@ def es_de_actas(fila: Mapping[str, object]) -> bool:
     dejan sus filas en el mismo inventario, pero cada una llega ya con su porqué.
     """
     return (fila.get("tipo") or TIPO_DOCUMENTAL) in _DE_ACTAS
-
-
-def es_de_consejo(fila: Mapping[str, object]) -> bool:
-    """Si la fila es de un acta de consejo: las que llevan además su Excel con el resumen."""
-    return (fila.get("tipo") or TIPO_DOCUMENTAL) == TIPO_DOCUMENTAL
 
 
 #: Lo que cada clase de acta lleva en su fila y el papel puede traer, con su

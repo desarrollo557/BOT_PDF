@@ -145,15 +145,21 @@ class TestLasActasDeConsejo:
 
         fila = informe["inventario_actas"][0]
         assert fila["fecha"] == "17-12-2012"
-        # La nota de la prueba no va a «Observaciones» del Excel de actas, que se
+        # La nota de la prueba no va a las observaciones de la fila, que se
         # entrega (la revisión, 2026-11-10): queda en el aviso y en la cuenta.
         assert "corregida" not in (fila.get("observaciones") or "")
         assert informe["revision_de_fechas"]["corregida"] == 1
         assert any(aviso.startswith("Fecha corregida en") for aviso in informe["notices"])
         # La pantalla de Archivo lee la fecha de la primera acta del informe.
         assert informe["fecha_inicial"] == informe["fecha_final"] == "17-12-2012"
-        # Y el Excel y el FUID salieron con ella.
-        assert informe.get("inventario") and informe.get("fuid_de_actas")
+        # Y el FUID salió con ella: el único inventario, sin el Excel de actas
+        # aparte (2026-11-11), con el nombre que busca el botón de descarga.
+        from openpyxl import load_workbook
+
+        assert informe["inventario"].endswith("__inventario.xlsx") and "fuid_de_actas" not in informe
+        escrito = next(Path(acta["settings"]["output_dir"]).rglob(informe["inventario"]))
+        assert load_workbook(escrito).active["P1"].value == "CÓDIGO: FO-GD-008"
+        assert load_workbook(escrito).active["F14"].value == "17/12/2012"
 
     def test_el_pdf_de_la_sesion_se_llama_con_la_fecha_corregida(self, tmp_path, monkeypatch):
         """El PDF se llama por su acta y su fecha: corregida, sale con la corregida (P1-1, 2026-11-10).
