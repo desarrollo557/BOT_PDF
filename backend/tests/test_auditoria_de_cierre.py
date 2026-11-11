@@ -872,3 +872,71 @@ class TestLaAuditoriaNoTrabaLaCorrida:
         la_suya = entrega_app.filas_por_archivo(filas)
         assert [la_suya(a) for a in archivos] == filas
         assert len(calculadas) == len(filas)
+
+
+class TestLoLeidoFueraDeLaCapa:
+    """La fecha leída a mano por la IA no es «no escrita» para la auditoría (3807860, 2026-11-11).
+
+    La auditoría contrastaba la fecha entregada sólo con la capa del PDF, y la
+    capa deja el «El Banco, 23 de 12 de 2020» manuscrito del reconocimiento en
+    «ÜD _ , ^ de de»: el documento bien fechado salía dudoso.
+    """
+
+    CAPA = {
+        1: "ÜD _ , ^ de de Grupo*epnp Señores: CARIBEMAR DE LA COSTA S.A.S E.S.P. La Ciudad Ref.: Reconocimiento "
+        "de deuda y propuesta de acuerdo de pago Yo, identificado como aparece al pie de mi firma, reconozco "
+        "como deuda clara, expresa y actualmente exigible a favor de CARIBEMAR DE LA COSTA la suma"
+    }
+    FILA = {"archivo_generado": "01_RECONOCIMIENTO.pdf", "fecha_inicial": "2020-12-23", "fecha_final": "2020-12-23"}
+
+    def _auditar(self, lo_leido=()):
+        from resolutions.domain.fechas_extremas import EXTREMOS
+
+        return entrega_app.auditar_las_fechas(
+            [ArchivoEntregado("01_RECONOCIMIENTO.pdf", (1,))], self.CAPA, [self.FILA], regla=EXTREMOS, lo_leido=lo_leido
+        )
+
+    def test_sin_lo_leido_la_fecha_a_mano_queda_en_duda(self):
+        assert any("no está escrita" in duda for duda in self._auditar().dudas)
+
+    def test_con_lo_que_leyo_la_ia_se_confirma(self):
+        leido = [{"paginas": [1], "texto": "El Banco, 23 de 12 de 2020 Señores: CARIBEMAR Ref.: Reconocimiento de deuda"}]
+        auditadas = self._auditar(leido)
+        assert auditadas.dudas == [] and auditadas.errores == []
+
+    def test_lo_leido_de_otra_hoja_no_cuenta(self):
+        leido = [{"paginas": [7], "texto": "El Banco, 23 de 12 de 2020"}]
+        assert any("no está escrita" in duda for duda in self._auditar(leido).dudas)
+
+    def test_la_caja_guarda_solo_lo_que_no_esta_en_la_capa(self):
+        from resolutions.api.worker.correspondencia import lo_leido_fuera_de_la_capa
+
+        piezas = [
+            {"fecha": "2020-12-23", "fecha_pagina": 4, "fecha_via": "ia"},
+            {"fecha": "2023-12-20", "fecha_pagina": 9, "fecha_via": "sello"},
+            {"fecha": "2021-05-03", "fecha_pagina": 12, "fecha_via": "texto"},
+            {"fecha": "2022-01-14", "fecha_pagina": 15, "fecha_via": "texto"},
+            {"fecha": None, "fecha_pagina": None},
+        ]
+        leido = lo_leido_fuera_de_la_capa(
+            piezas, releidas={4: ["El Banco, 23 de 12 de 2020"]}, leidas_por_ocr={15: "Cartagena, 14/01/2022"}
+        )
+        assert leido == [
+            {"paginas": [4], "texto": "El Banco, 23 de 12 de 2020"},
+            {"paginas": [9], "texto": "SELLO DE RADICACION: 20/12/2023"},
+            {"paginas": [15], "texto": "Cartagena, 14/01/2022"},
+        ]
+
+    def test_la_constancia_lo_guarda_y_la_vieja_se_lee_sin_el(self, tmp_path):
+        import json
+
+        from resolutions.api import constancia as constancias
+
+        ruta = tmp_path / ".bot-entrega-UPD1.json"
+        constancias.escribir(ruta, constancias.Constancia("UPD1.pdf", 1, 1, lo_leido=[{"paginas": [4], "texto": "x"}]))
+        assert constancias.leer(ruta).lo_leido == [{"paginas": [4], "texto": "x"}]
+        # La de antes del 2026-11-11, sin el campo (en otro archivo: Windows no deja pisar la oculta).
+        vieja = {k: v for k, v in json.loads(ruta.read_text(encoding="utf-8")).items() if k != "lo_leido"}
+        otra = tmp_path / "vieja.json"
+        otra.write_text(json.dumps(vieja), encoding="utf-8")
+        assert constancias.leer(otra).lo_leido == []

@@ -111,6 +111,7 @@ def auditar_un_pdf(
     filas_de_la_constancia: Sequence[Mapping[str, object]] | None = None,
     juez_de_datos: JuezDeDatos | None = None,
     filas_del_indice_electronico: Sequence[Mapping[str, object]] | None = None,
+    lo_leido: Sequence[Mapping[str, object]] = (),
 ) -> PdfAuditado:
     """Lo que la auditoría encuentra en un PDF entregado.
 
@@ -227,6 +228,7 @@ def auditar_un_pdf(
             juez=juez_de_datos,
             # Los años del libro, los mismos que en la muestra de filas.
             ventana=ventana_de_la_auditoria(habilidad, pdf, list(textos.values())),
+            lo_leido=lo_leido,
         )
         errores.extend(fechas.errores)
         dudas.extend(fechas.dudas)
@@ -431,6 +433,7 @@ def auditar_las_fechas(
     regla: str,
     juez: JuezDeDatos | None = None,
     ventana: tuple[int, int] | None = None,
+    lo_leido: Sequence[Mapping[str, object]] = (),
 ) -> FechasAuditadas:
     """La fecha inicial y la final de cada PDF entregado contra el texto de sus hojas del original.
 
@@ -454,16 +457,29 @@ def auditar_las_fechas(
 
     Las filas ``DE_TODO_EL_ORIGINAL`` -- las puntas de Kingspan -- se auditan
     contra sus hojas del original, no contra un PDF.
+
+    ``lo_leido`` es lo que un lector leyó en el papel al procesar y la capa no
+    trae (``constancia.lo_leido``): la fecha a mano que transcribió la IA, la
+    del sello de tinta. Se suma al papel de sus hojas. Sin ello, la fecha bien
+    leída a mano salía «no escrita en el documento» (3807860, 2026-11-11).
     """
     resultado = FechasAuditadas()
     documentos: list[_Documento] = []
     la_suya = filas_por_archivo([f for f in filas if not f.get(DE_TODO_EL_ORIGINAL)])
+    leido_por_hoja: dict[int, list[str]] = {}
+    for leido in lo_leido:
+        texto = str(leido.get("texto") or "") if isinstance(leido, Mapping) else ""
+        for pagina in (leido.get("paginas") or []) if texto else []:
+            if isinstance(pagina, int):
+                leido_por_hoja.setdefault(pagina, []).append(texto)
     for archivo in archivos:
         fila = la_suya(archivo)
         fechas = fechas_de_la_fila(fila) if fila is not None else None
         if fechas is None:
             continue
-        suyas = tuple(textos.get(p, "") or "" for p in archivo.paginas if p is not None)
+        suyas = tuple(textos.get(p, "") or "" for p in archivo.paginas if p is not None) + tuple(
+            texto for p in archivo.paginas if p is not None for texto in leido_por_hoja.get(p, ())
+        )
         documentos.append(_Documento(archivo.nombre, fechas, suyas))
     total = max(textos, default=0)
     for orden, fila in enumerate(f for f in filas if f.get(DE_TODO_EL_ORIGINAL)):

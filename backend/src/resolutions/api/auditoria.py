@@ -553,6 +553,8 @@ def _auditar_uno(entrega: EntregaVista, juez, indices: dict, *, juez_de_datos=No
         juez_de_datos=juez_de_datos,
         # Ni la caja de correspondencia: su Índice Electrónico (2026-11-10).
         filas_del_indice_electronico=_filas_del_indice_electronico(entrega, indices),
+        # Lo que la IA o el sello leyeron para fechar y la capa no trae (2026-11-11).
+        lo_leido=entrega.constancia.lo_leido,
     )
 
 

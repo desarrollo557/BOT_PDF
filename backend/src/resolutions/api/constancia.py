@@ -87,6 +87,12 @@ class Constancia:
     #: para rehacer el de la carpeta del NIC con todos sus UPD sin volver a
     #: procesar ninguno (la caja de correspondencia, desde el 2026-10-22).
     indice: dict | None = None
+    #: Lo que un lector leyó en el papel para fechar un documento cuando la capa
+    #: del PDF no lo trae -- la fecha a mano del reconocimiento que transcribió
+    #: la IA, la del sello de tinta --: {"paginas", "texto"}, por las hojas del
+    #: origen. La auditoría de cierre lo suma al papel de esas hojas; sin él,
+    #: daba por «no escrita» la fecha que la IA leyó bien (2026-11-11).
+    lo_leido: list[dict] = field(default_factory=list)
     #: El principio y el final del PDF de origen (``firma_del_origen``): dice si
     #: es el mismo aunque se haya copiado y tenga otra fecha.
     firma: str | None = None
@@ -138,6 +144,7 @@ def leer(ruta: Path) -> Constancia | None:
         or not isinstance(constancia.actas, list)
         or not isinstance(constancia.unidades, list)
         or (constancia.indice is not None and not isinstance(constancia.indice, dict))
+        or not isinstance(constancia.lo_leido, list)
         or (constancia.firma is not None and not isinstance(constancia.firma, str))
         or type(constancia.version) is not int
     ):

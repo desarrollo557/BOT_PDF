@@ -211,6 +211,8 @@ def _completar_las_fechas(
             if hallada is not None:
                 piezas[i]["fecha"] = hallada.fecha.isoformat()
                 piezas[i]["fecha_por"] = hallada.como()
+                piezas[i]["fecha_pagina"] = hallada.pagina
+                piezas[i]["fecha_via"] = hallada.via
                 halladas.append({"pages": piezas[i]["pages"], "fecha": piezas[i]["fecha"], "como": hallada.como()})
     except Exception:  # noqa: BLE001 - buscar una fecha no tumba la caja
         logger.warning("no se pudo terminar de buscar las fechas que faltan", exc_info=True)
@@ -241,6 +243,51 @@ def _completar_las_fechas(
                 }
             )
     return halladas
+
+
+#: Cómo se dice, en ``fecha_via``, cada fuente de ``fecha_por_estructura`` que
+#: no está en la capa de texto del PDF.
+_VIA_DE_LA_FUENTE = {"sello de radicación": "sello", "fecha marcada en la guía": "guia"}
+#: Cuánto texto leído se guarda por hoja en la constancia.
+LARGO_DE_LO_LEIDO = 4000
+#: Por debajo de cuántos caracteres una capa de texto no trae nada que leer.
+MINIMO_DE_CAPA = 50
+
+
+def lo_leido_fuera_de_la_capa(
+    piezas: list[dict],
+    *,
+    releidas: dict[int, list[str]],
+    leidas_por_ocr: dict[int, str],
+) -> list[dict]:
+    """Lo que un lector leyó en el papel para fechar cada pieza y la capa no trae.
+
+    Va a la constancia, y la auditoría de cierre lo suma al papel de esas
+    hojas: contrastaba la fecha sólo con la capa del PDF, y la que la IA leyó a
+    mano en el encabezado del reconocimiento -- «El Banco, 23 de 12 de 2020»,
+    que la capa deja en «ÜD _ , ^ de de» -- salía «no escrita en el
+    documento» (3807860, 2026-11-11). Lo que salió de la capa no se guarda: la
+    auditoría lo lee igual.
+    """
+    from datetime import date
+
+    salida: list[dict] = []
+    for pieza in piezas:
+        fecha, pagina, via = pieza.get("fecha"), pieza.get("fecha_pagina"), pieza.get("fecha_via")
+        if not fecha or pagina is None:
+            continue
+        if via in ("ocr", "ia"):
+            texto = "\n".join(releidas.get(pagina, ()))
+        elif via == "sello":
+            texto = f"SELLO DE RADICACION: {date.fromisoformat(str(fecha)[:10]):%d/%m/%Y}"
+        elif via == "guia":
+            texto = f"FECHA MARCADA EN LA GUIA: {date.fromisoformat(str(fecha)[:10]):%d/%m/%Y}"
+        else:
+            # De la capa, o de la OCR de una hoja que no la trae.
+            texto = leidas_por_ocr.get(pagina) or ""
+        if texto.strip():
+            salida.append({"paginas": [pagina], "texto": " ".join(texto.split())[:LARGO_DE_LO_LEIDO]})
+    return salida
 
 
 def _asegurar_las_fechas(
@@ -761,6 +808,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             ),
         )
         textos = {p: source.text_of(p) for p in range(1, page_count + 1)}
+        # Las hojas cuya capa no trae nada que leer: lo que la OCR leyó en
+        # ellas va a la constancia si fecha un documento (``lo_leido``).
+        sin_capa = {p for p, t in textos.items() if len((t or "").strip()) < MINIMO_DE_CAPA}
         textos.update({p: t for p, t in leidas.textos.items() if t})
         # L2. El sello de radicación de cada hoja que puede llevarlo, leído
         # aparte con el OCR de casa. Los radicados bien escritos en la caja
@@ -1096,6 +1146,13 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                         # acuerdo de 2020). La busca después el agente.
                         "fecha": primera.isoformat() if primera else None,
                         **({"fecha_por": estructura.como()} if primera else {}),
+                        # De qué hoja y por qué vía, para dejar en la
+                        # constancia lo que se leyó fuera de la capa.
+                        **(
+                            {"fecha_pagina": estructura.pagina, "fecha_via": _VIA_DE_LA_FUENTE.get(estructura.fuente, "texto")}
+                            if primera
+                            else {}
+                        ),
                         # Dónde releerla si no salió: la hoja principal y
                         # sus respaldos.
                         "donde_buscar": list(estructura.donde_buscar),
@@ -1703,6 +1760,13 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # Las fechas que no estaban a la vista y de dónde salieron: el índice
         # lleva sólo la fecha; aquí queda cómo se obtuvo, para auditarla.
         "fechas_halladas": fechas_halladas,
+        # Y lo que se leyó para fecharlas fuera de la capa del PDF: va a la
+        # constancia, y la auditoría de cierre lo suma al papel (2026-11-11).
+        "lo_leido": lo_leido_fuera_de_la_capa(
+            piezas,
+            releidas=releidas,
+            leidas_por_ocr={p: t for p, t in textos.items() if p in sin_capa and t},
+        ),
         # Y el RE de cada reclamo y constancia, por su primera hoja, con de
         # dónde salió: «RE2310…: del sello de la pág. 8».
         "re_en_el_nombre": re_en_el_nombre,

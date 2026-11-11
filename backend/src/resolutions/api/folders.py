@@ -4119,6 +4119,9 @@ class FolderRunner:
             if not informe.get("indice_electronico")
             else [],
             indice=entrega.indice,
+            # Lo que la IA o el sello leyeron para fechar cada documento cuando
+            # la capa no lo trae: la auditoría de cierre lo suma a su papel.
+            lo_leido=[f for f in informe.get("lo_leido") or [] if isinstance(f, dict)],
             # De la copia que se procesó, que es la del origen: sin otra lectura
             # de la red.
             firma=self._firma_de(job, origin),
