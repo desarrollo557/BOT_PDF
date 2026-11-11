@@ -483,6 +483,11 @@ def _del_encabezado_de_la_cabeza(texto: str, hoy: date | None) -> date | None:
     return None
 
 
+#: El escrito con el sello de tinta de la oficina. Es también lo que pasa a ser
+#: una hoja con sello que parecía un anexo.
+_ESCRITO_RADICADO = Pieza("escrito radicado", ABRE, _del_escrito)
+
+
 #: Las piezas, en el orden en que se prueban sobre una hoja (la primera que la
 #: reconoce la nombra). Los rangos dicen cuál manda como hoja principal.
 _PIEZAS: list[tuple[re.Pattern[str], Pieza]] = [
@@ -503,7 +508,7 @@ _PIEZAS: list[tuple[re.Pattern[str], Pieza]] = [
         re.compile(
             r"RECIBIDO\s+NO\s+IM[PB]LICA|NO\s+IM[PB]LICA\s+A\W?C\W?EPTACI|FECHA\s+[DC]E\s+RECIBIDO"
         ),
-        Pieza("escrito radicado", ABRE, _del_escrito),
+        _ESCRITO_RADICADO,
     ),
     (
         re.compile(
@@ -688,6 +693,12 @@ def fecha_por_estructura(
     sellos = sellos or {}
     guias = guias or {}
     piezas = {p: pieza_de(textos.get(p, "") or "") for p in paginas}
+    # Una hoja con sello nunca es un anexo (regla F4 de la caja): es el escrito
+    # que la oficina radicó, aunque su cabeza nombre la factura que aporta
+    # (DOCUMENTO_35 p5, UPD2366126 p68: el sello leído no llegaba al documento).
+    for pagina in (*sellos, *con_sello):
+        if pagina in piezas and piezas[pagina].anexo:
+            piezas[pagina] = _ESCRITO_RADICADO
     # La hoja con sello -- aunque su fecha, a mano, no se haya podido leer -- es
     # la que el operador radicó: la principal.
     principal = hoja_principal(

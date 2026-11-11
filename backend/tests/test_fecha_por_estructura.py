@@ -259,6 +259,14 @@ class TestElSelloManda:
         )
         assert fecha_por_estructura([1], _paginas(escrito), hoy=HOY).fecha is None
 
+    def test_una_hoja_con_sello_nunca_es_un_anexo(self) -> None:
+        # DOCUMENTO_35 p5: el recurso nombra en su cabeza la factura que aporta; su sello, leído
+        # por la IA (21/07/2022), no llegaba al documento porque la hoja se tomaba por factura.
+        recurso = "OPERADOR DE RED Caribe Mar USE ESTE NÚMERO PARA CONSULTAS Factura No. Fecha emisión: 03/04/2022"
+        assert pieza_de(recurso).anexo
+        r = fecha_por_estructura([1], _paginas(recurso), sellos={1: date(2022, 7, 21)}, hoy=HOY)
+        assert (r.fecha, r.fuente) == (date(2022, 7, 21), "sello de radicación")
+
     def test_la_hoja_con_sello_es_la_principal(self) -> None:
         factura = "OPERADOR DE RED Caribe Mar USE ESTE NÚMERO PARA CONSULTAS NIC 1 Fecha emisión: 03/04/2022 Factura No."
         escrito = "Señores Afinia Ref: Reclamo"

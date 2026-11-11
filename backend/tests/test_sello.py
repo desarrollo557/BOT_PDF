@@ -393,3 +393,52 @@ class TestLaHojaDeLaListaCierraSuEscrito:
         }
         retencion = retener_anexos(_grupos([1], [2, 3]), textos, abren={2})
         assert [g.page_numbers for g in retencion.grupos.groups] == [[1], [2, 3]]
+
+
+class TestLaFechaDelSelloDeTinta:
+    """La fecha a mano del sello de la oficina, leída por la IA del recorte (2026-11-10).
+
+    Hasta entonces el sello de tinta salía siempre sin fecha, aunque la IA la
+    hubiera transcrito: 4100325 (UPD3138018) se fechaba con su factura anexa.
+    """
+
+    def test_tras_el_rotulo(self):
+        from resolutions.domain.sello import fecha_del_sello_de_tinta
+
+        pago = (
+            "CARIBEMAR DE LA COSTA S.A.S.E.S.P. OFICINA SANTA ANA BOLIVAR SUR RECIBIDO NO IMPLICA ACEPTACIÓN "
+            "FECHA DE RECIBIDO: 20/12/2023 11:37 No DE RADICACION: 2023602 16067 No DE FOLIOS: DOS(2)"
+        )
+        assert fecha_del_sello_de_tinta(pago) == date(2023, 12, 20)
+
+    def test_con_el_rotulo_detras_o_al_pie_del_recuadro(self):
+        from resolutions.domain.sello import fecha_del_sello_de_tinta
+
+        detras = "OFICINA AGUSTIN CODAZZI CESAR RECIBIDO NO IMPLICA ACEPTACIÓN 24-06-2022. FECHA DE RECIBIDO DE 3120"
+        al_pie = (
+            "RECIBIDO NO IMPLICA ACEPTACIÓN FECHA DE RECIBIDO: No DE RADICACIÓN: No DE FOLIOS: DIR. NOTIFICACIÓN: "
+            "FUNCIONARIO RECEPTOR: 27-01-2022 LE 3120202200134"
+        )
+        assert fecha_del_sello_de_tinta(detras) == date(2022, 6, 24)
+        assert fecha_del_sello_de_tinta(al_pie) == date(2022, 1, 27)
+
+    def test_lo_que_deja_tesseract_no_da_fecha(self):
+        from resolutions.domain.sello import fecha_del_sello_de_tinta
+
+        casa = "RECIBIDO NO IMPLICA ACEPTACIÓN Grupo-epm wg% 6- 20 0aa Z- O - 2027 81º%; No DE RASICACION"
+        assert fecha_del_sello_de_tinta(casa) is None
+
+    def test_sin_sello_de_tinta_o_con_dos_fechas_sin_rotulo_no_se_adivina(self):
+        from resolutions.domain.sello import fecha_del_sello_de_tinta
+
+        assert fecha_del_sello_de_tinta("Valledupar, 14/06/2022 Señores AFINIA") is None
+        assert fecha_del_sello_de_tinta("RECIBIDO NO IMPLICA ACEPTACIÓN 03/05/2021 factura del 01/04/2021") is None
+
+    def test_leer_los_sellos_la_toma_de_la_ia_y_no_de_casa(self):
+        from resolutions.application.sellos import leer_sellos
+
+        casa = "OFICINA SANTA ANA BOLIVAR SUR RECIBIDO NO IMPLICA ACEPTACIÓN FECHA 0E AECIECO: ZD[MÍ_LO_ 23"
+        pago = "RECIBIDO NO IMPLICA ACEPTACIÓN FECHA DE RECIBIDO: 20/12/2023 11:37 No DE FOLIOS: DOS(2)"
+        assert leer_sellos(_Fuente({1: casa}), _Ocr(), [1])[1].fecha is None
+        con_ia = leer_sellos(_Fuente({1: casa}), _Ocr(), [1], de_pago=_Ocr({casa: pago}))
+        assert (con_ia[1].clase, con_ia[1].fecha) == ("tinta", date(2023, 12, 20))

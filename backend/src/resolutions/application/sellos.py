@@ -32,6 +32,7 @@ from ..domain.grouping import GroupingResult, PageGroup
 from ..domain.sello import (
     Sello,
     con_los_conocidos,
+    fecha_del_sello_de_tinta,
     leer_sello,
     radicado_aproximado,
     radicado_del_texto,
@@ -416,13 +417,22 @@ def leer_sellos(
     sellos: dict[int, Sello] = {}
     for pagina, (sello, texto, de_la_capa, _) in detectados.items():
         del_pago = leer_sello(pagados[pagina]) if pagados.get(pagina) else None
+        # La fecha a mano del sello de tinta, sólo de la lectura de la IA: la
+        # de casa la deja en basura, y el sello manda sobre cualquier otra
+        # fecha del documento (2026-11-10). Hasta hoy el sello de tinta salía
+        # siempre sin fecha aunque la IA la hubiera transcrito.
+        a_mano = (
+            fecha_del_sello_de_tinta(pagados[pagina])
+            if sello.clase == "tinta" and pagados.get(pagina)
+            else None
+        )
         if del_pago is not None and del_pago.radicado:
             # La lectura de pago manda: no se corrige contra los conocidos,
             # que podrían ser el radicado vecino de otro trámite.
             sellos[pagina] = Sello(
                 sello.clase if sello.clase == "tinta" else del_pago.clase,
                 del_pago.radicado,
-                del_pago.fecha or sello.fecha,
+                a_mano or del_pago.fecha or sello.fecha,
                 del_pago.folios or sello.folios,
             )
             continue
@@ -438,7 +448,8 @@ def leer_sellos(
         de_la_capa_leido = leer_sello(de_la_capa) if de_la_capa else None
         releido = leer_sello(relecturas[pagina]) if relecturas.get(pagina) else None
         fecha = (
-            sello.fecha
+            a_mano
+            or sello.fecha
             or (releido.fecha if releido else None)
             or (del_pago.fecha if del_pago else None)
             or (de_la_capa_leido.fecha if de_la_capa_leido else None)

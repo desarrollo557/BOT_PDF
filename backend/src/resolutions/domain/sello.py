@@ -362,6 +362,51 @@ def radicado_del_texto(texto: str) -> str | None:
     return _radicado(_plano(texto or ""))
 
 
+#: La fecha a mano del sello de tinta, como la transcribe la IA del recorte:
+#: «FECHA DE RECIBIDO: 20/12/2023 11:37», «21-02-2022.», «24-06-2022. FECHA
+#: DE RECIBIDO» (el rótulo detrás de su cifra), o al pie del recuadro,
+#: «FUNCIONARIO RECEPTOR: 27-01-2022» (2026-11-10, sobre ocho sellos reales).
+_FECHA_A_MANO = re.compile(r"(?<![\d/.-])(\d{1,2})\s?[/.-]\s?(\d{1,2})\s?[/.-]\s?(\d{4}|\d{2})(?![\d/-])")
+_RECIBIDO = re.compile(r"F\w?CH[AI1]\s+D[EF]\s+RECIB")
+#: Cuánto texto alrededor del rótulo «FECHA DE RECIBIDO» es suyo.
+_ALREDEDOR_DEL_RECIBIDO = 90
+
+
+def fecha_del_sello_de_tinta(texto: str, *, hoy: date | None = None) -> date | None:
+    """La fecha escrita a mano en el sello de tinta, leída por la IA del recorte.
+
+    Sólo para la lectura de la IA: Tesseract deja esa letra en «0aa Z- O -
+    2027», y una cifra inventada fecharía mal el documento, porque el sello
+    manda (el operador, 2026-11-10). La más cercana al rótulo «FECHA DE
+    RECIBIDO»; sin rótulo legible, la única fecha del recorte -- si hay dos,
+    no se sabe cuál es --.
+    """
+    plano = _plano(texto or "")
+    if not _TINTA.search(plano):
+        return None
+    hoy = hoy or date.today()
+
+    def valida(hallado: re.Match[str]) -> date | None:
+        dia, mes, anio = (int(g) for g in hallado.groups())
+        anio = anio + 2000 if anio < 100 else anio
+        try:
+            fecha = date(anio, mes, dia)
+        except ValueError:
+            return None
+        return fecha if date(2000, 1, 1) <= fecha <= hoy else None
+
+    fechas = [(h.start(), f) for h in _FECHA_A_MANO.finditer(plano) if (f := valida(h))]
+    if not fechas:
+        return None
+    rotulo = _RECIBIDO.search(plano)
+    if rotulo:
+        cerca = [(abs(i - rotulo.end()), f) for i, f in fechas if abs(i - rotulo.end()) <= _ALREDEDOR_DEL_RECIBIDO]
+        if cerca:
+            return min(cerca, key=lambda par: par[0])[1]
+    distintas = {f for _, f in fechas}
+    return distintas.pop() if len(distintas) == 1 else None
+
+
 def _fecha(plano: str) -> date | None:
     for hallado in (*_FECHA_CON_HORA.finditer(plano), *_FECHA_DEL_SELLO.finditer(plano)):
         try:
