@@ -56,6 +56,14 @@ DPI_DEL_PAGO = 300
 #: Hasta dónde se busca el sello: va en la mitad de arriba.
 ALTURA_DEL_SELLO = 0.45
 
+#: Las palabras que siguen a un «no implica» de la prosa y nunca al del sello,
+#: «RECIBIDO NO IMPLICA ACEPTACIÓN»: «no implica que…», «no implica o de a
+#: entender…», «no implica la…».
+_PALABRA_DE_PROSA = (
+    r"(?:QUE|O|U|Y|E|A|AL|LA|LAS|EL|LOS|LO|UN|UNA|UNOS|UNAS|DE|DEL|EN|NI|NADA|SU|SUS|NINGUN|NINGUNA"
+    r"|CON|POR|PARA|SIN|ESTO|ESO|ESTE|ESTA|MI|MIS|TU|SE|ME|LE|LES|NOS)"
+)
+
 #: Lo que la capa de texto deja del sello, por roto que esté: el renglón de
 #: «AL CONTESTAR CITE ESTE NUMERO RE…» de la etiqueta, o el «RECIBIDO NO IMPLICA
 #: ACEPTACIÓN» del sello de tinta.
@@ -66,8 +74,16 @@ _ANCLA = re.compile(
     # Pegado también: «ALCONTESTARCITE» (UPD2326323 p1).
     r"CONT[EHIR]\W?STA[RN]\W{0,3}C|N\W?[UV]\W?[MVWI\\]{1,2}\W?[EF]\W?[RN]\W?[O0]\W?[RK]\W?[EFK]?\W?\d"
     # El sello de tinta por su frase, no por una palabra suelta: «le implica
-    # otras» está en el cuerpo de un recurso (UPD2326324 p9).
-    r"|NO\s+IM[PB]LICA|IM[PB]LICA\s*A?C?EPTACI|RECIBIDO\s+NO|N\W{0,3}\s*D[EF]\s+RADICACI"
+    # otras» está en el cuerpo de un recurso (UPD2326324 p9). Y tampoco por
+    # media frase que la prosa también dice (7975593, 2026-11-11: dos recursos
+    # partidos a la mitad por un sello que no estaba): «esto no implica o de a
+    # entender» (UPD3126960 p13) y «no había recibido notificación» (UPD2460819
+    # p257). «NO IMPLICA» vale salvo que lo siga una palabra de prosa; «RECIBIDO
+    # NO», sólo si sigue la «IM» de «IMPLICA», por rota que esté («í MELICA»,
+    # «IM:L'C», «IWPLICA»). Medido en 4.114 hojas de Afinia con la capa: se
+    # pierden esos 7 renglones de prosa y ningún sello.
+    r"|NO\s+IM[PB]LICA\b(?!\s+" + _PALABRA_DE_PROSA + r"\b)|IM[PB]LICA\s*A?C?EPTACI"
+    r"|RECIBIDO\s+NO\b(?=\W*[IÍ]\W*[MW])|N\W{0,3}\s*D[EF]\s+RADICACI"
     # La primera línea de la etiqueta, que la capa deja pegada por lo chica de
     # su letra: «CaribemardelaCostaS AS ESP» (UPD3102756 pág. 51). Una carta
     # escribe el nombre con sus espacios.

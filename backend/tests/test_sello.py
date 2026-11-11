@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from resolutions.application.agrupacion import PaginasLeidas, agrupar_por_tramite
 from resolutions.application.sellos import cortar_por_sellos
 from resolutions.domain.grouping import GroupingResult, PageGroup
@@ -224,6 +226,39 @@ class TestElAnclaDelSello:
         assert _ANCLA.search("se puede evidenciar el cuadro comparativo anexo a la contestación de la petición") is None
         assert _ANCLA.search("AL CONTESTAR CITE ESTE NUMERORE3110202118047")
         assert _ANCLA.search("NUMF.nORK3110202139039")
+
+    @pytest.mark.parametrize(
+        "renglon",
+        [
+            # 7975593, 2026-11-11: cada uno partió un recurso a la mitad con un sello que no estaba.
+            "en los postes, esto no implica o de a entender que la diligencia sea de mi inmueble,",
+            "derecho, de lo cual yo no había recibido notificación sobre a que obedecía este",
+            "La presente certificación no implica que el cotizante se encuentre al día en pagos",
+            "académico, no implicarán suspensiones de los pagos siempre que",
+        ],
+    )
+    def test_la_prosa_que_dice_media_frase_del_sello_no_es_un_sello(self, renglon):
+        from resolutions.application.sellos import _ANCLA
+
+        assert _ANCLA.search(renglon) is None
+
+    @pytest.mark.parametrize(
+        "renglon",
+        [
+            # Sellos reales de Afinia, tal como los deja la capa del escáner.
+            "RECIBIDO NO IMPLICA ACEPTACIÓN Grupo-epm",
+            "recibido no í MELICA ACEPTACION iI GPJp J'ep'T)",
+            "RECIBIDO no IM:L'C; ACE jJACióS C^-2úZI Gnjpo-epfij",
+            "RECIBIDO NO IWPLICAACEPTACIÓN Grupo.epnj",
+            "REC!3IDC NO IMPLICA ACE^TACiCS \\0-:2ozh Gnjpo-eprrj",
+            "RECIBIDO ......... NO IMPLICA .24- ACEPTACION, ofe-jtoa-",
+            "El Banco Magdalena, 16 de Octxibre 2020 RnCIPIDO NO IMPLICA / ACF p TA v . > n",
+        ],
+    )
+    def test_el_sello_de_tinta_roto_sigue_siendo_un_sello(self, renglon):
+        from resolutions.application.sellos import _ANCLA
+
+        assert _ANCLA.search(renglon)
 
 
 class _Fuente:
