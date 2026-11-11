@@ -11,6 +11,12 @@ el orden nuevo.
 - A igual fecha, el orden de antes, el de las hojas: el reclamo y su
   notificación del mismo día no se cruzan, y ordenar dos veces da lo mismo.
 
+Desde el 2026-11-11 el número de los PDF de la caja de correspondencia
+también sigue este orden («como esté en el Excel, también estará en el orden
+de archivos y numeración… esto es sólo Afinia»): el bot los numera con esta
+misma regla (``correspondencia.numerar_por_fecha``) y el PDF «05_…» es la fila
+con «Orden Documento» 5.
+
 Es la misma regla que aplica ``scripts/renombrar_reclamaciones.py`` a las cajas
 que ya estaban entregadas: lo que entrega el bot y lo que deja el script tienen
 que quedar iguales.

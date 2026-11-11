@@ -238,7 +238,8 @@ def _escribir_indice(report: dict, destination: Path, payload: dict) -> None:
     archivo de Afinia hacía a mano -- «00.INDICE ELECTRONICO.xlsx» -- y en lugar
     de la planilla de las otras rutas: una fila por archivo entregado, por la
     fecha de cada documento, lo antiguo primero (lo dictó el operador el
-    2026-11-04; los PDF conservan su número). Cada columna sale de donde se
+    2026-11-04; desde el 2026-11-11 los PDF van numerados en ese mismo orden).
+    Cada columna sale de donde se
     acordó:
 
     - el nombre es el tipo documental del catálogo, como su archivo; el

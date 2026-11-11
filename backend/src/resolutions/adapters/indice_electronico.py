@@ -79,8 +79,9 @@ def en_orden_cronologico(filas: list[FilaDelIndice]) -> list[FilaDelIndice]:
     """Las filas por su «Fecha Creación Documento», con «Orden Documento» 1, 2, 3… de nuevo.
 
     Lo antiguo primero, lo que no trae fecha al final y, a igual fecha, el orden
-    de las hojas (ver :mod:`~resolutions.domain.orden_del_indice`). Sólo el
-    índice: el número de cada PDF no cambia.
+    de las hojas (ver :mod:`~resolutions.domain.orden_del_indice`). En la caja
+    de correspondencia los PDF ya vienen numerados en este mismo orden
+    (2026-11-11), y las filas quedan como venían.
     """
     from dataclasses import replace
 

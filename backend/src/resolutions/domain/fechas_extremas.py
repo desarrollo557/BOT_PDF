@@ -63,8 +63,9 @@ GRADO = "grado"  # actas de grado y exámenes: la del acta, en las dos
 EXPEDICION = "expedicion"  # resoluciones: la de su fórmula «Dada en…»
 FIRMA = "firma"  # certificados: la de la firma (la primera y la última versión)
 ANIOS = "anios"  # historias, nóminas, matrículas: el primer y el último año
-EXTREMOS = "extremos"  # archivo entero, correspondencia, Kingspan, genérico
-REGLAS = (SESION, GRADO, EXPEDICION, FIRMA, ANIOS, EXTREMOS)
+EXTREMOS = "extremos"  # archivo entero, Kingspan, genérico
+ESTRUCTURA = "estructura"  # caja de correspondencia: la de su hoja principal, por su estructura
+REGLAS = (SESION, GRADO, EXPEDICION, FIRMA, ANIOS, EXTREMOS, ESTRUCTURA)
 
 #: El origen de una fecha que salió de su papel.
 PAPEL = "papel"
@@ -447,9 +448,58 @@ def lo_que_dice_el_papel(
                 frozenset({min(firmas)}), frozenset({max(firmas)}),
             )
         return LoQueDiceElPapel()
+    if regla == ESTRUCTURA and fechas is not None:
+        if fechas.inicial is not None and fechas.inicial == fechas.final:
+            return _la_estructura(textos)
+        return _las_puntas(textos, EXTREMOS, fechas, ventana)
     if regla in (ANIOS, EXTREMOS) and fechas is not None:
         return _las_puntas(textos, regla, fechas, ventana)
     return LoQueDiceElPapel()
+
+
+#: Lo que un lector leyó fuera de la capa y se le suma al papel, en una línea:
+#: la fecha del sello de radicación y la marcada en la guía
+#: (``correspondencia.lo_leido_fuera_de_la_capa`` y el papel del revisor).
+_LEIDA_FUERA_DE_LA_CAPA = re.compile(r"(?:SELLO DE RADICACION|FECHA MARCADA EN LA GUIA):\s*(\d{2})/(\d{2})/(\d{4})")
+
+
+def _la_estructura(textos: Sequence[str]) -> LoQueDiceElPapel:
+    """La fecha de la caja de correspondencia como la fecha el bot: la de su hoja principal (2026-11-11).
+
+    Con el lector de las puntas, la «fecha propia» de cada hoja caía en las
+    trampas que ``fecha_por_estructura`` ya deja fuera, y la auditoría dudaba de
+    tres fechas bien puestas en «pruebas afinia»:
+
+    - el pagaré del 06/04/2021 («a los 6 días del mes de Abril del 2021»,
+      la firma de la carta de instrucciones), contra la «Fecha Vto.» 13/04/2021
+      de su liquidación;
+    - la constancia del 03/05/2021 («FECHA:»), contra el «a más tardar el
+      25/05/2021» de su notificación;
+    - la publicación del aviso del 13/07/2021 («se publica el día»), contra
+      la lectura del medidor (01/06/2021) de la respuesta que lleva dentro.
+
+    Débil: sólo confirma o pregunta. Da por buena la de su hoja principal, la
+    del sitio de la clase de cada hoja (``fecha_de_la_hoja``, también la de lo
+    que la IA releyó) y la del sello o la guía que se le sumó al papel.
+    """
+    from .fecha_por_estructura import fecha_de_la_hoja, fecha_por_estructura
+
+    por_hoja = {numero: texto or "" for numero, texto in enumerate(textos, start=1)}
+    principal = fecha_por_estructura(list(por_hoja), por_hoja).fecha
+    aceptables = {f for texto in por_hoja.values() if texto.strip() and (f := fecha_de_la_hoja(texto)) is not None}
+    aceptables |= {
+        f
+        for texto in por_hoja.values()
+        for leida in _LEIDA_FUERA_DE_LA_CAPA.finditer(texto)
+        if (f := _fecha(int(leida.group(1)), int(leida.group(2)), int(leida.group(3)))) is not None
+    }
+    if principal is not None:
+        aceptables.add(principal)
+    if not aceptables:
+        return LoQueDiceElPapel()
+    dice = principal or min(aceptables)
+    como = "la fecha de su hoja principal" if principal is not None else "la fecha propia de sus hojas"
+    return LoQueDiceElPapel(dice, dice, como, False, frozenset(aceptables), frozenset(aceptables))
 
 
 def _uno(fecha: date | None, como: str, fuerte: bool, **otros) -> LoQueDiceElPapel:

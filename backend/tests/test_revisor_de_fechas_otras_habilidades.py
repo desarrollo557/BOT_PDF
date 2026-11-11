@@ -34,6 +34,7 @@ from resolutions.domain.fechas_extremas import (
     ANIO,
     ANIOS,
     DIA,
+    ESTRUCTURA,
     EXPEDICION,
     EXTREMOS,
     fechas_de_un_par,
@@ -103,7 +104,8 @@ class TestLoQueComparten:
         assert regla_de("matriculas", EXTREMOS) == ANIOS
         assert regla_de("diplomas", ANIOS) == EXTREMOS
         assert regla_de("kingspan", ANIOS) == EXTREMOS
-        assert regla_de("correspondencia", ANIOS) == EXTREMOS
+        # La caja, con la fecha de su hoja principal, como la fecha el bot (2026-11-11).
+        assert regla_de("correspondencia", ANIOS) == ESTRUCTURA
 
     def test_una_fecha_al_reves_se_dice_como_la_entiende_el_contraste(self):
         # Kingspan fecha «2023/10/14»: la misma fecha del mismo papel, escrita

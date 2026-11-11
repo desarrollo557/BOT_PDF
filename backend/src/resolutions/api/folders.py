@@ -3290,6 +3290,9 @@ class FolderRunner:
             try:
                 for hoja in sorted(produced.rglob(indice))[:1]:
                     entrega.indice = _indice_a_dict(leer_indice(hoja))
+                    # Sus PDF, numerados en el orden de sus filas (2026-11-11):
+                    # la carpeta los cruza con los de los otros UPD por fecha.
+                    entrega.indice["por_fecha"] = bool((job.report or {}).get("numerado_por_fecha"))
             except Exception:  # noqa: BLE001 - sin sus filas, el índice de la carpeta sale sin ellas
                 logger.warning("no se pudo leer el índice de %s", job.filename, exc_info=True)
         elif indice:
@@ -4147,9 +4150,12 @@ class FolderRunner:
         nombre le coloques primero la UPD; la idea es que por NIC estén sus
         archivos en la raíz de la carpeta del NIC con la estructura número-título».
 
-        - Los PDF de todos sus UPD entregados, por el orden de su ruta, se
-          numeran seguidos: «01_…», «02_…», «03_…» (renombrando en dos pasos,
-          para que ningún nombre pise a otro mientras se mueve).
+        - Los PDF de todos sus UPD entregados se numeran seguidos: «01_…»,
+          «02_…», «03_…» (renombrando en dos pasos, para que ningún nombre pise
+          a otro mientras se mueve). Por la fecha de su documento, en el mismo
+          orden que el índice (lo dictó el operador el 2026-11-11), si cada UPD
+          los trae numerados así (``indice["por_fecha"]``); si no -- una
+          entrega de antes --, por el orden de su ruta y de sus hojas.
         - Un solo «00.INDICE ELECTRONICO.xlsx», con las filas de todos por la
           fecha de cada documento, lo antiguo primero, y el NIC también como
           «Nombre del Expediente» (lo dictó el operador el 2026-11-04); las de
@@ -4224,14 +4230,34 @@ class FolderRunner:
                 # origen, sea «UPD2998726» o «NIC 5940155-11»: se quita el de
                 # verdad, no uno que se suponga. Con «NIC …» salía
                 # «01_NIC 5940155-11_01_DOCUMENTO.pdf» (el operador, 2026-11-10).
-                pdfs = [
-                    (archivo, _prefijo_de_la_constancia(constancia))
+                pdfs_de = [
+                    [
+                        (archivo, _prefijo_de_la_constancia(constancia))
+                        for archivo in sorted(
+                            (a for a in constancia.archivos if str(a.get("ruta") or "").lower().endswith(".pdf")),
+                            key=lambda a, c=constancia: _orden_del_archivo(a, _prefijo_de_la_constancia(c)),
+                        )
+                    ]
                     for _, constancia in leidas
-                    for archivo in sorted(
-                        (a for a in constancia.archivos if str(a.get("ruta") or "").lower().endswith(".pdf")),
-                        key=lambda a, c=constancia: _orden_del_archivo(a, _prefijo_de_la_constancia(c)),
-                    )
                 ]
+                filas_de = [_filas_de_la_constancia(constancia) for _, constancia in leidas]
+                pdfs = [par for suyos in pdfs_de for par in suyos]
+                filas: list[FilaDelIndice] = [fila for suyas in filas_de for fila in suyas]
+                if all(
+                    (constancia.indice or {}).get("por_fecha") and len(suyas) == len(suyos)
+                    for (_, constancia), suyas, suyos in zip(leidas, filas_de, pdfs_de, strict=True)
+                ):
+                    # Cada UPD trae sus PDF numerados en el orden de sus filas:
+                    # el PDF y su fila van al mismo puesto, por la fecha de su
+                    # documento y con la regla del índice (lo dictó el operador
+                    # el 2026-11-11: «como esté en el Excel, también estará en
+                    # el orden de archivos y numeración»). Si alguno no -- una
+                    # entrega de antes --, el orden de sus UPD y sus hojas.
+                    from ..domain.orden_del_indice import orden_cronologico
+
+                    puestos = orden_cronologico([fila.fecha_creacion for fila in filas])
+                    pdfs = [pdfs[puesto] for puesto in puestos]
+                    filas = [filas[puesto] for puesto in puestos]
                 ancho = max(2, len(str(len(pdfs))))
                 cambios = []
                 for numero, (archivo, prefijo) in enumerate(pdfs, start=1):
@@ -4275,32 +4301,17 @@ class FolderRunner:
                     for ruta, constancia in leidas:
                         constancias.escribir(ruta, constancia)
                 # 3. Un solo índice, con las filas de todos sus UPD.
-                filas: list[FilaDelIndice] = []
                 nic = territorial = None
                 for _, constancia in leidas:
                     datos = constancia.indice or {}
                     nic = nic or datos.get("nic")
                     territorial = territorial or datos.get("territorial")
-                    for fila in datos.get("filas") or []:
-                        filas.append(
-                            FilaDelIndice(
-                                nombre=str(fila.get("nombre") or ""),
-                                fecha_creacion=date.fromisoformat(fila["fecha_creacion"]) if fila.get("fecha_creacion") else None,
-                                fecha_incorporacion=date.fromisoformat(fila["fecha_incorporacion"])
-                                if fila.get("fecha_incorporacion")
-                                else None,
-                                orden=len(filas) + 1,
-                                paginas=int(fila.get("paginas") or 0),
-                                formato=str(fila.get("formato") or "pdf"),
-                                observaciones=str(fila.get("observaciones") or ""),
-                                responsable=str(fila.get("responsable") or ""),
-                            )
-                        )
                 if any(constancia.indice for _, constancia in leidas):
                     # Por la fecha de cada documento, lo antiguo primero, y
                     # «Nombre del Expediente» = el NIC (lo dictó el operador el
-                    # 2026-11-04). Nunca el UPD (2026-10-22). Los PDF conservan
-                    # su número, el del orden de sus UPD y sus hojas.
+                    # 2026-11-04). Nunca el UPD (2026-10-22). Los PDF llevan el
+                    # mismo puesto que su fila (2026-11-11), salvo los de una
+                    # entrega de antes, que guardan el orden de sus hojas.
                     indice = escribir_indice(
                         carpeta,
                         en_orden_cronologico(filas),
@@ -4487,6 +4498,28 @@ def _sin_el_prefijo(nombre: str, prefijo: str) -> str:
             if not solo_digitos or re.match(r"^\d+_", resto):
                 return resto
     return nombre
+
+
+def _filas_de_la_constancia(constancia) -> list:
+    """Las filas del índice de un UPD, de su constancia, en su orden («Orden Documento» lo pone el índice)."""
+    from ..adapters.indice_electronico import FilaDelIndice
+
+    def fecha(valor: object) -> date | None:
+        return date.fromisoformat(str(valor)) if valor else None
+
+    return [
+        FilaDelIndice(
+            nombre=str(fila.get("nombre") or ""),
+            fecha_creacion=fecha(fila.get("fecha_creacion")),
+            fecha_incorporacion=fecha(fila.get("fecha_incorporacion")),
+            orden=puesto,
+            paginas=int(fila.get("paginas") or 0),
+            formato=str(fila.get("formato") or "pdf"),
+            observaciones=str(fila.get("observaciones") or ""),
+            responsable=str(fila.get("responsable") or ""),
+        )
+        for puesto, fila in enumerate((constancia.indice or {}).get("filas") or [], start=1)
+    ]
 
 
 def _indice_a_dict(indice) -> dict:

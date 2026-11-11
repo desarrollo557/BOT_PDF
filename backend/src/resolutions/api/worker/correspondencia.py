@@ -268,6 +268,10 @@ def lo_leido_fuera_de_la_capa(
     que la capa deja en «ÜD _ , ^ de de» -- salía «no escrita en el
     documento» (3807860, 2026-11-11). Lo que salió de la capa no se guarda: la
     auditoría lo lee igual.
+
+    Cada relectura va aparte, como la fechó el agente: juntas, el encabezado
+    que se leía era el de la primera -- la de Tesseract, «Ci Cu lo ¡So de 03
+    de Zo22» -- y no el «30 de 08 de 2022» de la IA (1000883, 2026-11-11).
     """
     from datetime import date
 
@@ -277,16 +281,19 @@ def lo_leido_fuera_de_la_capa(
         if not fecha or pagina is None:
             continue
         if via in ("ocr", "ia"):
-            texto = "\n".join(releidas.get(pagina, ()))
+            leidos = list(releidas.get(pagina, ()))
         elif via == "sello":
-            texto = f"SELLO DE RADICACION: {date.fromisoformat(str(fecha)[:10]):%d/%m/%Y}"
+            leidos = [f"SELLO DE RADICACION: {date.fromisoformat(str(fecha)[:10]):%d/%m/%Y}"]
         elif via == "guia":
-            texto = f"FECHA MARCADA EN LA GUIA: {date.fromisoformat(str(fecha)[:10]):%d/%m/%Y}"
+            leidos = [f"FECHA MARCADA EN LA GUIA: {date.fromisoformat(str(fecha)[:10]):%d/%m/%Y}"]
         else:
             # De la capa, o de la OCR de una hoja que no la trae.
-            texto = leidas_por_ocr.get(pagina) or ""
-        if texto.strip():
-            salida.append({"paginas": [pagina], "texto": " ".join(texto.split())[:LARGO_DE_LO_LEIDO]})
+            leidos = [leidas_por_ocr.get(pagina) or ""]
+        salida.extend(
+            {"paginas": [pagina], "texto": " ".join(texto.split())[:LARGO_DE_LO_LEIDO]}
+            for texto in leidos
+            if (texto or "").strip()
+        )
     return salida
 
 
@@ -423,6 +430,60 @@ def _heredada(de_quien, donde: str, la_suya):
         ),
         motivos=tuple(f"{donde}: {m}" for m in de_quien.motivos),
     )
+
+
+def fecha_de_cada_archivo(grupos: list, piezas: list[dict]) -> list:
+    """La fecha con que cada archivo va al Índice Electrónico: la del documento con que abre, o la del archivo.
+
+    La misma regla que ``planillas._fecha_de_la_fila``: con ella se ordenan
+    los PDF y con ella se ordena el índice, así que salen en el mismo orden.
+    """
+    from datetime import date
+
+    def iso(valor: object) -> date | None:
+        try:
+            return date.fromisoformat(str(valor)[:10]) if valor else None
+        except ValueError:
+            return None
+
+    primeras: dict[int, dict] = {}
+    for pieza in piezas:
+        primeras.setdefault(pieza.get("archivo"), pieza)
+    return [iso((primeras.get(puesto) or {}).get("fecha")) or iso(grupo.fecha) for puesto, grupo in enumerate(grupos)]
+
+
+def numerar_por_fecha(grupos, anexos: dict, piezas: list[dict]):
+    """Los PDF numerados por la fecha de su documento, como el Índice Electrónico (2026-11-11).
+
+    Lo dictó el operador ante «1000690», donde el Excel decía Orden 5 para el
+    recurso y su archivo era «06_…»: «como esté en el Excel, también estará
+    en el orden de archivos y numeración… esto es sólo Afinia». Antes (el
+    2026-11-04) sólo el índice iba por fecha y los PDF guardaban el orden de
+    sus hojas.
+
+    Lo antiguo primero, lo que no trae fecha al final y, a igual fecha, el
+    orden de las hojas (``orden_cronologico``, la regla del índice). Se
+    renumera 01, 02, 03… conservando el RE del código (``_renumerar``), y las
+    piezas pasan a decir en qué archivo acabaron. Si algún código no empieza
+    por su número no se toca nada: el orden cambiaría sin que el nombre lo dijera.
+    """
+    from dataclasses import replace
+
+    from ...application.anexos_declarados import _renumerar
+    from ...domain.orden_del_indice import orden_cronologico
+
+    if not grupos.groups or not all(re.match(r"^\d+", g.code.value) for g in grupos.groups):
+        return grupos, anexos, piezas
+    orden = orden_cronologico(fecha_de_cada_archivo(grupos.groups, piezas))
+    if orden == list(range(len(orden))):
+        return grupos, anexos, piezas
+    numerados, anexos = _renumerar([grupos.groups[viejo] for viejo in orden], anexos)
+    nuevo_de = {viejo: nuevo for nuevo, viejo in enumerate(orden)}
+    piezas = sorted(
+        ({**pieza, "archivo": nuevo_de.get(pieza.get("archivo"), pieza.get("archivo"))} for pieza in piezas),
+        key=lambda pieza: pieza.get("archivo") if isinstance(pieza.get("archivo"), int) else len(orden),
+    )
+    return replace(grupos, groups=numerados), anexos, piezas
 
 
 def _poner_el_re_en_el_nombre(grupos, anexos: dict, *, textos: dict, sellos: dict, sin_re: set, abren: set):
@@ -1611,6 +1672,12 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         sellos=sellos,
         fechas_de_guia=fechas_de_guia,
     )
+    # F8. El número de cada PDF, por la fecha de su documento: el mismo orden
+    # que el Índice Electrónico (lo dictó el operador el 2026-11-11). Por mes
+    # no: el archivo es un mes, y su código no es un puesto.
+    numerado_por_fecha = entregado_por is not Agrupacion.MES
+    if numerado_por_fecha:
+        grupos, anexos, piezas = numerar_por_fecha(grupos, anexos, piezas)
     _anunciar(
         payload,
         Stage.ASSEMBLING,
@@ -1757,6 +1824,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         "anexos_declarados": [escrito.as_dict() for escrito in escritos],
         # Los documentos que forman cada archivo, y el expediente: la caja.
         "piezas": piezas,
+        # Si los PDF van numerados por la fecha de su documento, como el
+        # índice: la carpeta del NIC los numera seguidos por la misma fecha.
+        "numerado_por_fecha": numerado_por_fecha,
         # Las fechas que no estaban a la vista y de dónde salieron: el índice
         # lleva sólo la fecha; aquí queda cómo se obtuvo, para auditarla.
         "fechas_halladas": fechas_halladas,

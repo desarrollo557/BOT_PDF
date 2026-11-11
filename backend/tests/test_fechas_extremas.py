@@ -43,6 +43,7 @@ from resolutions.domain.fechas_extremas import (
     ANIO,
     ANIOS,
     DIA,
+    ESTRUCTURA,
     EXPEDICION,
     EXTREMOS,
     FIRMA,
@@ -1203,7 +1204,92 @@ class TestElInforme:
 
 #: Un documento sintético por regla, con la fila que lo describe bien y una que
 #: lo describe mal sin que el papel diga otra cosa.
+class TestLaCajaDeCorrespondenciaPorSuEstructura:
+    """La caja de correspondencia se contrasta con la fecha de su hoja principal (2026-11-11).
+
+    Con el lector de las puntas, la auditoría de «pruebas afinia» dudó de tres
+    fechas bien puestas: la «fecha propia» de cada hoja caía en las trampas que
+    el bot ya deja fuera al fechar (``fecha_por_estructura``). Capa real de cada caso.
+    """
+
+    #: 1000186, «03_PAGARE.pdf»: la liquidación de la carta de instrucciones
+    #: trae la «Fecha Vto.»; la firma, el día del documento.
+    LIQUIDACION = (
+        "CARIBEMAR DE LA COSTA S.A.S. ESP EMPRESA DE SERVICIOS PUBLICOS DOMICILIARIOS NitSOI .380.949-1 CARTA DE "
+        "INSTRUCCIONES ANEXA A PAGARE No. 1000186 1 CON ESPACIOS ABIERTOS , identificado como aparece al ... "
+        "Tipo de servicio Energía regulada 255.766,00 Símbolo Variable NIR Fecha Vto, Importe $255.766,00 "
+        "13/04/2021 1000186007 1.107261-06/04/2021 $255.766,00 Importe total:"
+    )
+    FIRMA_DE_LA_CARTA = (
+        "f CARIBEMAR DE LA COSTA S.A.S. ESP EMPRESA DE SERVICIOS PUBLICOS DOMICILIARIOS Nit901.380.949-1 í, f H "
+        "CARTA DE INSTRUCCIONES ANEXA A PAGARE No. 1000186 1 CON E ... Dejo constancia que en mi poder ha quedado "
+        "una copia del presente documento. del 2021 MAGANGUE a los 6 días del mes de Abril Firmado en la ciudad de FIRMA:"
+    )
+    #: 1000224: «FECHA:» de la constancia y el plazo «a más tardar» de su notificación.
+    CONSTANCIA = (
+        "PARA LA EMPRESA Recibí constancia del contenido de la reclamación presentada ante CARIBEMAR DE LA COSTA "
+        "S.A.S. ESP MESES POR LO QUE RECLAMA: N»PQR: RE2320202101914 FECHA: 03/05/2021 INSTALACIÓN: CR 1 CR26 117 "
+        "CAUSA: Facturación no ditribuida SERVICIO: 10812 ^ ^ Apr de 2021 de AMPIM NOTIFICACIÓN: La decisión de estp "
+        "requerimiento, le será notificada a más íardar el 25/05/2021 11:59:59 PM"
+    )
+    #: 1000690, «05_PUBLICACION-DEL-AVISO.pdf»: el día en que se publica, y la
+    #: lectura del medidor de la respuesta que va dentro.
+    AVISO = (
+        "aFinia Grupo-ep«) Consecutivo No. PA 202170188518 Cartagena, 30-06-2021 Consecutivo NO.A202170174520 "
+        "PUBLICACIÓN DEL AVISO Señor(a) AZAÚ BELEÑO CARRERA 3 CALLE 19 - 67 APARTAMENTO 01 LA CANDELARIA MAGANGUE "
+        "BOLIVAR a) El usuario AZAÚ BELEÑO reportó como dirección de Teniendo en cuenta que: notificación para la "
+        "respuesta a la petición presentada el día 16/06/2021 16:40:44, ... El presente aviso se publica el día "
+        "13/07/2021 10:32:03.0 y hasta por"
+    )
+    LECTURA_DEL_MEDIDOR = (
+        "Consumo: lectura mes de junio del 2021 (lectura 1226 (01/06/2021) - lectura 01/06/2021 (03/05/2021) = 259 Kws"
+    )
+
+    @pytest.mark.parametrize(
+        ("hojas", "fecha"),
+        [
+            ((LIQUIDACION, FIRMA_DE_LA_CARTA), "06/04/2021"),
+            ((CONSTANCIA,), "03/05/2021"),
+            ((AVISO, LECTURA_DEL_MEDIDOR), "13/07/2021"),
+        ],
+        ids=["pagare", "constancia", "publicacion"],
+    )
+    def test_la_fecha_de_su_hoja_principal_se_confirma(self, hojas, fecha):
+        assert contrastar_las_fechas(_par(fecha, fecha), list(hojas), regla=ESTRUCTURA).confirmadas
+        # Con el lector de las puntas, las tres quedaban en duda.
+        assert contrastar_las_fechas(_par(fecha, fecha), list(hojas), regla=EXTREMOS).preguntas
+
+    @pytest.mark.parametrize(
+        ("hojas", "trampa"),
+        [
+            ((LIQUIDACION, FIRMA_DE_LA_CARTA), "13/04/2021"),
+            ((CONSTANCIA,), "25/05/2021"),
+            ((AVISO, LECTURA_DEL_MEDIDOR), "01/06/2021"),
+        ],
+        ids=["vencimiento", "a-mas-tardar", "lectura-del-medidor"],
+    )
+    def test_la_fecha_de_una_trampa_no_se_confirma(self, hojas, trampa):
+        revision = contrastar_las_fechas(_par(trampa, trampa), list(hojas), regla=ESTRUCTURA)
+        assert not revision.confirmadas and not revision.correcciones
+        assert "la fecha de su hoja principal dice" in revision.preguntas[0].duda
+
+    def test_la_fecha_del_sello_que_se_sumo_al_papel_se_confirma(self):
+        hojas = [self.CONSTANCIA, "SELLO DE RADICACION: 04/05/2021"]
+        assert contrastar_las_fechas(_par("04/05/2021", "04/05/2021"), hojas, regla=ESTRUCTURA).confirmadas
+
+    def test_el_lector_es_debil_nunca_corrige(self):
+        revision = contrastar_las_fechas(_par("10/05/2021", "10/05/2021"), [self.CONSTANCIA], regla=ESTRUCTURA)
+        assert revision.correcciones == () and revision.preguntas
+
+    def test_la_caja_de_correspondencia_usa_esta_regla(self):
+        assert perfil_de("Caja de correspondencia").regla_de_fechas == ESTRUCTURA
+
+
 _DE_CADA_REGLA = {
+    ESTRUCTURA: (
+        TestLaCajaDeCorrespondenciaPorSuEstructura.CONSTANCIA,
+        {"fecha_inicial": "03/05/2021", "fecha_final": "03/05/2021"},
+    ),
     SESION: (ACTA, {"fecha": "21-02-2012"}),
     GRADO: (GRADO_TEXTO, {"fecha": "15-06-2001"}),
     EXPEDICION: (

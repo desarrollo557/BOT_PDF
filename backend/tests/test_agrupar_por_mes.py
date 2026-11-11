@@ -410,15 +410,21 @@ def procesar(pdf, tmp_path, **opciones):
 
 class TestLaCajaDePuntaAPunta:
     def test_sin_elegir_nada_sale_un_archivo_por_documento(self, pdf, tmp_path):
-        """Con la opción apagada no cambia nada de lo que ya había."""
+        """Un archivo por documento, numerado por su fecha como el índice (2026-11-11).
+
+        03/05, 28/05 y 07/06; la notificación sin fecha, al final. Hasta el
+        2026-11-11 iban en el orden de las hojas: 01 respuesta, 02 notificación…
+        """
         informe = procesar(pdf, tmp_path)
 
         assert informe["outputs"] == [
             "caja/01_RESPUESTA-A-RECLAMACION.pdf",
-            "caja/02_NOTIFICACION-POR-AVISO.pdf",
-            "caja/03_RESPUESTA-A-RECLAMACION.pdf",
+            "caja/02_RESPUESTA-A-RECLAMACION.pdf",
+            "caja/03_NOTIFICACION-POR-AVISO.pdf",
             "caja/04_NOTIFICACION-POR-AVISO.pdf",
         ]
+        assert [grupo["pages"] for grupo in informe["groups"]] == [[1, 2], [4], [3], [5]]
+        assert informe["numerado_por_fecha"] is True
         assert informe["agrupar"] == "documento"
         assert informe["notices"] == []
         # Las hojas se leen siempre -- es de donde sale el título --, pero la
@@ -580,3 +586,60 @@ class TestUnaCarpetaPideLoMismo:
             if all(estado in ("done", "failed", "cancelled") for estado in estados):
                 break
             time.sleep(0.1)
+
+
+class TestNumeradoPorFecha:
+    """El número de cada PDF de la caja sale del orden por fecha del índice (el operador, 2026-11-11).
+
+    «Como esté en el Excel, también estará en el orden de archivos y
+    numeración… esto es sólo Afinia»: en 1000690 el Excel decía Orden 5 para el
+    recurso y su archivo era «06_…».
+    """
+
+    @staticmethod
+    def _grupos(*codigos_y_hojas):
+        from resolutions.domain.grouping import GroupingResult, PageGroup
+        from resolutions.domain.resolution_code import ResolutionCode
+
+        return GroupingResult(
+            groups=[PageGroup(code=ResolutionCode(value=c, raw=c), page_numbers=h) for c, h in codigos_y_hojas]
+        )
+
+    def test_como_el_indice_y_con_su_re(self):
+        from resolutions.api.worker.correspondencia import numerar_por_fecha
+
+        grupos = self._grupos(("01", [1, 2]), ("02", [3]), ("03-RE2310202105657", [4, 5]), ("04", [6]))
+        piezas = [
+            {"pages": [1, 2], "archivo": 0, "fecha": "2021-06-28"},
+            {"pages": [3], "archivo": 1, "fecha": "2021-07-13"},
+            {"pages": [4, 5], "archivo": 2, "fecha": "2021-07-01"},
+            {"pages": [6], "archivo": 3, "fecha": None},
+        ]
+        numerados, anexos, piezas = numerar_por_fecha(grupos, {"03-RE2310202105657": [5]}, piezas)
+
+        assert [(g.code.value, g.page_numbers) for g in numerados.groups] == [
+            ("01", [1, 2]),
+            ("02-RE2310202105657", [4, 5]),
+            ("03", [3]),
+            # Sin fecha, al final.
+            ("04", [6]),
+        ]
+        # El anexo sigue a su documento, y cada pieza dice en qué archivo acabó.
+        assert anexos == {"02-RE2310202105657": [5]}
+        assert [(p["archivo"], p["pages"]) for p in piezas] == [(0, [1, 2]), (1, [4, 5]), (2, [3]), (3, [6])]
+
+    def test_a_igual_fecha_el_orden_de_las_hojas(self):
+        from resolutions.api.worker.correspondencia import numerar_por_fecha
+
+        grupos = self._grupos(("01", [1]), ("02", [2]))
+        piezas = [{"pages": [1], "archivo": 0, "fecha": "2021-05-03"}, {"pages": [2], "archivo": 1, "fecha": "2021-05-03"}]
+        assert numerar_por_fecha(grupos, {}, piezas)[0] is grupos
+
+    def test_un_codigo_sin_numero_no_se_toca(self):
+        from resolutions.api.worker.correspondencia import numerar_por_fecha
+
+        # Si algún código no es un puesto, el orden cambiaría sin que el
+        # nombre lo dijera: no se mueve ninguno.
+        grupos = self._grupos(("SIN-NUMERO", [1]), ("02", [2]))
+        piezas = [{"pages": [1], "archivo": 0, "fecha": "2021-07-01"}, {"pages": [2], "archivo": 1, "fecha": "2021-05-01"}]
+        assert numerar_por_fecha(grupos, {}, piezas)[0] is grupos

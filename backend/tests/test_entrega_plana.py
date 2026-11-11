@@ -224,6 +224,61 @@ class TestLaEntregaPlana:
         assert [(f.orden, f.nombre) for f in indice.filas] == [(1, "RECLAMO DE UPD2"), (2, "RECLAMO DE UPD1")]
         assert indice.nombre_del_expediente == indice.nic == "1000265"
 
+    def test_los_pdf_del_nic_van_por_fecha_como_su_indice(self, ajustes, tmp_path):
+        """Lo dictó el operador el 2026-11-11 (Afinia): «como esté en el Excel, también estará en el
+        orden de archivos y numeración». El PDF «NN_» es la fila con «Orden Documento» NN, también
+        cruzando los UPD del NIC. La prueba de arriba es la entrega de antes, sin la marca."""
+        _caja(tmp_path / "origen", "1000265", "UPD1", "UPD2")
+        documentos = {
+            "UPD1": [("RECLAMO", date(2024, 2, 1)), ("RESPUESTA", date(2024, 3, 1)), ("GUIA", None)],
+            "UPD2": [("PETICION", date(2024, 1, 15)), ("NOTIFICACION", date(2024, 2, 20))],
+        }
+        registro = JobRegistry()
+
+        async def run_job(job):
+            upd = Path(job.filename).stem
+            salida = ajustes.output_dir / job.id / upd
+            salida.mkdir(parents=True, exist_ok=True)
+            filas = []
+            # Como el worker: cada UPD, numerado ya por la fecha de sus documentos.
+            for orden, (documento, fecha) in enumerate(documentos[upd], start=1):
+                (salida / f"{orden:02d}_{documento}.pdf").write_bytes(b"%PDF-1.4 " + f"{upd} {documento}".encode())
+                filas.append(FilaDelIndice(f"{documento} DE {upd}", fecha, date(2026, 11, 11), orden, 1))
+            escribir_indice(salida, filas, nic="1000265", territorial="MAGANGUE", nombre_del_expediente="1000265")
+            registro.mark_done(
+                job,
+                {"groups": [{"code": "01"}], "review_queue": [], "indice_electronico": INDICE, "numerado_por_fecha": True},
+            )
+
+        motor = FolderRunner(registro, ajustes, run_job, watch_interval=0.01)
+        _correr(motor, tmp_path / "origen", tmp_path / "destino", task="segment")
+
+        caja = tmp_path / "destino" / "1000265"
+        esperado = [
+            ("01_PETICION.pdf", b"UPD2 PETICION"),
+            ("02_RECLAMO.pdf", b"UPD1 RECLAMO"),
+            ("03_NOTIFICACION.pdf", b"UPD2 NOTIFICACION"),
+            ("04_RESPUESTA.pdf", b"UPD1 RESPUESTA"),
+            # Sin fecha, al final, como en el índice.
+            ("05_GUIA.pdf", b"UPD1 GUIA"),
+        ]
+        assert [n for n in _nombres(caja) if n.endswith(".pdf")] == [nombre for nombre, _ in esperado]
+        for nombre, contenido in esperado:
+            assert (caja / nombre).read_bytes().endswith(contenido)
+        indice = leer_indice(caja / INDICE)
+        assert [(f.orden, f.nombre) for f in indice.filas] == [
+            (1, "PETICION DE UPD2"),
+            (2, "RECLAMO DE UPD1"),
+            (3, "NOTIFICACION DE UPD2"),
+            (4, "RESPUESTA DE UPD1"),
+            (5, "GUIA DE UPD1"),
+        ]
+        # Relanzarla no cambia nada: el orden de la carpeta es estable.
+        otra =_correr(motor, tmp_path / "origen", tmp_path / "destino", task="segment")
+        assert otra.ya_entregados == 2
+        for nombre, contenido in esperado:
+            assert (caja / nombre).read_bytes().endswith(contenido)
+
     def test_relanzarla_no_repite_nada(self, ajustes, tmp_path):
         _caja(tmp_path / "origen", "1000265", "UPD1", "UPD2")
         registro = JobRegistry()

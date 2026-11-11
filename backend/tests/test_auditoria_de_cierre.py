@@ -927,6 +927,33 @@ class TestLoLeidoFueraDeLaCapa:
             {"paginas": [15], "texto": "Cartagena, 14/01/2022"},
         ]
 
+    def test_cada_relectura_va_aparte(self):
+        # Juntas, el encabezado era el de la de Tesseract y la de la IA no se
+        # leía: el reconocimiento de 1000883 salía en duda (2026-11-11).
+        from resolutions.api.worker.correspondencia import lo_leido_fuera_de_la_capa
+        from resolutions.domain.fechas_extremas import ESTRUCTURA
+
+        tesseract = "Ci Cu lo ¡So de 03 de Zo22 Señores: CARIBEMAR Ref.: Reconocimiento de deuda"
+        ia = "Magangué, 30 de 08 de 2022 Señores: CARIBEMAR Ref.: Reconocimiento de deuda y propuesta de acuerdo de pago"
+        leido = lo_leido_fuera_de_la_capa(
+            [{"fecha": "2022-08-30", "fecha_pagina": 1, "fecha_via": "ia"}], releidas={1: [tesseract, ia]}, leidas_por_ocr={}
+        )
+        assert [x["texto"] for x in leido] == [tesseract, ia]
+        fila = {"archivo_generado": "01_RECONOCIMIENTO.pdf", "fecha_inicial": "2022-08-30", "fecha_final": "2022-08-30"}
+        auditadas = entrega_app.auditar_las_fechas(
+            [ArchivoEntregado("01_RECONOCIMIENTO.pdf", (1,))], self.CAPA, [fila], regla=ESTRUCTURA, lo_leido=leido
+        )
+        assert auditadas.dudas == [] and auditadas.errores == []
+
+    def test_con_la_regla_de_la_caja_tambien_se_confirma(self):
+        from resolutions.domain.fechas_extremas import ESTRUCTURA
+
+        leido = [{"paginas": [1], "texto": "El Banco, 23 de 12 de 2020 Señores: CARIBEMAR Ref.: Reconocimiento de deuda"}]
+        auditadas = entrega_app.auditar_las_fechas(
+            [ArchivoEntregado("01_RECONOCIMIENTO.pdf", (1,))], self.CAPA, [self.FILA], regla=ESTRUCTURA, lo_leido=leido
+        )
+        assert auditadas.dudas == [] and auditadas.errores == []
+
     def test_la_constancia_lo_guarda_y_la_vieja_se_lee_sin_el(self, tmp_path):
         import json
 

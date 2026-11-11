@@ -129,7 +129,8 @@ def _cruces_del_acuerdo(textos: Mapping[int, str]) -> frozenset[int]:
 PERFILES: tuple[PerfilDeRevision, ...] = (
     PerfilDeRevision(
         clave="correspondencia",
-        regla_de_fechas="extremos",
+        # La de su hoja principal, como la fecha el bot (2026-11-11).
+        regla_de_fechas="estructura",
         nombre="Caja de correspondencia",
         reglas=REGLAS_DE_LA_CORRESPONDENCIA,
         corrige=True,
