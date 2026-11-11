@@ -292,6 +292,65 @@ class TestLasHojasReleidas:
         assert fecha_de_la_hoja(CAMARA, hoy=HOY) is None
 
 
+class TestLaFechaRazonada:
+    """La hoja sin estructura conocida: la fecha de su rótulo «FECHA:» en la cabeza (2026-11-11).
+
+    945220 (UPD2998536): «REVISIÓN DE PROCEDIMIENTOS», a mano. La IA leyó
+    «FECHA: 03/08/2021» y salió «S.F.»: la hoja no es de ninguna clase y al
+    escrito sólo se le cree un «FECHA:» con la hora del rótulo de radicación.
+    """
+
+    #: Lo que leyó la IA, recortado.
+    LEIDA_POR_LA_IA = (
+        "# REVISIÓN DE PROCEDIMIENTOS\n\nFECHA: 03/08/2021\n\nASOCIADO COMERCIAL: Cam Colombia\n\nPUNTO DE PAGO:\n\n"
+        "# PROCESOS\n\n1.1 Conocimiento y documentación\n1.2 Censos de carga y modificaciones\n\n# OBSERVACIONES\n\n"
+        "Se realiza verificación en terreno por solicitud del Sector Jose de los Peres con Cedula # 945.220"
+    )
+    #: Su capa: la fecha a mano no está.
+    CAPA = "REVISIÓN DE PROCEDIMIENTOS\nFECHA: \n/\nASOCIADO COMERCIAL:\nPUNTO DE PAGO:\nPROCESOS\n1.1 Conocimiento"
+
+    def test_la_leida_por_la_ia_se_fecha_por_su_rotulo(self) -> None:
+        assert fecha_de_la_hoja(self.LEIDA_POR_LA_IA, hoy=HOY) == date(2021, 8, 3)
+        hallada = fecha_por_estructura([1], {1: self.LEIDA_POR_LA_IA}, hoy=HOY)
+        assert hallada.fecha == date(2021, 8, 3) and hallada.pagina == 1
+
+    def test_sin_la_fecha_en_el_papel_no_se_inventa(self) -> None:
+        assert fecha_de_la_hoja(self.CAPA, hoy=HOY) is None
+        # Tesseract con la fecha a mano: va sin fecha y a Revisión.
+        assert fecha_de_la_hoja("REVISIÓN DE PROCEDIMIENTOS\nFECHA: £ 3_/¿¿3 7202|\n", hoy=HOY) is None
+
+    def test_un_rotulo_calificado_es_una_trampa(self) -> None:
+        assert fecha_de_la_hoja("FORMATO DE ATENCION\nFECHA DE VENCIMIENTO: 20/09/2021\n", hoy=HOY) is None
+        assert fecha_de_la_hoja("FORMATO DE ATENCION\nFECHA VTO: 20/09/2021\n", hoy=HOY) is None
+
+    def test_el_rotulo_que_cita_una_referencia_no_fecha(self) -> None:
+        # Lo que el «REF:» de un recurso cita (UPD2365925 p36).
+        texto = "Señores AFINIA REF: RECURSO DE REPOSICION contra la factura FECHA: 10/12/2021, FACTURADO SEGUN LA FACTURA"
+        assert fecha_de_la_hoja(texto, hoy=HOY) is None
+
+    def test_sólo_en_la_cabeza_de_la_hoja(self) -> None:
+        cuerpo = "INFORME DE VISITA " + "se revisó el predio y el medidor " * 20 + "FECHA: 03/08/2021"
+        assert fecha_de_la_hoja(cuerpo, hoy=HOY) is None
+
+    def test_un_anexo_no_se_razona(self) -> None:
+        assert fecha_de_la_hoja(CEDULA + "\nFECHA: 03/08/2021", hoy=HOY) is None
+
+    def test_la_estructura_manda_sobre_el_rotulo(self) -> None:
+        # Una constancia fechada por su estructura no cambia de fecha.
+        assert fecha_de_la_hoja(
+            "PARA LA EMPRESA Recibí constancia del contenido de la reclamación presentada ante CARIBEMAR "
+            "N° PQR: RE2320202101914 FECHA: 03/05/2021 NOTIFICACIÓN: a más tardar el 25/05/2021",
+            hoy=HOY,
+        ) == date(2021, 5, 3)
+
+    def test_el_agente_la_encuentra_con_la_ia(self) -> None:
+        from resolutions.application.agente_de_fechas import AgenteDeFechas
+
+        agente = AgenteDeFechas(leer_con_ia=lambda _p: self.LEIDA_POR_LA_IA, fechar=fecha_de_la_hoja, en_orden=True)
+        hallada = agente.buscar([1], {1: self.CAPA})
+        assert hallada is not None and hallada.fecha == date(2021, 8, 3) and hallada.via == "ia"
+
+
 class TestEnLaCaja:
     """La caja de correspondencia de verdad, sobre un PDF pequeño (sin IA)."""
 

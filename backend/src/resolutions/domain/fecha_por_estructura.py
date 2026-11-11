@@ -484,6 +484,45 @@ def _del_encabezado_de_la_cabeza(texto: str, hoy: date | None) -> date | None:
     return None
 
 
+#: Hasta dónde llega la cabeza de un formulario para su rótulo «FECHA:».
+_CABEZA_DEL_FORMULARIO = 400
+_ROTULO_DE_LA_FECHA = re.compile(r"\bFECHA\s*[:;.]")
+#: Lo que, poco antes del rótulo, dice que la fecha es de otro papel: lo que
+#: un recurso cita en su referencia.
+_CITA_DE_OTRO_PAPEL = re.compile(r"\bREF\b|REFERENCIA|ASUNTO")
+_ANTES_DEL_ROTULO = 150
+
+
+def fecha_razonada(texto: str, hoy: date | None = None) -> date | None:
+    """La fecha de una hoja sin estructura conocida, razonada: la de su rótulo «FECHA:» en la cabeza (2026-11-11).
+
+    Lo pidió el operador ante «REVISIÓN DE PROCEDIMIENTOS» (945220,
+    UPD2998536): un formulario a mano, «FECHA: 03/08/2021», que la IA leyó
+    bien y salió «S.F.» porque la hoja no es de ninguna clase conocida y al
+    escrito sólo se le cree un «FECHA:» con la hora del rótulo de radicación.
+
+    Sólo lo que es prueba de ser la fecha del documento:
+
+    - un rótulo «FECHA:» **sin calificar** («FECHA DE VENCIMIENTO», «FECHA
+      VTO.», «FECHA ÚLTIMA LECTURA»… son trampas y se tachan antes);
+    - en la **cabeza** de la hoja, donde un formulario la pide;
+    - **no citado**: sin «REF:», «REFERENCIA» ni «ASUNTO» poco antes -- el
+      «FECHA: 10/12/2021, FACTURADO» que cita un recurso (UPD2365925 p36) --.
+
+    Medido sobre las 281 piezas de Afinia (capa de texto): de las que la
+    estructura deja sin fecha, da 1 bien y 0 mal. La regla más suelta -- la
+    única fecha de la hoja -- daba 7 bien y **12 mal** (la fecha de la carta en
+    un escrito que se radicó al día siguiente): no se usa.
+    """
+    cabeza = " ".join(sin_trampas(texto or "").split())[:_CABEZA_DEL_FORMULARIO]
+    for rotulo in _ROTULO_DE_LA_FECHA.finditer(cabeza):
+        if _CITA_DE_OTRO_PAPEL.search(cabeza[max(0, rotulo.start() - _ANTES_DEL_ROTULO) : rotulo.start()]):
+            continue
+        if (fecha := _tras(r"\bFECHA\s*[:;.]", cabeza[rotulo.start() :], hoy)) is not None:
+            return fecha
+    return None
+
+
 #: El escrito con el sello de tinta de la oficina. Es también lo que pasa a ser
 #: una hoja con sello que parecía un anexo.
 _ESCRITO_RADICADO = Pieza("escrito radicado", ABRE, _del_escrito)
@@ -641,10 +680,14 @@ def fecha_de_la_hoja(texto: str, *, hoy: date | None = None) -> date | None:
     """La fecha que la hoja pone en el sitio de su clase, o ``None``.
 
     Para releer la hoja principal -- en local o con la IA -- y fecharla igual
-    que su capa: sólo con el sitio de su clase, nunca con la más reciente.
+    que su capa: sólo con el sitio de su clase, nunca con la más reciente. Si
+    su clase no la da y la hoja no es un anexo, la razonada: su rótulo
+    «FECHA:» en la cabeza (``fecha_razonada``, 2026-11-11).
     """
     pieza = pieza_de(texto)
-    return pieza.fecha(texto or "", hoy) if pieza.fecha else None
+    if pieza.fecha and (fecha := pieza.fecha(texto or "", hoy)) is not None:
+        return fecha
+    return None if pieza.anexo else fecha_razonada(texto, hoy)
 
 
 @dataclass(frozen=True, slots=True)
@@ -741,4 +784,8 @@ def fecha_por_estructura(
             fecha := respaldo.fecha(textos.get(pagina, "") or "", hoy)
         ):
             return hallada(fecha, pagina, respaldo.nombre)
+    # 4. Razonada, en la hoja principal si no es un anexo: su rótulo «FECHA:»
+    #    en la cabeza (2026-11-11). Lo último: la estructura manda.
+    if not pieza.anexo and (fecha := fecha_razonada(textos.get(principal, "") or "", hoy)) is not None:
+        return hallada(fecha, principal, "rótulo «FECHA:» en la cabeza de la hoja")
     return FechaPorEstructura(None, None, principal, None, donde)
