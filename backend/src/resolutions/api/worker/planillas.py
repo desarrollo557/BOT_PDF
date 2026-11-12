@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ...application.progress import Stage
 from ...domain.naming import DOCUMENT_PREFIX
-from ...domain.nombre_oficial import lleva_re_en_el_nombre, re_del_archivo
+from ...domain.nombre_oficial import re_del_archivo
 from ..errores import explicar_fallo
 from .taller import _anunciar, _reportero
 
@@ -376,8 +376,10 @@ def _nombre_de_la_fila(item: dict, report: dict) -> str:
     # El reclamo y la constancia de su contenido, con el RE de su archivo
     # detrás (lo dictó el operador el 2026-11-04): el archivo y su fila dicen
     # lo mismo, «RECLAMO-RE2310202405234».
+    # Desde el 2026-11-11 también el documento que trae su sello con su RE, sea
+    # del tipo que sea: la fila lleva el RE siempre que su archivo lo lleva.
     titulo = str(titulo).upper()
     radicado = re_del_archivo(str(item.get("file_name") or ""))
-    if radicado and lleva_re_en_el_nombre(titulo):
+    if radicado:
         return f"{titulo}-{radicado}"
     return titulo

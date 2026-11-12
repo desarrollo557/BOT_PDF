@@ -466,6 +466,14 @@ _CABEZA_DE_LA_HOJA = 350
 _DIAS_DE_LA_SEMANA = re.compile(
     r"(?i)^(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b"
 )
+#: Y con punto en vez de coma: «Santa Rosa del Sur – Bolívar. Julio 15 de 2021»
+#: (1016215, UPD2437946 p1, 2026-11-11), que salía «S.F.». Sólo con la fecha en
+#: letras, ya normalizada a «15 de Julio de 2021»: un punto seguido de cifras es
+#: también el final de una frase que cita un número.
+_LUGAR_PUNTO_Y_FECHA = re.compile(
+    r"\b([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ]+(?:\s*[-–]?\s*[A-Za-zÁÉÍÓÚÑáéíóúñ]+){0,5})\.\s+"
+    r"(\d{1,2}\s+de\s+[A-Za-záéíóúñ]+\s+del?\s+\d{4})"
+)
 
 
 def _del_encabezado_de_la_cabeza(texto: str, hoy: date | None) -> date | None:
@@ -475,12 +483,14 @@ def _del_encabezado_de_la_cabeza(texto: str, hoy: date | None) -> date | None:
     MARTES, 19/07/2022…» (DOCUMENTO_35). Y un día de la semana no es una ciudad.
     """
     cabeza = " ".join((texto or "").split())[:_CABEZA_DE_LA_HOJA]
-    for encabezado in _LUGAR_Y_FECHA.finditer(_normalizar(cabeza)):
-        if _DIAS_DE_LA_SEMANA.match(encabezado.group(1).strip()):
-            continue
-        declaradas = fechas_de(encabezado.group(2), hoy=hoy)
-        if declaradas:
-            return declaradas[0]
+    normalizada = _normalizar(cabeza)
+    for patron in (_LUGAR_Y_FECHA, _LUGAR_PUNTO_Y_FECHA):
+        for encabezado in patron.finditer(normalizada):
+            if _DIAS_DE_LA_SEMANA.match(encabezado.group(1).strip()):
+                continue
+            declaradas = fechas_de(encabezado.group(2), hoy=hoy)
+            if declaradas:
+                return declaradas[0]
     return None
 
 

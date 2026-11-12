@@ -56,6 +56,28 @@ class Boundary:
     deterministic: bool = True
 
 
+#: Los motivos de continuidad que son el papel mismo diciendo que la hoja sigue:
+#: la frase cortada, la numeración de párrafos o de páginas, el folio. No «dos
+#: hojas llenas de prosa» ni «la anterior abre», que se apoyan en ausencias.
+_EL_PAPEL_DICE_QUE_SIGUE = (
+    "la oración sigue",
+    "la numeración sigue",
+    "cadena ",
+    "la cuenta salta",
+    "la hoja se declara página",
+    "el folio sigue",
+)
+
+
+def continua_por_el_papel(boundary: Boundary) -> bool:
+    """Si la hoja de la derecha sigue a la de la izquierda por lo que el papel dice de sí mismo.
+
+    Lo usa la agrupación por trámite: el RE que esa hoja cite en su texto no la
+    saca de su documento (7975593, UPD2460819 p203-204, 2026-11-12).
+    """
+    return boundary.verdict is Verdict.CONTINUES and boundary.reason.startswith(_EL_PAPEL_DICE_QUE_SIGUE)
+
+
 @dataclass(slots=True)
 class Segment:
     """Contiguous pages that form one document."""

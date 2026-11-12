@@ -170,6 +170,29 @@ class TestElSelloEnElTramite:
         )
         assert [g.code.raw for g in tramites.grupos.groups] == ["RE3110202139039", "RE3110202140544"]
 
+    def test_la_hoja_que_continua_no_cambia_de_tramite_por_el_re_que_cita(self):
+        """7975593 (UPD2460819 p203): la lista de pruebas del recurso cita el RE de otro reclamo de la
+        caja; con su frase siguiendo de la hoja anterior, no sale del recurso. Su sello sí manda."""
+        textos = {
+            1: "Reclamación No. RE2310202104663",
+            2: "PRUEBAS Y ANEXOS 3. CONSECUTIVO asunto reclamación No. RE2310202105403",
+            3: "Reclamación No. RE2310202105403",
+        }
+        fechas = {1: None, 2: None, 3: None}
+        grupos = _grupos([1], [2], [3])
+        leidas = PaginasLeidas(
+            fechas=fechas, tipos={p: None for p in textos}, asuntos={p: None for p in textos}, con_ocr=0, textos=textos
+        )
+        sin_regla = agrupar_por_tramite(grupos, leidas)
+        assert [g.page_numbers for g in sin_regla.grupos.groups] == [[1], [2, 3]]
+        con_regla = agrupar_por_tramite(grupos, leidas, continuan={2})
+        assert [g.page_numbers for g in con_regla.grupos.groups] == [[1, 2], [3]]
+        # Con su sello, el de su sello manda.
+        con_sello = agrupar_por_tramite(
+            grupos, leidas, sellos={2: Sello("tinta", "RE2310202105403")}, continuan={2}
+        )
+        assert [g.page_numbers for g in con_sello.grupos.groups] == [[1], [2, 3]]
+
     def test_un_sello_ilegible_corta_hasta_el_proximo_sello_o_re(self):
         """Lo que sigue al sello ilegible es de ese escrito, aunque su fecha
         encaje en otro trámite: la fecha no parte donde manda un sello."""
@@ -216,6 +239,17 @@ class TestLaUltimaHojaConSello:
 
         grupos = _grupos([1, 2, 3])
         assert la_ultima_hoja_sola(grupos, {1})[0] is grupos
+
+
+def test_lo_que_el_papel_dice_que_sigue():
+    from resolutions.domain.segmentation import Boundary, Verdict, continua_por_el_papel
+
+    assert continua_por_el_papel(Boundary(202, 203, Verdict.CONTINUES, "la oración sigue cortada en la hoja siguiente"))
+    assert continua_por_el_papel(Boundary(203, 204, Verdict.CONTINUES, "la numeración sigue en 4 tras el 3"))
+    assert continua_por_el_papel(Boundary(1, 2, Verdict.CONTINUES, "el folio sigue en 9 tras el 8"))
+    # Lo que se apoya en ausencias no.
+    assert not continua_por_el_papel(Boundary(1, 2, Verdict.CONTINUES, "dos hojas llenas de prosa y ninguna abre nada"))
+    assert not continua_por_el_papel(Boundary(1, 2, Verdict.STARTS, "la oración sigue cortada en la hoja siguiente"))
 
 
 class TestElAnclaDelSello:

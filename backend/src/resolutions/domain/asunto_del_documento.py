@@ -516,6 +516,47 @@ def formulario_que_abre(texto: str) -> str | None:
     return None
 
 
+def escrito_que_interpone(primera_pagina: str) -> str | None:
+    """El escrito del trámite que la carta dice interponer en su cuerpo: «interponer DERECHO DE PETICION».
+
+    Para la carta cuyo asunto la llama «SOLICITUD…» y que en su cuerpo dice qué
+    escrito presenta (1005965, UPD3102771, 2026-11-11: dos derechos de petición
+    con un mes de distancia que salían en un solo PDF). ``None`` si no lo dice.
+    """
+    renglones = [_plano(r) for r in (primera_pagina or "").splitlines()[:RENGLONES_DE_CABECERA]]
+    cabeza = " ".join(renglones)
+    for verbo in _INTERPONE.finditer(cabeza):
+        propio = _titulo_del_escrito(cabeza[verbo.end() : verbo.end() + 60])
+        if propio:
+            return propio
+    return None
+
+
+#: El nombre de la respuesta de la empresa a una reclamación, como lo dictó el
+#: operador el 2026-11-11 ante 1016215 (UPD2437946 p7): «cuando un documento
+#: tenga este formato» -- «Consecutivo No. …», «CIUDAD, fecha», «ASUNTO:
+#: Reclamación No. RE…» -- «le colocarás el RE y como nombre contestación a
+#: reclamación». No es un tipo del catálogo del cliente: es su nombre.
+CONTESTACION_A_RECLAMACION = "CONTESTACION A RECLAMACION"
+#: «ASUNTO: Reclamación No. RE9234202200564», con lo que la OCR le haga.
+_ASUNTO_DE_RECLAMACION = re.compile(r"\bASUNTO\W{0,3}\s*RECLAMACI\w{0,3}\s+N\W{0,2}[O0]?\W{0,3}\s*R\W?E\s?\d")
+#: Hasta dónde se busca su asunto: va bajo el destinatario y su dirección.
+CABEZA_DE_LA_CONTESTACION = 900
+
+
+def es_contestacion_a_reclamacion(texto: str) -> bool:
+    """Si la hoja abre la respuesta de la empresa a una reclamación.
+
+    La carta de la empresa con su «Consecutivo No.» en el encabezado
+    (``formulario_que_abre``) y, en su asunto, la reclamación que contesta con
+    su RE. Sólo la primera hoja: la que sigue no trae ninguna de las dos.
+    """
+    if formulario_que_abre(texto or "") != RESPUESTA_DE_LA_EMPRESA:
+        return False
+    cabeza = _plano(" ".join((texto or "").split())[:CABEZA_DE_LA_CONTESTACION])
+    return _ASUNTO_DE_RECLAMACION.search(cabeza) is not None
+
+
 #: La carta de instrucciones escrita como título: en mayúsculas, como la
 #: imprime el formato -- «CARTA DE INSTRUCCIONES ANEXA A PAGARE No.» --, o con
 #: el «ANEXA» que la sigue aunque la OCR le cambie la caja.

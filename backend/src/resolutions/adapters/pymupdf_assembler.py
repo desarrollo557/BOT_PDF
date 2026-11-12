@@ -404,6 +404,7 @@ class PyMuPDFAssembler:
                     sin_radicado=self._sin_radicado,
                     radicado_en=self._radicado_en,
                     literal=group.nombre_literal,
+                    con_su_re=group.re_en_el_nombre,
                 )
                 # Dos unidades distintas nunca comparten archivo. El nombre se
                 # recorta para caber en la ruta, y dos graduados leídos con el

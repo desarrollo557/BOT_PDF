@@ -511,6 +511,129 @@ def leer_sellos(
     return sellos
 
 
+#: La zona de la firma, donde la ventanilla estampa el sello de tinta junto a
+#: ella: la mitad de abajo, de un tercio hacia la derecha.
+BANDA_DE_LA_FIRMA = Band(0.30, 0.55, 1.0, 1.0)
+#: A cuánto se lee esa zona con la tinta realzada.
+DPI_DE_LA_FIRMA = 300
+#: Lo que deja ver de sí el sello de Afinia con la tinta realzada, aunque el
+#: escáner lo haya dejado casi blanco (1005965 p2): «…ACEPTACIÓN», «Grupo-epm»,
+#: «OFICINA…», el número de radicación y los folios. Con dos señales distintas,
+#: porque una carta también nombra una oficina o unos folios.
+_SENALES_DEL_SELLO = (
+    re.compile(r"ACE\W?[PCT]?\W?TACI", re.IGNORECASE),
+    re.compile(r"\b[GCE]R?[UN]?PO\W?EP", re.IGNORECASE),
+    re.compile(r"\b[O0]\W?F\W?I\W?C\W?I\W?N\W?A\b", re.IGNORECASE),
+    re.compile(r"IM[PB]\W?LICA|RECIB\W?ID", re.IGNORECASE),
+    re.compile(r"RADICACI|N\W{0,3}D[EF]\s+F[O0]LI", re.IGNORECASE),
+)
+SENALES_PARA_CREER = 2
+#: La hoja de firma: la del escrito que la ventanilla sella.
+_FIRMA = re.compile(
+    r"\bC\W{0,2}C\W{0,3}\s*(?:N|No|N°|Nº|N®)|ATENTAMENTE|CORDIALMENTE|EN\s+CONSTANCIA\s+FIRM|\bFIRMA\b",
+    re.IGNORECASE,
+)
+
+
+#: Cuánto se abre el recorte alrededor de las señales del sello: encima va el
+#: rótulo de la oficina; debajo, sus campos y el RE escrito a mano.
+_ANTES_DEL_SELLO = (0.06, 0.05)
+_DESPUES_DEL_SELLO = (0.15, 0.13)
+
+
+def _recorte_del_sello(imagen: bytes, palabras) -> Band | None:
+    """El sello solo, en fracciones de la hoja, alrededor de las palabras que lo delatan."""
+    import struct
+
+    anclas = [p for p in palabras if any(senal.search(p[0]) for senal in _SENALES_DEL_SELLO)]
+    if not anclas or imagen[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    ancho, alto = struct.unpack(">II", imagen[16:24])
+    zona = BANDA_DE_LA_FIRMA
+    x0 = zona.x0 + min(x for _, x, _, _, _ in anclas) / ancho * (zona.x1 - zona.x0)
+    x1 = zona.x0 + max(x + a for _, x, _, a, _ in anclas) / ancho * (zona.x1 - zona.x0)
+    y0 = zona.y0 + min(y for _, _, y, _, _ in anclas) / alto * (zona.y1 - zona.y0)
+    y1 = zona.y0 + max(y + h for _, _, y, _, h in anclas) / alto * (zona.y1 - zona.y0)
+    return Band(
+        max(0.0, x0 - _ANTES_DEL_SELLO[0]),
+        max(0.0, y0 - _ANTES_DEL_SELLO[1]),
+        min(1.0, x1 + _DESPUES_DEL_SELLO[0]),
+        min(1.0, y1 + _DESPUES_DEL_SELLO[1]),
+    )
+
+
+def parece_un_sello(texto: str) -> bool:
+    """Si la lectura realzada de la zona de la firma deja ver un sello: dos de sus señales."""
+    return sum(1 for senal in _SENALES_DEL_SELLO if senal.search(texto or "")) >= SENALES_PARA_CREER
+
+
+def es_hoja_de_firma(texto: str) -> bool:
+    """Si la hoja lleva la firma de un escrito: es donde la ventanilla estampa el sello."""
+    return _FIRMA.search(texto or "") is not None
+
+
+def sellos_al_pie(
+    source,
+    textos: Mapping[int, str],
+    ya: set[int] | frozenset[int],
+    *,
+    lector_realzado: OcrEngine,
+    de_pago: OcrEngine | None = None,
+    control: RunControl | None = None,
+) -> dict[int, Sello]:
+    """El sello de tinta clara junto a la firma, que la capa del escáner no dejó ver.
+
+    Lo pidió el operador el 2026-11-11 ante 1005965 (UPD3102771 p2): el sello
+    de la oficina de Santa Rosa del Sur, con su RE escrito a mano, en tinta tan
+    clara que ni la capa ni la lectura normal lo veían; «puede estar en
+    cualquier área de la página… agarra el RE para colocarlo en el nombre, así
+    sea manuscrito o digital».
+
+    Sólo en las hojas de firma que no traen sello (``ya``), la zona de la firma
+    con la tinta realzada (``lector_realzado``): dos de sus señales y el sello
+    está. Su RE y su fecha, a mano, sólo los lee la IA (``de_pago``, con «OCR +
+    IA»), del sello recortado alrededor de esas señales -- la zona entera la IA
+    la toma por una imagen y no la transcribe --. Lo leído va tal cual: el
+    agente lo valida al ponerlo en el nombre (``domain.sello.validar_el_re_a_mano``).
+    Sin la IA el sello queda sin RE: no se adivina.
+
+    Estos sellos **no abren documento**: el sello al pie radica el escrito que
+    va encima. Dan el RE del nombre y la fecha.
+    """
+    control = control or NullRunControl()
+    hallados: dict[int, Sello] = {}
+    for pagina, texto in sorted(textos.items()):
+        if pagina in ya or not es_hoja_de_firma(texto or ""):
+            continue
+        control.check()
+        try:
+            imagen = source.render(pagina, BANDA_DE_LA_FIRMA, DPI_DE_LA_FIRMA)
+            palabras = lector_realzado.palabras(imagen)
+        except Exception:  # noqa: BLE001 - una zona ilegible no para la caja
+            continue
+        if not parece_un_sello(" ".join(texto for texto, *_ in palabras)):
+            continue
+        sello = Sello("tinta")
+        if de_pago is not None:
+            # Sólo el sello, recortado alrededor de sus señales: la zona entera
+            # la IA la toma por una imagen y no la transcribe.
+            recorte = _recorte_del_sello(imagen, palabras) or BANDA_DE_LA_FIRMA
+            try:
+                del_pago = de_pago.read(source.render(pagina, recorte, DPI_DEL_PAGO, "jpeg")).text
+            except Exception:  # noqa: BLE001 - sin la IA, el sello sin su número
+                del_pago = ""
+            if del_pago:
+                fecha = fecha_del_sello_de_tinta(del_pago) or getattr(leer_sello(del_pago), "fecha", None)
+                # Lo leído, tal cual: la validación del agente (año y oficina)
+                # la hace quien lo pone en el nombre, y la anota.
+                radicado = radicado_del_texto(del_pago) or radicado_escrito(
+                    del_pago, fecha.year if fecha else None
+                )
+                sello = Sello("tinta", radicado, fecha, folios_del_sello_de_tinta(del_pago))
+        hallados[pagina] = sello
+    return hallados
+
+
 def cortar_por_sellos(
     grupos: GroupingResult,
     sellos: Mapping[int, Sello],

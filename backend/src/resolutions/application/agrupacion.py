@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from enum import StrEnum
@@ -634,8 +634,16 @@ def agrupar_por_tramite(
     anexos: dict[str, list[int]] | None = None,
     retenidas: Mapping[int, int] | None = None,
     sellos: Mapping[int, Sello] | None = None,
+    continuan: Collection[int] = frozenset(),
 ) -> PorTramite:
     """Un archivo por trámite: el radicado lo abre y la fecha reparte lo demás.
+
+    ``continuan`` son las hojas que siguen a la anterior por lo que el papel
+    dice de sí mismo -- la frase que sigue, la numeración que sigue, el folio --:
+    el RE que citan en su texto no las saca de su trámite, ni la comprobación
+    las mueve. Sólo su sello. En 7975593 (UPD2460819, 2026-11-12) un recurso de
+    folios 8, 9 y 10 se partía en tres porque la lista de sus pruebas cita «…asunto
+    reclamación No. RE2310202105403» y «…RE2310202105702».
 
     ``retenidas`` son las hojas que la lista de «ANEXOS» de un escrito unió a
     él, con la hoja de la lista: van al trámite de su escrito pase lo que pase,
@@ -689,6 +697,11 @@ def agrupar_por_tramite(
         for p in paginas:
             if radicado[p] is None:
                 radicado[p] = radicado_del_sello(textos.get(p, ""), oficinas)
+    # La hoja que continúa la anterior no cambia de trámite por un RE que cita:
+    # sólo por el de su sello.
+    for p in continuan:
+        if p in radicado and not (p in sellos and sellos[p].radicado):
+            radicado[p] = None
     if not any(radicado.values()):
         return PorTramite(
             grupos=grupos, anexos=dict(anexos), paginas=len(paginas), en_revision=[], agrupo=False
@@ -818,7 +831,7 @@ def agrupar_por_tramite(
     retenidas = retenidas or {}
     # Lo que la lista de anexos retuvo no lo mueve ninguna comprobación: la
     # lista es la palabra del cliente, y vale más que una fecha que encaja.
-    reparos = [reparo for reparo in reparos if reparo.page not in retenidas]
+    reparos = [reparo for reparo in reparos if reparo.page not in retenidas and reparo.page not in continuan]
     for reparo in reparos:
         asignada[reparo.page] = reparo.tramite
     for pagina, ancla in retenidas.items():

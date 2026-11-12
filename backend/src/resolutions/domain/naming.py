@@ -168,6 +168,7 @@ def output_filename(
     sin_radicado: bool = False,
     radicado_en: Collection[str] = (),
     literal: bool = False,
+    con_su_re: bool = False,
 ) -> str:
     """Nombrar un archivo generado por lo que es y por su número.
 
@@ -217,7 +218,7 @@ def output_filename(
     if sin_radicado and kind is not None and (
         partido := re.match(r"^(\d+)-(?:RE|P)\d", fragment, re.IGNORECASE)
     ):
-        if _plano_del_tipo(kind) in {_plano_del_tipo(tipo) for tipo in radicado_en} and (
+        if (con_su_re or _plano_del_tipo(kind) in {_plano_del_tipo(tipo) for tipo in radicado_en}) and (
             con_re := re.match(r"^\d+-(RE\d{13})(?![0-9])", fragment, re.IGNORECASE)
         ):
             radicado = con_re.group(1).upper()

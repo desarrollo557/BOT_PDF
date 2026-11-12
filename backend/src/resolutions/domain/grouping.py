@@ -33,6 +33,11 @@ class PageGroup:
     #: LUCIA HERRERA - ENFERMERA.pdf» -- en vez de en guiones. Es el del acta de
     #: grado, que se llama igual que su asunto en el FUID (2026-11-05).
     nombre_literal: bool = False
+    #: Si el RE de su código va detrás del tipo en el nombre del archivo, sea
+    #: cual sea el tipo: el documento que trae su sello de radicación con su RE
+    #: (lo pidió el operador el 2026-11-11: «cuando un documento tenga su sello…
+    #: agarra el RE para colocarlo en el nombre»).
+    re_en_el_nombre: bool = False
 
     @property
     def size(self) -> int:

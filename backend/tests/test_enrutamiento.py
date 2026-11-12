@@ -230,7 +230,7 @@ class TestElAvisoDeQueLaAccionNoPega:
 
         llamadas = []
 
-        def fake_agrupar_por_tramite(grupos, leidas, anexos, retenidas=None, sellos=None):
+        def fake_agrupar_por_tramite(grupos, leidas, anexos, retenidas=None, sellos=None, continuan=()):
             llamadas.append((grupos, leidas, anexos))
             return PorTramite(
                 grupos=grupos,

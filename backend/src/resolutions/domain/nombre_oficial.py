@@ -54,8 +54,12 @@ _MOTIVO = re.compile(
 #: 2026-11-04: «que los reclamos o constancias de reclamación lleven su RE»,
 #: sólo estos dos y con su nombre exacto (no «RECLAMO POR CONSUMO ESTIMADO» ni
 #: «RESPUESTA A RECLAMACION»). Los demás siguen número-título, sin el RE (lo
-#: dictó el 2026-10-21).
-CON_RE_EN_EL_NOMBRE = frozenset({"RECLAMO", "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION"})
+#: dictó el 2026-10-21). Y desde el 2026-11-11, la respuesta de la empresa a una
+#: reclamación, con el nombre que le dio el operador: «CONTESTACION A
+#: RECLAMACION» con su RE (``asunto_del_documento.es_contestacion_a_reclamacion``).
+CON_RE_EN_EL_NOMBRE = frozenset(
+    {"RECLAMO", "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION", "CONTESTACION A RECLAMACION"}
+)
 #: Un RE como va en el nombre: «RE» y trece cifras. El «P…» de una solicitud
 #: de servicio no es un RE.
 _RE_COMPLETO = re.compile(r"RE\d{13}")

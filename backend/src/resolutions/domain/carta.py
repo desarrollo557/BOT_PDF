@@ -45,12 +45,33 @@ PALABRAS_DE_LA_PROSA = 5
 
 #: El renglón del asunto de la carta: «ASUNTO:», «Asunto;», «REF:», «Ref.».
 _ASUNTO = re.compile(r"^\W{0,3}(?:REF(?:ERENCIA)?|ASUNTO)\s*[.:;!]{1,3}\s*(?P<resto>.*)$", re.IGNORECASE)
+#: «Asunto» solo en su renglón, con los dos puntos en otra columna: la capa
+#: deja «Asunto» / «SOLICITUD SE REALICE CORRECCION…» (1005965, UPD3102771,
+#: 2026-11-11), y la carta no se reconocía.
+#: Con mayúscula, como lo escribe la carta: «cuyo / asunto / es» es la prosa de
+#: un recurso partida en renglones (UPD2460819 p203).
+_ASUNTO_SUELTO = re.compile(r"^\W{0,3}(?:Asunto|ASUNTO)\W{0,3}$")
+#: Hasta qué renglón va la cabeza de una carta: fecha, destinatario, asunto.
+#: La segunda carta de 1005965 lo trae en el 15, tras el ruido del escáner y
+#: cuatro renglones de «ART. 23…».
+RENGLONES_DEL_ASUNTO_SUELTO = 20
 #: El asunto de la etiqueta del sello, que no es el de una carta: «03 RECLAMO»,
 #: «06 RECLREPOSICION EN SUBSIDIO DE APELACION» (UPD2326360 pág. 12). Ningún
 #: cliente empieza su asunto con la clase del trámite en dos cifras.
 _ASUNTO_DEL_SELLO = re.compile(r"^[O0]?\d{1,2}\s+[A-Z]", re.IGNORECASE)
 #: A quién va dirigida.
 _SALUDO = re.compile(r"^\W*(?:SE[ÑN]OR(?:ES|A|ITA)?|DOCTOR(?:A)?|GERENTE|DR\.|SRES?\.)\b", re.IGNORECASE)
+#: La fórmula de cortesía con que abre el cuerpo: nunca es el asunto.
+_CORTESIA = re.compile(
+    r"^\W*(?:SALUDOS?\b|CORDIAL(?:MENTE)?\s+SALUDO|RESPETAD[OA]S?\b|ESTIMAD[OA]S?\b|APRECIAD[OA]S?\b"
+    r"|DISTINGUID[OA]S?\b|BUEN(?:OS)?\s+DIAS?\b)"
+)
+#: El renglón del destinatario, que también puede ir encima de «REF.»: nunca es el asunto.
+_DESTINATARIO = re.compile(
+    r"\b(?:AFINIA|CARIBEMAR|ELECTRICARIBE|EMPRESA|OFICINA|GERENTE|S\.?\s?A\.?\s?S?\.?\s?E\.?\s?S\.?\s?P)\b"
+)
+#: Cuántas letras lleva, como poco, el asunto que la capa dejó encima de «REF.».
+LETRAS_DEL_ASUNTO_DE_ENCIMA = 6
 #: Cómo empieza la hoja que sigue a la carta: la sección de lo que pide o de lo
 #: que cuenta. Con lo que la OCR hace de la palabra: «PETiCfONES».
 _SECCION = re.compile(r"^(?:PETI\w{1,6}|PRETENSI\w{1,6}|HECHOS|FUNDAMENTOS?\b|SOLICITUDES)\b")
@@ -76,6 +97,13 @@ def _renglon_del_asunto(renglones: list[str]) -> tuple[int, str] | None:
     for i, renglon in enumerate(renglones):
         hallado = _ASUNTO.match(renglon)
         if hallado is None:
+            if _ASUNTO_SUELTO.match(renglon) and i < RENGLONES_DEL_ASUNTO_SUELTO and i + 1 < len(renglones):
+                # El asunto, en los renglones de debajo, sin la «Referencia» de
+                # la otra columna. Sólo en la cabeza: más abajo, «ASUNTO» suelto
+                # es lo que cita el cuerpo de un recurso (UPD2460819 p203).
+                debajo = re.sub(r"(?i)^\W*REFERENCIA\W*", "", " ".join(renglones[i + 1 : i + 3])).strip()
+                if _letras(debajo) >= 12 and not _ASUNTO_DEL_SELLO.match(_plano(debajo)):
+                    return i, debajo
             continue
         resto = hallado.group("resto").strip()
         if _ASUNTO_DEL_SELLO.match(_plano(resto)):
@@ -131,9 +159,30 @@ def continua_la_carta(texto: str) -> bool:
 
 
 def asunto_de_la_carta(texto: str) -> str | None:
-    """El asunto de la primera hoja de una carta, plano, o ``None`` si no lo trae."""
-    hallado = _renglon_del_asunto(_renglones(texto))
-    return _plano(hallado[1]) if hallado else None
+    """El asunto de la primera hoja de una carta, plano, o ``None`` si no lo trae.
+
+    Nunca la fórmula de cortesía. Con «REF.» solo en su renglón y el saludo
+    debajo, la capa dejó el asunto encima: en el papel va a la derecha de
+    «REF.», en la misma línea -- «CAMBIO DE ESTRATO / REF. / Saludo Cordial;»
+    (1016215, UPD2437946 p1, 2026-11-11), que se llamaba «SALUDO CORDIAL» --. Si
+    encima no hay nada que sirva, no hay asunto. Sólo el nombre: si la hoja abre
+    carta lo sigue diciendo ``_renglon_del_asunto``, sin cambios.
+    """
+    renglones = _renglones(texto)
+    hallado = _renglon_del_asunto(renglones)
+    if hallado is None:
+        return None
+    indice, asunto = hallado
+    if _CORTESIA.match(_plano(asunto)):
+        anterior = renglones[indice - 1] if indice > 0 else ""
+        if (
+            _letras(anterior) >= LETRAS_DEL_ASUNTO_DE_ENCIMA
+            and not _SALUDO.match(anterior)
+            and not _DESTINATARIO.search(_plano(anterior))
+        ):
+            return _plano(anterior)
+        return None
+    return _plano(asunto)
 
 
 def huella_de_la_carta(texto: str) -> tuple[str, str | None] | None:

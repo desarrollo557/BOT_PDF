@@ -24,6 +24,7 @@ from ..domain.asunto_del_documento import (
     ESCRITOS_DEL_TRAMITE,
     PIEZAS_DEL_ACUERDO,
     es_carta_de_la_empresa,
+    escrito_que_interpone,
     titulo_del_documento,
 )
 from ..domain.carta import (
@@ -37,6 +38,20 @@ from ..domain.sello import Sello, numero_de_la_superintendencia
 
 #: Cuántas hojas hacia atrás se busca la carta que cita la constancia.
 HOJAS_DE_LA_CITA = 2
+
+
+def _es_escrito_del_tramite(texto: str) -> bool:
+    """Si la carta es un escrito del trámite -- reclamo, petición, queja, recurso -- y por eso abre.
+
+    Por su título; y la que su asunto llama «SOLICITUD…», si el cuerpo dice que
+    interpone uno (1005965, UPD3102771, 2026-11-11: «con el objeto de interponer
+    DERECHO DE PETICION», dos peticiones de julio y agosto en un solo PDF). La
+    «SOLICITUD» que no interpone nada sigue sin abrir.
+    """
+    titulo = titulo_del_documento(texto)
+    if titulo in ESCRITOS_DEL_TRAMITE:
+        return True
+    return titulo == "SOLICITUD" and escrito_que_interpone(texto) in ESCRITOS_DEL_TRAMITE
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,7 +121,7 @@ class Cartas:
             de_tramite=frozenset(
                 p
                 for p in primeras - de_la_empresa
-                if titulo_del_documento(textos.get(p) or "") in ESCRITOS_DEL_TRAMITE
+                if _es_escrito_del_tramite(textos.get(p) or "")
             ),
             copias=frozenset(copias),
             siguen=frozenset(siguen),

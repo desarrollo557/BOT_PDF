@@ -54,6 +54,15 @@ SIN_TITULO = "sin título legible: se nombró por su caja y sus páginas"
 SEGUNDOS_PARA_UNA_HOJA = 90.0
 #: Cuántas veces se intenta la franja con el OCR de casa.
 INTENTOS_DE_LA_FRANJA = 2
+#: Desde qué gris se toma un píxel por tinta al buscar el sello claro junto a la
+#: firma: con 220 se ve el de 1005965 p2 («…ACEPTACIÓN», «Grupo-epm»), que la
+#: lectura normal no veía. El mismo que realza la tinta clara de las actas.
+UMBRAL_DE_LA_TINTA_CLARA = 220
+#: Por qué va a Revisión el sello al pie cuyo RE no se cree.
+RE_AL_PIE_SIN_VALIDAR = (
+    "trae sello de radicación al pie con el RE escrito a mano y la IA no lo leyó: "
+    "el nombre va sin RE; escríbalo a mano"
+)
 
 
 def _titulo_del_encabezado(fuente, pagina: int, lector, de_pago=None) -> str | None:
@@ -486,8 +495,72 @@ def numerar_por_fecha(grupos, anexos: dict, piezas: list[dict]):
     return replace(grupos, groups=numerados), anexos, piezas
 
 
-def _poner_el_re_en_el_nombre(grupos, anexos: dict, *, textos: dict, sellos: dict, sin_re: set, abren: set):
-    """El RE del reclamo y de la constancia de su contenido, en su código, para su nombre.
+#: Cuántos documentos hacia atrás se busca la fecha de lo que va delante de una
+#: respuesta, saltando los anexos sin fecha (la compraventa de 1016215).
+DOCUMENTOS_HACIA_ATRAS = 3
+
+
+def _sigue_con_lo_de_delante(
+    pagina: int, radicado: str | None, grupos, textos: dict, sellos: dict, abren: frozenset[int] | set[int] = frozenset()
+) -> bool:
+    """Si la respuesta de la empresa que abre en ``pagina`` es de lo que va delante de ella.
+
+    Lo es si lo de delante lleva su RE -- el de su sello o el que cita su
+    texto --, o si la fecha más cercana de lo de delante cae en la ventana de
+    su trámite (``en_ventana``): el escrito del cliente sin sello sólo toma el
+    RE que le cita la respuesta, y es la fecha la que dice que es el suyo. Lo
+    de otra fecha es de otro trámite (1016215, 2026-11-11: una carta de 2021 y
+    sus anexos delante de una respuesta de 2022 a otra persona).
+
+    Hacia atrás sólo se saltan los anexos sin fecha, lo que no abre nada por sí
+    mismo (``abren``: sello o carta). Un escrito que abre y no se deja fechar es
+    una duda, y no se salta: en UPD2366126 el recurso de p18-20 lleva sello con
+    la fecha ilegible, y saltarlo llevaba a un acta de abril y partía la
+    publicación del aviso de su escrito.
+
+    Ante la duda -- nada de delante trae fecha ni RE, o la respuesta no se deja
+    fechar -- sigue con lo de delante, como siempre.
+    """
+    from ...domain.fecha_por_estructura import fecha_por_estructura
+    from ...domain.tramites import en_ventana, radicado_de
+
+    delante = [g for g in grupos if g.page_numbers and max(g.page_numbers) < pagina]
+    delante.sort(key=lambda g: g.page_numbers[0])
+    if not delante:
+        return True
+
+    def re_de(pagina_suya: int) -> str | None:
+        sello = sellos.get(pagina_suya)
+        if sello is not None and sello.radicado:
+            return sello.radicado
+        return radicado_de(textos.get(pagina_suya, "") or "")
+
+    if radicado and any(re_de(p) == radicado for p in delante[-1].page_numbers):
+        return True
+    suya = fecha_por_estructura([pagina], textos).fecha
+    if suya is None:
+        return True
+    for grupo in reversed(delante[-DOCUMENTOS_HACIA_ATRAS:]):
+        fecha = fecha_por_estructura(list(grupo.page_numbers), textos).fecha
+        if fecha is not None:
+            return en_ventana(fecha, suya)
+        if grupo.page_numbers[0] in abren:
+            return True
+    return True
+
+
+def _poner_el_re_en_el_nombre(
+    grupos,
+    anexos: dict,
+    *,
+    textos: dict,
+    sellos: dict,
+    sin_re: set,
+    abren: set,
+    oficinas: frozenset[str] | set[str] = frozenset(),
+    rechazados: list | None = None,
+):
+    """El RE del reclamo, de la constancia de su contenido, de la contestación y de todo documento con su sello, para su nombre.
 
     Lo dictó el operador el 2026-11-04: «que los reclamos o constancias de
     reclamación lleven su RE», como los dejaba ``scripts/renombrar_reclamaciones.py``
@@ -511,18 +584,60 @@ def _poner_el_re_en_el_nombre(grupos, anexos: dict, *, textos: dict, sellos: dic
     from dataclasses import replace
 
     from ...domain.nombre_oficial import es_re, lleva_re_en_el_nombre
+    from ...domain.sello import validar_el_re_a_mano
     from ...domain.tramites import radicado_de
 
     de_anexo = {p for paginas in anexos.values() for p in paginas if p not in abren}
     salida = []
     renombrados: dict[str, str] = {}
     hallados: dict[str, str] = {}
+
+    def del_sello(pagina: int) -> tuple[str | None, str]:
+        """El RE del sello de la hoja, validado si va a mano (sello de tinta), y la nota del agente."""
+        sello = sellos[pagina]
+        if sello.clase != "tinta":
+            return (sello.radicado.upper() if es_re(sello.radicado) else None), ""
+        if not sello.radicado:
+            return None, ""
+        valido, motivo = validar_el_re_a_mano(sello.radicado, sello.fecha, oficinas)
+        if valido is None and rechazados is not None:
+            rechazados.append(
+                {
+                    "page": pagina,
+                    "reason": f"el RE leído a mano en el sello ({sello.radicado}) no se cree: {motivo}; "
+                    "el nombre va sin RE, escríbalo a mano",
+                }
+            )
+        return valido, motivo
+
     for grupo in grupos.groups:
-        if not lleva_re_en_el_nombre(grupo.kind):
-            salida.append(grupo)
-            continue
         numero, _, resto = grupo.code.value.partition(" ")
         primera = str(grupo.page_numbers[0])
+        if not lleva_re_en_el_nombre(grupo.kind):
+            # El documento que trae su sello con su RE lo lleva en el nombre,
+            # sea del tipo que sea (el operador, 2026-11-11). Sólo el sello de
+            # sus hojas -- arriba o al pie (``sellos_al_pie``) --, nunca el de
+            # una copia aportada como prueba ni el de un anexo. El de tinta,
+            # validado por el agente (año y oficina).
+            encontrado = None
+            for pagina in grupo.page_numbers if numero.isdigit() else ():
+                if pagina in sin_re or pagina in de_anexo or pagina not in sellos:
+                    continue
+                valido, nota = del_sello(pagina)
+                if valido:
+                    encontrado = (pagina, valido, nota)
+                    break
+            if encontrado is None:
+                salida.append(grupo)
+                continue
+            pagina, radicado, nota = encontrado
+            nuevo = f"{numero} {radicado}"
+            renombrados[grupo.code.value] = nuevo
+            hallados[primera] = f"{radicado}: del sello de la pág. {pagina}" + (f" ({nota})" if nota else "")
+            salida.append(
+                replace(grupo, code=type(grupo.code)(value=nuevo, raw=radicado), re_en_el_nombre=True)
+            )
+            continue
         del_tramite = next((pieza.upper() for pieza in resto.split() if es_re(pieza)), None)
         if del_tramite:
             hallados[primera] = f"{del_tramite}: el de su trámite"
@@ -533,7 +648,8 @@ def _poner_el_re_en_el_nombre(grupos, anexos: dict, *, textos: dict, sellos: dic
             if pagina in sin_re or pagina in de_anexo:
                 continue
             if pagina in sellos:
-                leido, de_donde = sellos[pagina].radicado, f"del sello de la pág. {pagina}"
+                leido, nota = del_sello(pagina)
+                de_donde = f"del sello de la pág. {pagina}" + (f" ({nota})" if nota else "")
             else:
                 leido, de_donde = radicado_de(textos.get(pagina, "") or ""), f"del texto de la pág. {pagina}"
             if es_re(leido):
@@ -746,6 +862,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         la_ultima_hoja_sola,
         leer_sellos,
         retener_los_folios,
+        sellos_al_pie,
         separar_las_actas,
         separar_los_formularios,
         unir_lo_que_no_abre,
@@ -754,7 +871,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     from ...domain.fingerprint import nic_de_la_caja
     from ...domain.naming import DOCUMENT_PREFIX, document_folder
     from ...domain.nombre_oficial import CON_RE_EN_EL_NOMBRE, nombre_oficial
-    from ...domain.segmentation import Verdict
+    from ...domain.segmentation import Verdict, continua_por_el_papel
     from ...domain.sello import (
         claves_del_envio,
         es_guia_de_envio,
@@ -909,6 +1026,30 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 total=total,
             ),
         )
+        # L2b. El sello de tinta clara junto a la firma, que la capa no dejó
+        # ver (1005965 p2, 2026-11-11): con la tinta realzada en la zona de la
+        # firma de cada hoja de firma sin sello, y su RE y su fecha a mano por
+        # la IA si se eligió, validado el año del RE con el de la fecha. No
+        # abren documento: dan el RE del nombre y la fecha.
+        al_pie = sellos_al_pie(
+            source,
+            textos,
+            set(sellos),
+            lector_realzado=TesseractOcr(
+                TesseractConfig(
+                    min_word_confidence=0,
+                    psm=6,
+                    umbral=UMBRAL_DE_LA_TINTA_CLARA,
+                    mediana=3,
+                    timeout_seconds=SEGUNDOS_PARA_UNA_HOJA,
+                )
+            ),
+            de_pago=taller.lector_de_pago(),
+            control=taller.control,
+        )
+        # El agente no cree el RE que no cuadra: con la IA, el sello al pie sin
+        # RE válido va a Revisión.
+        re_al_pie_sin_validar = sorted(p for p, s in al_pie.items() if not s.radicado) if taller.con_ia() else []
         # L3. La fecha de entrega que el mensajero marcó en cada guía de
         # LECTA: el día y el mes con una X, el año de la fecha impresa.
         lector_de_rejillas = TesseractOcr(
@@ -1014,8 +1155,18 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     from ...domain.asunto_del_documento import NOTIFICACION_PERSONAL as _NOTIFICACION
     from ...domain.asunto_del_documento import RESPUESTA_DE_LA_EMPRESA as _RESPUESTA
 
+    # Y desde el 2026-11-11 también cuando lo de delante no es de su trámite:
+    # ni lleva su RE ni cae en su ventana de fechas. En 1016215 (UPD2437946) la
+    # respuesta de 2022 a YORLENE RIAPIRA quedó detrás del contrato que anexaba
+    # la carta de 2021 de otro suscriptor, y el archivo salió «CONTRATO DE
+    # TRANSACCION», sin fecha.
     for p in [p for p, (tipo_f, _) in formularios.items() if tipo_f == _RESPUESTA]:
-        if not any(formularios.get(p - atras, ("", None))[0] == _NOTIFICACION for atras in (1, 2, 3)):
+        tras_la_notificacion = any(
+            formularios.get(p - atras, ("", None))[0] == _NOTIFICACION for atras in (1, 2, 3)
+        )
+        if not tras_la_notificacion and _sigue_con_lo_de_delante(
+            p, formularios[p][1], grupos.groups, textos, sellos, abren=set(sellos_que_abren) | set(que_abren)
+        ):
             del formularios[p]
     # Dentro de los folios de un sello, o aportado como prueba, un formulario
     # es del escrito que lo trae: no abre. Salvo la Habeas Data, que nunca es
@@ -1182,16 +1333,20 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 # primera -- en el sitio de su clase; si no, sus respaldos.
                 # Nunca un anexo, ni la guía que acompaña a una carta, ni el
                 # sello de una copia aportada como prueba: ésa es de otro día.
+                # Con los sellos al pie (L2b) que traen su fecha -- la leyó la IA
+                # --: es la del sello. Sin fecha no cuentan, y «Solo OCR» queda
+                # como estaba.
+                con_pie = {**{p: s for p, s in al_pie.items() if s.fecha}, **sellos}
                 estructura = fecha_por_estructura(
                     paginas,
                     textos,
                     sellos={
-                        p: sellos[p].fecha
+                        p: con_pie[p].fecha
                         for p in paginas
-                        if p in sellos and sellos[p].fecha and p not in cartas.copias
+                        if p in con_pie and con_pie[p].fecha and p not in cartas.copias
                     },
                     guias=fechas_de_guia,
-                    con_sello={p for p in paginas if p in sellos and p not in cartas.copias},
+                    con_sello={p for p in paginas if p in con_pie and p not in cartas.copias},
                 )
                 primera = estructura.fecha
                 piezas.append(
@@ -1268,6 +1423,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     entregado_por = Agrupacion.DOCUMENTO
     if agrupacion is Agrupacion.TRAMITE:
         # F5. Trámite: mismo RE, mismo trámite.
+        # Las hojas que siguen a la anterior por lo que el papel dice de sí
+        # mismo: el RE que citan no las saca de su documento.
+        continuan_por_el_papel = {b.right for b in segmentacion.boundaries if continua_por_el_papel(b)}
         # Sin los sellos de las copias aportadas como prueba: son de otro trámite.
         por_tramite = agrupar_por_tramite(
             grupos,
@@ -1275,6 +1433,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             anexos,
             retenidas=retencion.retenidas,
             sellos={p: s for p, s in sellos.items() if p not in de_prueba},
+            # La hoja que sigue a la anterior por su frase, su numeración o su
+            # folio no cambia de trámite por un RE que cita (2026-11-12).
+            continuan=continuan_por_el_papel,
         )
         avisos_de_agrupacion.append(por_tramite.aviso())
         if por_tramite.agrupo:
@@ -1312,6 +1473,12 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             # RE…21592 al aviso de la pág. 23.
             for p in de_prueba:
                 propios[p] = None
+            # Ni la hoja que sigue a la anterior por su frase, su numeración o
+            # su folio, con el RE que cita en el cuerpo (7975593, UPD2460819
+            # p203-204, 2026-11-12): sólo con el de su sello.
+            for p in continuan_por_el_papel:
+                if p in propios and p not in sellos:
+                    propios[p] = None
             # Ni las del acuerdo de pago, que no lleva RE: las constancias de
             # la financiación que se firmaron con él traen el suyo y lo partían
             # (UPD3102729).
@@ -1526,6 +1693,10 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # La carta, no la guía que la precede ni la autorización que se le unió
         # por delante.
         primera = next((x for x in g.page_numbers if x not in guias and x not in delanteras), g.page_numbers[0])
+        # La respuesta de la empresa a una reclamación se llama como la nombró
+        # el operador, «CONTESTACION A RECLAMACION», y lleva su RE (2026-11-11).
+        if es_contestacion_a_reclamacion(textos.get(primera, "") or ""):
+            return replace(g, kind=CONTESTACION_A_RECLAMACION)
         # El nombre oficial (lo dictó el operador el 2026-10-21: «según el
         # nombre oficial del documento del trámite… tanto en el nombre del
         # documento como en el inventario»): su título con el nombre del
@@ -1586,7 +1757,8 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         if entregado_por is Agrupacion.MES:
             return nombrado
         nombre = estandarizar(nombrado.kind)
-        if nombre in POR_NOMBRE or nombrador is None:
+        # El nombre que dio el operador a la contestación no se le discute a la IA.
+        if nombre in POR_NOMBRE or nombre == CONTESTACION_A_RECLAMACION or nombrador is None:
             return replace(nombrado, kind=nombre)
         if not fuente_de_encabezados:
             fuente_de_encabezados.append(PyMuPDFPageSource(tmp_path, taller.name))
@@ -1609,6 +1781,10 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             return replace(nombrado, kind=de_la_ia)
         return replace(nombrado, kind=nombre)
 
+    from ...domain.asunto_del_documento import (
+        CONTESTACION_A_RECLAMACION,
+        es_contestacion_a_reclamacion,
+    )
     from ...domain.catalogo import POR_NOMBRE
     from ...domain.nombre_oficial import estandarizar
     from ...domain.titulo_impreso import nombre_por_su_origen, titulo_impreso
@@ -1636,15 +1812,25 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # IDENTIDAD».
     grupos = nombrar_sin_soporte(grupos, textos)
     # F6b. El reclamo y la constancia de su contenido llevan su RE en el
-    # nombre (lo dictó el operador el 2026-11-04). Por mes no: el archivo es un
-    # mes, no un documento.
+    # nombre (lo dictó el operador el 2026-11-04), y la contestación y todo
+    # documento con su sello (2026-11-11). Por mes no: el archivo es un mes, no
+    # un documento.
     re_en_el_nombre: dict[str, str] = {}
+    re_rechazados: list[dict] = []
+    # El sello al pie de una copia aportada como prueba no es del documento que
+    # la trae: su RE no se pide (7975593, UPD3126960 p43).
+    re_al_pie_que_importa = [p for p in re_al_pie_sin_validar if p not in cartas.copias and p not in de_prueba]
     if entregado_por is not Agrupacion.MES:
         grupos, anexos, re_en_el_nombre = _poner_el_re_en_el_nombre(
             grupos,
             anexos,
             textos=textos,
-            sellos=sellos,
+            # Con los sellos al pie: dan el RE del documento, no abren nada.
+            sellos={**al_pie, **sellos},
+            # El agente valida el RE a mano con las oficinas que radican y las
+            # de los RE impresos de la caja; lo que no cree va a Revisión.
+            oficinas={r[2:6] for r in conocidos if len(r) == 15},
+            rechazados=re_rechazados,
             sin_re=set(cartas.copias) | set(de_prueba) | set(del_acuerdo),
             abren=set(sellos_que_abren),
         )
@@ -1736,7 +1922,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         + [pagina.page for pagina in sin_fecha_en_revision]
         + sin_titulo
         + [pagina for pagina, _ in (revisados.en_revision if revisados else ())]
-        + [sin_leer["page"] for sin_leer in fechas_sin_leer],
+        + [sin_leer["page"] for sin_leer in fechas_sin_leer]
+        + re_al_pie_que_importa
+        + [rechazado["page"] for rechazado in re_rechazados],
         estadisticas=estadisticas,
         anexos=anexos,
         # Cada PDF escrito, vuelto a abrir y casado hoja por hoja con el
@@ -1780,6 +1968,13 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         + [{"page": pagina, "reason": SIN_TITULO} for pagina in sin_titulo]
         # Y el que no dejó leer su fecha: va sin ella, a que alguien la mire.
         + fechas_sin_leer
+        # Y el sello al pie (L2b) cuyo RE a mano la IA no leyó, o leyó con otro
+        # año que el de la fecha del sello: el agente no lo cree y no va al
+        # nombre (2026-11-11). Sin la IA no se lee nunca, y no se repite aquí.
+        + [{"page": pagina, "reason": RE_AL_PIE_SIN_VALIDAR} for pagina in re_al_pie_que_importa]
+        # Y el RE a mano que la IA leyó y el agente no cree: otro año que el del
+        # sello, o una oficina que no radica.
+        + re_rechazados
         # Y el escrito que enumera anexos que no aparecen detrás.
         # Dice de qué documento es la lista: una caja trae varios escritos con
         # su propia lista, y «pág. 2» a secas se confundía con la lista de la
@@ -1840,6 +2035,12 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # Y el RE de cada reclamo y constancia, por su primera hoja, con de
         # dónde salió: «RE2310…: del sello de la pág. 8».
         "re_en_el_nombre": re_en_el_nombre,
+        # Los sellos al pie que halló L2b, con lo que se les leyó: la
+        # auditoría de cierre los cruza con el papel.
+        "sellos_al_pie": {
+            str(p): {"radicado": s.radicado, "fecha": s.fecha.isoformat() if s.fecha else None}
+            for p, s in sorted(al_pie.items())
+        },
         # Sólo el PDF, sin la subcarpeta de la caja: «UPD2998266», no
         # «910349 UPD2998266» (la caja va en «Identificación / Nic»).
         "expediente": document_folder(nombre_del_expediente(taller.name)),

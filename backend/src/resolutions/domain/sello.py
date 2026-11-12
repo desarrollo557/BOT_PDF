@@ -158,6 +158,44 @@ _OFICINAS = {"110": "3110", "120": "3120", "310": "4310"}
 #: Su «310» es también el de la 4310, y deducir la oficina por esas tres cifras
 #: convertía el RE2310… en un RE4310… que no existe.
 OFICINAS_CONOCIDAS = frozenset({"3110", "3120", "4310", "2310"})
+#: Las oficinas que radican, para validar el RE escrito a mano en un sello de
+#: tinta: las conocidas, la 2311 de Santa Rosa del Sur (los sellos de 1005965,
+#: «RE2311202302499» y «RE2311202302952») y las que se repiten impresas en el
+#: corpus de Afinia (9233, 9234, 8310). No corrige la lectura de nada: sólo
+#: decide si se cree un RE a mano. Se suman las de los RE impresos de la caja.
+OFICINAS_QUE_RADICAN = OFICINAS_CONOCIDAS | frozenset({"2311", "9233", "9234", "8310"})
+_RE_ENTERO = re.compile(r"RE\d{13}")
+
+
+def validar_el_re_a_mano(
+    radicado: str | None, fecha: date | None, oficinas_de_la_caja: Iterable[str] = ()
+) -> tuple[str | None, str]:
+    """El RE escrito a mano de un sello, si se cree, y por qué; ``(None, motivo)`` si no.
+
+    La validación del agente (2026-11-11), sobre lo que la IA leyó a mano:
+
+    - un RE entero, «RE» y trece cifras;
+    - su año, el de la fecha del sello si se leyó: «RE2311**2023**02952» con «28-08-23»;
+    - su oficina, una que radica (``OFICINAS_QUE_RADICAN`` y las de la caja).
+      Si no lo es pero está a una sola cifra de una única que sí, es ésa: la IA
+      leyó «RE2371202302499» por «RE2311202302499» (1005965 p1). Si está a una
+      cifra de dos, o de ninguna, no se cree.
+    """
+    if not radicado or not _RE_ENTERO.fullmatch(radicado.upper()):
+        return None, "no es un RE entero"
+    radicado = radicado.upper()
+    if fecha is not None and radicado[6:10] != str(fecha.year):
+        return None, f"su año ({radicado[6:10]}) no es el de la fecha del sello ({fecha.year})"
+    validas = OFICINAS_QUE_RADICAN | frozenset(oficinas_de_la_caja)
+    oficina = radicado[2:6]
+    if oficina in validas:
+        return radicado, ""
+    cercanas = sorted(o for o in validas if len(o) == 4 and sum(a != b for a, b in zip(o, oficina, strict=True)) == 1)
+    if len(cercanas) == 1:
+        return f"RE{cercanas[0]}{radicado[6:]}", f"oficina {oficina} leída por {cercanas[0]}"
+    return None, f"la oficina {oficina} no es ninguna que radique"
+
+
 #: Cuántas letras se aceptan en lugar de cifras al leer un radicado roto.
 LETRAS_QUE_SE_PERDONAN = 2
 
