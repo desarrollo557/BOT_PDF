@@ -72,7 +72,14 @@
       },
       { titulo: 'Carpetas del origen sin PDF', tono: 'warn', items: comparacion.sin_pdf },
       { titulo: 'Archivos sueltos en la raíz', tono: 'warn', items: comparacion.archivos_en_la_raiz },
-      { titulo: 'De más en el destino', tono: 'warn', items: comparacion.sobran }
+      { titulo: 'De más en el destino', tono: 'warn', items: comparacion.sobran },
+      {
+        titulo: 'PDF con 2 o más sellos',
+        tono: 'warn',
+        items: (comparacion.varios_sellos ?? []).map(
+          (v): HallazgoDelCuadre => ({ carpeta: `${v.pdf} → ${v.archivo}`, motivo: v.estado, evidencia: v.sellos })
+        )
+      }
     ].filter((grupo) => grupo.items.length);
   });
 

@@ -342,9 +342,15 @@ def _del_formulario(hallazgo: re.Match[str]) -> str:
     return f"{dia}/{mes}/{anio}" if mes.isdigit() else f"{dia} de {mes} de {anio}"
 
 
+_ANIO_PEGADO_A_LA_HORA = re.compile(r"(?<=\bde )((?:19|20)\d{2})([01]?\d:[0-5]\d)")
+
+
 def _normalizar(texto: str) -> str:
     """El texto con las fechas escritas como las reconoce :func:`fechas_de`."""
     plano = " ".join(texto.split())
+    # «9 de julio de 202111:01»: el año pegado a la hora del correo (7975593
+    # pág. 274, 2026-11-12).
+    plano = _ANIO_PEGADO_A_LA_HORA.sub(r"\1 \2", plano)
     plano = _todas_las_formas(plano)
     plano = _ANIO_MES_DIA.sub(r"\3/\2/\1", plano)
     plano = _CIFRAS_CON_ESPACIOS.sub(r"\1\2\3\2\4", plano)

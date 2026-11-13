@@ -36,6 +36,7 @@ from ..domain.sello import (
     folios_del_sello_de_tinta,
     leer_sello,
     radicado_aproximado,
+    radicado_con_una_cifra_de_mas,
     radicado_del_texto,
     radicado_escrito,
     radicado_por_la_cola,
@@ -117,18 +118,32 @@ ANCHO_DEL_SELLO = 0.34
 
 #: Las clases de hoja que nunca abren un escrito, y por eso no se miran.
 _NO_LLEVAN_SELLO = {*SOPORTES, HOJA_MUDA}
+#: Los rótulos del sello de tinta de la oficina que la capa deja leer aunque
+#: rompa el «RECIBIDO NO IMPLICA ACEPTACIÓN»: «OFICINA MAGANGUE», «DIR.
+#: NOTIFICACIÓN», «FUNCIONARIO RECEPTOR» (7975593 hojas 136, 231, 315).
+_CAMPOS_DEL_SELLO_DE_TINTA = re.compile(
+    r"OFICINA\s+MAGA[NÑ]GU|DIR\W{0,3}\s*[NS][O0]TIFICACI|FUNCIONARIO\s+RECEPT", re.IGNORECASE
+)
 
 
 def hojas_que_pueden_llevar_sello(textos: Mapping[int, str]) -> list[int]:
     """Las hojas cuyo sello vale la pena leer: las que no son un soporte ni una foto."""
+    from ..domain.carta import abre_carta
+
     # La hoja cuya capa nombra un sello se mira siempre, parezca lo que
     # parezca: la carta escaneada torcida queda «muda» y la que enumera
     # «certificado de tradición» en su cabecera parece un certificado
-    # (UPD2326310 p10, UPD2326323 p1), y las dos traen su sello.
+    # (UPD2326310 p10, UPD2326323 p1), y las dos traen su sello. Y la carta
+    # que abre, aunque reclame «en contra de la factura» y parezca una: en
+    # 7975593 las cartas de las hojas 136, 175, 231 y 315 se tomaban por
+    # facturas y su sello nunca se leía (2026-11-12).
     return [
         p
         for p, texto in sorted(textos.items())
-        if clase_de_la_hoja(texto or "") not in _NO_LLEVAN_SELLO or _ANCLA_ESTRICTA.search(texto or "")
+        if clase_de_la_hoja(texto or "") not in _NO_LLEVAN_SELLO
+        or _ANCLA_ESTRICTA.search(texto or "")
+        or _CAMPOS_DEL_SELLO_DE_TINTA.search(texto or "")
+        or abre_carta(texto or "")
     ]
 
 
@@ -469,7 +484,15 @@ def leer_sellos(
             # el de pago sí, con lo que la letra a mano le hace a cada cifra
             # -- «RE23102023214Y3», «RE 23/0 2024 003 48» -- y el año de la
             # «FECHA DE RECIBIDO» del propio sello para validarlo.
-            radicado = radicado_del_texto(pagados[pagina]) or radicado_escrito(pagados[pagina])
+            # Antes que la lectura a mano letra por letra, la de una cifra de
+            # más contra los RE de la caja: «RE 23102021094662» es el
+            # RE2310202104662 que la caja trae impreso, no el …09462 que dejaba
+            # ``radicado_escrito`` (7975593, 2026-11-12).
+            radicado = (
+                radicado_del_texto(pagados[pagina])
+                or radicado_con_una_cifra_de_mas(pagados[pagina], conocidos, a_mano.year if a_mano else None)
+                or radicado_escrito(pagados[pagina])
+            )
         de_la_capa_leido = leer_sello(de_la_capa) if de_la_capa else None
         releido = leer_sello(relecturas[pagina]) if relecturas.get(pagina) else None
         fecha = (

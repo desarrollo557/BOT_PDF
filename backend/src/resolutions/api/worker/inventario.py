@@ -187,7 +187,7 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
         resultado_de_cada_acta,
     )
     from ...application.control import Cancelled
-    from ...application.perfiles_de_revision import perfil_de
+    from ...application.perfiles_de_revision import REGLAS_DEL_LIBRO_COLECTIVO, perfil_de
     from ...application.revisor_de_cortes import anotar_en_el_informe, revisar_sin_romper
 
     # Las actas de grado son el mismo trabajo con otro perfil: otro
@@ -225,6 +225,9 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
             lector_de_franja=_lector_de_franja(taller) if grado else None,
             lectores_de_tinta_clara=_lectores_de_tinta_clara(taller),
             lector_de_datos=taller.lector_del_acta_de_grado() if grado else None,
+            # El libro de actas colectivas manuscrito (UPD3859802, 2026-11-12):
+            # la lista de graduados de cada acta, leída del texto por la IA.
+            lector_de_actas_colectivas=taller.lector_de_actas_colectivas() if grado else None,
         ).execute(source, document_name=Path(taller.name).name, carpeta=carpeta)
     finally:
         source.close()
@@ -252,12 +255,27 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
     # cada sesión es una fila. Señala y no mueve: el nombre y la fila de cada
     # acta salen de leerla. Lo que sale del margen lo decide la IA si se eligió.
     del_revisor = perfil_de(outcome.tipo_documental)
+    # El libro de actas colectivas (UPD3859802, 2026-11-12) lleva a toda una
+    # promoción en el PDF de su acta: dos cédulas en él no son dos personas que
+    # separar, y la IA que decide lo dudoso lo sabe por su regla.
+    # Sus hojas van en el orden del folio impreso (2026-11-13): la que sigue en
+    # su PDF a una que no es su vecina del escaneo no salta otro documento, y
+    # la hoja compartida se mira una vez, en el acta que empieza en ella.
+    del_libro = (
+        {
+            "una_persona_por_pdf": False,
+            "reglas": REGLAS_DEL_LIBRO_COLECTIVO,
+            "cruces": frozenset(outcome.cruces_por_el_folio),
+        }
+        if outcome.colectivo
+        else {}
+    )
     revision = aviso_del_revisor = None
     if outcome.reparto.es_libro and len(outcome.sesiones) > 1:
         revision, aviso_del_revisor = revisar_sin_romper(
-            reparto_de_las_actas(outcome),
+            reparto_de_las_actas(outcome, cada_hoja_una_vez=True),
             outcome.textos,
-            del_revisor.patrones(outcome.textos),
+            del_revisor.patrones(outcome.textos, **del_libro),
             juez=taller.juez_de_costuras(),
         )
     division = None
@@ -332,7 +350,7 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
             revision,
             aviso_del_revisor,
             division.comprobacion if division is not None else None,
-            perfil=del_revisor.as_dict(),
+            perfil={**del_revisor.as_dict(), **({"una_persona_por_pdf": False} if outcome.colectivo else {})},
         )
 
     _anunciar(payload, Stage.INVENTORYING, detail="escribiendo el FUID", done=0, total=1)
@@ -590,12 +608,22 @@ def _revisar_las_actas(
 
     El texto es el que ya se leyó para el inventario (``outcome.textos``): está
     entero, así que el revisor trabaja con todo su margen.
+
+    Las filas de un acta colectiva son una fecha, la del acta: se revisa en la
+    primera y las demás llevan lo mismo, sin preguntarle a la IA treinta veces
+    por la misma ceremonia (UPD3859802, 2026-11-12).
     """
     from ...application.revisor_de_fechas import CORREGIDA
 
     revisadas_filas: list[FilaDeActa] = []
     primera_corregida = False
+    de_la_colectiva: dict[int, tuple[str, str]] = {}
     for orden, fila in enumerate(filas):
+        if fila.acta_colectiva and fila.sesion in de_la_colectiva:
+            leida, revisada = de_la_colectiva[fila.sesion]
+            revisadas_filas.append(replace(fila, fecha=revisada) if fila.fecha == leida else fila)
+            continue
+        leida = fila.fecha
         suyas = range(fila.pagina_inicial, max(fila.pagina_inicial, fila.pagina_final) + 1)
         revisadas = revisor.revisar(
             fila.acta or fila.nombre or fila.archivo,
@@ -612,6 +640,8 @@ def _revisar_las_actas(
             # trabajo y en ``revision_de_fechas``, como la de las demás filas.
             fila = replace(fila, fecha=inicial if inicial != fila.fecha else final)
             primera_corregida = primera_corregida or orden == 0
+        if fila.acta_colectiva:
+            de_la_colectiva[fila.sesion] = (leida, fila.fecha)
         revisadas_filas.append(fila)
     return revisadas_filas, primera_corregida
 
@@ -622,16 +652,22 @@ def _sesiones_con_su_fecha(
 ) -> list[SesionDeActa]:
     """Las sesiones del libro con el nombre de su acta revisada: el PDF se llama por su acta y su fecha.
 
-    La sesión ``orden`` es la fila ``orden - 1`` (las páginas previas, la 0, no
-    llevan fecha). Sólo se renombra la que el revisor corrigió y conserva el
-    nombre que se le dio por su fila: un nombre puesto de otro modo -- el del
-    graduado, que no lleva fecha -- queda como estaba (2026-11-10).
+    La sesión ``orden`` es la de su primera fila (``fila.sesion``): un acta
+    colectiva da varias filas, una por graduado, y su PDF se nombra por la
+    primera (2026-11-12). En los informes sin sesión, la fila ``orden - 1``
+    (las páginas previas, la 0, no llevan fecha). Sólo se renombra la que el
+    revisor corrigió y conserva el nombre que se le dio por su fila: un nombre
+    puesto de otro modo -- el del graduado, que no lleva fecha -- queda como
+    estaba (2026-11-10).
     """
     from ...application.acta_consejo import nombre_de_la_sesion
 
+    primera: dict[int, int] = {}
+    for indice, fila in enumerate(leidas):
+        primera.setdefault(fila.sesion or indice + 1, indice)
     nuevas: list[SesionDeActa] = []
     for sesion in sesiones:
-        indice = sesion.orden - 1
+        indice = primera.get(sesion.orden, -1)
         if 0 <= indice < min(len(leidas), len(revisadas)):
             antes, ahora = leidas[indice], revisadas[indice]
             if antes.fecha != ahora.fecha and sesion.nombre == nombre_de_la_sesion(antes):

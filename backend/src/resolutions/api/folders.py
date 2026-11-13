@@ -4105,6 +4105,11 @@ class FolderRunner:
             # Lo que la IA o el sello leyeron para fechar cada documento cuando
             # la capa no lo trae: la auditoría de cierre lo suma a su papel.
             lo_leido=[f for f in informe.get("lo_leido") or [] if isinstance(f, dict)],
+            # Los PDF con dos o más sellos de RE distinto: la auditoría los avisa.
+            varios_sellos=[v for v in informe.get("varios_sellos") or [] if isinstance(v, dict)],
+            # El folio a mano y las marcas de cada hoja: la auditoría razona con ellos.
+            folios=dict(informe.get("folios_de_la_esquina") or {}),
+            marcas=dict(informe.get("marcas") or {}),
             # De la copia que se procesó, que es la del origen: sin otra lectura
             # de la red.
             firma=self._firma_de(job, origin),

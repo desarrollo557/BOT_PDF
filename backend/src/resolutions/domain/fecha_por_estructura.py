@@ -474,6 +474,14 @@ _LUGAR_PUNTO_Y_FECHA = re.compile(
     r"\b([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ]+(?:\s*[-–]?\s*[A-Za-zÁÉÍÓÚÑáéíóúñ]+){0,5})\.\s+"
     r"(\d{1,2}\s+de\s+[A-Za-záéíóúñ]+\s+del?\s+\d{4})"
 )
+#: Y sin nada entre la ciudad y la fecha: «Magangué 29 de agosto de 2022», la
+#: carta de desistimiento y la notificación de su aceptación (7975593, UPD2460819
+#: págs. 306-307, 2026-11-12), que salían «S.F.». La ciudad con mayúscula y la
+#: fecha en letras, como las dos de arriba.
+_LUGAR_ESPACIO_Y_FECHA = re.compile(
+    r"\b([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,3})\s+"
+    r"(\d{1,2}\s+de\s+[A-Za-záéíóúñ]+\s+del?\s+\d{4})"
+)
 
 
 def _del_encabezado_de_la_cabeza(texto: str, hoy: date | None) -> date | None:
@@ -484,7 +492,7 @@ def _del_encabezado_de_la_cabeza(texto: str, hoy: date | None) -> date | None:
     """
     cabeza = " ".join((texto or "").split())[:_CABEZA_DE_LA_HOJA]
     normalizada = _normalizar(cabeza)
-    for patron in (_LUGAR_Y_FECHA, _LUGAR_PUNTO_Y_FECHA):
+    for patron in (_LUGAR_Y_FECHA, _LUGAR_PUNTO_Y_FECHA, _LUGAR_ESPACIO_Y_FECHA):
         for encabezado in patron.finditer(normalizada):
             if _DIAS_DE_LA_SEMANA.match(encabezado.group(1).strip()):
                 continue
@@ -779,6 +787,13 @@ def fecha_por_estructura(
     # 1. El sello manda: el de la principal y, si no, el de otra hoja propia.
     for pagina in [principal, *paginas]:
         if not piezas[pagina].anexo and (fecha := sellos.get(pagina)) is not None:
+            # Salvo el que es anterior a la carta que radica: nada se recibe
+            # antes de escribirse. El sello de la 52 de 7975593 dice
+            # «20-05-2020» y la carta «Mayo 20 de 2021» (2026-11-12): vale la
+            # de la carta.
+            de_la_carta = _del_encabezado_de_la_cabeza(textos.get(pagina, "") or "", hoy)
+            if de_la_carta is not None and fecha < de_la_carta:
+                return hallada(de_la_carta, pagina, "encabezado de la carta (el sello, anterior a ella, no se cree)")
             return hallada(fecha, pagina, "sello de radicación")
     # 2. La hoja principal, en el sitio de su clase.
     pieza = piezas[principal]
@@ -798,4 +813,21 @@ def fecha_por_estructura(
     #    en la cabeza (2026-11-11). Lo último: la estructura manda.
     if not pieza.anexo and (fecha := fecha_razonada(textos.get(principal, "") or "", hoy)) is not None:
         return hallada(fecha, principal, "rótulo «FECHA:» en la cabeza de la hoja")
+    # 5. El correo impreso: «Enviado: viernes, 9 de julio de 2021» (7975593
+    #    págs. 274-277, 2026-11-12).
+    if not pieza.anexo and (fecha := _del_correo(textos.get(principal, "") or "", hoy)) is not None:
+        return hallada(fecha, principal, "«Enviado:» del correo")
     return FechaPorEstructura(None, None, principal, None, donde)
+
+
+_ENVIADO = re.compile(
+    r"\bEnviado\s*:\s*(?:[A-Za-záéíóúñ]+,?\s+)?(\d{1,2}\s+de\s+[A-Za-záéíóúñ]+\s+del?\s+\d{4})", re.IGNORECASE
+)
+
+
+def _del_correo(texto: str, hoy: date | None) -> date | None:
+    """La fecha de envío de un correo impreso, en la cabeza de la hoja."""
+    cabeza = _normalizar(" ".join((texto or "").split())[:_CABEZA_DE_LA_HOJA])
+    hallado = _ENVIADO.search(cabeza)
+    declaradas = fechas_de(hallado.group(1), hoy=hoy) if hallado else []
+    return declaradas[0] if declaradas else None

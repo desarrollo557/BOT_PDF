@@ -19,6 +19,13 @@ se queda con el acta anterior. El listado y la portada no abren nada: sin
 índice o su constancia.
 
 Sólo texto, sin leer imágenes: lo que trae la capa del escaneo.
+
+Y una tercera, manuscrita (UPD3859802, 1983-2012): el **libro de actas
+colectivas**, en que cada acta gradúa a una promoción -- «Acta de Grado Nº
+05408120 a 05408124» con la lista de sus graduados -- y empieza a mitad de la
+hoja en que acaba la anterior. Su reparto y su lectura van al final
+(``reparto_del_libro_colectivo``): un PDF por acta, una fila por graduado
+(2026-11-12).
 """
 
 from __future__ import annotations
@@ -26,13 +33,21 @@ from __future__ import annotations
 import difflib
 import re
 import unicodedata
+from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 
 from .acta_consejo import ActaDeConsejo, ActasDelPdf, TramoDeActa
 from .fechas import MESES, fecha_de_la_pagina
-from .graduado import cuanto_dice, dudas_de, graduado, titulo_limpio
+from .graduado import (
+    LUGARES_DE_EXPEDICION,
+    cuanto_dice,
+    dudas_de,
+    graduado,
+    titulo_limpio,
+)
+from .orden_por_el_folio import folios_corregidos, orden_por_el_folio
 
 ROTULO = "ACTA DE GRADO"
 
@@ -486,9 +501,54 @@ def leer_acta_de_grado(paginas: Sequence[str]) -> ActaDeConsejo:
         None,
     )
     if hoja is None:
-        return ActaDeConsejo(rotulo=ROTULO_DE_CEREMONIA, fecha=_fecha_de_la_ceremonia(paginas))
+        return ActaDeConsejo(
+            rotulo=ROTULO_DE_CEREMONIA,
+            fecha=_fecha_de_la_ceremonia(paginas),
+            # Lo que dice ser la hoja: la resolución de los grados o la
+            # ceremonia con sus actas (2026-11-12). La hoja de la ceremonia no
+            # tiene sesión; el campo lo lleva.
+            sesion=encabezado_de_la_ceremonia(paginas),
+        )
     pagina, texto = hoja
     return completar_acta(ActaDeConsejo(rotulo=ROTULO, pagina=pagina), texto)
+
+
+#: «RESOLUCIÓN No. 01633», en la cabeza de la hoja.
+_RESOLUCION_DE_GRADOS = re.compile(r"RESOLUCI[O0]N\s+N\W?[O0]?\W{0,3}\s*([0-9OIl]{3,6})\b")
+#: «"Por medio de la cual se autorizan grados secretariales"».
+_EPIGRAFE = re.compile(r"POR\s+MEDIO\s+DE\s+LA\s+CUAL\s+[A-Z ,]{5,120}?(?=\W{0,3}\s*(?:EL\s+RECTOR|CONSIDERANDO|$))")
+#: «Actas de Grado No. 05418726 a 05418731».
+_ACTAS_DE_LA_CEREMONIA = re.compile(r"ACTAS\s+DE\s+GRADO\s+N\W?[O0]?\W{0,3}\s*(\d{4,10})\s+A\s+(\d{4,10})")
+ROTULO_DE_RESOLUCION = "RESOLUCION"
+
+
+def encabezado_de_la_ceremonia(paginas: Sequence[str]) -> str | None:
+    """Lo que dice ser la hoja que no es el acta de un graduado: la resolución o la ceremonia con sus actas.
+
+    Lo pidió el operador el 2026-11-12 sobre Odontología: la «RESOLUCIÓN No.
+    01633, por medio de la cual se autorizan grados secretariales», con su
+    lista de cédulas y nombres, salía «CEREMONIA DE GRADO» como la hoja de la
+    ceremonia. Ahora es «RESOLUCION 01633 - POR MEDIO DE LA CUAL SE AUTORIZAN
+    GRADOS SECRETARIALES»; y la ceremonia, «CEREMONIA DE GRADO - ACTAS 05418726
+    A 05418731». ``None`` si no dice ninguna de las dos.
+    """
+    from .title import lo_que_resuelve
+
+    for texto in paginas:
+        cabeza = _plano(" ".join((texto or "").split())[:1200])
+        if (resolucion := _RESOLUCION_DE_GRADOS.search(cabeza)) and "RESUELVE" in _plano(texto or ""):
+            numero = resolucion.group(1).replace("O", "0").replace("I", "1").replace("l", "1")
+            # El asunto de una resolución de la Universidad es la resolución
+            # más lo que resuelve (el operador, 2026-11-03 en la caja 3303 y
+            # 2026-11-12 para todas sus habilidades); sin RESUELVE legible, su
+            # epígrafe.
+            resuelve = lo_que_resuelve(paginas)
+            epigrafe = _EPIGRAFE.search(cabeza)
+            resumen = _plano(resuelve) if resuelve else (epigrafe.group(0).strip(" ,") if epigrafe else None)
+            return " - ".join([f"{ROTULO_DE_RESOLUCION} {numero}", *([resumen] if resumen else [])])
+        if actas := _ACTAS_DE_LA_CEREMONIA.search(cabeza):
+            return f"{ROTULO_DE_CEREMONIA} - ACTAS {actas.group(1)} A {actas.group(2)}"
+    return None
 
 
 def _fecha_de_la_ceremonia(paginas: Sequence[str]) -> date | None:
@@ -944,6 +1004,31 @@ def _nombre_de_arriba(texto: str) -> str | None:
     return None
 
 
+#: El final de un renglón y el principio del siguiente: «… ESPECIALISTAS EN EN» / «FERMERIA MEDICO…».
+_PARTIDA_EN_DOS_RENGLONES = re.compile(r"\b([A-ZÁÉÍÓÚÑ]{2,9})[ \t]*-?[ \t]*\n\s*([A-ZÁÉÍÓÚÑ]{3,})\b")
+
+
+def con_las_palabras_unidas(texto: str) -> str:
+    """El texto con las palabras de título partidas entre dos renglones unidas, y sin el guion blando.
+
+    El acta manuscrita de UPD3859802 (pág. 110, 2026-11-12) partió «ENFERMERIA»
+    en «EN» y «FERMERIA», y el título se leía «ESPECIALISTAS EN EN». Sólo se
+    unen si juntas son una palabra de título: «EN» / «CARTAGENA» no.
+    """
+    from .graduado import VOCABULARIO_DE_LOS_TITULOS
+
+    texto = (texto or "").replace("\xad\n", "").replace("\xad", "")
+    # Y la palabra partida con guion al final del renglón: «al estu- / diante»
+    # (UPD3859802 pág. 1, la franja del nombre, 2026-11-13).
+    texto = re.sub(r"([a-záéíóúñ])-\s*\n\s*([a-záéíóúñ])", r"\1\2", texto)
+
+    def unir(hallado: re.Match[str]) -> str:
+        junta = _plano(hallado.group(1) + hallado.group(2))
+        return hallado.group(1) + hallado.group(2) if junta in VOCABULARIO_DE_LOS_TITULOS else hallado.group(0)
+
+    return _PARTIDA_EN_DOS_RENGLONES.sub(unir, texto)
+
+
 def completar_acta(acta: ActaDeConsejo, texto: str) -> ActaDeConsejo:
     """El acta con lo que le falte leído de ``texto``; lo ya leído no se toca.
 
@@ -951,6 +1036,7 @@ def completar_acta(acta: ActaDeConsejo, texto: str) -> ActaDeConsejo:
     capa del escáner, después Tesseract, después la IA si se pidió. Cada uno
     llena sólo los huecos que dejó el anterior.
     """
+    texto = con_las_palabras_unidas(texto)
     hecha = constancia(texto)
     if hecha is not None:
         acta = _con_la_constancia(acta, hecha)
@@ -1108,8 +1194,21 @@ INSTRUCCIONES_DEL_ACTA_DE_GRADO = (
     "NOMBRE: el nombre completo del graduado tal como aparece, nombres y apellidos en el orden del acta, "
     "aunque esté partido en dos renglones (no el rector, el decano, la secretaria ni quien firma)\n"
     "CEDULA: el número de la cédula del graduado, sólo cifras\n\n"
+    "Razona antes de responder:\n"
+    "- El NOMBRE es lo que sigue a «al estudiante» o «a la estudiante» y puede seguir en el renglón de abajo "
+    "hasta «portador(a) de la cédula»: «al estudiante VIVIAN LOPEZ / VERHELST ---- portador» es VIVIAN LOPEZ "
+    "VERHELST. El título va en otro renglón aunque el OCR lo monte encima: ninguna palabra del título "
+    "(ESPECIALISTA, ENFERMERIA, MEDICO QUIRURGICA, CON ENFASIS EN…, Y RECUPERACION, NEUROCIRUGIA) es del nombre; "
+    "devuélvela en TITULO. Tampoco son del nombre el «No.» ni la cédula que sigue, el lugar de expedición "
+    "(«de Cartagena»), ni los nombres del pie bajo «Rector», «Decano» o «Secretario General».\n"
+    "- El número puede venir como «Nº», «No.» o «#».\n"
+    "- En una constancia que dice «… aparece relacionada entre otros el nombre de la estudiante X», el NOMBRE es "
+    "X y el TITULO es sólo el título otorgado.\n"
     "- En una constancia que nombra a varios graduados, el nombre es el de quien la constancia señala; si no "
     "señala a ninguno, NINGUNO.\n"
+    "- En un acta manuscrita de graduación colectiva, si el espacio tras «al estudiante» está vacío o con «x x», "
+    "el NOMBRE es el primero de los graduados que el acta nombra (subrayado en la frase o el 1 de su lista), y "
+    "la CEDULA, la suya si está escrita.\n"
     "- Si es un acta manuscrita antigua de examen («se constituyó el Consejo Examinador … con el fin de practicar "
     "el quinto examen preparatorio de grado del alumno …», o el examen final de grado), el NOMBRE es el del "
     "alumno examinado, la FECHA la del examen, y el TITULO el que se le confirió («DOCTOR EN MEDICINA Y "
@@ -1168,7 +1267,9 @@ def datos_de_la_ia(respuesta: str, texto: str) -> dict[str, object]:
         elif campo == "NUMERO":
             # Sólo el que sigue a «ACTA DE GRADO No.»: con el número en blanco, la
             # IA daba el de la resolución (0816) o el folio (73/V) (UPD3859808).
-            numero = re.search(r"\d{1,4}", valor)
+            # Hasta diez cifras: las actas de 2006 en adelante son «05408120»,
+            # y con cuatro quedaba «0540», que el texto no confirma (2026-11-12).
+            numero = re.search(r"\d{1,10}", valor)
             if numero and re.search(
                 rf"ACTA\W+DE\W+GRADO\W{{0,3}}N\S{{0,3}}\s*0*{int(numero.group(0))}(?!\d)", _plano(texto)
             ):
@@ -1279,3 +1380,1357 @@ def nombre_de_tres_lecturas(
     return nombre, (
         f"nombre por confirmar en el papel ({', '.join(dudosas)}): la letra a mano se leyó distinto — {leidas}"
     )
+
+
+# -- el libro de actas colectivas manuscrito ---------------------------------------
+#
+# Odontología, UPD3859802 (2026-11-12): un libro a mano de 1983 a 2012 en que
+# cada acta gradúa a una promoción entera -- «Acta de Grado Nº 01» con la lista
+# de sus 31 graduados debajo, «Acta de Grado Nº 05408120 a 05408124» --, y la
+# siguiente empieza a mitad de la hoja en que acaba la anterior. La capa del
+# escáner es basura: sólo vale lo que la IA leyó de cada hoja. El operador
+# eligió un PDF por acta y una fila del FUID por graduado.
+
+
+def _por_letra(texto: str) -> str:
+    """El texto en mayúsculas y sin tildes, letra por letra: cada posición es la misma que en el original.
+
+    Para cortar el texto de un acta donde empieza la siguiente hace falta la
+    posición en el texto de la IA, y `_plano` junta los blancos. Lo que tras
+    quitarle la tilde no es una letra ASCII -- «º», «°» -- queda en blanco.
+    """
+    salida = []
+    for letra in texto:
+        base = unicodedata.normalize("NFD", letra)[:1]
+        salida.append(base.upper() if base.isascii() else " ")
+    return "".join(salida)
+
+
+#: «se llevó a cabo la graduación Colectiva», «ceremonia solemne de graduación
+#: colectiva», «la graduación colectera» (la IA con la letra de 1983).
+_GRADUACION_COLECTIVA = re.compile(r"GRADUACI\w{1,3}\W+(?:DE\W+)?COLECT\w{2,4}\b")
+#: El encabezado de un acta del libro: «Acta de Grado Nº 01», «Acta Nº 1»,
+#: «Acta de Grado #03», «Acta de Grado Nº» con el número en el renglón de abajo,
+#: y como lo transcribe la IA la letra a mano: «# Acta 02.», «Acto N°02»,
+#: «Acta de Prado Nº», «Acta de Acdo Nº» (UPD3859802, 2026-11-13: sin «Nº» el
+#: encabezado no se veía, y el número del acta salía de «Resolución Nº 1813»).
+_ENCABEZADO_DEL_LIBRO = re.compile(
+    r"\bACT[AO]\W{1,3}DE\W{1,3}(?:[GCOP][RH]ADO|GRAD0|ACDO)\b|\bACT[AO]?(?=\W{0,3}(?:N[O0]?(?![A-Z])|#|\d))"
+)
+#: Las cifras de un número del encabezado, con los puntos y las barras que les
+#: pone la IA: «12.008.001.», «05409.169», «054/11254».
+_CIFRAS_DEL_NUMERO = r"\d(?:\d|[./](?=\d))*"
+_NUMERO_DEL_ENCABEZADO = re.compile(rf"\W{{0,4}}(?:(?:N[O0]?(?![A-Z])\.?|#)\W{{0,4}})?(?P<numero>{_CIFRAS_DEL_NUMERO})")
+#: «… Nº 05408120 a 05408124», «05412351 - 05412353», «054/1289-a 054/1320»,
+#: «2007001, 2007002»: el rango de los números de la promoción. El separador es
+#: obligatorio: el «7» suelto debajo de «Acta N° 04» es el folio de la hoja.
+_RANGO_DEL_ENCABEZADO = re.compile(
+    rf"\s*(?:[-,]\W{{0,2}}(?:A\b|AL\b)?|(?:A|AL|HASTA|Y)\b)\W{{0,3}}(?P<hasta>{_CIFRAS_DEL_NUMERO})"
+)
+#: Lo que sigue a «Acta No 02 - 26» cuando el 26 es el día de una fecha: «de mayo 1989».
+_DIA_DE_UNA_FECHA = re.compile(r"\W{0,3}DE\W+[A-Z]{3,}")
+#: El encabezado de un acta abreviada -- la complementaria de la misma ceremonia,
+#: sin «En la ciudad de …» --: debajo, el título o la lista. «Acto 04 /
+#: Especialista en: Salud Familiar / 1. Pérez Tobias Shirley Margarita», al pie
+#: de la hoja 150 de UPD3859802, iba como cola del Acta 03.
+_DEBAJO_DEL_ABREVIADO = re.compile(
+    r"^\W{0,6}(?:ESPECIALIST|ENFERMER|COMPLEMENTARI|LICENCIAD|CON\W+E\w{0,2}FAS|\d{1,3}\W{1,3}[A-Z]{3,})"
+)
+#: Lo que puede ir delante del encabezado en su renglón: «# », «Complementario».
+_DELANTE_DEL_ABREVIADO = re.compile(r"\W{0,6}(?:[A-Z]{6,14}\W{1,3})?")
+#: Lo que dice que el renglón no abre un acta sino que la nombra: una fecha -- el
+#: «Acta No 02 - 26 de mayo 1989» arriba de la hoja en que sigue su lista (hoja
+#: 4) -- o un año -- «(repite acta N° 03) Resolución 3047 de 14 Dic/2000» --.
+_FECHA_EN_EL_RENGLON = re.compile(
+    r"\b(?:19|20)\d\d\b|\bDE\W+(?:ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)\b"
+)
+#: Cuántas letras puede llevar el renglón del encabezado detrás del número para
+#: ser un encabezado y no una frase: «Acta 01 de 1990», «Acta No. 01 Postgrado».
+LETRAS_DETRAS_DEL_ENCABEZADO = 25
+#: Donde empieza el cuerpo de un acta: «En la ciudad de Cartagena a los…», también
+#: como lo lee la IA en la letra a mano: «cuidad», «Con la ciudad», «En la unidad»
+#: (UPD3859802, hojas 3, 6 y 175: el Acta 05408125 a 05408149 se soldaba a la de
+#: arriba porque su cuerpo no se reconocía; 2026-11-13).
+_CUERPO_DEL_LIBRO = re.compile(r"\b(?:EN|CON)\W{1,3}LA\W{1,3}[CU]\w{3,5}D\W{1,3}DE\W{1,3}[A-Z]{4,}")
+#: Lo que sigue a ese comienzo en un acta, y no en «expedida en la ciudad de…»:
+#: el día y el mes, o el año.
+_DIA_DEL_CUERPO = re.compile(r"D\w{0,2}AS?\W+DEL\W+MES|\b(?:19|20)\d\d\b|\b1\W?9\d\d\b|NOVECIENTOS|DOS\W+MIL")
+#: Cuánto antes del cuerpo se busca su encabezado.
+VENTANA_DEL_ENCABEZADO = 250
+#: Cuántas letras puede haber en una hoja antes del cuerpo para que el
+#: encabezado al pie de la anterior sea suyo: el folio y la «80/V» no cuentan.
+LETRAS_DE_LA_CABEZA = 40
+#: Cuántas letras de la cola del acta anterior hacen falta en la hoja para decir
+#: que su cierre -- la lista, las firmas -- quedó en ella.
+LETRAS_DE_UN_CIERRE = 20
+#: «al estudiante x x x portador», «al estudiante _______, portador», «al
+#: estudiante ……. portador»: el formulario sin el nombre, porque son varios.
+_ESTUDIANTE_EN_BLANCO = re.compile(
+    r"\bESTUDIANTE\W{0,3}(?:(?:X\W{0,3}){2,}|[\\_.\-]{3,}[\s\\_.,\-]*)\W{0,3}PORTA"
+)
+#: «… el título de Especialista a - - - - - Portador», «a ……… portador(a)»: el
+#: graduado en blanco sin la palabra «estudiante».
+_GRADUADO_EN_BLANCO = re.compile(r"\bA\W{0,3}(?:[\\_.\-]\W{0,2}){3,}\W{0,3}PORTA")
+#: «a los siguientes estudiantes», «a las estudiantes»: la frase que nombra a varios.
+_A_LOS_ESTUDIANTES = re.compile(r"\bA\W+L[AO]S\W+(?:SIGUIENTES\W+)?ESTUDIANTES\b")
+#: Un renglón de la lista de graduados: «1. Karolay Acevedo Jiménez 45.521.842
+#: Cartagena», «31. Ramos Caballero Edgardo Javier CC Nº 1.128.049.264 de
+#: Cartagena», «2- Nafkay Ahumada Romero».
+#: También con el número corregido al lado -- «5 6 Barrios Huerta Lorayda» -- y
+#: con «º», «ª» o «-» detrás: «8º Martinez Ramos Efren», «32-34 Edith …».
+_RENGLON_NUMERADO = re.compile(
+    r"^\W{0,4}(?P<orden>\d{1,3})(?:\s*[.)\-–:ºª°]\s*|\s+)(?:\d{1,3}\W{1,3})?(?P<resto>[^\W\d_].*)$"
+)
+#: Un renglón numerado, tenga lo que tenga detrás: el «2.» de una lista en
+#: blanco o el renglón que la IA no supo leer también es un puesto de la lista.
+_PUESTO_DE_LA_LISTA = re.compile(r"^\W{0,4}(?P<orden>\d{1,3})(?:\s*[.)\-–:ºª°]|\s*$|\s+\S)")
+#: Un renglón de la lista sin número: con viñeta -- «- Orieta Narvaez Stella
+#: del Socorro cc 45.478.083 de Cartagena (Bol)» -- o el nombre solo bajo el
+#: título de su sección, con la cédula en el renglón de abajo (UPD3859802, hoja
+#: 25: el Acta 04 de 1996 nombra así a sus siete graduados; 2026-11-13).
+_RENGLON_SIN_NUMERO = re.compile(r"^(?P<vineta>[-–•·]\s*)?(?P<resto>[^\W\d_].*)$")
+#: La cédula con su rótulo delante: «cc 45.478.083», «C.C. Nº 32.732.022».
+_CEDULA_CON_ROTULO = re.compile(r"\bC\W{0,2}[CE]\W{0,3}(?:N[O0]?\W{0,3})?\d")
+#: La inicial con su punto y el resto de la palabra en minúscula: «Niño O. sario»
+#: es Osorio partido por la IA (UPD3859802, hoja 35). Nunca delante de «de», «la»…
+_INICIAL_PARTIDA = re.compile(r"\b([A-ZÁÉÍÓÚÑ])\.\s?(?!(?:de|del|la|las|los|y)\b)([a-záéíóúñ]{2,})")
+#: La marca de chequeo detrás del nombre: «Niño Osorio /ect», «… ✓».
+_VISTO_AL_FINAL = re.compile(r"\s*/\s*[A-Za-z]{0,4}\W*$")
+#: Una cédula: grupos de tres cifras con su separador -- «45.521.842»,
+#: «45 525 926», «1'101.384.349», «1/143.332.238», «45:409.979», «1. 129.516.130»
+#: -- o las cifras seguidas. «22.844.285-6» es la 22.844.285.
+#: También con un solo punto -- «9.177901», «45.517404», «45525.602» -- como
+#: la IA transcribe la letra a mano: la regla se quedaba con las cifras de
+#: detrás del punto (UPD3859802, hoja 142; 2026-11-13).
+_CIFRAS_DE_LA_CEDULA = (
+    r"(?:\d{1,3}[.,'’´]\s?\d{6}(?!\d)|\d{4,5}[.,'’´]\d{3}(?!\d)"
+    r"|\d{1,4}(?:(?:[.,'’´:/]\s?|\s)\d{3}(?!\d)){1,3}|\d{6,10}(?!\d))"
+)
+_CEDULA_DEL_RENGLON = re.compile(rf"(?<!\d){_CIFRAS_DE_LA_CEDULA}")
+_PALABRA_DEL_RENGLON = re.compile(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+")
+#: Lo que puede ir entre el nombre y la cédula y no es del nombre: «C.C.»,
+#: «c.e» (como transcribe la IA la «c.c» a mano), «cc#», «CCN°».
+_NO_ES_DEL_NOMBRE_EN_LA_LISTA = {
+    "C", "CC", "CE", "E", "N", "NO", "CCN", "DE", "DEL", "CEDULA", "CIUDADANIA", "CON", "T", "I", "TI",
+}
+#: El renglón que abre la lista sin números de las actas de 1980: «Las
+#: graduandas son:» (UPD3859802, hoja 60; 2026-11-13).
+_ABRE_LA_LISTA = re.compile(r"\b(?:GRADUAND|GRADUAD|ESTUDIANTE)\w*\W+SON\W*$")
+#: La cédula empezada al final del renglón del nombre, que sigue en el de abajo:
+#: «Guadalupe Yáñez Parada con C.C. #34» / «325.259 de Cuenta» es la 34.325.259.
+#: «Carmen Teresa Perez Bohanquez con T.I.», «… con C.C. #34»: el nombre dice
+#: que su documento va detrás.
+_CON_SU_DOCUMENTO = re.compile(r"\bCON\W+(?:C\W?C|T\W?I)\b")
+_CEDULA_EMPEZADA = re.compile(r"\bC\W{0,2}C\W{0,3}(?:N[O0]?\W{0,3})?(?P<cifras>\d{1,3})\W*$")
+#: Un renglón que sólo trae una cédula -- debajo del nombre, «cc. 32.732.022 de
+#: Baranquilla (Atl).», o en la columna aparte, «1. 129.516.130 de Banonguilla»
+#: --, sin nombre delante.
+_RENGLON_DE_LA_CEDULA = re.compile(
+    rf"^\W{{0,4}}(?:(?:C\W{{0,2}}[CE]|CEDULA)\W{{0,3}}(?:N[O0]?\W{{0,3}})?)?(?P<cedula>{_CIFRAS_DE_LA_CEDULA})"
+    r"(?:\W.{0,40})?$"
+)
+#: La marca a lápiz del graduado que no se presentó: «no aparece», y como la lee
+#: la IA, «no apmuel», «no apnce» (UPD3859802, 2026-11-13).
+_NO_APARECE = re.compile(r"\bNO\W{1,3}AP\w{0,7}\W*$")
+NOTA_NO_APARECE = "marcado a lápiz: no aparece"
+#: Palabras que no van en el nombre de un graduado: es el orden del día de la
+#: ceremonia («1º: Himno de Colombia», «4º: Toma de juramento», hoja 68), que
+#: también va numerado, o el pie.
+#: También como lo transcribe la IA a mano: «1º Apertura de la sesión», «1º
+#: Número a Colombia» (el Himno), hojas 61 y 64 (2026-11-13).
+_NO_ES_UN_GRADUADO = re.compile(
+    r"\b(?:HIMNO|LECTURA|MOCION|JURAMENTO|DIPLOMAS?|RESOLUCION|ENTREGA|APERTURA|SESION|PALABRAS|DISCURSO"
+    r"|INSTALACION|CLAUSURA|BIENVENIDA|INVOCACION|ORACION|FELICITACION|NUMERO\W+A\W+(?:COLOMBIA|CARTAGENA))\b"
+)
+#: Los títulos dentro de la lista: «Con Énfasis en Neurocirugía», «# ESPECIALISTA
+#: EN MEDICO QUIRURGICA», «# COMPLEMENTARIO DE ENFERMERIA» (hoja 16).
+_ENFASIS_DE_LA_LISTA = re.compile(r"^\W{0,6}(?:\d{1,3}\W+)?(?:CON\W+)?E\w{0,2}FAS\w{1,3}\W+(?:EN\W+)?(?P<enfasis>[A-Z][A-Z ]{3,60}?)\W*$")
+_ESPECIALIDAD_DE_LA_LISTA = re.compile(r"^\W{0,6}(?P<titulo>(?:ESPECIALISTAS?|COMPLEMENTARIO)\b[A-Z :]{0,70}?)\W*$")
+#: El acta que dice cuántos gradúa: «se graduaron cuarenta y ocho (48) estudiantes».
+_ESTUDIANTES_DECLARADOS = re.compile(r"\(?\s*(\d{1,3})\s*\)?\s+(?:ESTUDIANTES|ALUMN[AO]S|SENORITAS|GRADUAND[AO]S)\b")
+#: El acta anulada: «Anulado», «se anula la presente acta».
+_ANULADA = re.compile(r"\bANULAD[AO]\b|\bSE\W+ANULA\b")
+#: Cuántos puestos en blanco hacen una lista vacía: la del acta anulada (hojas 144-145).
+PUESTOS_DE_UNA_LISTA_EN_BLANCO = 5
+_CONECTORES_DEL_NOMBRE = {"DE", "DEL", "LA", "LAS", "LOS", "Y"}
+PALABRAS_DE_UN_GRADUADO = 7
+#: Cuántas hojas del libro tienen que traer la marca de una graduación
+#: colectiva con varios graduados para tratarlo como libro colectivo.
+HOJAS_DE_UN_LIBRO_COLECTIVO = 2
+
+
+@dataclass(frozen=True, slots=True)
+class GraduadoDelActa:
+    """Un graduado de un acta colectiva: su puesto en la lista, su nombre, su cédula y su título."""
+
+    orden: int
+    nombre: str | None
+    cedula: str | None = None
+    #: El suyo si el acta le da uno distinto al común; ``None`` si es el común.
+    #: «CON ENFASIS EN NEUROCIRUGIA» se le pone detrás al común.
+    titulo: str | None = None
+    #: Lo que hay que mirar en el papel de este graduado.
+    nota: str | None = None
+    #: Su puesto en el texto, de 1 en adelante: la lista vuelve a contar desde
+    #: el 1 en cada título («Complementario: 1. …», «Con énfasis en …: 1. …»).
+    puesto: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ActaDelLibro:
+    """Un tramo del libro colectivo: un acta -- con su texto y su cierre -- o las hojas de una ceremonia."""
+
+    #: Su primera y su última hoja del PDF, en el orden del libro.
+    desde: int
+    hasta: int
+    #: El texto del acta, desde su encabezado hasta donde empieza la siguiente:
+    #: la cola de la anterior que va en su primera hoja no es suya.
+    texto: str = ""
+    #: La hoja en que acaba su lista o sus firmas y empieza la siguiente acta:
+    #: va en los dos PDF (lo decidió el operador el 2026-11-13) y cuenta en el
+    #: de la que empieza en ella.
+    cierre: int | None = None
+    ceremonia: bool = False
+    #: Sus hojas del PDF en el orden del folio impreso, con la del cierre: «(98,
+    #: 2)» es el Acta 01 de 1988, que empieza en la hoja 98 y sigue en la 2.
+    hojas: tuple[int, ...] = ()
+    #: Lo que el reparto razonó y hay que mirar en el papel: el encabezado que
+    #: quedó en blanco al pie de su hoja, la portada que va delante.
+    notas: tuple[str, ...] = ()
+
+    @property
+    def en_el_pdf(self) -> tuple[int, ...]:
+        """Sus hojas en el orden en que van en su PDF."""
+        return self.hojas or tuple(range(self.desde, self.hasta + 1))
+
+
+@dataclass(frozen=True, slots=True)
+class _Comienzo:
+    #: Dónde empieza el acta en la hoja: su encabezado, o su cuerpo si no se lee.
+    inicio: int
+    #: Dónde empieza y acaba «En la ciudad de …».
+    cuerpo: int
+    fin_del_cuerpo: int
+    #: Si es un acta abreviada, sin cuerpo: el encabezado y debajo el título o la lista.
+    abreviada: bool = False
+
+
+def _comienzos(texto: str) -> list[_Comienzo]:
+    """Dónde empieza cada acta en el texto de una hoja: su encabezado y su cuerpo.
+
+    Cada acta del libro abre con «En la ciudad de Cartagena a los … días del
+    mes de …», y su encabezado -- «Acta de Grado Nº 02» -- va justo encima. Lo
+    que hay antes en la hoja es la cola de la anterior: su lista, sus firmas.
+    La complementaria de la misma ceremonia va abreviada: su encabezado al
+    principio del renglón y debajo el título o la lista (``_abreviadas``).
+    """
+    letras = _por_letra(texto)
+    hallados: list[_Comienzo] = []
+    anterior = 0
+    for cuerpo in _CUERPO_DEL_LIBRO.finditer(letras):
+        if "EXPEDID" in letras[max(0, cuerpo.start() - 30) : cuerpo.start()]:
+            continue
+        if not _DIA_DEL_CUERPO.search(letras, cuerpo.end(), cuerpo.end() + 250):
+            continue
+        desde = max(anterior, cuerpo.start() - VENTANA_DEL_ENCABEZADO)
+        encabezados = list(_ENCABEZADO_DEL_LIBRO.finditer(letras, desde, cuerpo.start()))
+        inicio = encabezados[-1].start() if encabezados else cuerpo.start()
+        hallados.append(_Comienzo(inicio, cuerpo.start(), cuerpo.end()))
+        anterior = cuerpo.end()
+    hallados += _abreviadas(letras, hallados)
+    return sorted(hallados, key=lambda comienzo: comienzo.inicio)
+
+
+def _abreviadas(letras: str, con_cuerpo: Sequence[_Comienzo]) -> list[_Comienzo]:
+    """Las actas abreviadas de la hoja: el encabezado con su número al principio del renglón y, debajo, el título o la lista.
+
+    La complementaria de una ceremonia no repite «En la ciudad de …»: «Acto 04
+    / Especialista en: Salud Familiar / 1. Pérez Tobias Shirley Margarita» al
+    pie de la hoja 150 de UPD3859802, «ACTA 04. / Especialista en Salud
+    Ocupacional» en la 136 (2026-11-13). Sin esto su graduada se contaba en la
+    lista del acta de arriba, con su número y su título.
+    """
+    abreviadas: list[_Comienzo] = []
+    for encabezado in _ENCABEZADO_DEL_LIBRO.finditer(letras):
+        if any(c.inicio <= encabezado.start() <= c.cuerpo for c in con_cuerpo):
+            continue
+        principio = letras.rfind("\n", 0, encabezado.start()) + 1
+        if not _DELANTE_DEL_ABREVIADO.fullmatch(letras, principio, encabezado.start()):
+            continue
+        numero = _NUMERO_DEL_ENCABEZADO.match(letras, encabezado.end())
+        if numero is None:
+            continue
+        fin = letras.find("\n", numero.end())
+        fin = len(letras) if fin < 0 else fin
+        detras = letras[numero.end() : fin]
+        if len(re.sub(r"[^A-Z]", "", detras)) > LETRAS_DETRAS_DEL_ENCABEZADO or _FECHA_EN_EL_RENGLON.search(detras):
+            continue
+        debajo = [renglon for renglon in letras[fin:].splitlines() if renglon.strip()][:3]
+        if any(_DEBAJO_DEL_ABREVIADO.match(renglon) for renglon in debajo):
+            abreviadas.append(_Comienzo(encabezado.start(), encabezado.start(), fin, abreviada=True))
+    return abreviadas
+
+
+def _encabezado_al_pie(texto: str, desde: int) -> int | None:
+    """El encabezado que cierra la hoja sin su cuerpo -- que va arriba de la siguiente --, o ``None``."""
+    letras = _por_letra(texto)
+    encabezados = [m for m in _ENCABEZADO_DEL_LIBRO.finditer(letras) if m.start() >= desde]
+    if not encabezados:
+        return None
+    detras = re.sub(r"[^A-Z]", "", letras[encabezados[-1].end() :])
+    return encabezados[-1].start() if len(detras) <= LETRAS_DE_LA_CABEZA else None
+
+
+def numero_y_rango(texto: str) -> tuple[str | None, str | None]:
+    """El número del acta y el último de su rango, de su encabezado: («05408120», «05408124»), («03», None).
+
+    El primer encabezado del texto, que en el de un acta cortada es el suyo.
+    Las cifras van juntas aunque la IA les ponga puntos o barras --
+    «054/11254» es 05411254, «12.008.001.» es 12008001 --: con la barra el
+    rango salía «054 A 054» (UPD3859802, 2026-11-13). Lo que la IA dejó corto
+    lo completa ``rango_reparado`` con la lista y la serie del libro.
+    """
+    letras = _por_letra(texto)
+    encabezado = _ENCABEZADO_DEL_LIBRO.search(letras)
+    if encabezado is None:
+        return None, None
+    numero = _NUMERO_DEL_ENCABEZADO.match(letras, encabezado.end())
+    if numero is None:
+        return None, None
+    desde = re.sub(r"\D", "", numero.group("numero"))
+    # Ningún acta es la cero: un «0» suelto es una cifra que la IA cortó.
+    if not desde.strip("0"):
+        return None, None
+    rango = _RANGO_DEL_ENCABEZADO.match(letras, numero.end())
+    if rango is None or _DIA_DE_UNA_FECHA.match(letras, rango.end()):
+        return desde, None
+    hasta = re.sub(r"\D", "", rango.group("hasta"))
+    return desde, hasta if hasta.strip("0") else None
+
+
+#: Cuántas cifras del final tienen que coincidir para completar con la lista
+#: o con la serie un número del rango que la IA dejó corto.
+CIFRAS_QUE_CASAN = 3
+
+
+def rango_reparado(
+    desde: str | None, hasta: str | None, cuantos: int, sigue_a: str | None = None
+) -> tuple[str | None, str | None, str | None]:
+    """El rango del acta con lo que la IA leyó mal arreglado por la lista y la serie: (desde, hasta, nota).
+
+    En UPD3859802 (2026-11-13) la IA leyó «054/11254 a 054/1288» (35
+    graduados), «05403125 a 05408149» (25) y «054/1289-a 054/1320»: una cifra
+    de menos o una cambiada. Lo arregla lo que el libro sabe -- cuántos nombra
+    la lista y dónde acabó el acta anterior (``sigue_a``) -- y sólo si las
+    últimas cifras casan; lo arreglado se dice en la nota. Sin con qué
+    arreglarlo, el rango se queda como se leyó.
+    """
+    if not desde or not desde.isdigit() or cuantos < 1:
+        return desde, hasta, None
+    largo = max(len(desde), len(hasta or ""), len(sigue_a or ""))
+
+    def casa(leido: str | None, deducido: int) -> bool:
+        return bool(leido) and str(deducido).zfill(largo)[-CIFRAS_QUE_CASAN:] == leido[-CIFRAS_QUE_CASAN:]  # type: ignore[index]
+
+    if hasta and hasta.isdigit() and len(desde) == len(hasta) == largo and int(hasta) - int(desde) + 1 == cuantos:
+        return desde, hasta, None
+    leido = f"{desde} A {hasta}" if hasta else desde
+    if sigue_a and sigue_a.isdigit() and casa(desde, int(sigue_a) + 1):
+        nuevo = str(int(sigue_a) + 1).zfill(largo)
+        nuevo_hasta = str(int(nuevo) + cuantos - 1).zfill(largo)
+        if hasta is None or casa(hasta, int(nuevo_hasta)):
+            nuevo_hasta = nuevo_hasta if hasta is not None or cuantos > 1 else None
+            if (nuevo, nuevo_hasta) != (desde, hasta):
+                return nuevo, nuevo_hasta, (
+                    f"el encabezado se leyó «{leido}»; el número sigue al del acta anterior y la lista nombra "
+                    f"{cuantos}: revíselo en el papel"
+                )
+            return desde, hasta, None
+    if hasta and hasta.isdigit() and len(desde) == largo and casa(hasta, int(desde) + cuantos - 1):
+        return desde, str(int(desde) + cuantos - 1).zfill(largo), (
+            f"el encabezado se leyó «{leido}» y la lista nombra {cuantos}: revíselo en el papel"
+        )
+    if hasta and hasta.isdigit() and len(hasta) == largo and casa(desde, int(hasta) - cuantos + 1):
+        return str(int(hasta) - cuantos + 1).zfill(largo), hasta, (
+            f"el encabezado se leyó «{leido}» y la lista nombra {cuantos}: revíselo en el papel"
+        )
+    return desde, hasta, None
+
+
+def cedula_valida(cifras: str | None) -> str | None:
+    """La cédula si su largo es de una cédula colombiana: de 6 a 8 cifras, o 10 que empiezan por 10 u 11.
+
+    En UPD3859802 (2026-11-13) la IA dejó «228442856» (la 22.844.285 con la
+    cifra de control) y «129516130» (la 1.129.516.130 sin el 1, de otra
+    graduada): de nueve cifras no hay ninguna.
+    """
+    if not cifras or not cifras.isdigit():
+        return None
+    if 6 <= len(cifras) <= 8 or (len(cifras) == 10 and cifras[:2] in ("10", "11")):
+        return cifras
+    return None
+
+
+def _nombre_del_renglon(resto: str) -> tuple[list[str], str | None]:
+    """Las palabras del nombre de un renglón de la lista y su nota a lápiz, sin la cédula ni lo que la sigue."""
+    nota = None
+    marca = _NO_APARECE.search(_plano(resto))
+    if marca is not None:
+        nota = NOTA_NO_APARECE
+        resto = resto[: marca.start()]
+    entre_parentesis = re.search(r"\(([^)]{6,80})\)", resto)
+    if entre_parentesis is not None and re.search(r"\bNO\b", _plano(entre_parentesis.group(1))):
+        # «Hernandez Uperla Mª Elena (no se ha graduado ni legalizó acta)».
+        nota = f"anotado en el papel: «{entre_parentesis.group(1).strip()}»"
+        resto = resto[: entre_parentesis.start()]
+    cedula = _CEDULA_DEL_RENGLON.search(resto)
+    antes = resto[: cedula.start()] if cedula else resto
+    anotado = re.search(r"\(([^)]{6,80})\)", antes)
+    if anotado is not None and len(_PALABRA_DEL_RENGLON.findall(antes[: anotado.start()])) >= 2:
+        # Lo anotado entre paréntesis delante de la cédula no es del nombre:
+        # «Calvo Martinez Susana (hoy Señora de Ortiz)» (hoja 25).
+        nota = _con_nota(nota, f"anotado en el papel: «{anotado.group(1).strip()}»")
+        resto = resto[: anotado.start()] + " " + resto[anotado.end() :]
+        cedula = _CEDULA_DEL_RENGLON.search(resto)
+    resto = _INICIAL_PARTIDA.sub(r"\1\2", resto)
+    if cedula is None:
+        resto = _VISTO_AL_FINAL.sub("", resto)
+    cedula = _CEDULA_DEL_RENGLON.search(resto)
+    # El nombre acaba en la primera palabra con cifras: la cédula mal leída
+    # «4N-434 3N6 9pm» le pegaba «N N PM» (hoja 64).
+    con_cifras = re.search(r"\S*\d", resto)
+    fin = min(cedula.start() if cedula else len(resto), con_cifras.start() if con_cifras else len(resto))
+    palabras = _PALABRA_DEL_RENGLON.findall(resto[:fin])
+    while palabras and _plano(palabras[-1]).strip() in _NO_ES_DEL_NOMBRE_EN_LA_LISTA:
+        palabras.pop()
+    if (
+        cedula is None
+        and nota is None
+        and len(palabras) >= 4
+        and palabras[-2].lower() == "de"
+        and _plano(palabras[-1]).strip() in LUGARES_DE_EXPEDICION
+    ):
+        # Sin cédula, el lugar de expedición va pegado al apellido: «…
+        # Andrade García de Cartagena». Sólo un lugar: «Lorica Phillips de
+        # Porras» y «Zully Moreno de Villalba» son apellidos de casada (hojas
+        # 60 y 80, 2026-11-13); «Ana María de la Hoz», un nombre.
+        palabras = palabras[:-2]
+    return palabras, nota
+
+
+def _es_un_nombre(palabras: Sequence[str], *, con_cedula: bool = False) -> bool:
+    """Si las palabras tienen forma de nombre: de dos a siete, y a lo más una en minúscula que no sea «de», «la»…
+
+    La IA escribe a veces un apellido en minúscula -- «11. Cabrera florez Iris
+    del Socorro» --; un renglón del cuerpo que empieza por un número -- «30 de
+    Junio de 2006 por medio…», «14 días del mes de julio» -- trae varias.
+    """
+    if not 2 <= len(palabras) <= PALABRAS_DE_UN_GRADUADO:
+        return False
+    planas = [_plano(palabra).strip() for palabra in palabras]
+    # Dos palabras de nombre por lo menos: «93-880 de Catania» es una cédula
+    # partida con su lugar de expedición, no «DE CATANIA» (hoja 60).
+    if sum(1 for plana in planas if plana not in _CONECTORES_DEL_NOMBRE) < 2:
+        return False
+    if any(_CARGO_EN_PALABRA.search(p) for p in planas) or _NO_ES_UN_GRADUADO.search(" ".join(planas)):
+        return False
+    minusculas = [
+        indice
+        for indice, (palabra, plana) in enumerate(zip(palabras, planas, strict=True))
+        if not palabra[:1].isupper() and plana not in _CONECTORES_DEL_NOMBRE
+    ]
+    if con_cedula:
+        # Con su cédula en el renglón es un graduado aunque la IA le pase la
+        # «C» a «b»: «8 bostillo bostillo fruity. 3len 45.422.357» (hoja 74,
+        # 2026-11-13). El nombre va como se leyó y lo vota la lectura de la IA.
+        return len(minusculas) * 2 <= len(palabras)
+    # «10 de la Rosa Sougoly Betty»: la mayúscula, en la primera que no es «de», «la».
+    primeras = [palabra for palabra, plana in zip(palabras, planas, strict=True) if plana not in _CONECTORES_DEL_NOMBRE]
+    return len(minusculas) <= 1 and (primeras[0][:1].isupper() or primeras[1][:1].isupper())
+
+
+def graduados_de_la_lista(texto: str) -> list[GraduadoDelActa]:
+    """Los graduados de la lista numerada del acta, leídos por regla: «1. Karolay Acevedo Jiménez 45.521.842 Cartagena».
+
+    Es la lectura gratuita: sirve cuando no hay IA, para completar lo que el
+    lector de la IA dejó sin escribir y para casar cada cédula con su nombre.
+    Un renglón vale si lo que va entre el número y la cédula tiene forma de
+    nombre (``_es_un_nombre``); el lugar de expedición que sigue a la cédula no
+    es del nombre.
+
+    La cédula es la de su renglón, nunca la de otro (UPD3859802, 2026-11-13:
+    la IA las casaba por orden de aparición, y una que faltaba corría todas
+    las de detrás). Cuando va sola en el renglón de abajo -- «cc. 32.732.022
+    de Baranquilla» -- es del nombre de arriba; cuando la IA transcribió la
+    columna de las cédulas aparte, debajo de la de los nombres, se casan por
+    su puesto sólo si hay tantas como nombres sin cédula. El graduado marcado a
+    lápiz «no aparece» se lista con su nota, y los títulos dentro de la lista
+    -- «Con Énfasis en Neurocirugía», «Especialista en Médico Quirúrgica» --
+    van con los graduados que los siguen.
+    """
+    graduados: list[GraduadoDelActa] = []
+    vistos: set[tuple[int, str]] = set()
+    especialidad: str | None = None
+    enfasis: str | None = None
+    #: Los graduados sin cédula desde la última que se puso, y las cédulas solas seguidas.
+    pendientes: list[int] = []
+    columna: list[str] = []
+    #: Las cifras de la cédula que el renglón del nombre dejó empezadas.
+    empezadas: dict[int, str] = {}
+    lista_abierta = False
+
+    def poner(indice: int, cifras: str) -> None:
+        graduados[indice] = replace(graduados[indice], cedula=cedula_valida(empezadas.pop(indice, "") + cifras))
+
+    def cerrar_la_columna() -> None:
+        if len(columna) == 1 and pendientes and pendientes[-1] == len(graduados) - 1:
+            poner(pendientes[-1], columna[0])
+            pendientes.clear()
+        elif len(columna) >= 2 and len(columna) == len(pendientes):
+            for indice, cifras in zip(pendientes, columna, strict=True):
+                poner(indice, cifras)
+            pendientes.clear()
+        elif len(columna) >= 2 and pendientes:
+            for indice in pendientes:
+                graduados[indice] = replace(
+                    graduados[indice],
+                    nota=_con_nota(
+                        graduados[indice].nota,
+                        f"las cédulas van en una columna aparte y no cuadran con los nombres ({len(columna)} "
+                        f"cédulas, {len(pendientes)} nombres): revísela en el papel",
+                    ),
+                )
+            pendientes.clear()
+        columna.clear()
+
+    renglones = [renglon.replace("|", " ").replace("\\", "").replace("*", "").strip() for renglon in (texto or "").splitlines()]
+    renglones = [renglon for renglon in renglones if renglon]
+    for indice_del_renglon, limpio in enumerate(renglones):
+        plano = _plano(limpio).strip()
+        sola = _RENGLON_DE_LA_CEDULA.match(plano)
+        if sola is not None:
+            columna.append(re.sub(r"\D", "", sola.group("cedula")))
+            continue
+        cerrar_la_columna()
+        if _ABRE_LA_LISTA.search(plano):
+            lista_abierta = True
+            continue
+        # El título de una sección de la lista, aunque lleve número delante:
+        # «* 5 Con Enfásis en Cuidados Intensivos:» no es un graduado (hoja 3).
+        if seccion := _ENFASIS_DE_LA_LISTA.match(plano):
+            enfasis = seccion.group("enfasis").strip()
+            continue
+        seccion = _ESPECIALIDAD_DE_LA_LISTA.match(plano)
+        # Delante del primer graduado, el título de la sección también vale
+        # («Especialistas en Salud Ocupacional», hoja 25), pero no el renglón
+        # del cuerpo que lo otorga: «… Salud Ocupacional a ______ portador».
+        if seccion and (graduados or not re.search(r"\bA$|PORTADOR", seccion.group("titulo").strip(" :"))):
+            # Sin el «Según → continúa» con que el renglón pasa a la otra hoja (hoja 142).
+            especialidad = re.sub(r"\s+SEGUN$", "", seccion.group("titulo").strip(" :"))
+            enfasis = None
+            continue
+        hallado = _RENGLON_NUMERADO.match(limpio)
+        if hallado is not None:
+            orden, resto = int(hallado.group("orden")), hallado.group("resto")
+        else:
+            sin_numero = _RENGLON_SIN_NUMERO.match(limpio)
+            siguiente = _plano(renglones[indice_del_renglon + 1]) if indice_del_renglon + 1 < len(renglones) else ""
+            con_cedula = bool(_CEDULA_CON_ROTULO.search(plano) or _CON_SU_DOCUMENTO.search(plano)) or (
+                bool(_RENGLON_DE_LA_CEDULA.match(siguiente))
+                and bool(_CEDULA_CON_ROTULO.match(siguiente.strip()) or siguiente.strip().startswith("CEDULA"))
+            )
+            # Sin número vale el renglón con viñeta o bajo el título de su
+            # sección, y sólo con su cédula rotulada en él o justo debajo: las
+            # firmas y el cuerpo no la traen. El nombre solo, sin cédula, no:
+            # medido en UPD3859802, por cada graduado bien leído entraban tres
+            # firmas y rótulos («Edna Gómez Bustamante / Jefe Dpto Académico»,
+            # «Facultad de Enfermería»); esa lista la lee la IA (2026-11-13).
+            if sin_numero is None or not con_cedula or not (
+                sin_numero.group("vineta") or especialidad or enfasis or lista_abierta
+            ):
+                continue
+            orden, resto = len(graduados) + 1, sin_numero.group("resto")
+        palabras, nota = _nombre_del_renglon(resto)
+        de_su_renglon = _CEDULA_DEL_RENGLON.search(resto)
+        con_cedula = bool(de_su_renglon and cedula_valida(re.sub(r"\D", "", de_su_renglon.group(0))))
+        if not _es_un_nombre(palabras, con_cedula=con_cedula):
+            continue
+        nombre = " ".join(palabra.upper() for palabra in palabras)
+        if orden == 0 or (orden, nombre) in vistos:
+            continue
+        vistos.add((orden, nombre))
+        cedula = _CEDULA_DEL_RENGLON.search(resto)
+        titulo = None
+        if especialidad:
+            titulo = f"{especialidad} CON ENFASIS EN {enfasis}" if enfasis else especialidad
+        elif enfasis:
+            titulo = f"CON ENFASIS EN {enfasis}"
+        graduados.append(
+            GraduadoDelActa(
+                orden=orden,
+                nombre=nombre,
+                cedula=cedula_valida(re.sub(r"\D", "", cedula.group(0))) if cedula else None,
+                titulo=titulo,
+                nota=nota,
+                puesto=len(graduados) + 1,
+            )
+        )
+        if cedula is None:
+            pendientes.append(len(graduados) - 1)
+            if empezada := _CEDULA_EMPEZADA.search(plano):
+                empezadas[len(graduados) - 1] = empezada.group("cifras")
+        else:
+            pendientes.clear()
+    cerrar_la_columna()
+    return graduados
+
+
+def _con_nota(nota: str | None, otra: str | None) -> str | None:
+    """Las dos notas juntas, sin repetir."""
+    if not otra or (nota and otra in nota):
+        return nota
+    return f"{nota}; {otra}" if nota else otra
+
+
+def puestos_de_la_lista(texto: str) -> int:
+    """Cuántos graduados numera la lista del acta, se lean o no sus nombres.
+
+    Cuenta el último número de cada tramo -- la lista vuelve a empezar en el 1
+    bajo cada título --, y también los renglones en blanco o que la IA no supo
+    leer: la hoja 80 de UPD3859802 trae ocho puestos y la IA sólo transcribió
+    un nombre (2026-11-13).
+    """
+    total, ultimo = 0, 0
+    for renglon in (texto or "").splitlines():
+        limpio = renglon.replace("|", " ").replace("*", "").strip()
+        if _NO_ES_UN_GRADUADO.search(_plano(limpio)):
+            continue
+        hallado = _PUESTO_DE_LA_LISTA.match(limpio)
+        if hallado is None or _RENGLON_DE_LA_CEDULA.match(_plano(limpio)):
+            continue
+        numero = int(hallado.group("orden"))
+        if numero == ultimo + 1:
+            ultimo = numero
+        elif numero == 1 and ultimo:
+            total += ultimo
+            ultimo = 1
+        elif ultimo < numero <= ultimo + SALTO_DE_UN_RENGLON:
+            # Un salto corto es un renglón que no se leyó.
+            ultimo = numero
+    return total + ultimo
+
+
+#: Cuántos puestos puede saltarse la lista leída y seguir siendo la misma lista.
+SALTO_DE_UN_RENGLON = 3
+
+
+def estudiantes_declarados(texto: str) -> int | None:
+    """Cuántos estudiantes dice el acta que gradúa: «… (48) estudiantes», o ``None``."""
+    declarado = _ESTUDIANTES_DECLARADOS.search(_plano(texto or ""))
+    return int(declarado.group(1)) if declarado else None
+
+
+def acta_anulada(texto: str) -> str | None:
+    """Por qué el acta está anulada, o ``None``: lo dice el papel, o su lista está en blanco.
+
+    El Acta 05 del 12-12-2003 (UPD3859802, hojas 144-145) se firmó «Anulado»
+    con la lista del 1 al 46 vacía: no gradúa a nadie, y el inventario sacaba
+    una fila sin nombre (2026-11-13).
+    """
+    if _ANULADA.search(_plano(texto or "")):
+        return "el acta dice que se anuló"
+    en_blanco = [renglon for renglon in (texto or "").splitlines() if re.fullmatch(r"\W{0,4}\d{1,3}\W{0,3}", renglon.strip())]
+    if len(en_blanco) >= PUESTOS_DE_UNA_LISTA_EN_BLANCO and not graduados_de_la_lista(texto):
+        return f"su lista de graduados está en blanco ({len(en_blanco)} puestos sin nombre)"
+    return None
+
+
+def acta_sin_terminar(texto: str) -> str | None:
+    """Por qué el acta no gradúa a nadie aunque nadie la anuló, o ``None``: su formulario quedó en blanco y sin lista.
+
+    El Acta 02 del 26-04-2003 (UPD3859802, hoja 138) es el formulario con el
+    graduado, la cédula y el título en blanco, sin lista debajo y sin firmas:
+    salía una fila sin nombre que decía «no se pudo leer la cédula», como si
+    el papel la trajera (2026-11-13).
+    """
+    letras = _por_letra(texto or "")
+    if not (_GRADUADO_EN_BLANCO.search(letras) or _ESTUDIANTE_EN_BLANCO.search(letras)):
+        return None
+    if graduados_de_la_lista(texto) or puestos_de_la_lista(texto) or estudiantes_declarados(texto):
+        return None
+    return "el acta quedó sin terminar: su formulario tiene el graduado en blanco y no trae lista de graduados"
+
+
+def es_acta_colectiva(texto: str) -> bool:
+    """Si el acta gradúa a varios: un rango de números, el estudiante en blanco o una lista de graduados.
+
+    Lo que sólo dice «graduación colectiva» no basta: las actas individuales
+    de hoy lo dicen y nombran a un graduado (``tests/test_acta_grado.py``).
+    El acta abreviada -- sin «En la ciudad de …», sólo el título y la lista --
+    lo es aunque nombre a uno: su graduado está en la lista, no en una frase.
+    """
+    letras = _por_letra(texto or "")
+    lista = graduados_de_la_lista(texto or "")
+    return bool(
+        numero_y_rango(texto or "")[1]
+        or _ESTUDIANTE_EN_BLANCO.search(letras)
+        or _A_LOS_ESTUDIANTES.search(letras)
+        or len(lista) >= 2
+        or (lista and not _CUERPO_DEL_LIBRO.search(letras))
+        # El formulario con el graduado en blanco y su nombre en la lista de
+        # abajo: «… en Salud Ocupacional a - - - - Portador …» y «1- Edgardo
+        # José Niño Osorio» (hoja 35: la fila salía sin nombre; 2026-11-13).
+        or (lista and _GRADUADO_EN_BLANCO.search(letras))
+        # «… a cuatro (4) estudiantes … Las graduandas son:» (hoja 60).
+        or (estudiantes_declarados(texto or "") or 0) >= 2
+    )
+
+
+def es_hoja_de_acta_colectiva(texto: str) -> bool:
+    """Si la hoja abre un acta colectiva: «graduación colectiva» y además varios graduados.
+
+    Varios es el rango «Nº A a B» en un encabezado con su cuerpo, el estudiante
+    en blanco, «a los estudiantes» o una lista de dos graduados o más con su
+    cédula. «Graduación colectiva» sola, no: las actas individuales modernas la
+    dicen (``tests/test_acta_grado.py``, ``tests/test_razonar_lo_que_falta.py``).
+    """
+    letras = _por_letra(texto or "")
+    if not _GRADUACION_COLECTIVA.search(letras):
+        return False
+    con_rango = any(numero_y_rango(texto[c.inicio : c.cuerpo])[1] for c in _comienzos(texto))
+    return bool(
+        con_rango
+        or _ESTUDIANTE_EN_BLANCO.search(letras)
+        or _A_LOS_ESTUDIANTES.search(letras)
+        or sum(1 for g in graduados_de_la_lista(texto) if g.cedula) >= 2
+    )
+
+
+def es_libro_de_actas_colectivas(paginas: Sequence[str]) -> bool:
+    """Si el libro es de actas colectivas: dos hojas o más que abren un acta colectiva (una, si el PDF es corto)."""
+    hojas = sum(1 for texto in paginas if es_hoja_de_acta_colectiva(texto or ""))
+    return hojas >= 1 and (hojas >= HOJAS_DE_UN_LIBRO_COLECTIVO or len(paginas) <= 3)
+
+
+#: El renglón de la esquina de la hoja: el número del libro y la foliación, «157», «81/V».
+_RENGLON_DEL_FOLIO = re.compile(r"^\W*\d{1,4}\s*(?:/\s*V)?\W*$", re.IGNORECASE)
+
+
+def _sin_folio_arriba(texto: str) -> str:
+    """La hoja que sigue a otra sin los renglones del folio de arriba.
+
+    El acta Nº 02 de 2006 (UPD3859802, págs. 159-160) deja «al estudiante» al
+    pie de una hoja y el nombre arriba de la siguiente, detrás de «157» y
+    «81/V»: con ellos en medio, la regla no veía a «Peggy Margarita Nieto
+    Periñan» (2026-11-12).
+    """
+    renglones = texto.splitlines()
+    while renglones and (not renglones[0].strip() or _RENGLON_DEL_FOLIO.match(renglones[0].strip())):
+        renglones.pop(0)
+    return "\n".join(renglones)
+
+
+#: Cuántos renglones de arriba de la hoja se miran para ver si su lista sigue
+#: la del acta de delante: el folio no cuenta, y puede ir antes un renglón como
+#: «Resolución Nº 2892 de fecha 5 de diciembre de 2003» (hoja 143).
+RENGLONES_DE_ARRIBA = 4
+#: Cuántas letras puede traer una hoja -- sin su folio -- para ser una portada
+#: o una hoja en blanco: «Pregrado 1980-2012» con su rótulo (hoja 59).
+LETRAS_DE_UNA_PORTADA = 60
+
+
+def _graduado_numerado(renglon: str) -> int | None:
+    """El número del renglón si es el de un graduado de la lista -- «45. Omaira Solarte Phenal …» --, o ``None``."""
+    limpio = renglon.replace("|", " ").replace("\\", "").replace("*", "").strip()
+    plano = _plano(limpio)
+    if not limpio or _NO_ES_UN_GRADUADO.search(plano) or _RENGLON_DE_LA_CEDULA.match(plano):
+        return None
+    hallado = _RENGLON_NUMERADO.match(limpio)
+    if hallado is None or not _es_un_nombre(_nombre_del_renglon(hallado.group("resto"))[0]):
+        return None
+    return int(hallado.group("orden"))
+
+
+def ultimo_puesto(texto: str) -> int:
+    """El último número de la lista que el texto deja abierta: 44 si acaba en «44. …»; 0 si no trae lista."""
+    ultimo = 0
+    for renglon in (texto or "").splitlines():
+        numero = _graduado_numerado(renglon)
+        if numero is not None and (numero == 1 or ultimo < numero <= ultimo + SALTO_DE_UN_RENGLON):
+            ultimo = numero
+    return ultimo
+
+
+def sigue_la_lista(anterior: str, texto: str) -> bool:
+    """Si la hoja sigue la lista del acta de delante: arriba trae el graduado con el número siguiente al último de ella.
+
+    La hoja 64 de UPD3859802 abre con «45. Omaira Solarte Phenal» -- el Acta 02
+    de 1980 acabó en el 44 -- y sigue con «La ceremonia estuvo presidida…»; la
+    143 abre con «1. Eduardo Isidro Blanco Granados» bajo el «Acta 06 …
+    continúa →» de la 142. Las dos salían como «CEREMONIA DE GRADO» con una
+    fila vacía, y sus graduados se perdían (2026-11-13).
+    """
+    renglones = [renglon for renglon in _sin_folio_arriba(texto or "").splitlines() if renglon.strip()]
+    for renglon in renglones[:RENGLONES_DE_ARRIBA]:
+        numero = _graduado_numerado(renglon)
+        if numero is not None:
+            return numero == ultimo_puesto(anterior) + 1
+    return False
+
+
+#: Cuántas veces seguidas tiene que repetirse un trozo con letra o cifra para que
+#: el renglón sea un bucle de la IA y no la raya en blanco del formulario.
+REPETICIONES_DE_UN_BUCLE = 12
+_BUCLE = re.compile(rf"((?=[^\W_])[^\W_]{{1,4}}[\W_]{{0,2}})\1{{{REPETICIONES_DE_UN_BUCLE - 1},}}")
+#: Cuántos números seguidos con su punto en un renglón son la IA contando sola.
+NUMEROS_DE_UN_BUCLE = 20
+
+
+def renglones_en_bucle(texto: str) -> int:
+    """Cuántos renglones de la lectura de la IA son un bucle: «1.1.1.1…», «H. H. H. …», «1. 2. 3. … 100.».
+
+    La IA a veces lee bien el principio de la hoja y se queda repitiendo un
+    trozo: la hoja 80 de UPD3859802 trae ocho graduados y devolvió el primero
+    y siete renglones de «1.1.1.1…»; la 74, «Galindo Gloria H. H. H. …»
+    (2026-11-13). La raya en blanco del formulario -- «a ________ portador»,
+    «- - - - -» -- no es un bucle: no trae letras ni cifras.
+    """
+    return sum(
+        1
+        for renglon in (texto or "").splitlines()
+        if _BUCLE.search(renglon) or len(re.findall(r"\b\d{1,3}\.", renglon)) >= NUMEROS_DE_UN_BUCLE
+    )
+
+
+def _letras_sin_folio(texto: str) -> int:
+    """Cuántas letras trae la hoja sin los renglones de su folio."""
+    return len(re.sub(r"[^A-Z]", "", _por_letra(_sin_folio_arriba(texto or ""))))
+
+
+def orden_del_libro(paginas: Sequence[str]) -> list[int]:
+    """Las páginas del libro colectivo en el orden de su folio impreso (``orden_por_el_folio``).
+
+    El folio es el que la IA lee arriba de cada hoja (``folio_del_texto``): en
+    UPD3859802 las hojas 1 a 12 son los folios 41 a 58 desordenados, y el Acta
+    01 de 1988 empieza en la hoja 98 (folio 40) y sigue en la 2 (2026-11-13).
+    """
+    return orden_por_el_folio(folios_corregidos([folio_del_texto(texto or "") for texto in paginas]))
+
+
+def reparto_del_libro_colectivo(paginas: Sequence[str], orden: Sequence[int] | None = None) -> list[ActaDelLibro]:
+    """El libro colectivo repartido en actas y hojas de ceremonia, en el orden de su folio impreso.
+
+    Un acta empieza en su encabezado -- o en «En la ciudad de …» si el
+    encabezado no se lee --, aunque sea a mitad de hoja; la abreviada, en su
+    encabezado con el título o la lista debajo. Sus hojas van en el orden del
+    folio impreso (``orden_del_libro``), no en el del escaneo: el acta sigue en
+    la hoja que lleva el folio siguiente aunque esté lejos en el PDF.
+
+    La hoja que comparten dos actas -- la cola de una, el comienzo de la otra
+    -- va en los **dos** PDF (lo decidió el operador el 2026-11-13: en la hoja
+    166 quedaban 25 de los 30 graduados del acta de la 165, y su PDF no los
+    traía); su ``cierre`` lo dice, y cuenta en el de la que empieza en ella. Dos
+    actas que empiezan en la misma hoja salen cada una en su PDF, con esa hoja.
+
+    El texto de cada acta va desde su encabezado hasta donde empieza la
+    siguiente. El encabezado al pie de una hoja con el cuerpo arriba de la
+    siguiente abre el acta en la hoja del encabezado. Una hoja sin comienzo es
+    de la que va delante, salvo la de una ceremonia que no sea la lista de un
+    acta -- su lista sigue aunque no traiga cédulas (la hoja 150, ítems 16-31,
+    salía como «CEREMONIA DE GRADO») -- y salvo la que no sigue por folio a la
+    de delante: dos hojas no se unen a través de un salto del folio impreso.
+    Lo que va antes de la primera acta es de la ceremonia.
+    """
+    total = len(paginas)
+    orden = list(orden) if orden is not None else orden_del_libro(paginas)
+    textos = [paginas[pagina - 1] or "" for pagina in orden]
+    folios = folios_corregidos([folio_del_texto(texto) for texto in textos])
+
+    def salta(puesto: int) -> bool:
+        """Si la hoja del puesto no sigue por folio a la de delante en el orden del libro."""
+        antes, este = folios[puesto - 2] if puesto > 1 else None, folios[puesto - 1]
+        return antes is not None and este is not None and este != antes + 1
+
+    comienzos = {puesto: _comienzos(texto) for puesto, texto in enumerate(textos, start=1)}
+    inicios: dict[int, list[int]] = {puesto: [c.inicio for c in hallados] for puesto, hallados in comienzos.items()}
+    # El encabezado al pie de una hoja y el cuerpo arriba de la siguiente.
+    for puesto in range(1, total):
+        siguiente = comienzos[puesto + 1]
+        if not siguiente or siguiente[0].abreviada or siguiente[0].inicio != siguiente[0].cuerpo:
+            continue
+        cabeza = re.sub(r"[^A-Z]", "", _por_letra(textos[puesto][: siguiente[0].cuerpo]))
+        if len(cabeza) > LETRAS_DE_LA_CABEZA or salta(puesto + 1):
+            continue
+        propios = [c for c in comienzos[puesto] if not c.abreviada]
+        al_pie = _encabezado_al_pie(textos[puesto - 1], propios[-1].fin_del_cuerpo if propios else 0)
+        if al_pie is None or al_pie in inicios[puesto]:
+            continue
+        inicios[puesto] = sorted([*inicios[puesto], al_pie])
+        inicios[puesto + 1] = inicios[puesto + 1][1:]
+
+    def texto_de(parte: list, hasta: int) -> str:
+        """El texto de la parte desde su comienzo hasta la hoja ``hasta`` del orden del libro."""
+        return "\n".join([textos[parte[0] - 1][parte[3] :], *textos[parte[0] : hasta]])
+
+    partes: list[list] = []  # desde, hasta, ceremonia, inicio (en puestos del orden del libro)
+    for puesto, texto in enumerate(textos, start=1):
+        sigue = bool(partes) and not salta(puesto)
+        if inicios[puesto]:
+            partes += [[puesto, puesto, False, inicio] for inicio in inicios[puesto]]
+        elif sigue and not partes[-1][2] and sigue_la_lista(texto_de(partes[-1], puesto - 1), texto):
+            # Su lista sigue la del acta de delante: es suya aunque diga
+            # «La ceremonia estuvo presidida…» (hojas 64 y 143).
+            partes[-1][1] = puesto
+        elif clase_de_hoja(texto) == CEREMONIA and puestos_de_la_lista(texto) < 2:
+            if sigue and partes[-1][2]:
+                partes[-1][1] = puesto
+            else:
+                partes.append([puesto, puesto, True, 0])
+        elif sigue:
+            partes[-1][1] = puesto
+        else:
+            partes.append([puesto, puesto, True, 0])
+
+    def hojas(desde: int, hasta: int) -> tuple[int, ...]:
+        return tuple(orden[puesto - 1] for puesto in range(desde, hasta + 1))
+
+    hechas: list[ActaDelLibro] = []
+    for indice, (desde, hasta, ceremonia, inicio) in enumerate(partes):
+        if ceremonia:
+            suyas = hojas(desde, hasta)
+            hechas.append(ActaDelLibro(suyas[0], suyas[-1], ceremonia=True, hojas=suyas))
+            continue
+        siguiente = partes[indice + 1] if indice + 1 < len(partes) else None
+        if siguiente is not None and not siguiente[2] and siguiente[0] == desde == hasta:
+            # La siguiente empieza en la misma hoja: su texto es lo que va entre las dos.
+            suyas = hojas(desde, hasta)
+            texto = textos[desde - 1][inicio : siguiente[3]].strip()
+            hechas.append(ActaDelLibro(suyas[0], suyas[-1], texto, hojas=suyas))
+            continue
+        trozos = [textos[desde - 1][inicio:], *(_sin_folio_arriba(texto) for texto in textos[desde:hasta])]
+        cierre = None
+        if siguiente is not None and not siguiente[2] and siguiente[0] == hasta + 1 and not salta(hasta + 1):
+            cola = _sin_folio_arriba(textos[hasta][: siguiente[3]])
+            if len(re.sub(r"[^A-Z]", "", _por_letra(cola))) >= LETRAS_DE_UN_CIERRE:
+                trozos.append(cola)
+                cierre = hasta + 1
+        suyas = hojas(desde, cierre or hasta)
+        hechas.append(
+            ActaDelLibro(
+                suyas[0],
+                suyas[-1],
+                "\n".join(trozos).strip(),
+                cierre=orden[cierre - 1] if cierre else None,
+                hojas=suyas,
+            )
+        )
+    return _con_las_portadas_delante(_sin_encabezados_en_blanco(hechas), paginas)
+
+
+def _sin_encabezados_en_blanco(partes: list[ActaDelLibro]) -> list[ActaDelLibro]:
+    """El reparto sin los encabezados abreviados que quedaron en blanco: no son actas, son una nota de la de delante.
+
+    Al pie de la hoja 140 de UPD3859802 dice «Acto 04 / Especialista en.» y la
+    hoja que sigue por folio abre con el Acta 05: el acta 04 se empezó y no se
+    escribió. Salía una fila sin graduado, sin fecha y con un PDF de la misma
+    hoja que ya va en el del acta 03 (2026-11-13).
+    """
+    limpias: list[ActaDelLibro] = []
+    for parte in partes:
+        texto = parte.texto
+        en_blanco = (
+            not parte.ceremonia
+            and len(parte.en_el_pdf) == 1
+            and not _CUERPO_DEL_LIBRO.search(_por_letra(texto))
+            and puestos_de_la_lista(texto) == 0
+            and not graduados_de_la_lista(texto)
+        )
+        anterior = limpias[-1] if limpias else None
+        if en_blanco and anterior is not None and not anterior.ceremonia and parte.en_el_pdf[0] in anterior.en_el_pdf:
+            renglon = " / ".join(r.strip() for r in texto.splitlines() if r.strip())
+            limpias[-1] = replace(
+                anterior,
+                notas=(
+                    *anterior.notas,
+                    f"al pie de la hoja {parte.en_el_pdf[0]} se empezó otra acta («{renglon[:60]}») y quedó en "
+                    "blanco: no se inventarió; revísela en el papel",
+                ),
+            )
+            continue
+        limpias.append(parte)
+    return limpias
+
+
+def _con_las_portadas_delante(partes: list[ActaDelLibro], paginas: Sequence[str]) -> list[ActaDelLibro]:
+    """El reparto con cada portada -- una hoja de ceremonia casi sin letras -- en el PDF del acta que la sigue.
+
+    La hoja 59 de UPD3859802 es la portada «Pregrado 1980-2012» de la segunda
+    parte del libro: salía como «CEREMONIA DE GRADO» con una fila vacía en el
+    FUID (2026-11-13). Va delante de la primera acta que la sigue; sin acta
+    detrás, con la de delante.
+    """
+    juntas: list[ActaDelLibro] = []
+    pendiente: ActaDelLibro | None = None
+    for parte in partes:
+        portada = parte.ceremonia and all(_letras_sin_folio(paginas[p - 1]) <= LETRAS_DE_UNA_PORTADA for p in parte.en_el_pdf)
+        if portada:
+            pendiente = parte if pendiente is None else replace(pendiente, hojas=(*pendiente.en_el_pdf, *parte.en_el_pdf))
+            continue
+        if pendiente is not None and not parte.ceremonia:
+            hojas = (*pendiente.en_el_pdf, *parte.en_el_pdf)
+            nota = f"la hoja {', '.join(map(str, pendiente.en_el_pdf))} es una portada: va al principio del PDF de esta acta"
+            parte = replace(parte, desde=hojas[0], hojas=hojas, notas=(*parte.notas, nota))
+        elif pendiente is not None:
+            juntas.append(pendiente)
+        pendiente = None
+        juntas.append(parte)
+    if pendiente is not None:
+        if juntas and not juntas[-1].ceremonia:
+            ultima = juntas[-1]
+            hojas = (*ultima.en_el_pdf, *pendiente.en_el_pdf)
+            juntas[-1] = replace(ultima, hasta=hojas[-1], hojas=hojas)
+        else:
+            juntas.append(pendiente)
+    return juntas
+
+
+def paginas_compartidas(partes: Sequence[ActaDelLibro]) -> list[int]:
+    """Las hojas que van en dos PDF del libro colectivo: el cierre de un acta y el comienzo de otra."""
+    vistas = Counter(pagina for parte in partes for pagina in parte.en_el_pdf)
+    return sorted(pagina for pagina, veces in vistas.items() if veces > 1)
+
+
+def actas_del_libro_colectivo(partes: Sequence[ActaDelLibro], total: int) -> ActasDelPdf:
+    """Los tramos del libro colectivo (``reparto_del_libro_colectivo``): uno por acta y uno por cada ceremonia."""
+    if not partes:
+        return ActasDelPdf(tramos=(TramoDeActa(1, max(1, total)),))
+    return ActasDelPdf(
+        tramos=tuple(
+            TramoDeActa(
+                parte.desde,
+                parte.hasta,
+                ceremonia=parte.ceremonia,
+                hojas=len(parte.en_el_pdf),
+                paginas_del_pdf=parte.en_el_pdf,
+            )
+            for parte in partes
+        )
+    )
+
+
+def numeros_de_los_graduados(
+    desde: str | None, hasta: str | None, cuantos: int
+) -> tuple[list[str | None], str | None]:
+    """El número del acta de cada graduado, y la nota si el rango no cuadra con la lista.
+
+    Con «Nº 05408120 a 05408124» y cinco graduados, uno por graduado y en el
+    orden de la lista: 05408120, 05408121… Si el rango no cuadra con cuántos
+    nombra el acta, todos llevan el rango -- «05408120 A 05408124» -- y se
+    dice: no se adivina qué número es de quién. Sin rango, el número del acta.
+    """
+    if desde and hasta and desde.isdigit() and hasta.isdigit():
+        if int(hasta) - int(desde) + 1 == cuantos:
+            return [str(int(desde) + puesto).zfill(len(desde)) for puesto in range(cuantos)], None
+        return [f"{desde} A {hasta}"] * cuantos, (
+            f"el acta va del Nº {desde} al {hasta} y nombra {cuantos} graduado(s): no se sabe qué número "
+            "es de cada uno; revíselo en el papel"
+        )
+    return [desde] * cuantos, None
+
+
+def rotulo_del_acta_colectiva(desde: str | None, hasta: str | None) -> str:
+    """«ACTA DE GRADO 05408120 A 05408124», «ACTA DE GRADO No. 03» o «ACTA DE GRADO SIN NUMERO»."""
+    if desde and hasta:
+        return f"{ROTULO} {desde} A {hasta}"
+    if desde:
+        return f"{ROTULO} No. {desde}"
+    return f"{ROTULO} SIN NUMERO"
+
+
+#: Lo que se le pide al lector de texto de la IA sobre un acta colectiva: el
+#: texto que ya leyó el OCR de pago, cortado donde empieza la siguiente. Lo que
+#: devuelve se valida contra ese texto (``lectura_colectiva_de_la_ia``).
+INSTRUCCIONES_DEL_ACTA_COLECTIVA = (
+    "Eres archivista de la Universidad de Cartagena. Recibes el texto, leído por OCR de un libro manuscrito, "
+    "de UN acta de grado colectiva: una sola ceremonia que gradúa a varios estudiantes, nombrados subrayados "
+    "en la frase o en una lista numerada debajo del acta («1. Castillo Castilla Freddy  C.C. 45.761.728 de "
+    "Cartagena»).\n\n"
+    "Devuelve estas líneas y nada más:\n"
+    "NUMERO_DESDE: el número del acta (el que sigue a «Acta de Grado Nº»); si es un rango «Nº 05408120 a "
+    "05408124», el primero\n"
+    "NUMERO_HASTA: el último número del rango, o NINGUNO si el acta lleva un solo número\n"
+    "FECHA: la fecha de la ceremonia en DD-MM-AAAA (la de «a los … días del mes de …»; no la de la "
+    "resolución)\n"
+    "TITULO: el título que otorga el acta («ENFERMERA (O)», «ESPECIALISTA EN SALUD OCUPACIONAL»)\n"
+    "y una línea por graduado, en el orden del acta:\n"
+    "GRADUADO: n | NOMBRE COMPLETO | CEDULA | TITULO\n\n"
+    "Reglas:\n"
+    "- Un graduado es cada persona de la lista numerada o subrayada en la frase; nunca el rector, la decana, "
+    "la secretaria, el jefe de departamento ni quien firma.\n"
+    "- El nombre tal como está escrito y en su orden (a veces van primero los apellidos), sin la cédula, sin "
+    "«C.C.» ni «Nº» y sin el lugar de expedición («de Cartagena», «Arjona»).\n"
+    "- La cédula, sólo sus cifras; si no está escrita, NINGUNO.\n"
+    "- El TITULO del graduado sólo si el acta le da uno distinto del común; si no, NINGUNO.\n"
+    "- Si el espacio tras «al estudiante» está vacío, con rayas o con «x x», los graduados son los de la lista.\n"
+    "- Cada palabra y cada cifra tiene que estar escrita en el texto: no corrijas ni inventes. Si un dato no "
+    "está, NINGUNO; si el acta no nombra a ningún graduado, ninguna línea GRADUADO."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class LecturaColectiva:
+    """Lo que el lector de la IA entendió de un acta colectiva, ya validado contra su texto."""
+
+    desde: str | None = None
+    hasta: str | None = None
+    fecha: date | None = None
+    titulo: str | None = None
+    graduados: tuple[GraduadoDelActa, ...] = ()
+
+
+def _cifras_seguidas(texto: str) -> str:
+    """El texto con las cifras de cada número juntas: «45.521.842» es 45521842.
+
+    Sólo un separador dentro del renglón: con el salto, «05408124» se pegaba al
+    folio «158» de la hoja siguiente y el número del rango no se confirmaba.
+    """
+    return re.sub(r"(?<=\d)[ .,'’´](?=\d)", "", texto or "")
+
+
+def lectura_colectiva_de_la_ia(respuesta: str, texto: str) -> LecturaColectiva:
+    """Lo que la IA leyó de un acta colectiva, campo por campo, si el texto lo dice; lo demás no se devuelve.
+
+    Como ``datos_de_la_ia``: una palabra o una cifra que el texto no trae
+    descarta el dato. Del graduado cuyo nombre no se confirma queda el puesto
+    -- es un graduado de la lista, y su número de acta depende de él -- con su
+    cédula si se confirma, y la nota para revisarlo.
+    """
+    palabras_del_texto = set(re.findall(r"[A-Z]+", _plano(texto)))
+    seguidas = _cifras_seguidas(texto)
+    cifras_del_texto = re.sub(r"\D", "", texto)
+
+    def esta_el_numero(valor: str) -> str | None:
+        numero = re.search(r"\d{1,10}", valor)
+        if numero and re.search(rf"(?<!\d){numero.group(0)}(?!\d)", seguidas):
+            return numero.group(0)
+        return None
+
+    def palabras_si_estan(valor: str) -> list[str]:
+        palabras = re.findall(r"[A-ZÁÉÍÓÚÜÑ]+", valor.upper())
+        return palabras if palabras and all(_plano(p).strip() in palabras_del_texto for p in palabras) else []
+
+    datos: dict[str, object] = {}
+    graduados: list[GraduadoDelActa] = []
+    vistos: set[tuple[str | None, str | None]] = set()
+    for linea in (respuesta or "").splitlines():
+        campo, _, valor = linea.partition(":")
+        campo, valor = _plano(campo).strip(" -*`"), valor.strip(" *`")
+        if campo == "GRADUADO":
+            partes = [parte.strip(" *`") for parte in valor.split("|")]
+            if len(partes) < 2:
+                continue
+            orden = re.search(r"\d{1,3}", partes[0])
+            leido = partes[1] if "NINGUNO" not in _plano(partes[1]) else ""
+            palabras = palabras_si_estan(leido)
+            nombre = " ".join(palabras) if len(palabras) >= 2 else None
+            cedula = None
+            if len(partes) > 2 and "NINGUNO" not in _plano(partes[2]):
+                cifras = re.sub(r"\D", "", partes[2])
+                cedula = cifras if 6 <= len(cifras) <= 11 and cifras in cifras_del_texto else None
+            titulo = None
+            if len(partes) > 3 and "NINGUNO" not in _plano(partes[3]):
+                del_titulo = palabras_si_estan(partes[3])
+                titulo = " ".join(del_titulo) if del_titulo and es_un_titulo(partes[3]) else None
+            if nombre is None and cedula is None:
+                continue
+            clave_del_graduado = (nombre, cedula)
+            if clave_del_graduado in vistos:
+                continue
+            vistos.add(clave_del_graduado)
+            nota = None
+            if nombre is None and leido:
+                nota = f"la IA leyó el nombre «{leido}», que el texto no confirma: revíselo en el papel"
+            graduados.append(
+                GraduadoDelActa(
+                    orden=int(orden.group(0)) if orden else len(graduados) + 1,
+                    nombre=nombre,
+                    cedula=cedula,
+                    titulo=titulo,
+                    nota=nota,
+                )
+            )
+            continue
+        if not valor or "NINGUNO" in _plano(valor):
+            continue
+        if campo in ("NUMERO_DESDE", "NUMERO DESDE"):
+            datos["desde"] = esta_el_numero(valor)
+        elif campo in ("NUMERO_HASTA", "NUMERO HASTA"):
+            datos["hasta"] = esta_el_numero(valor)
+        elif campo == "TITULO":
+            palabras = palabras_si_estan(valor)
+            if palabras and es_un_titulo(valor):
+                datos["titulo"] = " ".join(palabras)
+        elif campo == "FECHA":
+            partes_de_la_fecha = re.fullmatch(r"(\d{1,2})\D(\d{1,2})\D(\d{4})", valor.strip())
+            if partes_de_la_fecha:
+                dia, mes, anio = (int(parte) for parte in partes_de_la_fecha.groups())
+                fecha = _fecha(dia, mes, str(anio))
+                if fecha is not None and _la_hoja_dice_la_fecha(fecha, texto):
+                    datos["fecha"] = fecha
+    return LecturaColectiva(
+        desde=datos.get("desde"),  # type: ignore[arg-type]
+        hasta=datos.get("hasta"),  # type: ignore[arg-type]
+        fecha=datos.get("fecha"),  # type: ignore[arg-type]
+        titulo=datos.get("titulo"),  # type: ignore[arg-type]
+        graduados=tuple(sorted(graduados, key=lambda g: g.orden)),
+    )
+
+
+#: El cargo que sigue al nombre de quien firma el acta: «Irma Yolanda Castillo
+#: Ávila / Jefe Dpto. Académico», «Amparo Montalvo Prieto, Decana».
+_CARGO_DEL_FIRMANTE = re.compile(
+    r"\W{0,8}(?:(?:DR|DRA|DOCTOR|DOCTORA)\W+)?(?:DECAN|JEF[AE]|RECTOR|SECRETARI|DIRECT|PRESID|VICERRECTOR)"
+)
+
+
+def sin_quien_firma(graduados: Sequence[GraduadoDelActa], texto: str) -> list[GraduadoDelActa]:
+    """Los graduados sin quien firma el acta: el nombre sin cédula que en el texto lleva su cargo detrás.
+
+    La IA tomó por graduada a «Irma Yolanda Castillo Ávila», que firma como
+    Jefe del Departamento Académico al pie de la lista (UPD3859802, acta Nº
+    12007003 a 12007004; 2026-11-12). Quien lleva cédula es de la lista: los
+    firmantes no la escriben.
+    """
+    plano = _plano(texto)
+    return [
+        graduado_
+        for graduado_ in graduados
+        if graduado_.cedula
+        or not graduado_.nombre
+        or not any(
+            _CARGO_DEL_FIRMANTE.match(plano, hallado.end())
+            for hallado in re.finditer(re.escape(_plano(graduado_.nombre).strip()), plano)
+        )
+    ]
+
+
+#: Cuánto tiene que parecerse el nombre que leyó la IA al de la lista para ser la misma persona.
+PARECIDO_DEL_GRADUADO = 0.72
+
+
+def _parecido_del_nombre(uno: str | None, otro: str | None) -> float:
+    """Cuánto se parecen dos nombres de la lista, letra a letra y sin tildes, en cualquier orden.
+
+    La IA escribe a veces el nombre primero y la lista los apellidos: «MARTHA
+    CICILIA ALVANS ESCANILLA» es «Alvans Escanilla Martha Cicilia» (hoja 21).
+    """
+    if not uno or not otro:
+        return 0.0
+    a, b = _plano(uno).split(), _plano(otro).split()
+    return max(
+        difflib.SequenceMatcher(None, " ".join(a), " ".join(b)).ratio(),
+        difflib.SequenceMatcher(None, " ".join(sorted(a)), " ".join(sorted(b))).ratio(),
+    )
+
+
+#: Lo que la IA leyó del nombre que el texto no confirma, en su nota (``lectura_colectiva_de_la_ia``).
+_LEIDO_SIN_CONFIRMAR = re.compile(r"la IA leyó el nombre «([^»]+)», que el texto no confirma")
+#: Cuánto tiene que parecerse a uno ya casado para ser el mismo graduado repetido por la IA.
+PARECIDO_DE_UN_REPETIDO = 0.85
+
+
+def _cedula_en_su_renglon(cedula: str, nombre: str | None, texto: str) -> bool:
+    """Si la cédula está escrita en un renglón -- o en el de abajo -- con una palabra del nombre.
+
+    La IA casaba las cédulas por orden de aparición: en el Acta 05408125 a
+    05408149 (UPD3859802, hoja 176) la de Diana Cristina Arenas Fumiga
+    («1.129.516.130») le tocó a Ruth Amarilis Castillo Alvarez, y las de
+    detrás se corrieron (2026-11-13).
+    """
+    palabras = {p for p in _plano(nombre or "").split() if len(p) > 3}
+    renglones = [_plano(renglon) for renglon in (texto or "").splitlines() if renglon.strip()]
+    for indice, renglon in enumerate(renglones):
+        if cedula not in re.sub(r"(?<=\d)[ .,'’´:/]{1,2}(?=\d)", "", renglon):
+            continue
+        cerca = " ".join(renglones[max(0, indice - 1) : indice + 1])
+        if palabras & set(re.findall(r"[A-Z]+", cerca)):
+            return True
+    return False
+
+
+def juntar_graduados(
+    de_la_ia: Sequence[GraduadoDelActa], de_la_lista: Sequence[GraduadoDelActa], texto: str = ""
+) -> list[GraduadoDelActa]:
+    """Los graduados del acta: los de la IA, casados con los que la regla leyó en la lista por su nombre.
+
+    La IA manda en el nombre -- junta el nombre partido, distingue al
+    firmante --, pero puede quedarse corta: un renglón que se saltó, el
+    marcado a lápiz «no aparece», la respuesta cortada en el graduado 40. Cada
+    graduado de la IA se casa con el de la lista que más se le parece, y la
+    cédula es la de **su renglón** en la lista: la que la IA le puso sólo vale
+    si está en el renglón de su nombre (``_cedula_en_su_renglon``), y una
+    cédula que no es válida no vale nunca (``cedula_valida``). El de la lista
+    que la IA no trae se añade con su nota; la nota a lápiz y el título de su
+    sección pasan del de la lista al de la IA. Van en el orden de la lista.
+    """
+    if not de_la_ia:
+        return list(de_la_lista)
+    usados: set[int] = set()
+    juntos: list[tuple[float, GraduadoDelActa]] = []
+    puesto_anterior = 0.0
+    for graduado_ in de_la_ia:
+        # El nombre que el texto no confirma también sirve para casarlo con el
+        # de la lista, que sí está en el texto: «Carmen De la Hoz Roche» es el
+        # «DE LA HOZ ROCHEL CARMEN» de la lista (hoja 21).
+        sin_confirmar = _LEIDO_SIN_CONFIRMAR.search(graduado_.nota or "") if not graduado_.nombre else None
+        leido = graduado_.nombre or (sin_confirmar.group(1) if sin_confirmar else None)
+        parecidos = [(_parecido_del_nombre(leido, de_la_regla.nombre), indice) for indice, de_la_regla in enumerate(de_la_lista)]
+        parecido, indice = max(((p, i) for p, i in parecidos if i not in usados), default=(0.0, -1))
+        if parecido < PARECIDO_DEL_GRADUADO and any(p >= PARECIDO_DE_UN_REPETIDO for p, i in parecidos if i in usados):
+            continue  # la IA lo escribió dos veces
+        cedula_de_la_ia = cedula_valida(graduado_.cedula)
+        if cedula_de_la_ia and texto and not _cedula_en_su_renglon(cedula_de_la_ia, leido, texto):
+            cedula_de_la_ia = None
+        if parecido >= PARECIDO_DEL_GRADUADO:
+            usados.add(indice)
+            de_la_regla = de_la_lista[indice]
+            nota = graduado_.nota if graduado_.nombre else None
+            graduado_ = replace(
+                graduado_,
+                nombre=graduado_.nombre or de_la_regla.nombre,
+                cedula=de_la_regla.cedula or cedula_de_la_ia,
+                titulo=graduado_.titulo or de_la_regla.titulo,
+                nota=_con_nota(nota, de_la_regla.nota),
+            )
+            puesto_anterior = float(de_la_regla.puesto or indice + 1)
+            juntos.append((puesto_anterior, graduado_))
+            continue
+        puesto_anterior += 0.01
+        juntos.append((puesto_anterior, replace(graduado_, cedula=cedula_de_la_ia)))
+    for indice, de_la_regla in enumerate(de_la_lista):
+        if indice not in usados:
+            juntos.append(
+                (
+                    float(de_la_regla.puesto or indice + 1),
+                    replace(de_la_regla, nota=_con_nota(de_la_regla.nota, "se leyó de la lista sin la IA: revíselo en el papel")),
+                )
+            )
+    return [graduado_ for _puesto, graduado_ in sorted(juntos, key=lambda par: par[0])]
+
+
+def numero_en_el_encabezado(numero: str, texto: str) -> bool:
+    """Si el número está en el encabezado del acta -- antes de «En la ciudad de …» --, y no en su cuerpo.
+
+    La IA daba como número del acta el de la resolución que la autoriza: «Acta
+    01 de 1990 … Resolución nº 1299» salía 1299 (UPD3859802, 2026-11-13).
+    """
+    letras = _por_letra(texto or "")
+    cuerpo = _CUERPO_DEL_LIBRO.search(letras)
+    cabeza = (texto or "")[: cuerpo.start() if cuerpo else VENTANA_DEL_ENCABEZADO]
+    return bool(numero) and re.search(rf"(?<!\d){re.escape(numero)}(?!\d)", _cifras_seguidas(cabeza).replace("/", "")) is not None
+
+
+def es_acta_abreviada(texto: str) -> bool:
+    """Si el acta es la abreviada de una ceremonia: su encabezado sin «En la ciudad de …» (``_abreviadas``)."""
+    letras = _por_letra(texto or "")
+    return _CUERPO_DEL_LIBRO.search(letras) is None and _ENCABEZADO_DEL_LIBRO.search(letras) is not None

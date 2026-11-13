@@ -66,7 +66,9 @@ REGLAS_DE_LA_CORRESPONDENCIA = (
     "El acuerdo de pago es un documento: reconocimiento de deuda, pagarés, cartas de instrucciones, cédulas "
     "y la Ley Habeas Data, aunque haya otros papeles en medio. "
     "El contrato de transacción va completo, con sus cláusulas y sus firmas. "
-    "Cada acta de suspensión es su documento."
+    "Cada acta de suspensión es su documento. "
+    "Dos sellos de radicación con RE distinto en un PDF suelen ser dos trámites: el escrito del segundo "
+    "abre el suyo; la copia aportada como prueba trae el sello de otro trámite y va con el escrito que la aporta."
 )
 
 
@@ -97,6 +99,18 @@ class Patrones:
     #: sale del margen: lo que desmiente deja de ir a revisión, y lo que confirma
     #: va con su cita (2026-11-05, el agente igual en todas las habilidades).
     puede_mover: bool = True
+    #: Por hoja, el RE de su sello que se cree; dos distintos en un PDF los
+    #: revisa el agente (2026-11-12). Sin las hojas cuyo sello explica una
+    #: regla: la copia aportada como prueba, el acuerdo de pago.
+    sellos: Mapping[int, str] = field(default_factory=dict)
+    #: Las hojas de ``sellos`` cuyo sello va al pie, junto a la firma.
+    al_pie: frozenset[int] = frozenset()
+    #: Lo que cada hoja trae fuera de su texto -- «folio 12; sello RE… del
+    #: 08/06/2021, 10 folios» --, para que la IA razone con ello (2026-11-12).
+    marcas: Mapping[int, str] = field(default_factory=dict)
+    #: El folio escrito a mano en la esquina de cada hoja: el que sigue al de la
+    #: anterior es prueba fuerte contra un corte, el 1 contra una unión.
+    folios: Mapping[int, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +231,9 @@ def revisar_los_cortes(
         abren=patrones.abren,
         cruces=patrones.cruces,
         una_persona_por_pdf=patrones.una_persona_por_pdf,
+        sellos=patrones.sellos,
+        al_pie=patrones.al_pie,
+        folios=patrones.folios,
     )
     fuera = [c for c in costuras if c.fuera_del_margen]
     en_revision: list[tuple[int, str]] = []
@@ -286,7 +303,7 @@ def revisar_los_cortes(
                     if nuevo and _palabras(nuevo) > _palabras(vistas[q]):
                         vistas[q] = nuevo
                         releidas.append(q)
-            huellas = [huella_para_la_ia(q, vistas[q], clase(vistas[q])) for q in ventana]
+            huellas = [huella_para_la_ia(q, vistas[q], clase(vistas[q]), patrones.marcas.get(q)) for q in ventana]
             preguntadas += len(tanda)
             respuesta = _preguntar(juez, huellas, tanda, patrones.reglas)
             # La costura que la IA dejó sin contestar se le pregunta otra vez,
@@ -306,13 +323,15 @@ def revisar_los_cortes(
                 veredicto = respuesta.get((costura.izquierda, costura.derecha))
                 corrige = "continua" if costura.decision is Decision.CORTE else "abre"
                 confirma = "abre" if costura.decision is Decision.CORTE else "continua"
+                # Cómo razonó, si lo dijo (2026-11-12): va con su cita al informe.
+                razon = f" ({veredicto.razon.strip()})" if veredicto and getattr(veredicto, "razon", "").strip() else ""
                 if veredicto and veredicto.decision == corrige and veredicto.cita.strip() and se_aplica(costura):
-                    decididas.append((costura, "la IA", f"«{veredicto.cita.strip()[:160]}»; {costura.motivo}"))
+                    decididas.append((costura, "la IA", f"«{veredicto.cita.strip()[:160]}»{razon}; {costura.motivo}"))
                 elif veredicto and veredicto.decision == corrige and veredicto.cita.strip():
                     en_revision.append(
                         (
                             costura.derecha,
-                            f"la IA confirma el error («{veredicto.cita.strip()[:160]}»): {costura.motivo}; "
+                            f"la IA confirma el error («{veredicto.cita.strip()[:160]}»{razon}): {costura.motivo}; "
                             "esta habilidad no mueve hojas, para mirar",
                         )
                     )

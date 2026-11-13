@@ -46,16 +46,18 @@ _SE_REINTENTA = frozenset({429, 500, 502, 503, 504})
 
 INSTRUCCIONES = """Eres el revisor final de un archivo que divide expedientes escaneados en sus documentos.
 
-Te doy la huella de unas hojas seguidas del original -- p: número de hoja; ini: cómo empieza; fin: cómo termina; es: qué clase de soporte es -- y unas costuras: pares de hojas seguidas [izquierda, derecha].
+Te doy la huella de unas hojas seguidas del original -- p: número de hoja; ini: cómo empieza; fin: cómo termina; es: qué clase de soporte es; marcas: lo que la hoja trae fuera de su texto, como el folio escrito a mano en la esquina y el sello de radicación con su RE, su fecha y sus folios -- y unas costuras: pares de hojas seguidas [izquierda, derecha].
 
 Para cada costura decide si la hoja derecha CONTINÚA el mismo documento que la izquierda o ABRE otro documento.
-- Continúa: la numeración sigue (cláusula SEGUNDO y luego TERCERO, «página 2 de 3» y luego «3 de 3»), la frase queda partida entre las dos, la derecha cierra con las firmas del documento de la izquierda, o es un anexo suyo que va detrás (cédula, factura).
-- Abre: un encabezado nuevo (ciudad y fecha, «Señores», un título, un sello de radicación, un formulario), otra persona u otro asunto.
+- Continúa: la numeración sigue (cláusula SEGUNDO y luego TERCERO, «página 2 de 3» y luego «3 de 3», el folio a mano 11 y luego 12), la frase queda partida entre las dos, la derecha cierra con las firmas del documento de la izquierda, o es un anexo suyo que va detrás (cédula, factura, la copia de otro escrito con su sello «Recibido» y un folio intermedio).
+- Abre: un encabezado nuevo (ciudad y fecha, «Señores», un título, un sello de radicación con el folio 1, un formulario), otra persona u otro asunto.
+
+Razona antes de decidir: reúne todas las señales de las dos hojas -- folio, sello, encabezado, firmas, persona, asunto, fechas -- y decide por la más fuerte. El folio a mano que sigue al de la hoja anterior pesa más que un sello: un sello en una hoja con folio intermedio es una copia anexa, no un escrito nuevo. Si las señales se contradicen y ninguna pesa más, «no_se».
 
 Las reglas del archivo mandan sobre todo lo demás; vienen en "reglas".
 
-Responde SOLO con JSON, con una entrada por CADA costura que te listo, sin dejar ninguna: {"costuras":[{"izq":3,"der":4,"decision":"continua","cita":"TERCERO: Para garantizar el pago"}]}
-"decision" es "continua", "abre" o "no_se". "cita" es el texto corto de la hoja que lo prueba, copiado del papel. Ante la duda, "no_se"."""
+Responde SOLO con JSON, con una entrada por CADA costura que te listo, sin dejar ninguna: {"costuras":[{"izq":3,"der":4,"razon":"el folio 12 sigue al 11 y la frase continúa","decision":"continua","cita":"TERCERO: Para garantizar el pago"}]}
+"razon" es tu razonamiento en una frase corta. "decision" es "continua", "abre" o "no_se". "cita" es el texto corto de la hoja que lo prueba, copiado del papel. Ante la duda, "no_se"."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +67,8 @@ class ConfigDelRevisor:
     timeout_seconds: int = 60
     #: Una costura contestada son unos 40 tokens; el revisor no manda más de
     #: ``COSTURAS_POR_PREGUNTA`` en una petición.
-    max_tokens: int = 700
+    #: Con la razón de cada una (2026-11-12), unos 80.
+    max_tokens: int = 1400
     #: Tres intentos: leyendo cajas en paralelo el 429 no es raro.
     intentos: int = 3
     #: La primera espera tras un «ahora no»; se dobla en cada intento: 2, 4.
@@ -201,7 +204,9 @@ def leer_la_respuesta(
         decision = _normal(str(item.get("decision") or ""))
         if decision not in ("continua", "abre", "no_se"):
             decision = "no_se"
-        veredictos[clave] = VeredictoDeCostura(decision=decision, cita=str(item.get("cita") or ""))
+        veredictos[clave] = VeredictoDeCostura(
+            decision=decision, cita=str(item.get("cita") or ""), razon=str(item.get("razon") or "")[:200]
+        )
     return veredictos
 
 

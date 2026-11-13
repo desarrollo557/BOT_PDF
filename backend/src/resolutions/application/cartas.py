@@ -54,6 +54,30 @@ def _es_escrito_del_tramite(texto: str) -> bool:
     return titulo == "SOLICITUD" and escrito_que_interpone(texto) in ESCRITOS_DEL_TRAMITE
 
 
+def radicada_por_sus_folios(pagina: int, sellos: Mapping[int, Sello], ultima: int) -> bool:
+    """Si la carta que se parece a otra de la caja es un escrito radicado y no su copia: lo prueban los folios de su sello.
+
+    Su sello propio dice cuántas hojas recibió la ventanilla, y esas hojas
+    cierran justo donde se acaba el PDF o donde abre el sello siguiente. La
+    copia aportada como prueba trae el sello del radicado original, cuyos
+    folios no cuadran con las hojas que la siguen en esta caja.
+
+    7975593, UPD3126960 (2026-11-13): el recurso de B44 repite la carta de
+    B40, del mismo día; pero su sello dice 10 folios y B44 + 10 - 1 es B53, la
+    última hoja. Se tomaba por copia y B39-B53 salía en un solo PDF.
+    """
+    sello = sellos.get(pagina)
+    if sello is None or not sello.folios or sello.folios < FOLIOS_PARA_PROBAR_EL_RADICADO:
+        return False
+    cierra = pagina + sello.folios - 1
+    return cierra == ultima or (cierra < ultima and cierra + 1 in sellos)
+
+
+#: Desde cuántos folios el sello propio prueba que la carta es un escrito y no
+#: su copia: con uno, cualquier hoja suelta cuadraría.
+FOLIOS_PARA_PROBAR_EL_RADICADO = 2
+
+
 @dataclass(frozen=True, slots=True)
 class Cartas:
     """Lo que las cartas de una caja deciden sobre su corte."""
@@ -86,11 +110,14 @@ class Cartas:
         }
         copias: set[int] = set()
         vistas: list[tuple[str, str | None]] = []
+        ultima = orden[-1] if orden else 0
         for pagina in sorted(primeras):
             huella = huella_de_la_carta(textos.get(pagina) or "")
             if huella is None:
                 continue
-            if any(es_la_misma_carta(huella, vista) for vista in vistas):
+            if any(es_la_misma_carta(huella, vista) for vista in vistas) and not radicada_por_sus_folios(
+                pagina, sellos, ultima
+            ):
                 copias.add(pagina)
             else:
                 vistas.append(huella)

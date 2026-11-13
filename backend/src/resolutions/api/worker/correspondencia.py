@@ -63,6 +63,10 @@ RE_AL_PIE_SIN_VALIDAR = (
     "trae sello de radicación al pie con el RE escrito a mano y la IA no lo leyó: "
     "el nombre va sin RE; escríbalo a mano"
 )
+RE_DEL_SELLO_SIN_LEER = (
+    "trae sello de radicación con el RE escrito a mano y no se pudo leer con certeza: "
+    "el nombre va sin RE; escríbalo a mano"
+)
 
 
 def _titulo_del_encabezado(fuente, pagina: int, lector, de_pago=None) -> str | None:
@@ -559,8 +563,14 @@ def _poner_el_re_en_el_nombre(
     abren: set,
     oficinas: frozenset[str] | set[str] = frozenset(),
     rechazados: list | None = None,
+    sellos_sin_re: set[int] | frozenset[int] = frozenset(),
 ):
     """El RE del reclamo, de la constancia de su contenido, de la contestación y de todo documento con su sello, para su nombre.
+
+    ``sellos_sin_re``: las hojas cuyo sello leyó entera la IA y no trae RE. El
+    documento que abre con una de ellas se radicó sin RE y no lleva el de su
+    trámite (UPD2460819 pág. 12, 2026-11-13: «20216003 6696», y el nombre
+    salía con el RE de otra reclamación del trámite).
 
     Lo dictó el operador el 2026-11-04: «que los reclamos o constancias de
     reclamación lleven su RE», como los dejaba ``scripts/renombrar_reclamaciones.py``
@@ -584,23 +594,34 @@ def _poner_el_re_en_el_nombre(
     from dataclasses import replace
 
     from ...domain.nombre_oficial import es_re, lleva_re_en_el_nombre
-    from ...domain.sello import validar_el_re_a_mano
+    from ...domain.sello import el_de_su_tramite, radicados_impresos, re_del_sello
     from ...domain.tramites import radicado_de
 
-    de_anexo = {p for paginas in anexos.values() for p in paginas if p not in abren}
+    impresos_de_la_caja = set().union(*(radicados_impresos(t or "") for t in textos.values())) if textos else set()
+    de_anexo ={p for paginas in anexos.values() for p in paginas if p not in abren}
     salida = []
     renombrados: dict[str, str] = {}
     hallados: dict[str, str] = {}
 
-    def del_sello(pagina: int) -> tuple[str | None, str]:
-        """El RE del sello de la hoja, validado si va a mano (sello de tinta), y la nota del agente."""
+    ya_rechazadas: set[int] = set()
+
+    def del_sello(pagina: int, del_tramite: str | None = None) -> tuple[str | None, str]:
+        """El RE del sello de la hoja, validado si va a mano (sello de tinta), y la nota del agente.
+
+        El leído a mano a una sola cifra del RE de su trámite es el de su
+        trámite (``el_de_su_tramite``; UPD3126960 pág. 9, 2026-11-13).
+        """
         sello = sellos[pagina]
-        if sello.clase != "tinta":
-            return (sello.radicado.upper() if es_re(sello.radicado) else None), ""
-        if not sello.radicado:
-            return None, ""
-        valido, motivo = validar_el_re_a_mano(sello.radicado, sello.fecha, oficinas)
-        if valido is None and rechazados is not None:
+        valido, motivo = re_del_sello(sello, oficinas)
+        if sello.clase == "tinta" and (corregido := el_de_su_tramite(valido or sello.radicado, del_tramite)):
+            return corregido, f"el sello se leyó {sello.radicado}, a una cifra del RE de su trámite"
+        if valido is None and sello.radicado and sello.radicado.upper() in impresos_de_la_caja:
+            # El RE que la caja trae impreso se cree aunque el funcionario
+            # errara el año de la fecha del sello (hoja 52: «20-05-2020» en un
+            # recurso de 2021 con su RE2310202103442 impreso en sus hojas).
+            return sello.radicado.upper(), f"{motivo}; la caja lo trae impreso"
+        if valido is None and motivo and rechazados is not None and pagina not in ya_rechazadas:
+            ya_rechazadas.add(pagina)
             rechazados.append(
                 {
                     "page": pagina,
@@ -613,6 +634,7 @@ def _poner_el_re_en_el_nombre(
     for grupo in grupos.groups:
         numero, _, resto = grupo.code.value.partition(" ")
         primera = str(grupo.page_numbers[0])
+        del_tramite = next((pieza.upper() for pieza in resto.split() if es_re(pieza)), None)
         if not lleva_re_en_el_nombre(grupo.kind):
             # El documento que trae su sello con su RE lo lleva en el nombre,
             # sea del tipo que sea (el operador, 2026-11-11). Sólo el sello de
@@ -623,7 +645,7 @@ def _poner_el_re_en_el_nombre(
             for pagina in grupo.page_numbers if numero.isdigit() else ():
                 if pagina in sin_re or pagina in de_anexo or pagina not in sellos:
                     continue
-                valido, nota = del_sello(pagina)
+                valido, nota = del_sello(pagina, del_tramite)
                 if valido:
                     encontrado = (pagina, valido, nota)
                     break
@@ -638,7 +660,33 @@ def _poner_el_re_en_el_nombre(
                 replace(grupo, code=type(grupo.code)(value=nuevo, raw=radicado), re_en_el_nombre=True)
             )
             continue
-        del_tramite = next((pieza.upper() for pieza in resto.split() if es_re(pieza)), None)
+        # El RE de su propio sello manda sobre el del trámite: el trámite puede
+        # haberse armado con el RE que una hoja cita de otro -- «RE8310…» en la
+        # 249 de 7975593 -- o con el de la ventana de fechas (2026-11-12).
+        propio = None
+        for pagina in grupo.page_numbers if numero.isdigit() else ():
+            if pagina in sin_re or pagina in de_anexo or pagina not in sellos:
+                continue
+            valido, nota = del_sello(pagina, del_tramite)
+            if valido:
+                propio = (pagina, valido, nota)
+                break
+        if propio is not None:
+            pagina, radicado, nota = propio
+            nuevo = f"{numero} {radicado}"
+            if nuevo != grupo.code.value:
+                renombrados[grupo.code.value] = nuevo
+            hallados[primera] = f"{radicado}: del sello de la pág. {pagina}" + (f" ({nota})" if nota else "")
+            salida.append(replace(grupo, code=type(grupo.code)(value=nuevo, raw=radicado)))
+            continue
+        if grupo.page_numbers[0] in sellos_sin_re:
+            # Su sello se leyó entero y no trae RE: no se le pone el del trámite.
+            sin_el_re = " ".join([numero, *(p for p in resto.split() if not es_re(p))])
+            if sin_el_re != grupo.code.value:
+                renombrados[grupo.code.value] = sin_el_re
+            hallados[primera] = "sin RE: su sello trae la fecha y el radicado, y ningún RE"
+            salida.append(replace(grupo, code=type(grupo.code)(value=sin_el_re, raw=numero)))
+            continue
         if del_tramite:
             hallados[primera] = f"{del_tramite}: el de su trámite"
             salida.append(grupo)
@@ -666,6 +714,398 @@ def _poner_el_re_en_el_nombre(
     return replace(grupos, groups=salida), anexos, hallados
 
 
+def _con_lo_impreso(sellos: dict, al_pie: dict, textos: dict) -> tuple[dict, dict, dict[int, str]]:
+    """Los sellos de tinta con su RE a mano corregido por el que la caja trae impreso, y qué se corrigió en cada hoja.
+
+    Sólo el de tinta -- la letra a mano --, y sólo si un único RE impreso en la
+    caja está a una cifra de él (``el_impreso_a_una_cifra``).
+    """
+    from dataclasses import replace
+
+    from ...domain.sello import el_impreso_a_una_cifra, radicados_impresos
+
+    impresos = set().union(*(radicados_impresos(t or "") for t in textos.values())) if textos else set()
+    corregidos: dict[int, str] = {}
+
+    def corregir(cuales: dict) -> dict:
+        salida = dict(cuales)
+        for pagina, sello in cuales.items():
+            if sello.clase != "tinta" or not sello.radicado:
+                continue
+            impreso = el_impreso_a_una_cifra(sello.radicado, impresos)
+            if impreso:
+                corregidos[pagina] = f"el sello se leyó {sello.radicado}; la caja trae impreso {impreso}"
+                salida[pagina] = replace(sello, radicado=impreso)
+        return salida
+
+    return corregir(sellos), corregir(al_pie), corregidos
+
+
+#: Cuántas cabeceras -- de sellos sin RE y de cartas sin sello visto -- se le
+#: enseñan a la IA como mucho por caja: una página pagada cada una. Con los
+#: sellos sin RE pasó de 30 a 40 (UPD2460819 trae 42 cartas; 2026-11-13).
+CARTAS_SIN_SELLO_POR_CAJA = 40
+#: La cabecera de la carta, donde la ventanilla estampa el sello de tinta.
+BANDA_DE_LA_CABECERA = (0.25, 0.0, 1.0, 0.22)
+
+
+def _plano_del_sello(texto: str) -> str:
+    """La lectura del sello en mayúsculas y sin tildes: «RADICACIÓN» es RADICACION."""
+    import unicodedata
+
+    return unicodedata.normalize("NFD", (texto or "").upper()).encode("ascii", "ignore").decode()
+
+
+#: Cuántas hojas se miran detrás del sello que no dice sus folios, para casar su RE ilegible.
+HOJAS_SIN_FOLIOS = 3
+#: El número de radicación de doce cifras del sello de tinta, sin «RE», en su
+#: propio renglón: «No DE RADICACION: 202160036696». En otra casilla no vale:
+#: con los campos corridos (UPD2460819 pág. 255, «No DE FOLIOS: 2021600 95
+#: 115») el RE a mano se perdió en la lectura, no falta en el sello.
+_RADICACION_SIN_RE = re.compile(r"RADI\w{0,6}N\W{0,4}((?:\d[ \t]?){12})(?![\d])")
+
+
+def _sellos_de_las_cartas(taller, source, textos: dict, sellos: dict, conocidos: set) -> tuple[dict, set[int]]:
+    """L2c: el sello de tinta de cada carta que abre y no lo mostró a Tesseract, o sin el RE a mano, leído por la IA.
+
+    Sólo con «OCR + IA» (con «Solo OCR», nada). De lo que transcribe la IA de
+    la cabecera: si es un sello de tinta, su fecha, su RE a mano -- con una
+    cifra de más si hace falta -- y sus folios. Devuelve también las hojas
+    cuyo sello se leyó entero y no trae RE: se radicaron sin él.
+    """
+    from ...application.ports import Band
+    from ...domain.carta import abre_carta
+    from ...domain.sello import (
+        FOLIOS_DE_UN_ESCRITO,
+        Sello,
+        el_conocido_por_la_lectura,
+        fecha_del_sello_de_tinta,
+        folios_del_sello_de_tinta,
+        leer_sello,
+        radicado_con_una_cifra_de_mas,
+        radicado_del_texto,
+        radicado_escrito,
+        radicados_impresos,
+        re_del_sello,
+        trae_un_re_a_mano,
+    )
+
+    lector = taller.lector_de_pago()
+    if lector is None:
+        return {}, set(), set()
+    # También la carta cuyo sello de tinta vio Tesseract sin poder leer su RE
+    # a mano: en 7975593 (UPD2460819, 2026-11-13) siete escritos con su sello
+    # salían sin RE -- …04663, …03442, …05402, …05408, …06812 -- y uno con el
+    # que citaba su texto.
+    sin_su_re = {
+        p for p, s in sellos.items() if s.clase == "tinta" and re_del_sello(s)[0] is None
+    }
+    # Primero las hojas con su sello visto y sin RE -- aunque la capa rota no
+    # deje ver la carta: la 255 de UPD2460819 --, después las cartas sin sello.
+    cartas = sorted(p for p in sin_su_re if p in textos) + [
+        p for p, t in sorted(textos.items()) if p not in sellos and abre_carta(t or "")
+    ]
+    hallados: dict = {}
+    sin_re_en_el_sello: set[int] = set()
+    vistos_sin_su_re: set[int] = set()
+    for pagina in cartas[:CARTAS_SIN_SELLO_POR_CAJA]:
+        taller.control.check()
+        try:
+            leido = lector.read(source.render(pagina, Band(*BANDA_DE_LA_CABECERA), 300)).text or ""
+        except Exception:  # noqa: BLE001 - sin la lectura, la carta abre como carta
+            logger.warning("no se pudo leer la cabecera de la pág. %s", pagina, exc_info=True)
+            continue
+        sello = leer_sello(leido)
+        # Con «CARIBEMAR DE LA COSTA» y «Folios» el lector lo toma por la
+        # etiqueta impresa; con su «FECHA DE RECIBIDO» o sus folios a mano es
+        # el de tinta (UPD3126960 pág. 9).
+        folios = folios_del_sello_de_tinta(leido)
+        fecha = fecha_del_sello_de_tinta(leido)
+        ya_visto = sellos.get(pagina)
+        if sello is None and ya_visto is None and (folios or fecha) and not (
+            radicado_del_texto(leido) or radicado_escrito(leido, fecha.year if fecha else None)
+        ):
+            # Un sello que el lector no reconoce -- su «FECHA DE RECIBIDO», sus
+            # folios -- y sin RE legible: no abre nada, pero su RE va a
+            # Revisión (UPD2460819 pág. 176, «KEP310202105408»).
+            vistos_sin_su_re.add(pagina)
+        if (sello is None or (sello.clase != "tinta" and folios is None and fecha is None)) and ya_visto is None:
+            continue
+        fecha = fecha or (sello.fecha if sello else None) or (ya_visto.fecha if ya_visto else None)
+        radicado = (
+            radicado_del_texto(leido)
+            or radicado_con_una_cifra_de_mas(leido, conocidos, fecha.year if fecha else None)
+            or radicado_escrito(leido, fecha.year if fecha else None)
+        )
+        if radicado is None:
+            # La letra a mano ilegible -- «REB3102021034V2» --, casada con el RE
+            # que el escrito imprime en las hojas que cubren los folios de su
+            # sello (UPD2460819 págs. 52 y 95, 2026-11-13).
+            hojas = min(folios or (ya_visto.folios if ya_visto else None) or HOJAS_SIN_FOLIOS, FOLIOS_DE_UN_ESCRITO)
+            suyos = set().union(*(radicados_impresos(textos.get(q, "") or "") for q in range(pagina, pagina + hojas)))
+            radicado = el_conocido_por_la_lectura(leido, suyos)
+        if (
+            radicado is None
+            and (fecha or ya_visto)
+            and _RADICACION_SIN_RE.search(_plano_del_sello(leido))
+            # Ni un RE a mano ilegible en otra casilla: «KEP310202105408» en la
+            # del funcionario (hoja 176) dice que el sello sí lo trae.
+            and not trae_un_re_a_mano(leido)
+        ):
+            # El sello leído entero -- su fecha y su radicado de doce cifras --
+            # sin RE: el escrito se radicó sin él (UPD2460819 pág. 12, «20216003
+            # 6696»), y no se le pone el de su trámite.
+            sin_re_en_el_sello.add(pagina)
+        if ya_visto is not None:
+            # El sello que ya vio Tesseract se queda con lo suyo; la IA le pone
+            # el RE a mano que él no leyó, y lo que le faltara.
+            if radicado:
+                hallados[pagina] = Sello(
+                    ya_visto.clase, radicado, ya_visto.fecha or fecha, ya_visto.folios or folios
+                )
+            continue
+        hallados[pagina] = Sello("tinta", radicado, fecha, folios or sello.folios)
+    return hallados, sin_re_en_el_sello, vistos_sin_su_re - sin_re_en_el_sello
+
+
+#: Cuánto se parecen dos formularios para que el segundo sea copia del primero.
+PARECIDO_DE_UNA_COPIA = 0.85
+#: Cuánto de cada formulario se compara, desde su título.
+LARGO_DE_LA_FIRMA = 220
+
+
+def _copias_de_formularios(formularios: dict, textos: dict) -> list[int]:
+    """Los formularios que repiten uno anterior del mismo tipo: la copia que un escrito trae anexa.
+
+    Se comparan desde el título, sin espacios ni signos, porque la OCR de la
+    cabecera cambia de una copia a otra («S.fi Grupo-epnQ», «Grupo-epn^»).
+    Sólo las notificaciones personales: las constancias, los pagarés y la
+    Habeas Data son formatos impresos que se parecen sin ser copias -- la
+    constancia de la 272 y la de la 297 son de dos radicados --.
+    """
+    from difflib import SequenceMatcher
+
+    from ...domain.asunto_del_documento import NOTIFICACION_PERSONAL
+    from ...domain.revision_de_cortes import plano
+
+    def firma(pagina: int) -> str:
+        limpio = re.sub(r"[^A-Z0-9]", "", plano(textos.get(pagina, "") or ""))
+        inicio = limpio.find("NOTIFICACION")
+        return limpio[max(inicio, 0) :][:LARGO_DE_LA_FIRMA]
+
+    copias = []
+    vistas: list[tuple[str, str]] = []
+    for pagina in sorted(formularios):
+        tipo = formularios[pagina][0]
+        if tipo != NOTIFICACION_PERSONAL:
+            continue
+        suya = firma(pagina)
+        if len(suya) >= 40 and any(
+            t == tipo and SequenceMatcher(None, f, suya).ratio() >= PARECIDO_DE_UNA_COPIA for t, f in vistas
+        ):
+            copias.append(pagina)
+            continue
+        vistas.append((tipo, suya))
+    return copias
+
+
+#: Cuántas esquinas van en cada página pagada.
+FOLIOS_POR_MOSAICO = 10
+#: Cuántos mosaicos se leen a la vez.
+MOSAICOS_A_LA_VEZ = 4
+
+
+def _leer_los_folios(payload: dict, taller, source, page_count: int) -> dict[int, int]:
+    """L4: el folio a mano de la esquina de cada hoja, leído por la IA en mosaicos etiquetados.
+
+    Sin la IA, ninguno. Un mosaico que falla deja sus hojas sin folio: el
+    corte de esas hojas queda como lo decidan las demás reglas.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from ...application.ports import Band
+    from ...domain.foliacion_del_escrito import BANDA_DEL_FOLIO_DE_LA_CAJA
+
+    lector = taller.lector_de_folios()
+    franjas = getattr(lector, "armar_mosaico_de_franjas", None)
+    leer = getattr(lector, "leer_mosaico_etiquetado", None)
+    if franjas is None or leer is None:
+        return {}
+    banda = Band(*BANDA_DEL_FOLIO_DE_LA_CAJA)
+
+    def armar(fuente, tanda):
+        # Sólo el número, con su hoja al lado: sin el logo ni la caja del NIC.
+        return franjas(fuente, [(pagina, banda) for pagina in tanda])
+    tandas = [
+        list(range(desde, min(desde + FOLIOS_POR_MOSAICO, page_count + 1)))
+        for desde in range(1, page_count + 1, FOLIOS_POR_MOSAICO)
+    ]
+    folios: dict[int, int] = {}
+    with ThreadPoolExecutor(max_workers=MOSAICOS_A_LA_VEZ) as hilos:
+        vuelo = []
+        for tanda in tandas:
+            taller.control.check()
+            # El mosaico se arma en este hilo: MuPDF no admite más de uno.
+            imagen = armar(source, tanda)
+            if imagen:
+                vuelo.append(hilos.submit(leer, imagen, tanda))
+        for hechas, futuro in enumerate(vuelo, start=1):
+            try:
+                folios.update(futuro.result())
+            except Exception:  # noqa: BLE001 - esas hojas se quedan sin folio
+                logger.warning("no se pudo leer un mosaico de folios en %s", taller.name, exc_info=True)
+            _anunciar(
+                payload,
+                Stage.GROUPING,
+                detail="leyendo el folio a mano de cada hoja",
+                done=hechas,
+                total=len(vuelo),
+            )
+    return folios
+
+
+def _ordenar_los_acuerdos(grupos, piezas: list[dict], textos: dict, del_acuerdo: set[int]):
+    """El orden en el PDF de cada acuerdo de pago (``orden_del_acuerdo``), por la fecha de su reconocimiento.
+
+    El reconocimiento está fechado si la pieza del acuerdo lleva fecha y salió
+    de sus hojas -- no de un pagaré ni de un anexo --. ``piezas`` ya dice en qué
+    archivo acabó cada una (``numerar_por_fecha``).
+    """
+    from dataclasses import replace
+
+    from ...application.anexos_declarados import (
+        RECONOCIMIENTO,
+        orden_del_acuerdo,
+        partes_del_acuerdo,
+    )
+
+    salida = []
+    for indice, grupo in enumerate(grupos.groups):
+        reconocimiento = (
+            {p for parte, hojas in partes_del_acuerdo(grupo.page_numbers, textos) if parte == RECONOCIMIENTO for p in hojas}
+            if set(grupo.page_numbers) & del_acuerdo
+            else set()
+        )
+        if not reconocimiento:
+            salida.append(grupo)
+            continue
+        fechado = any(
+            pieza.get("archivo") == indice
+            and pieza.get("fecha")
+            and set(pieza.get("pages") or ()) & reconocimiento
+            and (pieza.get("fecha_pagina") is None or pieza.get("fecha_pagina") in reconocimiento)
+            for pieza in piezas
+        )
+        orden = orden_del_acuerdo(grupo.page_numbers, textos, reconocimiento_fechado=fechado)
+        salida.append(replace(grupo, orden=None if list(orden) == sorted(grupo.page_numbers) else orden))
+    return replace(grupos, groups=salida)
+
+
+def marcas_de_las_hojas(folios: dict[int, int], sellos: dict, al_pie: dict) -> dict[int, str]:
+    """Lo que cada hoja trae fuera de su texto, dicho para la IA: «folio a mano 12; sello de radicación RE… del 08/06/2021, 10 folios».
+
+    Con esto razonan el revisor de cortes y la auditoría (2026-11-12: «que el
+    bot y los agentes tengan la capacidad de razonar»).
+    """
+    marcas: dict[int, str] = {}
+    for pagina in sorted(set(folios) | set(sellos) | set(al_pie)):
+        partes = []
+        if pagina in folios:
+            partes.append(f"folio a mano {folios[pagina]}")
+        sello = sellos.get(pagina) or al_pie.get(pagina)
+        if sello is not None:
+            partes.append(
+                "sello de radicación"
+                + (" al pie" if pagina not in sellos else "")
+                + (f" {sello.radicado}" if sello.radicado else "")
+                + (f" del {sello.fecha:%d/%m/%Y}" if sello.fecha else "")
+                + (f", {sello.folios} folios" if sello.folios else "")
+            )
+        marcas[pagina] = "; ".join(partes)
+    return marcas
+
+
+def _res_de_los_sellos(sellos: dict, al_pie: dict, oficinas: set[str]) -> dict[int, str]:
+    """Por hoja, el RE de su sello que se cree -- arriba o al pie --, como lo cree el nombre (``re_del_sello``)."""
+    from ...domain.sello import re_del_sello
+
+    return {
+        pagina: radicado
+        for pagina, sello in {**al_pie, **sellos}.items()
+        if (radicado := re_del_sello(sello, oficinas)[0])
+    }
+
+
+#: Lo que el agente no pudo decidir de un PDF con varios sellos: va a Revisión.
+VARIOS_SELLOS_EN_REVISION = "en revisión"
+VARIOS_SELLOS_CONFIRMADO = "confirmado por la IA: es un documento"
+
+
+def pdf_con_varios_sellos(
+    salidas: Sequence[tuple[str, Sequence[int]]],
+    res: dict[int, str],
+    *,
+    explicados: dict[int, str],
+    al_pie: frozenset[int] | set[int],
+    revision=None,
+) -> list[dict]:
+    """Los PDF entregados con dos o más sellos de RE distinto, con lo que hizo el agente de cada uno.
+
+    Lo pidió el operador el 2026-11-12: «cuando me dividas un PDF y tenga más
+    de 2 sellos, me avises», contando cada RE una vez y desde dos. ``salidas``
+    son, por PDF, su nombre y sus hojas; ``res``, el RE que se cree de cada
+    sello; ``explicados``, la hoja cuyo sello explica una regla y por qué;
+    ``revision``, lo que dejó el revisor de cortes (``None`` si no corrió). El
+    estado de cada uno:
+
+    - el de la regla, si todo sello de más lo explica una (``explicados``);
+    - «confirmado por la IA: es un documento», si la IA vio cada costura que
+      los sellos ponían en duda y le dio la razón al corte;
+    - «en revisión», si no: sin IA, sin respuesta o sin revisor.
+
+    El PDF que el agente partió ya no trae los dos RE, y no sale aquí: lo dice
+    ``revision_de_cortes.movimientos``.
+    """
+    from ...domain.revision_de_cortes import costuras_de_los_sellos
+    from ...domain.sello import SELLOS_PARA_AVISAR, res_del_documento
+
+    fuera = {int(c["der"]): str(c["resultado"]) for c in (revision.fuera if revision is not None else ())}
+    sin_explicar = {p: r for p, r in res.items() if p not in explicados}
+    avisos = []
+    for nombre, paginas in salidas:
+        hallados = res_del_documento(paginas, res)
+        if len(hallados) < SELLOS_PARA_AVISAR:
+            continue
+        reglas = sorted({explicados[p] for p, _ in hallados[1:] if p in explicados})
+        dudosas = costuras_de_los_sellos([paginas], sin_explicar, al_pie)
+        if not dudosas and reglas:
+            estado = reglas[0]
+        elif dudosas and all(fuera.get(p) == "confirmada" for p in dudosas):
+            estado = VARIOS_SELLOS_CONFIRMADO
+        else:
+            estado = VARIOS_SELLOS_EN_REVISION
+        avisos.append(
+            {
+                "archivo": nombre,
+                "paginas": list(paginas),
+                "sellos": [{"pagina": p, "re": r, "al_pie": p in al_pie} for p, r in hallados],
+                "estado": estado,
+                "motivo": "; ".join([*dict.fromkeys(dudosas.values()), *reglas]),
+            }
+        )
+    return avisos
+
+
+def aviso_de_varios_sellos(varios: Sequence[dict]) -> str | None:
+    """El resumen para los avisos y el Excel de procesos: «2 PDF con 2 o más sellos: 03_X.pdf (RE…, RE…; en revisión)»."""
+    if not varios:
+        return None
+    cada = ", ".join(
+        f"{Path(str(v['archivo'])).name} ({', '.join(s['re'] for s in v['sellos'])}; {v['estado']})" for v in varios
+    )
+    return f"{len(varios)} PDF con 2 o más sellos: {cada}"
+
+
 def _revisar_los_cortes(
     grupos,
     anexos: dict,
@@ -678,12 +1118,19 @@ def _revisar_los_cortes(
     del_acuerdo: set,
     fijas: set,
     cortados: list,
+    sellos: dict[int, str] | None = None,
+    al_pie: frozenset[int] = frozenset(),
+    folios: dict[int, int] | None = None,
+    marcas: dict[int, str] | None = None,
 ):
     """F5e: el revisor de cortes sobre los documentos de la caja.
 
     Devuelve la revisión y los documentos del corte con lo que se movió, que
     son los que el índice describe. ``del_acuerdo`` se corrige en su sitio: una
     hoja que sale del acuerdo deja de nombrarse y fecharse como él.
+    ``sellos`` es, por hoja, el RE de su sello que se cree, sin las hojas cuyo
+    sello explica una regla: dos distintos en un documento los revisa el agente
+    (2026-11-12).
     """
     from dataclasses import replace
 
@@ -747,6 +1194,12 @@ def _revisar_los_cortes(
                 cruces=frozenset(cruces | delanteras),
                 fijas=frozenset(fijas),
                 clase=clase,
+                sellos=dict(sellos or {}),
+                al_pie=frozenset(al_pie),
+                # El folio a mano y lo que cada hoja trae fuera de su texto:
+                # con ellos razona la IA (2026-11-12).
+                folios=dict(folios or {}),
+                marcas=dict(marcas or {}),
             ),
             juez=taller.juez_de_costuras(),
             anexos=anexos,
@@ -852,6 +1305,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     )
     from ...application.cartas import Cartas
     from ...application.entrega import Destino, entregar
+    from ...application.foliacion import aplicar_la_foliacion
     from ...application.segment_document import SegmentDocument
     from ...application.segment_split import group_by_segment
     from ...application.sellos import (
@@ -869,6 +1323,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     )
     from ...domain.carta import abre_carta, asunto_de_la_carta
     from ...domain.fingerprint import nic_de_la_caja
+    from ...domain.foliacion_del_escrito import foliacion_del_escrito
     from ...domain.naming import DOCUMENT_PREFIX, document_folder
     from ...domain.nombre_oficial import CON_RE_EN_EL_NOMBRE, nombre_oficial
     from ...domain.segmentation import Verdict, continua_por_el_papel
@@ -1026,6 +1481,13 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 total=total,
             ),
         )
+        # L2c. El sello tenue de la carta que abre y en el que Tesseract no vio
+        # nada (7975593, UPD3126960 págs. 9 y 44, 2026-11-12): con la IA, su
+        # cabecera, una página por carta.
+        de_las_cartas, sellos_sin_re, sellos_que_no_se_leyeron = _sellos_de_las_cartas(
+            taller, source, textos, sellos, conocidos
+        )
+        sellos.update(de_las_cartas)
         # L2b. El sello de tinta clara junto a la firma, que la capa no dejó
         # ver (1005965 p2, 2026-11-11): con la tinta realzada en la zona de la
         # firma de cada hoja de firma sin sello, y su RE y su fecha a mano por
@@ -1047,6 +1509,11 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             de_pago=taller.lector_de_pago(),
             control=taller.control,
         )
+        # El RE a mano del sello de tinta a una sola cifra de uno que la caja
+        # trae impreso es el impreso (7975593, UPD3126960 págs. 9 y 33,
+        # 2026-11-13): antes de agrupar por trámite, que parte el trámite por
+        # una cifra mal leída.
+        sellos, al_pie, corregidos_por_lo_impreso = _con_lo_impreso(sellos, al_pie, textos)
         # El agente no cree el RE que no cuadra: con la IA, el sello al pie sin
         # RE válido va a Revisión.
         re_al_pie_sin_validar = sorted(p for p, s in al_pie.items() if not s.radicado) if taller.con_ia() else []
@@ -1065,8 +1532,22 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                     )
                 except Exception:  # noqa: BLE001 - sin la fecha marcada, la del texto
                     fechas_de_guia[p] = None
+        # L4. El folio a mano de la esquina de cada hoja (2026-11-12: «el folio
+        # manda»), con la IA si se eligió: diez esquinas por página pagada, cada
+        # una con su hoja al lado. Tesseract no lee la letra a mano: con «Solo
+        # OCR» no hay folios y el corte queda como estaba.
+        folios_de_la_esquina = _leer_los_folios(payload, taller, source, page_count)
     finally:
         source.close()
+    # Lo que abre por sí mismo cuando la numeración de un escrito se acaba: la
+    # carta y el sello (arriba o al pie). El reverso de un recibo, no.
+    from ...domain.carta import abre_carta as _abre_carta
+
+    foliacion = foliacion_del_escrito(
+        folios_de_la_esquina,
+        range(1, page_count + 1),
+        abren_solas={p for p, t in textos.items() if _abre_carta(t or "")} | set(sellos) | set(al_pie),
+    )
     # La fecha del sello fecha la hoja que no trae otra.
     leidas = replace(
         leidas,
@@ -1099,7 +1580,10 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # en la caja es una prueba, y el radicado de la Superintendencia que la
     # carta anterior cita es el soporte de esa carta.
     cartas = Cartas.de(textos, sellos)
-    sellos_que_abren = {p: s for p, s in sellos.items() if p not in cartas.no_abren}
+    # Ni el sello de la hoja cuyo folio a mano sigue al de la anterior: es la
+    # copia «Recibido» de otro radicado que el escrito trae anexa (2026-11-12,
+    # «el folio manda»; 7975593 partía así doce escritos).
+    sellos_que_abren = {p: s for p, s in sellos.items() if p not in cartas.no_abren and p not in foliacion.continua}
     grupos, anexos, cortes_por_sello = cortar_por_sellos(
         grupos,
         sellos_que_abren,
@@ -1124,7 +1608,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # F2d. La carta abre su trámite aunque no traiga sello -- salvo dentro de
     # los folios de un sello, que son de ese escrito --; la hoja que la
     # continúa y la prueba que trae van con ella.
-    que_abren = cartas.que_abren(sellos_que_abren)
+    # Ni la carta en una hoja cuyo folio a mano sigue al de la anterior: es la
+    # copia que el escrito trae (2026-11-12, «el folio manda»).
+    que_abren = cartas.que_abren(sellos_que_abren) - foliacion.continua
     grupos, anexos, abiertas_por_carta, unidas_por_carta, de_prueba = ajustar_por_cartas(
         grupos, anexos, abren=que_abren, siguen=cartas.siguen, pruebas=cartas.pruebas
     )
@@ -1168,13 +1654,18 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             p, formularios[p][1], grupos.groups, textos, sellos, abren=set(sellos_que_abren) | set(que_abren)
         ):
             del formularios[p]
+    # La copia de un formulario que ya salió en la caja -- la misma notificación
+    # de aceptación del desistimiento en la 306 y, dentro del desistimiento, en
+    # la 309 (7975593, 2026-11-12) -- es del escrito que la trae: no abre.
+    for p in _copias_de_formularios(formularios, textos):
+        del formularios[p]
     # Dentro de los folios de un sello, o aportado como prueba, un formulario
     # es del escrito que lo trae: no abre. Salvo la Habeas Data, que nunca es
     # prueba de una carta: es de su acuerdo de pago (1002421 pág. 10, detrás de
     # la carta de otra persona).
     intocables = set(por_folios) | {
         p for p in de_prueba if formularios.get(p, ("", None))[0] != _HABEAS
-    }
+    } | set(foliacion.continua)
     # Detrás de la constancia y la notificación sólo sigue el anexo evidente:
     # la cédula, la factura, la hoja muda o la foto, que traen poco texto. Una
     # hoja con texto propio es otro documento (1000224 pág. 2, una carta que la
@@ -1218,13 +1709,20 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             and not _anexo_evidente(primera)
         ):
             formularios_solos.add(primera)
+    # F2f. El folio manda (2026-11-12): lo que la numeración a mano dice que
+    # sigue vuelve a su escrito, y el folio 1 abre el suyo. Lo que el folio
+    # une no lo vuelve a abrir nada de lo que viene.
+    por_el_folio = aplicar_la_foliacion(grupos, anexos, foliacion)
+    grupos, anexos = por_el_folio.grupos, por_el_folio.anexos
+    formularios_solos -= foliacion.continua
+    abren -= foliacion.continua
     # El trámite no une a su anterior un escrito del cliente, aunque cite su
     # RE: sólo la respuesta o la notificación de la empresa (lo dictó el
     # operador: «cada trámite va solo, no unido a otros trámites por código de
     # referencia»). Y desde el 2026-10-26 tampoco la constancia, la
     # notificación ni la respuesta: cada una va sola.
-    abren_el_tramite = abren | cartas.escritos(que_abren) | formularios_solos
-    abren = abren | que_abren | formularios_solos
+    abren_el_tramite = abren | cartas.escritos(que_abren) | formularios_solos | foliacion.abre
+    abren = abren | que_abren | formularios_solos | foliacion.abre
     # F3. Lista de ANEXOS.
     retencion = retener_anexos(grupos, textos, anexos, abren=abren)
     grupos, anexos = retencion.grupos, retencion.anexos
@@ -1425,7 +1923,10 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # F5. Trámite: mismo RE, mismo trámite.
         # Las hojas que siguen a la anterior por lo que el papel dice de sí
         # mismo: el RE que citan no las saca de su documento.
-        continuan_por_el_papel = {b.right for b in segmentacion.boundaries if continua_por_el_papel(b)}
+        # Y la que sigue por su folio a mano (2026-11-12, «el folio manda»).
+        continuan_por_el_papel = {b.right for b in segmentacion.boundaries if continua_por_el_papel(b)} | set(
+            foliacion.continua
+        )
         # Sin los sellos de las copias aportadas como prueba: son de otro trámite.
         por_tramite = agrupar_por_tramite(
             grupos,
@@ -1607,6 +2108,11 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             anexos[unido.code.value] = sorted(set(suyos))
             restantes, anexos = _renumerar([unido, *grupos.groups[2:]], anexos)
             grupos = replace(grupos, groups=restantes)
+    # F5d. Y otra vez el folio, sobre lo que dejaron el trámite y lo que no
+    # abre: es la regla que manda (2026-11-12). Lo que mueva aquí se suma a lo
+    # que movió en F2f, para el informe.
+    final_por_el_folio = aplicar_la_foliacion(grupos, anexos, foliacion)
+    grupos, anexos = final_por_el_folio.grupos, final_por_el_folio.anexos
     # F5e. El revisor de cortes (lo pidió el operador el 2026-11-05 ante
     # 1004569, donde el acuerdo de pago se llevó la última hoja del contrato de
     # transacción saltando una constancia): cada costura de lo que va a salir,
@@ -1616,6 +2122,19 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # no: ahí un archivo es un mes, no un documento.
     revisados = None
     revisor_roto = None
+    # El RE que se cree de cada sello, arriba o al pie (2026-11-12: el PDF con
+    # dos o más sellos de RE distinto lo revisa el agente y se avisa). Sin los
+    # de las hojas cuyo sello explica una regla: la copia aportada como prueba
+    # trae el de otro trámite, y el acuerdo de pago es un documento.
+    res_de_los_sellos = _res_de_los_sellos(sellos, al_pie, {r[2:6] for r in conocidos if len(r) == 15})
+    explicados = {
+        **{p: "explicado: acuerdo de pago" for p in del_acuerdo},
+        **{p: "explicado: copia aportada como prueba" for p in (*cartas.copias, *de_prueba)},
+        # El sello en una hoja con folio intermedio es la copia que el escrito
+        # trae: lo explica su folio a mano (2026-11-12).
+        **{p: "explicado: copia dentro de los folios del escrito" for p in foliacion.continua},
+    }
+    marcas_por_hoja = marcas_de_las_hojas(folios_de_la_esquina, sellos, al_pie)
     if entregado_por is not Agrupacion.MES:
         try:
             revisados, cortados_revisados = _revisar_los_cortes(
@@ -1627,8 +2146,13 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 abren=set(abren_el_tramite if entregado_por is Agrupacion.TRAMITE else abren),
                 delanteras=delanteras,
                 del_acuerdo=set(del_acuerdo),
-                fijas=set(sellos_que_abren) | etiquetas | guias,
+                # Y lo que decidió el folio a mano, que manda (2026-11-12).
+                fijas=set(sellos_que_abren) | etiquetas | guias | foliacion.continua | foliacion.abre,
                 cortados=cortados,
+                sellos={p: r for p, r in res_de_los_sellos.items() if p not in explicados},
+                al_pie=frozenset(p for p in al_pie if p not in sellos),
+                folios=folios_de_la_esquina,
+                marcas=marcas_por_hoja,
             )
         except Exception as error:  # noqa: BLE001 - el revisor nunca tumba la caja
             # Sale como la cortaron las reglas, y se dice.
@@ -1820,6 +2344,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # El sello al pie de una copia aportada como prueba no es del documento que
     # la trae: su RE no se pide (7975593, UPD3126960 p43).
     re_al_pie_que_importa = [p for p in re_al_pie_sin_validar if p not in cartas.copias and p not in de_prueba]
+    re_del_sello_sin_leer: list[int] = []
     if entregado_por is not Agrupacion.MES:
         grupos, anexos, re_en_el_nombre = _poner_el_re_en_el_nombre(
             grupos,
@@ -1833,7 +2358,27 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             rechazados=re_rechazados,
             sin_re=set(cartas.copias) | set(de_prueba) | set(del_acuerdo),
             abren=set(sellos_que_abren),
+            sellos_sin_re=sellos_sin_re,
         )
+        if taller.con_ia():
+            from ...domain.nombre_oficial import es_re as _es_re
+
+            con_re = {g.page_numbers[0] for g in grupos.groups if any(_es_re(p) for p in g.code.value.split())}
+            primeras = {g.page_numbers[0] for g in grupos.groups}
+            ya_rechazadas = {rechazado["page"] for rechazado in re_rechazados}
+            sin_su_re = {p for p, s in sellos.items() if s.clase == "tinta" and not s.radicado} | set(
+                sellos_que_no_se_leyeron
+            )
+            re_del_sello_sin_leer = sorted(
+                p
+                for p in sin_su_re
+                if p in primeras
+                and p not in sellos_sin_re
+                and p not in con_re
+                and p not in ya_rechazadas
+                and p not in cartas.copias
+                and p not in de_prueba
+            )
     piezas = describir_piezas(grupos.groups)
     # F7. La fecha que la estructura no dio en la capa: el agente relee la hoja
     # principal y sus respaldos, en local y, si se eligió una lectura con IA,
@@ -1864,6 +2409,11 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     numerado_por_fecha = entregado_por is not Agrupacion.MES
     if numerado_por_fecha:
         grupos, anexos, piezas = numerar_por_fecha(grupos, anexos, piezas)
+    # F8b. Las hojas del acuerdo de pago en su orden: el reconocimiento primero
+    # si está fechado, si no al final; los pagarés, la Habeas Data y los anexos
+    # (lo dictó el operador el 2026-11-12). Sólo el orden del PDF escrito: el
+    # inventario y las fechas siguen con el del papel.
+    grupos = _ordenar_los_acuerdos(grupos, piezas, textos, set(del_acuerdo))
     _anunciar(
         payload,
         Stage.ASSEMBLING,
@@ -1924,12 +2474,27 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         + [pagina for pagina, _ in (revisados.en_revision if revisados else ())]
         + [sin_leer["page"] for sin_leer in fechas_sin_leer]
         + re_al_pie_que_importa
+        + re_del_sello_sin_leer
         + [rechazado["page"] for rechazado in re_rechazados],
         estadisticas=estadisticas,
         anexos=anexos,
         # Cada PDF escrito, vuelto a abrir y casado hoja por hoja con el
         # original (2026-11-05: «validados de extremo a extremo»).
         huellas=huellas_de,
+    )
+    # Los PDF con dos o más sellos de RE distinto (el operador, 2026-11-12):
+    # con lo que hizo el agente de cada uno, para los avisos, el Excel de
+    # procesos y la auditoría. Por mes no: un archivo es un mes, no un documento.
+    varios_sellos = (
+        pdf_con_varios_sellos(
+            [(item.file_name, item.page_numbers) for item in entregado.inventario.items],
+            res_de_los_sellos,
+            explicados=explicados,
+            al_pie=frozenset(p for p in al_pie if p not in sellos),
+            revision=revisados,
+        )
+        if entregado_por is not Agrupacion.MES
+        else []
     )
     # 3. El informe, con lo que sólo esta ruta sabe: el NIC, los avisos y cómo
     #    se decidió cada costura.
@@ -1972,6 +2537,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # año que el de la fecha del sello: el agente no lo cree y no va al
         # nombre (2026-11-11). Sin la IA no se lee nunca, y no se repite aquí.
         + [{"page": pagina, "reason": RE_AL_PIE_SIN_VALIDAR} for pagina in re_al_pie_que_importa]
+        # Y el sello de arriba con su RE a mano que ni Tesseract ni la IA
+        # leyeron con certeza (UPD2460819 pág. 176, 2026-11-13).
+        + [{"page": pagina, "reason": RE_DEL_SELLO_SIN_LEER} for pagina in re_del_sello_sin_leer]
         # Y el RE a mano que la IA leyó y el agente no cree: otro año que el del
         # sello, o una oficina que no radica.
         + re_rechazados
@@ -2013,7 +2581,20 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             *avisos_de_agrupacion,
             *([aviso] if (aviso := retencion.aviso()) else []),
             *([aviso] if (aviso := soportes.aviso()) else []),
+            *([aviso] if (aviso := aviso_de_varios_sellos(varios_sellos)) else []),
         ],
+        # Y el detalle de cada PDF con dos o más sellos de RE distinto: sus
+        # sellos, lo que hizo el agente y por qué (2026-11-12).
+        "varios_sellos": varios_sellos,
+        # El folio a mano de cada hoja (L4) y lo que hizo con él la regla del
+        # folio: las hojas que volvieron a su escrito y las que abrieron el
+        # suyo. La auditoría razona con los folios y las marcas de cada hoja.
+        "folios_de_la_esquina": {str(p): f for p, f in sorted(folios_de_la_esquina.items())},
+        "por_el_folio": {
+            "unidas": sorted({*por_el_folio.unidas, *final_por_el_folio.unidas}),
+            "partidas": sorted({*por_el_folio.partidas, *final_por_el_folio.partidas}),
+        },
+        "marcas": {str(p): m for p, m in marcas_por_hoja.items()},
         # Lo que cada escrito dijo que traía contra lo que se encontró. Lo lee
         # el Índice Electrónico para sus observaciones.
         "anexos_declarados": [escrito.as_dict() for escrito in escritos],
@@ -2035,6 +2616,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # Y el RE de cada reclamo y constancia, por su primera hoja, con de
         # dónde salió: «RE2310…: del sello de la pág. 8».
         "re_en_el_nombre": re_en_el_nombre,
+        # El RE a mano de cada sello que se corrigió por el que la caja trae
+        # impreso, con lo que se leyó: la auditoría lo puede cruzar.
+        "re_corregidos_por_lo_impreso": {str(p): nota for p, nota in corregidos_por_lo_impreso.items()},
         # Los sellos al pie que halló L2b, con lo que se les leyó: la
         # auditoría de cierre los cruza con el papel.
         "sellos_al_pie": {

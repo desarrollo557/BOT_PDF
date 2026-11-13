@@ -35,12 +35,14 @@ faltó y por qué.
 
 from __future__ import annotations
 
+import difflib
 import logging
 import math
 import re
 import time
 import unicodedata
-from collections.abc import Callable, Mapping, Sequence
+from collections import Counter
+from collections.abc import Callable, Collection, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date
@@ -75,21 +77,44 @@ from ..domain.acta_grado import (
     CORREGIDO,
     DEDUCIDO,
     ROTULO_DE_CEREMONIA,
+    ActaDelLibro,
+    GraduadoDelActa,
+    acta_anulada,
+    acta_sin_terminar,
     actas_de_grado_del_pdf,
+    actas_del_libro_colectivo,
     asunto_del_graduado,
     completar_acta,
     con_la_franja,
     datos_de_la_ia,
+    es_acta_abreviada,
+    es_acta_colectiva,
     es_acta_de_examen,
+    es_libro_de_actas_colectivas,
     es_un_titulo,
+    estudiantes_declarados,
     fecha_de_grado,
     folio_del_texto,
     folios_de_la_foliacion,
+    graduados_de_la_lista,
+    juntar_graduados,
     le_falta_algo,
+    lectura_colectiva_de_la_ia,
     lecturas_del_nombre,
     leer_acta_de_grado,
     mejor_lectura,
     nombre_de_tres_lecturas,
+    numero_en_el_encabezado,
+    numero_y_rango,
+    numeros_de_los_graduados,
+    orden_del_libro,
+    paginas_compartidas,
+    puestos_de_la_lista,
+    rango_reparado,
+    renglones_en_bucle,
+    reparto_del_libro_colectivo,
+    rotulo_del_acta_colectiva,
+    sin_quien_firma,
     titulo_del_examen,
 )
 from ..domain.acta_grado import (
@@ -107,8 +132,19 @@ from ..domain.acta_grado import (
 from ..domain.doble_lectura import decidir_con_la_ia
 from ..domain.fechas import fechas_de
 from ..domain.formulario import recuadro_tras, texto_del_formulario
+from ..domain.graduado import (
+    VOCABULARIO_DE_LOS_TITULOS,
+    dudas_de,
+    firmantes_del_libro,
+    nombre_con_la_cola_del_renglon,
+    nombre_limpio,
+    nombre_y_titulo_separados,
+    sin_firmantes,
+    titulo_del_vocabulario,
+    titulo_limpio,
+    titulos_unificados,
+)
 from ..domain.graduado import cedula as cedula_leida
-from ..domain.graduado import dudas_de, nombre_limpio, titulo_limpio, titulos_unificados
 from ..domain.grouping import GroupingResult, PageGroup
 from ..domain.nombres import (
     calidad,
@@ -120,6 +156,7 @@ from ..domain.nombres import (
     sin_perder_conocidas,
     zona_del_nombre,
 )
+from ..domain.orden_por_el_folio import tramos_seguidos
 from ..domain.piezas_de_acta import (
     ACTA,
     ANEXO,
@@ -184,6 +221,14 @@ def _renglon(source: PageSource, pagina: int, banda: Band, dpi: int, girar: bool
 
 #: Y el renglón del nombre, solo y más grande, para la tercera lectura.
 DPI_DEL_RENGLON_DEL_NOMBRE = 500
+#: Las dos mitades en que se relee, con más zoom, la hoja que la IA leyó en
+#: bucle (``renglones_en_bucle``): la hoja 80 de UPD3859802 (2026-11-13).
+MITADES_DE_LA_HOJA = (Band(0.0, 0.0, 1.0, 0.5), Band(0.0, 0.5, 1.0, 1.0))
+DPI_DE_LA_MITAD = 400
+#: La franja del medio del acta a mano de 1988-2012, donde va el nombre (2026-11-13).
+DPI_DE_LA_FRANJA_DEL_NOMBRE = 400
+#: Cuánto se tienen que parecer los nombres de pila de dos lecturas para votarlos.
+PARECIDO_DE_LOS_NOMBRES_DE_PILA = 0.75
 #: Las palabras que deja en la capa cualquier acta impresa o a máquina.
 _PALABRAS_DE_UN_ACTA_IMPRESA = (
     "UNIVERSIDAD", "CIUDAD", "CARTAGENA", "GRADO", "ACTA", "TITULO", "CEDULA", "PORTADOR", "ESTUDIANTE",
@@ -309,6 +354,24 @@ class FilaDeActa:
     nombre: str = ""
     titulo: str = ""
     cedula: str = ""
+    #: El orden del PDF en que va la fila. Un acta colectiva da una fila por
+    #: graduado, todas en el PDF de su acta (UPD3859802, 2026-11-12); 0 en los
+    #: informes de antes, donde la fila N es el PDF N.
+    sesion: int = 0
+    #: De un acta colectiva, su rótulo -- «ACTA DE GRADO 05408120 A 05408124» --,
+    #: que con la fecha nombra su PDF.
+    acta_colectiva: str = ""
+    #: En las filas de un acta colectiva que no son la primera: el graduado en
+    #: cuya fila van los folios del acta. En el FUID, sus folios van en 0.
+    folios_en: str = ""
+    #: Las páginas de su PDF en su orden, cuando no son de ``pagina_inicial`` a
+    #: ``pagina_final`` seguidas: el acta del libro colectivo que sigue en la
+    #: hoja del folio siguiente, lejos en el escaneo -- «98, 2» --, o que lleva
+    #: la hoja que comparte con la siguiente (UPD3859802, 2026-11-13).
+    hojas_del_pdf: tuple[int, ...] = ()
+    #: Las hojas de su PDF que van también en el de otra acta y se cuentan allí,
+    #: en la que empieza en ella: la suma de los folios no las cuenta dos veces.
+    hojas_contadas_en_otra: tuple[int, ...] = ()
 
 
 @dataclass(slots=True)
@@ -334,6 +397,16 @@ class ActaOutcome:
     #: El texto de cada página, ya leído para el inventario: con él el agente
     #: revisor mira las costuras del libro sin leer nada más. No va al informe.
     textos: dict[int, str] = field(default_factory=dict, repr=False)
+    #: Si es un libro de actas colectivas (UPD3859802): sus PDF llevan a varios
+    #: graduados, y el revisor no cuenta dos cédulas como dos personas.
+    colectivo: bool = False
+    #: Las hojas que van en dos PDF: la que comparten el cierre de un acta y el
+    #: comienzo de la siguiente (lo decidió el operador el 2026-11-13). La
+    #: comprobación, la auditoría de cierre y retomar no las cuentan como error.
+    paginas_compartidas: list[int] = field(default_factory=list)
+    #: Las hojas que van en su PDF lejos de su vecina del escaneo porque el
+    #: libro sigue por su folio impreso: su salto no es un error de corte.
+    cruces_por_el_folio: list[int] = field(default_factory=list)
 
     @property
     def fila(self) -> FilaDeActa:
@@ -396,6 +469,11 @@ class ActaOutcome:
             # Las piezas de cada sesión, con sus páginas: lo que se escribe al
             # dividir, y lo que la pantalla enseña aunque sólo se inventaríe.
             "sesiones": [sesion.as_dict() for sesion in self.sesiones],
+            # Las hojas que van en dos PDF a propósito, y las que van lejos de su
+            # vecina del escaneo por su folio: la constancia las guarda para la
+            # auditoría de cierre y para retomar (2026-11-13).
+            "paginas_compartidas": list(self.paginas_compartidas),
+            "cruces_por_el_folio": list(self.cruces_por_el_folio),
         }
 
 
@@ -411,6 +489,9 @@ class SesionDeActa:
     #: Si el PDF lleva ``nombre`` tal cual, con sus espacios, y no en guiones: el
     #: del graduado se llama igual que su asunto en el FUID (2026-11-05).
     literal: bool = False
+    #: Sus hojas que van también en el PDF de otra sesión: la que comparte el
+    #: cierre de un acta colectiva con el comienzo de la siguiente (2026-11-13).
+    compartidas: tuple[int, ...] = ()
 
     @property
     def desde(self) -> int:
@@ -420,8 +501,13 @@ class SesionDeActa:
     def hasta(self) -> int:
         return self.piezas[-1].hasta
 
+    @property
+    def paginas(self) -> tuple[int, ...]:
+        """Sus páginas en el orden en que van en su PDF: el de sus piezas, que en el libro colectivo es el del folio."""
+        return tuple(pagina for pieza in self.piezas for pagina in pieza.paginas)
+
     def as_dict(self) -> dict[str, object]:
-        return {
+        datos: dict[str, object] = {
             "orden": self.orden,
             "nombre": self.nombre,
             "desde": self.desde,
@@ -431,6 +517,12 @@ class SesionDeActa:
                 for pieza in self.piezas
             ],
         }
+        if self.paginas != tuple(range(self.desde, self.hasta + 1)):
+            # Las que no son de «desde» a «hasta» seguidas, en el orden del PDF.
+            datos["paginas"] = list(self.paginas)
+        if self.compartidas:
+            datos["compartidas"] = list(self.compartidas)
+        return datos
 
 
 #: Lo que Windows no admite en el nombre de una carpeta.
@@ -443,6 +535,12 @@ def nombre_de_la_sesion(fila: FilaDeActa) -> str:
     Es lo que lleva el PDF de la sesión detrás de su número de orden, y es por
     lo que se busca.
     """
+    if fila.acta_colectiva:
+        # El acta colectiva lleva a todos sus graduados: su PDF se llama por el
+        # acta y su fecha, «ACTA DE GRADO 05408120 A 05408124 - 26-09-2008»
+        # (el operador, 2026-11-12).
+        partes = [fila.acta_colectiva, *([fila.fecha] if fila.fecha != NO_APLICA else [])]
+        return _NO_VALE_EN_UNA_CARPETA.sub("-", " - ".join(partes)).strip(" .")
     if fila.tipo == TIPO_DE_GRADO:
         # El graduado: «MARTHA LUCIA HERRERA VILLAMIZAR - ESPECIALISTA EN
         # GESTION DE LA CALIDAD…», el nombre como va en el acta y el título que
@@ -470,7 +568,7 @@ def _con_nombre_literal(fila: FilaDeActa) -> bool:
     mismo formato. El acta manuscrita de examen (caja 3362) sigue como se
     entregó: su asunto en el FUID es otro, el examen primero.
     """
-    if fila.tipo == ROTULO_DE_CEREMONIA:
+    if fila.tipo == ROTULO_DE_CEREMONIA or fila.acta_colectiva:
         return True
     return fila.tipo == TIPO_DE_GRADO and not es_acta_de_examen(fila.acta)
 
@@ -491,19 +589,36 @@ class DivisionDeActas:
     comprobacion: dict[str, object] = field(default_factory=dict)
 
 
-def reparto_de_las_actas(outcome: ActaOutcome) -> GroupingResult:
-    """El libro repartido en sesiones, como se va a escribir: un grupo por PDF."""
-    return GroupingResult(
-        groups=[
+def reparto_de_las_actas(outcome: ActaOutcome, *, cada_hoja_una_vez: bool = False) -> GroupingResult:
+    """El libro repartido en sesiones, como se va a escribir: un grupo por PDF.
+
+    Con ``cada_hoja_una_vez``, la hoja compartida queda sólo en el acta que
+    empieza en ella: es como la mira el revisor de cortes, que casa cada hoja
+    con un documento (2026-11-13).
+    """
+    duenas: dict[int, int] = {}
+    if cada_hoja_una_vez:
+        for sesion in outcome.sesiones:
+            if sesion.compartidas and sesion.paginas[0] in sesion.compartidas:
+                duenas.setdefault(sesion.paginas[0], sesion.orden)
+        for sesion in outcome.sesiones:
+            for pagina in sesion.compartidas:
+                duenas.setdefault(pagina, sesion.orden)
+    grupos = []
+    for sesion in outcome.sesiones:
+        paginas = [p for p in sesion.paginas if duenas.get(p, sesion.orden) == sesion.orden]
+        if not paginas:
+            continue
+        grupos.append(
             PageGroup(
                 code=ResolutionCode(value=f"{sesion.orden:02d}", raw=f"{sesion.orden:02d}"),
-                page_numbers=list(range(sesion.desde, sesion.hasta + 1)),
+                # En el orden del PDF: el del folio impreso en el libro colectivo.
+                page_numbers=paginas,
                 kind=sesion.nombre,
                 nombre_literal=sesion.literal,
             )
-            for sesion in outcome.sesiones
-        ]
-    )
+        )
+    return GroupingResult(groups=grupos)
 
 
 def dividir_actas(
@@ -557,13 +672,16 @@ def resultado_de_cada_acta(
 ) -> list[FilaDeActa]:
     """Las filas con lo que se hizo con cada acta escrito en su columna.
 
-    De un libro dividido, el PDF en que quedó cada acta: la fila N es el PDF
-    que empieza por «NN_», el orden del libro. De un PDF que ya era un acta y se
-    pidió dividir, que no hizo falta. Si dividir falló -- ``no_se_dividio`` --,
-    por qué. Y si sólo se pidió inventariar, eso.
+    De un libro dividido, el PDF en que quedó cada acta: el de su sesión
+    (``fila.sesion``), que empieza por «NN_», el orden del libro; las filas de
+    un acta colectiva, todas el mismo. En los informes de antes, sin sesión, la
+    fila N es el PDF N. De un PDF que ya era un acta y se pidió dividir, que no
+    hizo falta. Si dividir falló -- ``no_se_dividio`` --, por qué. Y si sólo se
+    pidió inventariar, eso.
     """
     resultados: list[FilaDeActa] = []
-    for orden, fila in enumerate(filas, start=1):
+    for puesto, fila in enumerate(filas, start=1):
+        orden = fila.sesion or puesto
         if salidas:
             prefijo = f"{orden:02d}_"
             pdf = next((ruta.rsplit("/", 1)[-1] for ruta in salidas if ruta.rsplit("/", 1)[-1].startswith(prefijo)), None)
@@ -579,12 +697,23 @@ def resultado_de_cada_acta(
 
 
 def _comprobar_que_cubre(sesiones: Sequence[SesionDeActa], total: int) -> None:
-    """Cada página del PDF en exactamente una pieza, o se para antes de escribir."""
-    vistas = sorted(pagina for sesion in sesiones for pieza in sesion.piezas for pagina in pieza.paginas)
-    if vistas != list(range(1, total + 1)):
+    """Cada página del PDF en exactamente una pieza, o se para antes de escribir.
+
+    Salvo la hoja declarada compartida (``SesionDeActa.compartidas``): va en
+    los dos PDF que la comparten, y en ninguno más (2026-11-13).
+    """
+    vistas = Counter(pagina for sesion in sesiones for pieza in sesion.piezas for pagina in pieza.paginas)
+    declaradas = {pagina for sesion in sesiones for pagina in sesion.compartidas}
+    de_mas = sorted(
+        pagina
+        for pagina, veces in vistas.items()
+        if veces > 1 and (pagina not in declaradas or veces > sum(pagina in s.paginas for s in sesiones))
+    )
+    if sorted(vistas) != list(range(1, total + 1)) or de_mas:
         raise ValueError(
             "el reparto en piezas no cubre el PDF entero una sola vez: "
             f"{len(vistas)} páginas repartidas de {total}"
+            + (f", repetidas sin declararlas compartidas: {de_mas[:10]}" if de_mas else "")
         )
 
 
@@ -637,6 +766,21 @@ class _Lectura:
     texto_de_la_ia: str | None = None
     #: Lo que el lector de texto de la IA entendió de esa hoja, validado.
     datos_de_la_ia: dict = field(default_factory=dict)
+    #: Del libro de actas colectivas (UPD3859802): el tramo del libro con el
+    #: texto de su acta, cortado donde empieza la siguiente.
+    del_libro: ActaDelLibro | None = None
+    #: Si el acta gradúa a varios: entonces da una fila por graduado, y no se
+    #: le decide un nombre como a las demás.
+    colectiva: bool = False
+    #: Los graduados del acta colectiva, en el orden del acta.
+    graduados: list[GraduadoDelActa] = field(default_factory=list)
+    #: El último número del rango, «05408124» en «Nº 05408120 a 05408124».
+    numero_hasta: str | None = None
+    #: Por qué el acta está anulada (``acta_anulada``) o sin terminar
+    #: (``acta_sin_terminar``): no gradúa a nadie.
+    anulada: str | None = None
+    #: Si no la anuló nadie: quedó sin terminar, y su rótulo no dice ANULADA.
+    sin_terminar: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -744,7 +888,13 @@ class InventariarActa:
         #: Cuánto se espera antes de volver a pedir los resúmenes que el
         #: proveedor no atendió por estar saturado.
         espera_para_reintentar: float | None = None,
+        #: Quien lee con la IA, del texto de un acta colectiva, su número, su
+        #: fecha y la lista de sus graduados (un ``Resumidor`` con
+        #: ``INSTRUCCIONES_DEL_ACTA_COLECTIVA``). Sin él, la lista se lee por regla.
+        lector_de_actas_colectivas: Resumidor | None = None,
     ) -> None:
+        self._lector_de_actas_colectivas = lector_de_actas_colectivas
+        self._orden_del_libro: list[int] | None = None
         self._espera_para_reintentar = (
             ESPERA_PARA_REINTENTAR if espera_para_reintentar is None else espera_para_reintentar
         )
@@ -802,6 +952,25 @@ class InventariarActa:
             if self._textos_de_la_ia:
                 paginas = [self._textos_de_la_ia.get(numero) or texto for numero, texto in enumerate(paginas, 1)]
                 reparto = self._perfil.repartir(paginas, foliadas)
+        # El libro de actas colectivas manuscrito (Odontología, UPD3859802,
+        # 2026-11-12): cada acta gradúa a una promoción y empieza a mitad de la
+        # hoja en que acaba la anterior. Se reconoce en lo que leyó la IA -- la
+        # capa es basura --, y se reparte por acta y no por graduado.
+        # Sus hojas van en el orden del folio impreso (2026-11-13): el escaneo de
+        # UPD3859802 trae hojas fuera de su sitio, y el acta sigue en la del
+        # folio siguiente aunque esté lejos en el PDF.
+        del_libro: list[ActaDelLibro | None] = []
+        self._orden_del_libro = None
+        compartidas: list[int] = []
+        if self._perfil.reparte_con_folios and self._textos_de_la_ia:
+            de_la_ia = [self._textos_de_la_ia.get(numero) or texto for numero, texto in enumerate(paginas, 1)]
+            if es_libro_de_actas_colectivas(de_la_ia):
+                paginas = self._con_todo_el_libro_leido(source, de_la_ia)
+                self._orden_del_libro = orden_del_libro(paginas)
+                partes = reparto_del_libro_colectivo(paginas, self._orden_del_libro)
+                reparto = actas_del_libro_colectivo(partes, total)
+                del_libro = [None if parte.ceremonia else parte for parte in partes]
+                compartidas = paginas_compartidas(partes)
         declarada = acta_del_nombre(document_name) if self._perfil.respeta_el_nombre else None
         if declarada and reparto.es_libro:
             reparto = sin_anexos_anteriores(reparto, paginas, *declarada)
@@ -815,12 +984,18 @@ class InventariarActa:
             foliadas = list(range(1, total + 1))
 
         lecturas = []
-        for tramo in reparto.tramos:
+        for indice, tramo in enumerate(reparto.tramos):
+            # Del libro colectivo, el tramo y su acta van a la par: dos actas que
+            # empiezan en la misma hoja tienen el mismo «desde».
+            parte = del_libro[indice] if del_libro and not tramo.ceremonia else None
+            if parte is not None:
+                lecturas.append(_lectura_del_libro_colectivo(tramo, parte, foliadas))
+                continue
             # Sólo texto ya leído: repartir en piezas no cuesta una lectura más.
             piezas = (
                 self._perfil.piezas(paginas[tramo.desde - 1 : tramo.hasta], tramo.desde)
                 if self._perfil.piezas
-                else [PiezaDeActa(ACTA, tramo.desde, tramo.hasta)]
+                else _piezas_del_tramo(tramo)
             )
             # La portada que separa una sesión de la anterior no se folia. Una
             # mota en su esquina la hacía pasar por foliada: el acta se contaba
@@ -832,14 +1007,14 @@ class InventariarActa:
             lecturas.append(
                 _Lectura(
                     tramo=tramo,
-                    acta=self._perfil.leer(paginas[tramo.desde - 1 : tramo.hasta]),
-                    foliadas=[
-                        p for p in foliadas if tramo.desde <= p <= tramo.hasta and p not in portadas
-                    ],
+                    acta=self._perfil.leer([paginas[p - 1] for p in tramo.en_el_pdf]),
+                    foliadas=[p for p in foliadas if p in tramo.en_el_pdf and p not in portadas],
                     piezas=piezas,
                 )
             )
         for lectura in lecturas:
+            if lectura.del_libro is not None:
+                continue  # el acta del libro colectivo ya trae su texto, cortado
             if lectura.acta.rotulo == ROTULO_DE_GRADO and not lectura.tramo.ceremonia:
                 hoja = lectura.tramo.desde + (lectura.acta.pagina or 1) - 1
                 if hoja in self._textos_de_la_ia:
@@ -861,6 +1036,7 @@ class InventariarActa:
             )
             self._releer_lo_que_falta(source, lecturas)
             self._verificar_con_la_ia(source, lecturas)
+            self._leer_las_actas_colectivas(lecturas)
             if declarada and len(lecturas) == 1:
                 _contrastar_con_el_nombre(lecturas[0], paginas, *declarada)
             if not self._manuscrito:  # la IA leyó la fecha; la regla es contra el OCR gratis
@@ -868,6 +1044,7 @@ class InventariarActa:
             self._razonar_lo_que_falta(source, paginas, lecturas)
             self._nombres_por_consenso(source, paginas, lecturas)
             self._nombres_manuscritos(source, lecturas)
+            self._releer_los_nombres_dudosos(source, lecturas)
             self._fechas_manuscritas(source, lecturas)
             _los_examenes(lecturas)
             self._report(
@@ -901,26 +1078,65 @@ class InventariarActa:
                 detail="anotando las actas en el inventario",
             )
         )
+        # Cada lectura da su fila, y el acta colectiva una por graduado: todas
+        # con el orden de su PDF (``sesion``), que es el de su lectura.
         filas = [
-            fila if fila.tipo == ROTULO_DE_CEREMONIA else replace(fila, tipo=self._perfil.tipo_documental)
-            for fila in [
-            _fila(
-                lectura,
-                archivo=document_name,
-                carpeta=carpeta,
-                ilegibles=[p for p in ilegibles if lectura.tramo.desde <= p <= lectura.tramo.hasta],
-                por_eleccion=self._motivo_sin_resumidor,
+            replace(
+                fila if fila.tipo == ROTULO_DE_CEREMONIA else replace(fila, tipo=self._perfil.tipo_documental),
+                sesion=orden,
             )
-            for indice, lectura in enumerate(lecturas)
-            ]
+            for orden, lectura in enumerate(lecturas, start=1)
+            for fila in (
+                _filas_de_la_colectiva(
+                    lectura,
+                    archivo=document_name,
+                    carpeta=carpeta,
+                    ilegibles=[p for p in ilegibles if p in lectura.tramo.en_el_pdf],
+                )
+                if lectura.colectiva
+                else [
+                    _fila(
+                        lectura,
+                        archivo=document_name,
+                        carpeta=carpeta,
+                        ilegibles=[p for p in ilegibles if p in lectura.tramo.en_el_pdf],
+                        por_eleccion=self._motivo_sin_resumidor,
+                    )
+                ]
+            )
+        ]
+        # Las hojas de cada PDF en su orden y las que se cuentan en otro: las
+        # del libro colectivo que no van seguidas o que comparte con otra acta.
+        if self._orden_del_libro is not None:
+            filas = _con_sus_hojas(filas, lecturas, compartidas)
+        # El rector o el decano del pie que se pegó detrás del graduado: las
+        # mismas tres palabras al final de tres nombres o más del libro
+        # (Odontología, 2026-11-12: «CARLOS VILLALBA BUSTILLO»).
+        # Y con una vez basta si son de quien el libro muestra firmando sobre su
+        # cargo (UPD3859813, fila 1802; 2026-11-13).
+        sin_el_pie = sin_firmantes([fila.nombre for fila in filas], firmantes_del_libro(paginas))
+        filas = [
+            replace(fila, nombre=nombre) if nombre != fila.nombre else fila
+            for fila, nombre in zip(filas, sin_el_pie, strict=True)
         ]
         if reparto.es_libro and self._perfil.tipo_documental != TIPO_DE_GRADO:
             filas = _con_el_numero_de_la_serie(filas)
         if reparto.previas and filas[0].tipo != TIPO_DE_GRADO and filas[0].tipo != ROTULO_DE_CEREMONIA:
             filas[0] = _con_las_previas(filas[0], lecturas[0], reparto.previas)
+        # Un PDF por lectura, nombrado por su primera fila: la del graduado, la
+        # de la sesión o la del acta colectiva con todos sus graduados.
+        primera_de: dict[int, FilaDeActa] = {}
+        for fila in filas:
+            primera_de.setdefault(fila.sesion, fila)
         sesiones = [
-            SesionDeActa(orden, nombre_de_la_sesion(fila), tuple(lectura.piezas), literal=_con_nombre_literal(fila))
-            for orden, (lectura, fila) in enumerate(zip(lecturas, filas, strict=True), start=1)
+            SesionDeActa(
+                orden,
+                nombre_de_la_sesion(primera_de[orden]),
+                tuple(lectura.piezas),
+                literal=_con_nombre_literal(primera_de[orden]),
+                compartidas=tuple(p for p in lectura.tramo.en_el_pdf if p in compartidas),
+            )
+            for orden, lectura in enumerate(lecturas, start=1)
         ]
         if reparto.previas and sesiones[0].desde != reparto.previas[0]:
             desde, hasta = reparto.previas
@@ -948,6 +1164,9 @@ class InventariarActa:
             sesiones=sesiones,
             tipo_documental=self._perfil.tipo_documental,
             textos=dict(enumerate(paginas, start=1)),
+            colectivo=any(lectura.colectiva for lectura in lecturas),
+            paginas_compartidas=compartidas,
+            cruces_por_el_folio=_cruces_por_el_folio(lecturas),
         )
 
     # -- leer -----------------------------------------------------------------
@@ -1150,15 +1369,20 @@ class InventariarActa:
             for pagina, texto in self._textos_de_la_ia.items()
             if (folio := folio_del_texto(texto)) is not None
         }
-        folios = folios_de_la_foliacion(leidos, {pagina: pagina for pagina in range(1, total + 1)})
+        # En el orden del libro: en el colectivo, el del folio impreso. Con el
+        # del escaneo, el folio 42 de la hoja 1 de UPD3859802 se «corregía» a
+        # 39 por la foliación seguida, y era el bueno (2026-11-13).
+        orden = self._orden_del_libro or range(1, total + 1)
+        folios = folios_de_la_foliacion(leidos, {pagina: puesto for puesto, pagina in enumerate(orden, start=1)})
         for lectura in lecturas:
             if lectura.tramo.ceremonia:
                 continue
-            desde, hasta = lectura.tramo.desde, lectura.tramo.hasta
+            hojas = lectura.tramo.en_el_pdf
+            desde, hasta = hojas[0], hojas[-1]
             if desde not in folios:
                 continue
             inicial, como, leido = folios[desde]
-            final = folios[hasta][0] if hasta in folios else inicial + hasta - desde
+            final = folios[hasta][0] if hasta in folios else inicial + len(hojas) - 1
             lectura.folios = FoliosDelActa(inicial=inicial, final=max(inicial, final), foliadas=len(lectura.foliadas))
             if como == CORREGIDO:
                 lectura.deducido = (
@@ -1537,17 +1761,19 @@ class InventariarActa:
         y con la IA si se pidió -- y se vuelve a votar. Lo que siga dudoso lo
         dicen las observaciones.
         """
+        # El acta colectiva no se vota: no decide un nombre sino una lista.
         graduados = [
             lectura
             for lectura in lecturas
             if lectura.acta.rotulo == ROTULO_DE_GRADO
             and not lectura.tramo.ceremonia
             and not lectura.acta.constancia
+            and not lectura.colectiva
         ]
         # Las constancias no se votan -- su nombre lo dice la constancia --,
         # pero sí se cruzan con la lectura de la IA, como lo demás.
         for constancia_ in lecturas:
-            if constancia_.acta.rotulo == ROTULO_DE_GRADO and constancia_.acta.constancia:
+            if constancia_.acta.rotulo == ROTULO_DE_GRADO and constancia_.acta.constancia and not constancia_.colectiva:
                 _nombre_de_la_ia(constancia_, nombres_conocidos())
         if not graduados:
             return
@@ -1876,9 +2102,11 @@ class InventariarActa:
                 )
         self._leer_los_datos_con_la_ia(propias)
         for lectura in propias:
-            if lectura.texto_de_la_ia:
+            # El acta colectiva no se cruza campo a campo: su nombre y su cédula
+            # son los de cada graduado de la lista, no los de la hoja.
+            if lectura.texto_de_la_ia and not lectura.colectiva:
                 self._cruzar_con_la_ia(lectura)
-        self._cedulas_con_zoom(source, propias)
+        self._cedulas_con_zoom(source, [lectura for lectura in propias if not lectura.colectiva])
 
     def _cedulas_con_zoom(self, source: PageSource, lecturas: list[_Lectura]) -> None:
         """La cédula que ni la página entera ni la IA leyeron, buscada en su zona ampliada.
@@ -1961,8 +2189,40 @@ class InventariarActa:
         for lectura in lecturas:
             if lectura.tramo.ceremonia or lectura.acta.rotulo != ROTULO_DE_GRADO or not lectura.texto_de_la_ia:
                 continue
-            arriba, del_texto = lecturas_del_nombre(lectura.texto_de_la_ia)
+            if lectura.colectiva:
+                continue  # sus graduados son los de su lista, no un nombre por hoja
+            # En el libro colectivo el acta no repite el nombre arriba, y lo que
+            # hay arriba de su hoja es la cola de la anterior: se lee de su
+            # frase, sin pagar el renglón ampliado (UPD3859802, 2026-11-12).
+            arriba, del_texto = (None, None) if lectura.del_libro is not None else lecturas_del_nombre(lectura.texto_de_la_ia)
             if not (arriba or del_texto):
+                # El acta a mano de 1988-2012, que no repite el nombre arriba:
+                # «… a la estudiante NURY VARELA ESCUDERO, portadora de la
+                # cédula» en el texto que leyó la IA (UPD3859802 pág. 110,
+                # 2026-11-12; se quedaba con la nota al margen «Post-grado»).
+                leido = nombre_limpio(
+                    leer_acta_de_grado([lectura.texto_de_la_ia]).nombre, lectura.acta.titulo, conocidas
+                )
+                # El nombre de pila en cursiva se lee mal en la página entera
+                # («REARMÉN SIGRÍA» por CARMEN SOFÍA, pág. 1): si el diccionario
+                # no confirma cada palabra, se relee la franja del medio
+                # ampliada y se vota (el operador, 2026-11-13: «releer el
+                # renglón del nombre»). Lo que no se confirma va a revisión.
+                if leido and not all(clave(p) in conocidas for p in leido.split()):
+                    ampliado = self._franja_del_nombre(source, lectura, leido)
+                    votado, duda = nombre_de_tres_lecturas(None, leido, ampliado, conocidas)
+                    if votado:
+                        leido = nombre_limpio(votado, lectura.acta.titulo, conocidas) or leido
+                    if duda:
+                        lectura.razonado.append(duda)
+                if leido and len(leido.split()) >= 2 and clave(leido) != clave(lectura.acta.nombre or ""):
+                    if lectura.acta.nombre:
+                        lectura.razonado.append(
+                            f"el nombre: se leyó «{lectura.acta.nombre}» y la IA leyó en el acta manuscrita "
+                            f"«{leido}»; se dejó lo de la IA: revíselo en el papel"
+                        )
+                    lectura.acta = replace(lectura.acta, nombre=leido)
+                    lectura.nombre_dudoso = False
                 continue
             # Las notas del voto general no valen aquí: éste decide el nombre.
             lectura.razonado = [
@@ -2010,10 +2270,15 @@ class InventariarActa:
         """
         if not self._manuscrito or self._relector_de_pago is None:
             return
+        # Las del libro colectivo no: empiezan a mitad de hoja, y los renglones
+        # de arriba son la cola de la anterior; se pagaría para leer su fecha.
         sin_fecha = [
             lectura
             for lectura in lecturas
-            if not lectura.tramo.ceremonia and lectura.acta.rotulo == ROTULO_DE_GRADO and lectura.acta.fecha is None
+            if not lectura.tramo.ceremonia
+            and lectura.acta.rotulo == ROTULO_DE_GRADO
+            and lectura.acta.fecha is None
+            and lectura.del_libro is None
         ]
         for lectura in sin_fecha:
             self._control.check()
@@ -2033,6 +2298,77 @@ class InventariarActa:
                     )
                     break
 
+    def _releer_los_nombres_dudosos(self, source: PageSource, lecturas: list[_Lectura]) -> None:
+        """El nombre en que el OCR y la IA no coinciden, releído en su franja ampliada y votado.
+
+        Lo eligió el operador el 2026-11-13 ante la pág. 1 de UPD3859802: la IA
+        leyó «REARMÉN SIGRÍA MENDOZA MORENO» por CARMEN SOFÍA. Sólo con «OCR +
+        IA», sólo si las lecturas discreparon en el nombre y el diccionario no
+        conoce sus nombres de pila: donde coinciden -- las actas a máquina -- no
+        se gasta nada. Una página pagada por acta releída; lo que el voto no
+        confirma va a revisión con las lecturas.
+        """
+        if self._relector_de_pago is None:
+            return
+        conocidas = nombres_conocidos()
+        for lectura in lecturas:
+            acta = lectura.acta
+            if lectura.tramo.ceremonia or acta.rotulo != ROTULO_DE_GRADO or lectura.colectiva or not acta.nombre:
+                continue
+            discreparon = any(r.startswith("el nombre:") for r in lectura.razonado)
+            de_pila = [clave(p) for p in acta.nombre.split()[:2]]
+            if not discreparon or all(p in conocidas for p in de_pila):
+                continue
+            ampliado = self._franja_del_nombre(source, lectura, acta.nombre)
+            if not ampliado:
+                continue
+            # Si los nombres de pila no se parecen entre las dos lecturas y el
+            # diccionario no conoce ninguno, no se adivina: «REARMÉN SIGRÍA»,
+            # «KARMAN SIGIA» y el papel dice CARMEN SOFÍA. Va a revisión con las
+            # lecturas; los apellidos, que coinciden, se quedan.
+            pila_ampliada = [clave(p) for p in ampliado.split()[:2]]
+            if not any(p in conocidas for p in pila_ampliada) and any(
+                difflib.SequenceMatcher(None, a, b).ratio() < PARECIDO_DE_LOS_NOMBRES_DE_PILA
+                for a, b in zip(de_pila, pila_ampliada, strict=False)
+            ):
+                lectura.razonado.append(
+                    f"los nombres de pila no se confirmaron: la página leyó «{acta.nombre}» y su franja ampliada "
+                    f"«{ampliado}»; la letra a mano no se deja leer con certeza: revíselo en el papel"
+                )
+                lectura.nombre_dudoso = True
+                continue
+            votado, duda = nombre_de_tres_lecturas(None, acta.nombre, ampliado, conocidas)
+            votado = nombre_limpio(votado, acta.titulo, conocidas) if votado else None
+            if votado and clave(votado) != clave(acta.nombre):
+                lectura.razonado.append(
+                    f"el nombre: la página dio «{acta.nombre}» y su franja ampliada «{ampliado}»; se votó «{votado}»"
+                )
+                lectura.acta = replace(acta, nombre=votado)
+            if duda:
+                lectura.razonado.append(duda)
+
+    def _franja_del_nombre(self, source: PageSource, lectura: _Lectura, referencia: str) -> str | None:
+        """El nombre del acta a mano de 1988-2012, de la franja del medio ampliada y leída por la IA.
+
+        En estas actas «al estudiante … portador» cae a media hoja, a una altura
+        que cambia de una a otra: se lee la franja del 20 al 70 % de la hoja a
+        ``DPI_DE_LA_FRANJA_DEL_NOMBRE``, una página pagada. Vale si comparte
+        alguna palabra -- un apellido -- con lo leído en la página entera.
+        """
+        if self._relector_de_pago is None:
+            return None
+        pagina = lectura.tramo.desde + (lectura.acta.pagina or 1) - 1
+        try:
+            imagen = source.render(pagina, Band(0.0, 0.2, 1.0, 0.7), DPI_DE_LA_FRANJA_DEL_NOMBRE)
+            texto = self._relector_de_pago.read(imagen).text or ""
+        except Exception:  # noqa: BLE001 - se vota con lo que hay
+            logger.warning("no se pudo releer la franja del nombre", exc_info=True)
+            return None
+        leido = leer_acta_de_grado([texto]).nombre
+        if leido and set(clave(p) for p in referencia.split()) & set(clave(p) for p in leido.split()):
+            return leido
+        return None
+
     def _renglon_del_nombre(self, source: PageSource, lectura: _Lectura, referencia: str) -> str | None:
         """El nombre del renglón de arriba del acta, recortado, ampliado y leído por la IA.
 
@@ -2050,11 +2386,14 @@ class InventariarActa:
                 return leido
         return None
 
-    def _leer_el_libro_con_la_ia(self, source: PageSource, total: int) -> dict[int, str]:
+    def _leer_el_libro_con_la_ia(
+        self, source: PageSource, total: int, solo: Sequence[int] | None = None
+    ) -> dict[int, str]:
         """Cada página del libro leída por la IA: lo que dice, por número de página.
 
         Sólo con «OCR + IA». La IA lee la letra a mano de los años 20 y 40, y
         también la hoja escaneada de cabeza. Una página facturada por página.
+        Con ``solo``, únicamente esas páginas.
         """
         lector = self._relector_de_pago
         if lector is None:
@@ -2062,7 +2401,7 @@ class InventariarActa:
         leidas: dict[int, str] = {}
         with hilos(self._workers) as lectores:
             vuelo: list[tuple[int, Future]] = []
-            for numero in range(1, total + 1):
+            for numero in solo if solo is not None else range(1, total + 1):
                 self._control.check()
                 try:
                     imagen = source.render(numero, None, DPI_DEL_MANUSCRITO)
@@ -2084,7 +2423,169 @@ class InventariarActa:
                         detail=f"leyendo con la IA el libro manuscrito ({len(vuelo)} páginas)",
                     )
                 )
+        self._releer_los_bucles(source, leidas)
         return leidas
+
+    def _releer_los_bucles(self, source: PageSource, leidas: dict[int, str]) -> None:
+        """La hoja que la IA leyó en bucle, releída en dos mitades con más zoom.
+
+        La IA a veces lee bien el principio de la hoja y se queda repitiendo un
+        trozo -- «1.1.1.1…» --: la hoja 80 de UPD3859802 trae ocho graduados y
+        devolvió uno; los otros siete no llegaban al inventario (2026-11-13).
+        Cada mitad es media hoja: la imagen más pequeña no la hace entrar en el
+        bucle. Se queda la relectura sólo si trae menos renglones en bucle; si
+        no, la de antes, y el acta avisa de los graduados que faltan. Dos
+        lecturas de pago por hoja en bucle, nunca más.
+        """
+        lector = self._relector_de_pago
+        en_bucle = sorted(numero for numero, texto in leidas.items() if renglones_en_bucle(texto))
+        if lector is None or not en_bucle:
+            return
+        for numero in en_bucle:
+            self._control.check()
+            try:
+                mitades = [lector.read(source.render(numero, banda, DPI_DE_LA_MITAD)).text or "" for banda in MITADES_DE_LA_HOJA]
+            except Exception:  # noqa: BLE001 - la hoja se queda con su primera lectura
+                logger.warning("la IA no pudo releer la hoja %s en dos mitades", numero, exc_info=True)
+                continue
+            releida = "\n".join(mitad for mitad in mitades if mitad.strip())
+            if all(mitad.strip() for mitad in mitades) and renglones_en_bucle(releida) < renglones_en_bucle(leidas[numero]):
+                logger.info("la hoja %s se leyó en bucle y se releyó en dos mitades", numero)
+                leidas[numero] = releida
+
+    def _con_todo_el_libro_leido(self, source: PageSource, paginas: list[str]) -> list[str]:
+        """El libro colectivo con todas sus hojas leídas por la IA: la que falló, leída otra vez.
+
+        En el libro colectivo una hoja sin leer parte un acta -- su lista sigue
+        en ella -- y la capa no la suple: es basura. Sólo las que la IA no
+        devolvió, una vez; no se paga dos veces la misma hoja.
+        """
+        faltan = [numero for numero in range(1, len(paginas) + 1) if numero not in self._textos_de_la_ia]
+        if faltan:
+            self._textos_de_la_ia.update(self._leer_el_libro_con_la_ia(source, len(paginas), faltan))
+        return [self._textos_de_la_ia.get(numero) or texto for numero, texto in enumerate(paginas, 1)]
+
+    def _leer_las_actas_colectivas(self, lecturas: list[_Lectura]) -> None:
+        """El número, la fecha, el título y los graduados de cada acta colectiva, leídos por la IA y por regla.
+
+        El lector de texto de la IA lee el acta entera -- su texto cortado
+        donde empieza la siguiente -- como una persona: junta el nombre partido
+        entre renglones y no toma al rector por graduado. Lo que devuelve se
+        valida contra el texto (``lectura_colectiva_de_la_ia``) y se completa con
+        lo que la regla lee de la lista numerada (``graduados_de_la_lista``),
+        que es también lo que queda sin la IA. Se paga por tokens, no por página.
+        """
+        colectivas = [lectura for lectura in lecturas if lectura.colectiva and lectura.del_libro is not None]
+        if not colectivas:
+            return
+        lector = self._lector_de_actas_colectivas
+        respuestas: dict[int, str] = {}
+        if lector is not None:
+            with hilos(LECTURAS_A_LA_VEZ) as proveedor:
+                # La anulada y la que quedó sin terminar no traen lista: no se
+                # paga por leerla (hojas 138 y 144-145).
+                vuelo = [
+                    (indice, proveedor.submit(lector.resumir, lectura.del_libro.texto))  # type: ignore[union-attr]
+                    for indice, lectura in enumerate(colectivas)
+                    if not lectura.anulada
+                ]
+                for hechas, (indice, futuro) in enumerate(vuelo, start=1):
+                    aguardar(futuro, self._control)
+                    try:
+                        respuestas[indice] = futuro.result()
+                    except Exception:  # noqa: BLE001 - se queda con la lista leída por regla
+                        logger.warning("la IA no pudo leer la lista de un acta colectiva", exc_info=True)
+                    self._report(
+                        ProgressEvent(
+                            stage=Stage.VERIFYING,
+                            done=hechas,
+                            total=len(vuelo),
+                            detail=f"leyendo con la IA los graduados de {len(vuelo)} acta(s) colectiva(s)",
+                        )
+                    )
+        leidas = {
+            id(lectura): lectura_colectiva_de_la_ia(respuestas.get(indice, ""), lectura.del_libro.texto)  # type: ignore[union-attr]
+            for indice, lectura in enumerate(colectivas)
+        }
+        # En el orden del libro: el número de cada acta sigue la serie de la
+        # anterior -- 054… las de Enfermería, 120… las de posgrado, que se
+        # alternan -- y la abreviada lleva la fecha de la ceremonia de arriba.
+        con_respuesta = {id(colectivas[indice]) for indice in respuestas}
+        ultimo_de_la_serie: dict[str, str] = {}
+        fecha_anterior: date | None = None
+        for lectura in lecturas:
+            if lectura.del_libro is None or lectura.tramo.ceremonia:
+                continue
+            if lectura.colectiva:
+                self._leer_una_colectiva(
+                    lectura,
+                    leidas[id(lectura)],
+                    sin_la_ia=lector is not None and id(lectura) not in con_respuesta,
+                    ultimo_de_la_serie=ultimo_de_la_serie,
+                    fecha_anterior=fecha_anterior,
+                )
+            numero = lectura.acta.numero or ""
+            if len(numero) >= LARGO_DE_LA_SERIE:
+                ultimo_de_la_serie[numero[:3]] = lectura.numero_hasta or numero
+            fecha_anterior = lectura.acta.fecha or fecha_anterior
+        _titulo_comun_del_libro(colectivas)
+
+    def _leer_una_colectiva(
+        self,
+        lectura: _Lectura,
+        leida,
+        *,
+        sin_la_ia: bool,
+        ultimo_de_la_serie: Mapping[str, str],
+        fecha_anterior: date | None,
+    ) -> None:
+        """Los graduados, el número, la fecha y el título de un acta colectiva, con lo que la IA leyó y lo que dice la lista.
+
+        Cada cédula con su nombre por su renglón (``juntar_graduados``); el
+        número, el del encabezado -- la IA sólo si su número está en el
+        encabezado, no el de la resolución -- arreglado con la lista y la serie
+        (``rango_reparado``); la lista contra lo que el acta numera o declara:
+        el graduado que falta se dice. El acta anulada no lleva graduados.
+        """
+        texto = lectura.del_libro.texto  # type: ignore[union-attr]
+        if lectura.anulada:
+            lectura.graduados = []
+        else:
+            lectura.graduados = sin_quien_firma(
+                juntar_graduados(leida.graduados, graduados_de_la_lista(texto), texto), texto
+            )
+        if sin_la_ia and lectura.graduados:
+            lectura.razonado.append(
+                "la IA no pudo leer el acta: sus graduados se leyeron de la lista por regla; revíselos en el papel"
+            )
+        acta = lectura.acta
+        desde, hasta = acta.numero, lectura.numero_hasta
+        if not desde and leida.desde and numero_en_el_encabezado(leida.desde, texto):
+            desde, hasta = leida.desde, leida.hasta
+        elif desde and not hasta and leida.hasta and leida.desde == desde:
+            # El rango que la regla no vio y la IA sí, empezando por el mismo número.
+            hasta = leida.hasta
+        cuantos = len(lectura.graduados)
+        if desde and len(desde) >= LARGO_DE_LA_SERIE - 1 and cuantos:
+            desde, hasta, nota = rango_reparado(desde, hasta, cuantos, ultimo_de_la_serie.get(desde[:3]))
+            if nota:
+                lectura.razonado.append(nota)
+        lectura.numero_hasta = hasta
+        if not lectura.anulada:
+            esperados = max(puestos_de_la_lista(texto), estudiantes_declarados(texto) or 0)
+            if esperados > cuantos:
+                lectura.razonado.append(
+                    f"la lista del acta numera {esperados} graduado(s) y se leyeron {cuantos}: faltan "
+                    f"{esperados - cuantos}; revíselos en el papel"
+                )
+        fecha = acta.fecha or leida.fecha
+        if fecha is None and fecha_anterior is not None and es_acta_abreviada(texto):
+            fecha = fecha_anterior
+            lectura.razonado.append(
+                f"el acta no repite la fecha: es la de la ceremonia del acta anterior "
+                f"({fecha_anterior.strftime('%d-%m-%Y')}); revísela en el papel"
+            )
+        lectura.acta = replace(acta, numero=desde, fecha=fecha, titulo=leida.titulo or acta.titulo)
 
     def _leer_los_datos_con_la_ia(self, lecturas: list[_Lectura]) -> None:
         """Número, fecha, título, nombre y cédula de cada graduado, leídos por la IA como una persona.
@@ -2096,10 +2597,15 @@ class InventariarActa:
         y ``datos_de_la_ia`` sólo deja lo que la hoja dice.
         """
         lector = self._lector_de_datos
+        # El acta colectiva no: no tiene un graduado sino una lista, y la lee
+        # su propio lector (``_leer_las_actas_colectivas``).
         graduados = [
             lectura
             for lectura in lecturas
-            if lectura.texto_de_la_ia and lectura.acta.rotulo == ROTULO_DE_GRADO and not lectura.tramo.ceremonia
+            if lectura.texto_de_la_ia
+            and lectura.acta.rotulo == ROTULO_DE_GRADO
+            and not lectura.tramo.ceremonia
+            and not lectura.colectiva
         ]
         if lector is None or not graduados:
             return
@@ -2816,9 +3322,11 @@ def _por_la_ceremonia(lecturas: list[_Lectura]) -> None:
     del 10-09-1999; y una sin número entre dos «No. 03» de su misma fecha es la
     03. Con vecinas que no coinciden no se deduce nada.
     """
+    # Las actas colectivas no: cada una es su propia ceremonia, con su número
+    # (UPD3859802, 2026-11-12).
     posiciones = [
         i for i in _de_graduado(lecturas)
-        if lecturas[i].acta.rotulo == ROTULO_DE_GRADO and not lecturas[i].acta.constancia
+        if lecturas[i].acta.rotulo == ROTULO_DE_GRADO and not lecturas[i].acta.constancia and not lecturas[i].colectiva
     ]
     if len(posiciones) < 3:
         return
@@ -3052,6 +3560,19 @@ def _lo_completa(nombre: str, otro: str) -> bool:
     return orden == una and all(parece_palabra_de_nombre(p) for p in sobrantes)
 
 
+def _con_la_cola_del_renglon(lectura: _Lectura) -> None:
+    """El nombre del OCR completado con el apellido que la IA ve delante de «portador» (``nombre_con_la_cola_del_renglon``)."""
+    acta = lectura.acta
+    completo = nombre_con_la_cola_del_renglon(acta.nombre, lectura.texto_de_la_ia or "", acta.titulo)
+    if completo is None:
+        return
+    lectura.razonado.append(
+        f"el nombre sigue en el renglón de «portador», que la IA sí leyó: «{acta.nombre}» quedó «{completo}»; "
+        "revíselo en el papel"
+    )
+    lectura.acta = replace(acta, nombre=completo)
+
+
 def _nombre_de_la_ia(lectura: _Lectura, conocidas: set[str]) -> None:
     """El nombre del graduado, cruzado con el que leyó la IA en su hoja, como los demás datos.
 
@@ -3087,6 +3608,15 @@ def _nombre_de_la_ia(lectura: _Lectura, conocidas: set[str]) -> None:
             leido = otro
     palabras = (leido or "").split()
     if len(palabras) < 2 or not all(parece_palabra_de_nombre(clave(palabra)) for palabra in palabras):
+        _con_la_cola_del_renglon(lectura)
+        return
+    # Un renglón del título no es un nombre: la IA leyó «CON ENFASIS EN
+    # NEUROCIRUGIA» en el renglón del graduado, ganó, y la limpieza dejó el
+    # nombre vacío (Odontología, UPD3859813 pág. 163, 2026-11-12).
+    del_titulo = {clave(p) for p in (acta.titulo or "").split()} | VOCABULARIO_DE_LOS_TITULOS | {"CON", "EN"}
+    if sum(clave(p) in del_titulo for p in palabras) * 2 >= len(palabras):
+        lectura.razonado.append(f"el nombre: la IA leyó «{leido}», que es del título; se dejó el del OCR")
+        _con_la_cola_del_renglon(lectura)
         return
     lectura.nombre_dudoso = False
     actual = acta.nombre or ""
@@ -3205,7 +3735,22 @@ def _fila_de_grado(
             f"{len(ilegibles)} página(s) sin texto legible: "
             + ", ".join(str(numero) for numero in ilegibles[:10])
         )
-    encabezado = ROTULO_DE_CEREMONIA if ceremonia else (acta.encabezado or NO_APLICA)
+    # La hoja que no es un acta dice lo que es: la resolución de los grados con
+    # su número, o la ceremonia con sus actas (Odontología, 2026-11-12).
+    encabezado = (acta.sesion or ROTULO_DE_CEREMONIA) if ceremonia else (acta.encabezado or NO_APLICA)
+    nombre_separado, titulo_separado = nombre_y_titulo_separados(acta.nombre, acta.titulo)
+    if not ceremonia and not nombre_limpio(nombre_separado, titulo_separado, nombres_conocidos()):
+        # Ninguna acta sin nombre si alguna lectura de su hoja lo trae: la de la
+        # IA primero y después las demás, por su peso (UPD3859802 pág. 110: la
+        # nota al margen «Post-grado» ganaba a «a la estudiante NURY VARELA
+        # ESCUDERO», que la IA sí leyó; 2026-11-12).
+        lecturas_de_la_hoja = [lectura.texto_de_la_ia or "", *(t for t, _ in sorted(lectura.textos, key=lambda x: -x[1]))]
+        for texto in lecturas_de_la_hoja:
+            hallado = nombre_limpio(leer_acta_de_grado([texto]).nombre, titulo_separado, nombres_conocidos()) if texto else None
+            if hallado and len(hallado.split()) >= 2:
+                avisos.append(f"el nombre se tomó de otra lectura de la hoja («{hallado}»): revíselo en el papel")
+                nombre_separado = hallado
+                break
     return FilaDeActa(
         archivo=archivo,
         acta=encabezado,
@@ -3222,10 +3767,286 @@ def _fila_de_grado(
         tipo=ROTULO_DE_CEREMONIA if ceremonia else TIPO_DE_GRADO,
         # Sin el título pegado, la basura ni la «X» de chequeo; y el título,
         # sin los renglones del formulario (Secretaría 3292, 2026-10-31).
-        nombre=nombre_limpio(acta.nombre, acta.titulo, nombres_conocidos()) or "",
-        titulo=titulo_limpio(acta.titulo) or "",
+        # Y sin la cédula vuelta letras, el lugar de expedición ni la cola del
+        # título partida en su renglón; el título con sus palabras del
+        # vocabulario (Odontología, 2026-11-12).
+        nombre=nombre_limpio(nombre_separado, titulo_separado, nombres_conocidos()) or "",
+        titulo=titulo_limpio(titulo_del_vocabulario(titulo_separado)) or "",
         cedula=acta.cedula or "",
     )
+
+
+def _lectura_del_libro_colectivo(tramo: TramoDeActa, parte: ActaDelLibro, foliadas: Sequence[int]) -> _Lectura:
+    """La lectura de un acta del libro colectivo, de su texto cortado: la de toda la promoción, o la de un graduado.
+
+    El acta que nombra a uno solo -- «a la estudiante NURY VARELA ESCUDERO»
+    (UPD3859802 pág. 110) -- sigue como las demás actas de grado: su nombre se
+    decide entre las lecturas y su PDF lleva su nombre. La que gradúa a varios
+    (``es_acta_colectiva``) no lleva nombre: lleva su lista, que lee
+    ``_leer_las_actas_colectivas``. Las dos leen sólo su texto, sin la cola de
+    la anterior que va en su primera hoja.
+
+    Su número es el de su encabezado -- «Acta (de Grado) Nº X» --, nunca el de
+    la resolución que la autoriza: el lector general tomaba «Resolución Nº
+    1813» cuando el encabezado decía «# Acta 02.» (2026-11-13). El acta anulada
+    -- lo dice el papel o su lista está en blanco -- no gradúa a nadie.
+    """
+    texto = parte.texto
+    acta = completar_acta(ActaDeConsejo(rotulo=ROTULO_DE_GRADO, pagina=1), texto)
+    desde, hasta = numero_y_rango(texto)
+    lectura = _Lectura(
+        tramo=tramo,
+        acta=acta,
+        foliadas=[p for p in foliadas if p in tramo.en_el_pdf],
+        piezas=_piezas_del_tramo(tramo),
+        del_libro=parte,
+        texto_de_la_ia=texto,
+    )
+    lectura.textos.append((texto, PESO_DE_LA_IA))
+    anulada = acta_anulada(texto)
+    colectiva = es_acta_colectiva(texto)
+    # La colectiva con su lista sin cédulas -- «Con Énfasis en …: Rosio
+    # Rodriguez Castro» (hoja 20) -- no está sin terminar: su lista la lee la IA.
+    sin_terminar = None if anulada or colectiva else acta_sin_terminar(texto)
+    if colectiva or (anulada and not leer_acta_de_grado([texto]).nombre) or sin_terminar:
+        lectura.colectiva = True
+        lectura.anulada = anulada or sin_terminar
+        lectura.sin_terminar = sin_terminar is not None
+        lectura.numero_hasta = hasta
+        lectura.acta = replace(
+            acta, numero=desde, nombre=None, cedula=None, examen=None, constancia=False, dudas=()
+        )
+    else:
+        if desde:
+            lectura.acta = replace(acta, numero=desde)
+        if anulada:
+            lectura.razonado.append(f"{anulada}: revísela en el papel")
+    if parte.cierre and not lectura.colectiva:
+        lectura.razonado.append(_CIERRE_EN_LA_SIGUIENTE.format(hoja=parte.cierre))
+    lectura.razonado.extend(parte.notas)
+    return lectura
+
+
+#: Cuántas cifras tiene el número de un acta de la serie larga del libro --
+#: «05408120», «12007003» --: el que sigue la serie de la anterior.
+LARGO_DE_LA_SERIE = 8
+
+
+def _titulo_comun_del_libro(colectivas: Sequence[_Lectura]) -> None:
+    """El título de las actas colectivas que no lo dicen: el más común del libro, con su nota.
+
+    El Acta 04 del 26-02-1982 (UPD3859802, hojas 66-68) gradúa «48
+    estudiantes» sin escribir el título, y su fila salía sin título (2026-11-13).
+    """
+    titulos = Counter(
+        titulo_limpio(lectura.acta.titulo) for lectura in colectivas if lectura.acta.titulo and not lectura.anulada
+    )
+    if not titulos:
+        return
+    comun = titulos.most_common(1)[0][0]
+    for lectura in colectivas:
+        if not lectura.acta.titulo and not lectura.anulada and comun:
+            lectura.acta = replace(lectura.acta, titulo=comun)
+            lectura.razonado.append(
+                f"el acta no dice el título: se le puso el más común del libro («{comun}»); revíselo en el papel"
+            )
+
+
+#: La nota del acta cuya lista o cuyas firmas siguen en la hoja en que empieza
+#: la siguiente: esa hoja va en los dos PDF y se cuenta en el de la siguiente.
+_CIERRE_EN_LA_SIGUIENTE = (
+    "el cierre del acta (su lista o sus firmas) sigue en la hoja {hoja}, donde empieza la siguiente acta: "
+    "va en los dos PDF y se cuenta en el de la siguiente"
+)
+
+
+def _piezas_del_tramo(tramo: TramoDeActa) -> list[PiezaDeActa]:
+    """El acta en una pieza por cada tramo seguido de sus hojas, en el orden de su PDF: «98, 2» son dos."""
+    return [PiezaDeActa(ACTA, desde, hasta) for desde, hasta in tramos_seguidos(tramo.en_el_pdf)]
+
+
+def _con_sus_hojas(filas: list[FilaDeActa], lecturas: Sequence[_Lectura], compartidas: Sequence[int]) -> list[FilaDeActa]:
+    """Las filas del libro colectivo con las hojas de su PDF y las que se cuentan en otro.
+
+    La hoja compartida se cuenta en el acta que empieza en ella -- la primera,
+    si empiezan dos --: su folio y su página no se suman dos veces en el FUID
+    (2026-11-13).
+    """
+    duenos: dict[int, int] = {}
+    for orden, lectura in enumerate(lecturas, start=1):
+        primera = lectura.tramo.en_el_pdf[0]
+        if primera in compartidas:
+            duenos.setdefault(primera, orden)
+    for orden, lectura in enumerate(lecturas, start=1):
+        for pagina in lectura.tramo.en_el_pdf:
+            if pagina in compartidas:
+                duenos.setdefault(pagina, orden)
+    con_hojas: list[FilaDeActa] = []
+    for fila in filas:
+        hojas = lecturas[fila.sesion - 1].tramo.en_el_pdf
+        en_otra = tuple(p for p in hojas if p in compartidas and duenos.get(p) != fila.sesion)
+        seguidas = hojas == tuple(range(fila.pagina_inicial, fila.pagina_final + 1))
+        con_hojas.append(
+            replace(fila, hojas_del_pdf=() if seguidas and not en_otra else hojas, hojas_contadas_en_otra=en_otra)
+        )
+    return con_hojas
+
+
+def _cruces_por_el_folio(lecturas: Sequence[_Lectura]) -> list[int]:
+    """Las hojas que van en su PDF detrás de una que no es su vecina del escaneo: el acta siguió por su folio."""
+    return sorted(
+        {
+            siguiente
+            for lectura in lecturas
+            for anterior, siguiente in zip(lectura.tramo.en_el_pdf, lectura.tramo.en_el_pdf[1:], strict=False)
+            if siguiente != anterior + 1
+        }
+    )
+
+
+
+def _filas_de_la_colectiva(
+    lectura: _Lectura, *, archivo: str, carpeta: str, ilegibles: list[int]
+) -> list[FilaDeActa]:
+    """Las filas de un acta colectiva: una por graduado, todas en el PDF del acta (UPD3859802, 2026-11-12).
+
+    Lo eligió el operador: un PDF por acta y una fila del FUID por graduado,
+    con su asunto «NOMBRE - TÍTULO» como las demás, desde = su número de acta
+    -- el del rango que le toca, si el rango cuadra con la lista -- y hasta =
+    su cédula. Los folios del acta, sólo en la fila del primero: en las demás
+    se dice dónde están, y el FUID las cuenta en 0 (``folios_en``). Sin lista
+    legible, una fila del acta, con la nota.
+    """
+    acta, tramo = lectura.acta, lectura.tramo
+    graduados = lectura.graduados or [GraduadoDelActa(orden=1, nombre=None)]
+    numeros, nota_del_rango = numeros_de_los_graduados(acta.numero, lectura.numero_hasta, len(graduados))
+    rotulo = rotulo_del_acta_colectiva(acta.numero, lectura.numero_hasta)
+    comunes: list[str] = []
+    anulada = lectura.anulada and not lectura.sin_terminar
+    if lectura.sin_terminar:
+        # Nadie la anuló: quedó a medio escribir (hoja 138). Su fila lo dice y
+        # el rótulo no dice ANULADA, porque el papel no lo dice.
+        comunes.append(f"{lectura.anulada}; no gradúa a nadie: revísela en el papel")
+    elif anulada:
+        # No gradúa a nadie: una fila del acta, sin graduado, que lo dice
+        # (UPD3859802, Acta 05 del 12-12-2003; 2026-11-13).
+        rotulo = f"{rotulo} {ANULADA}"
+        comunes.append(f"acta anulada: {lectura.anulada}; no gradúa a nadie")
+    elif not lectura.graduados:
+        comunes.append("acta colectiva: no se pudo leer la lista de sus graduados; revísela en el papel")
+    if acta.numero is None:
+        comunes.append("no se pudo leer el número del acta")
+    if lectura.fecha_descartada:
+        comunes.append(lectura.fecha_descartada)
+    elif acta.fecha is None:
+        comunes.append("no se pudo leer la fecha del grado")
+    if nota_del_rango:
+        comunes.append(nota_del_rango)
+    comunes.extend(lectura.razonado)
+    if lectura.deducido:
+        comunes.append(lectura.deducido)
+    if lectura.del_libro is not None and lectura.del_libro.cierre:
+        comunes.append(_CIERRE_EN_LA_SIGUIENTE.format(hoja=lectura.del_libro.cierre))
+    if ilegibles:
+        comunes.append(
+            f"{len(ilegibles)} página(s) sin texto legible: " + ", ".join(str(numero) for numero in ilegibles[:10])
+        )
+    conocidas = nombres_conocidos()
+    # Las actas que no escriben cédulas no avisan que no se leyó ninguna: no hay
+    # nada que leer (Acta 05410249 a 05410253, hoja 186).
+    trae_cedulas = any(g.cedula for g in lectura.graduados)
+    filas: list[FilaDeActa] = []
+    primero = ""
+    for puesto, (graduado_, numero) in enumerate(zip(graduados, numeros, strict=True)):
+        nombre, titulo_separado = _nombre_de_la_lista(
+            graduado_.nombre, _titulo_del_graduado(graduado_.titulo, acta.titulo), conocidas
+        )
+        avisos = list(comunes)
+        if lectura.graduados:
+            if not nombre:
+                avisos.append("no se pudo leer el nombre del graduado")
+            elif len(nombre.split()) < 2:
+                avisos.append(f"el nombre se leyó de una sola palabra («{nombre}»): revíselo en el papel")
+            if not graduado_.cedula and trae_cedulas:
+                avisos.append("no se pudo leer la cédula")
+            if graduado_.nota:
+                avisos.append(graduado_.nota)
+        if puesto == 0:
+            primero = nombre or f"el graduado {graduado_.orden} del acta"
+        else:
+            avisos.insert(0, f"acta colectiva: folios en la fila de {primero}")
+        filas.append(
+            FilaDeActa(
+                archivo=archivo,
+                acta=(f"{ROTULO_DE_GRADO} No. {numero}" if numero else NO_APLICA)
+                + (f" {ANULADA}" if anulada else ""),
+                fecha=acta.fecha.strftime("%d-%m-%Y") if acta.fecha else NO_APLICA,
+                folio_inicial=lectura.folios.inicial if lectura.folios.inicial is not None else NO_APLICA,
+                folio_final=lectura.folios.final if lectura.folios.final is not None else NO_APLICA,
+                folios=tramo.hojas or tramo.paginas,
+                resumen=NO_APLICA,
+                observaciones="; ".join(avisos),
+                carpeta=carpeta,
+                pagina_inicial=tramo.desde,
+                pagina_final=tramo.hasta,
+                numero=numero or "",
+                tipo=TIPO_DE_GRADO,
+                nombre=nombre,
+                titulo=_con_su_parentesis(titulo_limpio(titulo_del_vocabulario(titulo_separado)) or ""),
+                cedula=graduado_.cedula or "",
+                acta_colectiva=rotulo,
+                folios_en=primero if puesto else "",
+            )
+        )
+    return filas
+
+
+#: Lo que lleva detrás el rótulo de un acta anulada.
+ANULADA = "ANULADA"
+#: Lo que la limpieza puede quitarle a un nombre de la lista: lo que no es nombre.
+_NO_ES_NOMBRE_DE_LA_LISTA = re.compile(r"^(?:C|CC|CE|NO|N|DE|DEL|LA|Y|COMPLEMENTARI\w*|PROGRAMA|.{1,2})$")
+
+
+def _nombre_de_la_lista(
+    nombre: str | None, titulo: str | None, conocidas: Collection[str]
+) -> tuple[str, str | None]:
+    """El nombre de un graduado de la lista con la limpieza de siempre, si no le quita nada que sea nombre.
+
+    La limpieza (``nombre_y_titulo_separados``, ``nombre_limpio``) está hecha
+    para la frase «al estudiante …» del acta de uno, donde se pegan el título y
+    la cédula. En la lista le quitaba palabras del nombre: «EDGAR MERA
+    MONTALVO» quedaba EDGAR MONTALVO (por ENFERMERA), «MEDINA ARNEDO JULIA
+    TERESA», ARNEDO JULIA TERESA, y «MARÍA DEL CARMEN SÁBADO FREYOS», MARÍA DEL
+    CARMEN (UPD3859802, 2026-11-13). Si lo quitado es de su título, de la
+    cédula o basura de dos letras, vale; si no, el nombre va como se leyó.
+    """
+    separado, titulo_separado = nombre_y_titulo_separados(nombre, titulo)
+    limpio = nombre_limpio(separado, titulo_separado, conocidas) or ""
+    quedan = set(limpio.split())
+    quitadas = [palabra for palabra in (nombre or "").split() if palabra not in quedan]
+    if any(not es_un_titulo(palabra) and not _NO_ES_NOMBRE_DE_LA_LISTA.match(_plano_del_titulo(palabra)) for palabra in quitadas):
+        return " ".join((nombre or "").split()), titulo
+    return limpio, titulo_separado
+
+
+def _titulo_del_graduado(suyo: str | None, del_acta: str | None) -> str | None:
+    """El título del graduado: el suyo, el del acta con su énfasis detrás, o el del acta.
+
+    «Con énfasis en Neurocirugía» bajo el título común del acta es «ESPECIALISTA
+    EN … CON ENFASIS EN NEUROCIRUGIA» (UPD3859802, hoja 16; 2026-11-13).
+    """
+    if suyo and _plano_del_titulo(suyo).startswith("CON ENFASIS") and del_acta:
+        return f"{del_acta} {suyo}"
+    return suyo or del_acta
+
+
+def _plano_del_titulo(titulo: str) -> str:
+    return unicodedata.normalize("NFD", titulo).encode("ascii", "ignore").decode().upper().strip()
+
+
+def _con_su_parentesis(titulo: str) -> str:
+    """El título con el paréntesis que le falta cerrado: «ENFERMERA (O» es «ENFERMERA (O)»."""
+    return f"{titulo})" if titulo.count("(") > titulo.count(")") else titulo
 
 
 def _advertencias(

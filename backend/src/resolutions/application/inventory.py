@@ -242,7 +242,16 @@ def _filas_de_actas_divididas(report: dict) -> list[dict[str, object]] | None:
         if salida is None:
             continue
         desde, hasta = int(sesion["desde"]), int(sesion["hasta"])
-        acta = actas[orden - 1] if 1 <= orden <= len(actas) else {}
+        # Las del PDF en su orden cuando no van seguidas: el libro colectivo en
+        # el orden de su folio impreso (UPD3859802, 2026-11-13).
+        paginas = [int(p) for p in sesion.get("paginas") or range(desde, hasta + 1)]
+        # La primera fila de su sesión: un acta colectiva da una por graduado
+        # (UPD3859802, 2026-11-12). Sin sesión -- los informes de antes --, la
+        # fila de su mismo puesto.
+        acta = next(
+            (fila for fila in actas if fila.get("sesion") == orden),
+            actas[orden - 1] if 1 <= orden <= len(actas) and not actas[orden - 1].get("sesion") else {},
+        )
         filas.append(
             {
                 "code": acta.get("numero") or "",
@@ -250,10 +259,10 @@ def _filas_de_actas_divididas(report: dict) -> list[dict[str, object]] | None:
                 "type": report.get("tipo_documental") if acta else None,
                 "fecha": _sin_na(acta.get("fecha")),
                 "file_name": salida,
-                "page_count": hasta - desde + 1,
+                "page_count": len(paginas),
                 "first_page": desde,
                 "last_page": hasta,
-                "page_numbers": list(range(desde, hasta + 1)),
+                "page_numbers": paginas,
                 "attachments": [],
             }
         )

@@ -37,6 +37,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
+from .foliacion_del_escrito import foliacion_del_escrito
+from .sello import SELLOS_PARA_AVISAR, res_del_documento
+
 #: Por debajo de esta confianza la costura sale del margen de error y la decide
 #: la IA (o va a revisión, sin ella). Una prueba fuerte sola la deja en 0,3 y
 #: una débil en 0,45: las dos quedan fuera, y es a propósito -- una prueba
@@ -246,6 +249,46 @@ def _tramos(paginas: Sequence[int]) -> list[list[int]]:
     return tramos
 
 
+#: Con el segundo RE en un sello al pie, en cuántas costuras -- las que siguen a
+#: la hoja del sello anterior -- puede empezar su documento: la firma con el
+#: sello va al final del escrito, no donde empieza.
+COSTURAS_POR_SELLO_AL_PIE = 4
+
+
+def costuras_de_los_sellos(
+    documentos: Sequence[Sequence[int]],
+    sellos: Mapping[int, str],
+    al_pie: frozenset[int] | set[int] = frozenset(),
+) -> dict[int, str]:
+    """Las costuras de unión que dos sellos con RE distinto en un documento ponen en duda.
+
+    Lo pidió el operador el 2026-11-12: un PDF con dos o más sellos de RE
+    distinto se avisa y lo revisa el agente. Por la hoja derecha de cada
+    costura, el motivo. Desde el segundo RE (hoja ``s``):
+
+    - con el sello en la cabeza, la costura ``s-1|s``: ahí empieza su escrito;
+    - con el sello al pie, su escrito empieza antes: las costuras que siguen a
+      la hoja del sello anterior, como mucho ``COSTURAS_POR_SELLO_AL_PIE``.
+    """
+    marcadas: dict[int, str] = {}
+    for paginas in documentos:
+        orden = sorted(paginas)
+        suyas = set(orden)
+        res = res_del_documento(orden, sellos)
+        if len(res) < SELLOS_PARA_AVISAR:
+            continue
+        for (anterior, su_re), (hoja, otro_re) in zip(res, res[1:], strict=False):
+            motivo = f"la hoja {hoja} trae el sello {otro_re} y este PDF ya lleva el {su_re} de la hoja {anterior}"
+            if hoja in al_pie:
+                candidatas = [p for p in orden if anterior < p <= hoja][:COSTURAS_POR_SELLO_AL_PIE]
+            else:
+                candidatas = [hoja]
+            for derecha in candidatas:
+                if derecha - 1 in suyas:
+                    marcadas.setdefault(derecha, motivo)
+    return marcadas
+
+
 def revisar_costuras(
     documentos: Sequence[Sequence[int]],
     textos: Mapping[int, str],
@@ -253,6 +296,9 @@ def revisar_costuras(
     abren: frozenset[int] | set[int] = frozenset(),
     cruces: frozenset[int] | set[int] = frozenset(),
     una_persona_por_pdf: bool = False,
+    sellos: Mapping[int, str] | None = None,
+    al_pie: frozenset[int] | set[int] = frozenset(),
+    folios: Mapping[int, int] | None = None,
 ) -> list[Costura]:
     """Cada costura de la entrega, con lo que el papel dice en contra.
 
@@ -264,7 +310,16 @@ def revisar_costuras(
       Data con su acuerdo de pago --. Su salto no es una prueba.
     - ``una_persona_por_pdf``: en los diplomas, las actas de grado y las
       historias, dos cédulas distintas en un PDF son dos personas.
+    - ``sellos``: por hoja, el RE de su sello que se cree; ``al_pie``, las que
+      lo llevan junto a la firma. Dos RE distintos en un documento son una
+      prueba débil contra la unión donde empieza el segundo
+      (``costuras_de_los_sellos``, 2026-11-12): la decide la IA o va a revisión.
+    - ``folios``: el folio escrito a mano en la esquina de cada hoja. El que
+      sigue al de la anterior es prueba fuerte contra un corte; el 1 detrás de
+      un folio mayor, contra una unión (``foliacion_del_escrito``, 2026-11-12).
     """
+    por_los_sellos = costuras_de_los_sellos(documentos, sellos or {}, al_pie)
+    foliacion = foliacion_del_escrito(folios or {}, [p for paginas in documentos for p in paginas])
     de: dict[int, int] = {}
     for indice, paginas in enumerate(documentos):
         for pagina in paginas:
@@ -306,6 +361,8 @@ def revisar_costuras(
             continue
         if de[izquierda] != de[derecha]:
             pruebas = _pruebas_de_continuidad(texto(izquierda), texto(derecha))
+            if derecha in foliacion.continua:
+                pruebas.append(Prueba(foliacion.motivo(derecha), fuerte=True))
             if salta(derecha, sigue_a_la_de_delante=any(p.fuerte for p in pruebas)):
                 grueso = max(tramos_de[de[derecha]], key=len)
                 pruebas.append(
@@ -346,6 +403,10 @@ def revisar_costuras(
                         fuerte=False,
                     )
                 )
+        if derecha in por_los_sellos and derecha not in foliacion.continua:
+            pruebas.append(Prueba(por_los_sellos[derecha], fuerte=False))
+        if derecha in foliacion.abre:
+            pruebas.append(Prueba(foliacion.motivo(derecha), fuerte=True))
         costuras.append(
             Costura(
                 izquierda,
@@ -358,18 +419,26 @@ def revisar_costuras(
     return costuras
 
 
-def huella_para_la_ia(pagina: int, texto: str, clase: str | None = None) -> dict[str, object]:
-    """Lo poco que la IA necesita de una hoja: cómo empieza y cómo termina.
+def huella_para_la_ia(
+    pagina: int, texto: str, clase: str | None = None, marcas: str | None = None
+) -> dict[str, object]:
+    """Lo poco que la IA necesita de una hoja: cómo empieza, cómo termina y qué marcas trae.
 
     Nunca el título que le puso el bot: el error de 1004569 nació de un título
-    mal puesto, y un juez que lo ve tiende a darle la razón.
+    mal puesto, y un juez que lo ve tiende a darle la razón. Sí lo que el papel
+    dice de sí mismo fuera del texto (2026-11-12: «que el bot y los agentes
+    tengan la capacidad de razonar»): el folio escrito a mano en la esquina y
+    el sello de radicación con su RE, su fecha y sus folios (``marcas``).
     """
     limpio = " ".join((texto or "").split())
     if clase:
-        return {"p": pagina, "es": clase, "ini": limpio[:120]}
-    if not limpio:
-        return {"p": pagina, "es": "sin texto legible"}
-    huella: dict[str, object] = {"p": pagina, "ini": limpio[:LARGO_DEL_PRINCIPIO]}
-    if len(limpio) > LARGO_DEL_PRINCIPIO:
-        huella["fin"] = limpio[-LARGO_DEL_FINAL:]
+        huella: dict[str, object] = {"p": pagina, "es": clase, "ini": limpio[:120]}
+    elif not limpio:
+        huella = {"p": pagina, "es": "sin texto legible"}
+    else:
+        huella = {"p": pagina, "ini": limpio[:LARGO_DEL_PRINCIPIO]}
+        if len(limpio) > LARGO_DEL_PRINCIPIO:
+            huella["fin"] = limpio[-LARGO_DEL_FINAL:]
+    if marcas:
+        huella["marcas"] = marcas
     return huella

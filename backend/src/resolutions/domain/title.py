@@ -287,7 +287,17 @@ def lo_que_resuelve(textos: Iterable[str], max_length: int = MAX_LENGTH_DE_LO_QU
         else:
             resto = _PRIMER_ARTICULO.sub(" ", resto, count=1)
         resto = _sin_lo_que_va_delante(resto)
-        fin = _FIN_DE_LA_ORDEN.search(resto, _LETRAS_DE_LA_ORDEN)
+        # Los dos puntos tras «de» no cierran la orden: «Otorgar el título de:
+        # ENFERMERO (A), a través de la Secretaría General, a los siguientes
+        # egresados:» (la resolución de grados secretariales, 2026-11-12).
+        fin = next(
+            (
+                f
+                for f in _FIN_DE_LA_ORDEN.finditer(resto, _LETRAS_DE_LA_ORDEN)
+                if not (f.group(0).startswith(":") and re.search(r"\bDE\s*$", resto[: f.start()], re.IGNORECASE))
+            ),
+            None,
+        )
         orden = (resto[: fin.start()] if fin else resto).strip(" ,.-–—_«»\"“”")
         if len(orden) > max_length:
             orden = orden[:max_length].rsplit(" ", 1)[0].rstrip(" ,.-–—") + "…"

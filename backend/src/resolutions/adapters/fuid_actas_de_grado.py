@@ -22,6 +22,12 @@ rellenado así:
 Las hojas de la ceremonia que no son de ningún graduado -- listado,
 resolución, portada -- no llevan fila: en el modelo no la tienen.
 
+El acta colectiva del libro manuscrito (UPD3859802, 2026-11-12) gradúa a una
+promoción en un PDF: una fila por graduado, cada una con su asunto, su número
+del rango y su cédula, todas con el mismo archivo. Los folios del acta van en
+la fila del primero; en las demás, 0 (``folios_en``), con la nota de dónde
+están.
+
 Las actas manuscritas de examen de 1924-1946 (caja 00C003362) no traen número
 ni cédula: su asunto es el examen y el alumno -- «ACTA DE EXAMEN PREPARATORIO
 DE GRADO - QUINTO PREPARATORIO - NOMBRE» -- y desde y hasta, el folio del libro
@@ -49,6 +55,8 @@ NO_LEIDO = "N/A"
 #: Las filas que no van al FUID: las hojas de la ceremonia.
 CEREMONIA = "CEREMONIA DE GRADO"
 ACTA_DE_GRADO = "ACTA DE GRADO"
+#: Lo que lleva detrás el rótulo del acta anulada (``acta_consejo.ANULADA``).
+ANULADA = "ANULADA"
 
 #: «00C003284», también con el rótulo pegado: Medicina nombra sus cajas
 #: «CAJA00C003268», sin espacio, y con ``\b`` delante no se encontraba ninguna.
@@ -157,11 +165,26 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
     # Un acta con su vuelto es un folio y dos páginas.
     desde, hasta = fila.get("pagina_inicial"), fila.get("pagina_final")
     paginas = hasta - desde + 1 if isinstance(desde, int) and isinstance(hasta, int) and hasta >= desde else 1
+    if fila.get("hojas_del_pdf"):
+        # Las del PDF cuando no van seguidas: el libro colectivo en el orden de
+        # su folio impreso, «98, 2» (UPD3859802, 2026-11-13).
+        paginas = len(fila["hojas_del_pdf"])  # type: ignore[arg-type]
     inicial, final = fila.get("folio_inicial"), fila.get("folio_final")
     if _es_numero(inicial) and _es_numero(final) and final >= inicial:
         folios = final - inicial + 1
     else:
         folios = max(1, (paginas + 1) // 2)
+    # La hoja que comparte con la siguiente acta va en los dos PDF y se cuenta
+    # en la que empieza en ella: la carpeta no suma dos veces la misma hoja.
+    en_otra = len(fila.get("hojas_contadas_en_otra") or ())  # type: ignore[arg-type]
+    if en_otra:
+        paginas, folios = max(0, paginas - en_otra), max(0, folios - en_otra)
+    if fila.get("folios_en"):
+        # Un graduado de un acta colectiva que no es el primero: el acta y sus
+        # folios ya se cuentan en la fila del primero, y aquí van en 0 para que
+        # la carpeta no sume la misma hoja treinta veces (UPD3859802,
+        # 2026-11-12). Su nota dice en qué fila están.
+        folios = paginas = 0
     if examen:
         # El acta de examen no trae número ni cédula: desde y hasta, el folio
         # del libro en que está, y el examen primero en el asunto (lo eligió el
@@ -171,6 +194,11 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
             str(inicial) if _es_numero(inicial) else NO_LEIDO,
             str(final) if _es_numero(final) else NO_LEIDO,
         )
+    elif acta.endswith(ANULADA):
+        # El acta anulada no gradúa a nadie (UPD3859802, 2026-11-13): su fila
+        # es la del acta, que lo dice, y no la de un graduado en blanco.
+        asunto = " - ".join(parte for parte in (acta, _leido(fila.get("titulo"))) if parte)
+        desde_hasta = (_numero_del_acta(fila).removesuffix(f" {ANULADA}"), NO_LEIDO)
     else:
         # El graduado (2026-11-05): el asunto es el nombre y la especialidad,
         # el mismo texto con que se llama su PDF; desde, el número del acta; y
@@ -195,6 +223,47 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
         tomo="",
         otro="",
         folios=folios,
+        folios_siar=paginas,
+        soporte="",
+        frecuencia="",
+        notas=str(fila.get("observaciones") or ""),
+        pagina_inicial=fila.get("pagina_inicial"),  # type: ignore[arg-type]
+    )
+
+
+def fila_de_la_ceremonia(fila: Mapping[str, object]) -> FuidRow | None:
+    """La fila de la resolución que autoriza los grados; ``None`` para las demás hojas de la ceremonia.
+
+    Lo pidió el operador el 2026-11-12 (Odontología): la «RESOLUCIÓN No. 01633,
+    por medio de la cual se autorizan grados secretariales», con su lista de
+    egresados, es un documento del libro y va al FUID con su número; la hoja de
+    la ceremonia que sólo lista a los graduados, no.
+    """
+    acta = str(fila.get("acta") or "")
+    if not acta.startswith("RESOLUCION"):
+        return None
+    numero = re.search(r"\d{3,6}", acta)
+    fecha = _fecha_del_fuid(fila.get("fecha"))
+    # El número completo, con su año, como en las resoluciones de la caja 3303:
+    # «01633-2021» (el operador, 2026-11-12).
+    anio = re.search(r"(19|20)\d{2}$", str(fila.get("fecha") or ""))
+    completo = f"{numero.group(0)}-{anio.group(0)}" if numero and anio else (numero.group(0) if numero else NO_LEIDO)
+    caja, upd = ubicacion(str(fila.get("carpeta") or ""), str(fila.get("archivo") or ""))
+    desde, hasta = fila.get("pagina_inicial"), fila.get("pagina_final")
+    paginas = hasta - desde + 1 if isinstance(desde, int) and isinstance(hasta, int) and hasta >= desde else 1
+    return FuidRow(
+        orden=0,
+        asunto=acta,
+        codigo_trd="",
+        consecutivo_inicial=completo,
+        consecutivo_final=completo,
+        fecha_inicial=fecha,
+        fecha_final=fecha,
+        caja=caja,
+        carpeta=upd,
+        tomo="",
+        otro="",
+        folios=max(1, (paginas + 1) // 2),
         folios_siar=paginas,
         soporte="",
         frecuencia="",

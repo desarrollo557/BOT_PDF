@@ -783,6 +783,9 @@ export interface ComparacionDeLaEntrega {
   faltan: HallazgoDelCuadre[];
   pdf_sin_entregar: { pdf: string; motivo: string; intentado: boolean }[];
   registros_que_no_cuadran: { pdf: string; motivo: string }[];
+  /** Los PDF entregados con dos o más sellos de RE distinto, y lo que hizo el agente (2026-11-12). */
+  pdf_con_varios_sellos?: number;
+  varios_sellos?: { pdf: string; archivo: string; sellos: string; estado: string }[];
   completa: boolean;
 }
 

@@ -415,7 +415,9 @@ class PyMuPDFAssembler:
                 usados.add(name.lower())
                 target = destination / name
                 self._announce(index - 1, total, f"escribiendo {name} ({index}/{total})")
-                if self._write_guarded(origin, group.page_numbers, target, unwritable):
+                # En el orden del PDF: el del papel, salvo el acuerdo de pago,
+                # que lleva el suyo (2026-11-12).
+                if self._write_guarded(origin, group.en_el_pdf, target, unwritable):
                     written.append(target)
                     names[group.code.value] = name
                 self._announce(index, total, name)

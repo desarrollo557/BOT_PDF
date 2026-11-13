@@ -728,10 +728,21 @@ class TramoDeActa:
     #: un graduado es una hoja, con su reverso. ``None`` en las de consejo, que
     #: se cuentan por la tinta de la esquina.
     hojas: int | None = None
+    #: Sus páginas del PDF en el orden en que van en el suyo, cuando no son las
+    #: de ``desde`` a ``hasta`` seguidas: el acta del libro colectivo que sigue
+    #: en la hoja del folio siguiente, lejos en el escaneo, o que comparte su
+    #: última hoja con la que empieza en ella (UPD3859802, 2026-11-13).
+    #: ``desde`` y ``hasta`` son entonces la primera y la última de éstas.
+    paginas_del_pdf: tuple[int, ...] = ()
+
+    @property
+    def en_el_pdf(self) -> tuple[int, ...]:
+        """Sus páginas en el orden en que van en su PDF."""
+        return self.paginas_del_pdf or tuple(range(self.desde, self.hasta + 1))
 
     @property
     def paginas(self) -> int:
-        return self.hasta - self.desde + 1
+        return len(self.paginas_del_pdf) if self.paginas_del_pdf else self.hasta - self.desde + 1
 
 
 @dataclass(frozen=True, slots=True)

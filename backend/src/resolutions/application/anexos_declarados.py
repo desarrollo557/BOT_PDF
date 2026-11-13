@@ -22,7 +22,7 @@ la cadena.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from ..domain.anexos_declarados import (
@@ -909,6 +909,70 @@ def unir_el_acuerdo_de_pago(
         anexos,
         del_acuerdo,
     )
+
+
+#: Las partes del acuerdo de pago, por su lugar en el PDF.
+RECONOCIMIENTO, PAGARES, HABEAS, ANEXOS_DEL_ACUERDO = "reconocimiento", "pagares", "habeas", "anexos"
+
+
+def partes_del_acuerdo(paginas: Sequence[int], textos: Mapping[int, str]) -> list[tuple[str, list[int]]]:
+    """Las hojas de un acuerdo de pago en sus partes, en el orden del papel.
+
+    Cada hoja con título abre su parte: el reconocimiento de deuda, el pagaré o
+    su carta de instrucciones (pagarés), la Ley Habeas Data. La hoja sin título
+    sigue a la de delante -- la segunda hoja del pagaré es del pagaré --, salvo
+    el soporte -- la cédula, la factura -- y lo que no es de ninguna, que son
+    anexos; también el simulador de la financiación.
+    """
+    from ..domain.asunto_del_documento import (
+        ACUERDO_DE_PAGO,
+        LEY_HABEAS_DATA,
+        PIEZAS_DEL_ACUERDO,
+        titulo_del_documento,
+    )
+
+    partes: list[tuple[str, list[int]]] = []
+    for pagina in sorted(paginas):
+        texto = textos.get(pagina, "") or ""
+        # «DOCUMENTO» es el título de lo que no dice ninguno.
+        titulo = None if (leido := titulo_del_documento(texto)) == SIN_TIPO else leido
+        if titulo == ACUERDO_DE_PAGO:
+            parte = RECONOCIMIENTO
+        elif titulo in PIEZAS_DEL_ACUERDO and titulo != "SIMULADOR DE NEGOCIACION Y FINANCIACION":
+            parte = PAGARES
+        elif titulo == LEY_HABEAS_DATA:
+            parte = HABEAS
+        elif titulo or clase_de_la_hoja(texto) in SOPORTES or not partes:
+            parte = ANEXOS_DEL_ACUERDO
+        else:
+            # Sin título: sigue a la de delante.
+            partes[-1][1].append(pagina)
+            continue
+        partes.append((parte, [pagina]))
+    return partes
+
+
+def orden_del_acuerdo(
+    paginas: Sequence[int], textos: Mapping[int, str], *, reconocimiento_fechado: bool
+) -> tuple[int, ...]:
+    """Las hojas de un acuerdo de pago en el orden en que van en su PDF.
+
+    Lo dictó el operador el 2026-11-12: «cuando encuentres un reconocimiento de
+    deuda y acuerdo de pago, si la página principal tiene fecha, agregarla de
+    primero, luego los pagarés si tiene, luego Ley Habeas Data, y luego los
+    anexos; pero cuando no tenga fecha, colócalo de último: pagarés, Ley Habeas
+    Data, anexos, reconocimiento de deuda y acuerdo de pago». Dentro de cada
+    parte, el orden del papel. Lo que no trae reconocimiento queda como estaba.
+    """
+    partes = partes_del_acuerdo(paginas, textos)
+    if not any(parte == RECONOCIMIENTO for parte, _ in partes):
+        return tuple(sorted(paginas))
+    puestos = (
+        (RECONOCIMIENTO, PAGARES, HABEAS, ANEXOS_DEL_ACUERDO)
+        if reconocimiento_fechado
+        else (PAGARES, HABEAS, ANEXOS_DEL_ACUERDO, RECONOCIMIENTO)
+    )
+    return tuple(p for puesto in puestos for parte, hojas in partes if parte == puesto for p in hojas)
 
 
 def verificar_en_el_documento(

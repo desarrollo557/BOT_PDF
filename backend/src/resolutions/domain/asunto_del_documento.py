@@ -357,6 +357,9 @@ _TITULOS_DE_LA_EMPRESA: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("NOTIFICACION PERSONAL RECLAMOS", re.compile(r"^\W*NOTIFICACION\s+PERSONAL\s+RECLAMOS?\W*$")),
     ("RESPUESTA A RECLAMACION", re.compile(r"^\W*RESPUESTA\s+A\s+(?:LA\s+)?RECLAMACION\W*$")),
     ("NOTIFICACION PERSONAL", re.compile(r"^\W*NOTIFICACION\s+PERSONAL\W*$")),
+    # La de la aceptación del desistimiento también va sola: se la llevaba el
+    # acuerdo de pago de delante (7975593, UPD2460819 hoja 306, 2026-11-12).
+    ("NOTIFICACION PERSONAL", re.compile(r"^\W*NOTIFICACION\s+PERSONAL\s+DE\s+ACEPTACION\s+DEL\s+DESISTIMIENTO\W*$")),
     ("CONSTANCIA DE NOTIFICACION", re.compile(r"^\W*CONSTANCIA\s+DE\s+NOTIFICACION")),
 )
 #: Los formatos impresos que llevan su título en un recuadro de la cabecera,

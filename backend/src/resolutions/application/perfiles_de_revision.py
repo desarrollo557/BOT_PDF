@@ -152,10 +152,15 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
         clave="actas-de-grado",
         regla_de_fechas="grado",
         nombre="Actas de grado",
+        # La auditoría de cierre sólo sabe la habilidad, no si el libro era de
+        # actas colectivas: la regla dice la excepción para que la IA no la dé
+        # por error (UPD3859802, 2026-11-12). Al procesar, el libro colectivo
+        # se revisa con ``REGLAS_DEL_LIBRO_COLECTIVO`` y sin una persona por PDF.
         reglas=(
             "Libro de actas de grado: una por graduado, con su número de acta, su nombre, su título y su cédula. "
             "La hoja con el encabezado del acta abre; lo que sigue sin encabezado es de la misma. "
-            "Dos graduados distintos nunca van en el mismo PDF."
+            "Dos graduados distintos nunca van en el mismo PDF, salvo el acta colectiva («Acta de Grado Nº A a B», "
+            "o la que gradúa a una lista numerada de estudiantes), que lleva a todos sus graduados en un PDF."
         ),
         una_persona_por_pdf=True,
         alias=("actas de grado", "acta de grado", "acta"),
@@ -250,6 +255,17 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
         reglas="PDF que ya son un documento cada uno: no se dividen.",
         alias=("archivos ya separados", "inventory", "inventario"),
     ),
+)
+
+#: Las del libro de actas colectivas manuscrito (Odontología, UPD3859802,
+#: 2026-11-12): un PDF por acta con toda su promoción. Las dice el revisor al
+#: procesarlo, con una persona por PDF apagada.
+REGLAS_DEL_LIBRO_COLECTIVO = (
+    "Libro manuscrito de actas de grado colectivas: un PDF por acta, y cada acta gradúa a varios estudiantes "
+    "(«Acta de Grado Nº 05408120 a 05408124», con su lista numerada de nombres y cédulas), así que varias "
+    "cédulas en un PDF son su promoción y no un error. Un acta abre en su encabezado o en «En la ciudad de "
+    "…», aunque sea a mitad de hoja; la hoja en que acaba una y empieza la siguiente va con la que empieza. La "
+    "lista y las firmas que siguen son de la misma acta."
 )
 
 #: El de lo que no se reconoce: los patrones de cualquier papel.

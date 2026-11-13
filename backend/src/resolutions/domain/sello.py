@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
 
@@ -51,6 +51,9 @@ _TINTA = re.compile(
     r"RECIBIDO\s+NO|NO\s+IM[PB]LICA|IM[PB]LICA\s*A?C?EPTACI|FECHA\s+[DC]E\s+RECIBIDO"
     # «No. DE RADICACIÓN» del sello, no la «radicación» de cualquier carta.
     r"|N\W{0,3}\s*D[EF]\s+RADICACI"
+    # Y sus otros rótulos, cuando la capa rompe los de arriba: «No DE FOLIOS;
+    # OIR. NOTIFLCACIGV» (7975593, UPD3126960 pág. 44, 2026-11-12).
+    r"|\bN\W?[O0]\s*D[EF]\s+F[O0]L[I1L][O0]S\W{0,2}\s*[DO0]\W?[I1]?R\W{0,3}\s*N[O0]TIF"
 )
 
 #: Trece cifras seguidas -- con algún espacio que mete la OCR -- detrás de una
@@ -196,6 +199,195 @@ def validar_el_re_a_mano(
     return None, f"la oficina {oficina} no es ninguna que radique"
 
 
+#: «No DE RADICACION: RE 23102021094662», «No DE RADIACION LE 23102021041663»:
+#: el número a mano del sello de tinta como lo transcribe la IA.
+_NUMERO_DE_RADICACION = re.compile(r"RADI\w{0,5}N\W{0,3}\s*(?:[RL]\s?[EF]\W?\s*)?((?:\d\s?){13,15})")
+
+
+def radicado_con_una_cifra_de_mas(
+    texto: str, conocidos: Iterable[str] = (), anio: int | None = None, oficinas: Iterable[str] = ()
+) -> str | None:
+    """El RE a mano del sello de tinta cuando la IA lo leyó con una cifra de más.
+
+    En 7975593 (2026-11-12) la IA leyó «RE 23102021094662» por RE2310202104662
+    y «LE 23102021041663» por RE2310202104663: catorce cifras. Se prueba a
+    quitar cada una; vale la que deja un RE de una oficina que radica, del año
+    del sello. Si quedan varias, la que ya está escrita en la caja; si no, no se
+    adivina.
+    """
+    validas = OFICINAS_QUE_RADICAN | frozenset(oficinas)
+    conocidos = {c.upper() for c in conocidos}
+    for hallado in _NUMERO_DE_RADICACION.finditer(_plano(texto or "")):
+        cifras = re.sub(r"\D", "", hallado.group(1))
+        if len(cifras) == 13:
+            candidatas = {cifras}
+        elif len(cifras) == 14:
+            candidatas = {cifras[:i] + cifras[i + 1 :] for i in range(14)}
+        else:
+            continue
+        posibles = sorted(
+            c for c in candidatas if c[:4] in validas and c[4:6] == "20" and (anio is None or c[4:8] == str(anio))
+        )
+        en_la_caja = [c for c in posibles if f"RE{c}" in conocidos]
+        if len(en_la_caja) == 1:
+            return f"RE{en_la_caja[0]}"
+        if len(posibles) == 1:
+            return f"RE{posibles[0]}"
+    return None
+
+
+#: Un radicado impreso en el texto de la caja, con «RE» o sin él: «RE 2310202321859»,
+#: «… ES RECLAMACION No- 2310202403978».
+_RADICADO_IMPRESO = re.compile(r"(?<![\d])(?:RE\s?)?(\d{4})(20\d{7})(?!\d)")
+
+
+def radicados_impresos(texto: str) -> set[str]:
+    """Los RE que trae impresos -- o a máquina -- el texto de una hoja, de una oficina que radica."""
+    return {
+        f"RE{oficina}{resto}"
+        for oficina, resto in _RADICADO_IMPRESO.findall((texto or "").upper())
+        if oficina in OFICINAS_QUE_RADICAN
+    }
+
+
+def el_impreso_a_una_cifra(leido: str | None, impresos: Iterable[str]) -> str | None:
+    """El RE impreso en la caja que está a una sola cifra del leído a mano en un sello, si es uno solo; si no, ``None``.
+
+    Lo impreso es texto fiable; la letra a mano, no. En 7975593 (UPD3126960,
+    2026-11-13) la IA leyó «…03578» en el sello de la reclamación de B33, y el
+    recurso de B44 dice impreso «ES RECLAMACION No- 2310202403978»; leyó
+    «…21059» en el de B9, y la hoja trae impreso «RE 2310202321859». Leído
+    igual a uno impreso, o a una cifra de dos, no se toca.
+    """
+    if not leido or not _RE_ENTERO.fullmatch(leido.upper()):
+        return None
+    leido = leido.upper()
+    impresos = {i.upper() for i in impresos if _RE_ENTERO.fullmatch(i.upper())}
+    if leido in impresos:
+        return None
+    cerca = [i for i in impresos if sum(a != b for a, b in zip(i, leido, strict=True)) == 1]
+    return cerca[0] if len(cerca) == 1 else None
+
+
+#: Lo que la IA transcribe tras «RE» en la letra a mano: «REB3102021034V2»,
+#: «RE 23/02021/03442», «KEP310202105408».
+_RE_DIFUSO = re.compile(r"\b[RKL]\s?[EF]\s?[-.:]?\s?([0-9A-Z/][0-9A-Z/ ]{10,17})")
+#: Cuántos cambios -- letras por cifras, una barra de más -- se le perdonan a
+#: la lectura a mano para casarla con un RE de la caja, y cuántos más tiene que
+#: tener el segundo más parecido para que no haya duda.
+CAMBIOS_QUE_SE_PERDONAN = 2
+VENTAJA_SOBRE_EL_SEGUNDO = 2
+#: Con menos caracteres que estos, la lectura no se casa con ningún RE.
+LARGO_MINIMO_DE_LA_LECTURA = 11
+
+
+def _cambios(una: str, otra: str) -> int:
+    """La distancia de edición entre dos cadenas: cuántas letras hay que cambiar, quitar o poner."""
+    anterior = list(range(len(otra) + 1))
+    for i, a in enumerate(una, start=1):
+        actual = [i]
+        for j, b in enumerate(otra, start=1):
+            actual.append(min(anterior[j] + 1, actual[j - 1] + 1, anterior[j - 1] + (a != b)))
+        anterior = actual
+    return anterior[-1]
+
+
+#: Desde cuántas cifras lo que sigue a «RE» es un RE a mano y no una palabra:
+#: «RECIBIDO NO IMPLICA» no tiene ninguna; «KEP310202105408», doce.
+CIFRAS_DE_UN_RE_A_MANO = 8
+
+
+def _lecturas_de_un_re(texto: str) -> list[str]:
+    """Lo que sigue a cada «RE» de la lectura y tiene cifras de RE, sin los blancos."""
+    return [
+        re.sub(r"\s", "", hallado.group(1))[:16]
+        for hallado in _RE_DIFUSO.finditer((texto or "").upper())
+        if sum(c.isdigit() for c in hallado.group(1)) >= CIFRAS_DE_UN_RE_A_MANO
+    ]
+
+
+def trae_un_re_a_mano(texto: str) -> bool:
+    """Si la lectura del sello trae algo escrito como un RE, se lea o no: «KEP310202105408»."""
+    return bool(_lecturas_de_un_re(texto))
+
+
+def el_conocido_por_la_lectura(texto: str, conocidos: Iterable[str]) -> str | None:
+    """El RE de la caja que casa con la lectura a mano ilegible del sello, si casa uno solo y sin duda.
+
+    La IA deja la letra a mano con letras por cifras y barras de más:
+    «REB3102021034V2» y «RE 23/02021/03442» son el RE2310202103442 que el
+    escrito imprime en sus propias hojas (7975593, UPD2460819 págs. 52 y 95;
+    2026-11-13). Vale el RE a ``CAMBIOS_QUE_SE_PERDONAN`` cambios o menos, si el
+    segundo más parecido está a ``VENTAJA_SOBRE_EL_SEGUNDO`` más. ``conocidos``
+    son los RE impresos en las hojas que cubren los folios del sello, no los
+    de toda la caja: contra toda la caja la hoja 52 quedaba a dos del suyo y a
+    tres del RE…05402, y «KEP310202105408» (hoja 176) a uno de la errata
+    RE8310202105408 que el cliente repite en sus cartas.
+    """
+    conocidos = sorted({c.upper()[2:] for c in conocidos if _RE_ENTERO.fullmatch(c.upper())})
+    if not conocidos:
+        return None
+    for leido in _lecturas_de_un_re(texto):
+        # Sin los blancos puede quedar corto: «RE 2 3 1 0 …» con huecos. Un RE
+        # tiene trece cifras; con menos de once no hay con qué casarlo.
+        if len(leido) < LARGO_MINIMO_DE_LA_LECTURA:
+            continue
+        largos = range(min(12, len(leido)), len(leido) + 1)
+        distancias = sorted((min(_cambios(leido[:largo], c) for largo in largos), c) for c in conocidos)
+        mejor, cual = distancias[0]
+        segundo = distancias[1][0] if len(distancias) > 1 else None
+        if mejor <= CAMBIOS_QUE_SE_PERDONAN and (segundo is None or segundo >= mejor + VENTAJA_SOBRE_EL_SEGUNDO):
+            return f"RE{cual}"
+    return None
+
+
+def el_de_su_tramite(leido: str | None, del_tramite: str | None) -> str | None:
+    """El RE del trámite del documento cuando el de su sello, leído a mano, está a una sola cifra de él; si no, ``None``.
+
+    El recurso se radica con el RE de la reclamación que recurre. En 7975593
+    (UPD3126960 pág. 9, 2026-11-13) la IA leyó «Re 231020232-1059» en el sello
+    del recurso del trámite RE2310202321859: una cifra cambiada. Sólo contra el
+    RE de su propio trámite, nunca contra cualquiera de la caja: en la misma
+    caja RE2310202403578 y RE2310202403978 son a una cifra y pueden ser dos.
+    """
+    if not leido or not del_tramite:
+        return None
+    leido, del_tramite = leido.upper(), del_tramite.upper()
+    if not (_RE_ENTERO.fullmatch(leido) and _RE_ENTERO.fullmatch(del_tramite)) or leido == del_tramite:
+        return None
+    return del_tramite if sum(a != b for a, b in zip(leido, del_tramite, strict=True)) == 1 else None
+
+
+def re_del_sello(sello: Sello, oficinas_de_la_caja: Iterable[str] = ()) -> tuple[str | None, str]:
+    """El RE de un sello que se cree, y la nota del agente: el impreso tal cual, el de tinta validado."""
+    if sello.clase != "tinta":
+        impreso = (sello.radicado or "").strip().upper()
+        return (impreso if _RE_ENTERO.fullmatch(impreso) else None), ""
+    if not sello.radicado:
+        return None, ""
+    return validar_el_re_a_mano(sello.radicado, sello.fecha, oficinas_de_la_caja)
+
+
+#: Desde cuántos sellos con RE distinto en un mismo PDF se avisa y lo revisa el
+#: agente (el operador, 2026-11-12: «cuando me dividas un PDF y tenga más de 2
+#: sellos, me avises»; precisó: desde 2, contando cada RE una vez).
+SELLOS_PARA_AVISAR = 2
+
+
+def res_del_documento(paginas: Iterable[int], res: Mapping[int, str]) -> list[tuple[int, str]]:
+    """Los RE distintos de los sellos de un documento, cada uno con su primera hoja, en el orden del papel.
+
+    ``res`` es, por hoja, el RE de su sello que se cree (``re_del_sello``). El
+    mismo RE en varias hojas -- el sello repetido en la copia -- cuenta una vez.
+    """
+    vistos: dict[str, int] = {}
+    for pagina in sorted(paginas):
+        radicado = res.get(pagina)
+        if radicado and radicado not in vistos:
+            vistos[radicado] = pagina
+    return [(pagina, radicado) for radicado, pagina in vistos.items()]
+
+
 #: Cuántas letras se aceptan en lugar de cifras al leer un radicado roto.
 LETRAS_QUE_SE_PERDONAN = 2
 
@@ -283,7 +475,7 @@ def radicado_por_la_cola(texto: str, conocidos: Iterable[str]) -> str | None:
 #: y como la IA lee la letra a mano: «RE23102023214Y3», «RE 23/0 2024 003 48».
 #: Sin pasar de renglón: lo de debajo -- el «DIR.» de «DIR. NOTIFICACIÓN» --
 #: no es parte del número (UPD3102756 pág. 42 daba RE…00301 con ese «DI»).
-_RE_ESCRITO = re.compile(r"R[ \t]?[EF£][ \t]?[-.:]?[ \t]?((?:[0-9OILYSZBGQTD|/][ \t]?){11,16})")
+_RE_ESCRITO = re.compile(r"R[ \t]?[EF£][ \t]?[-.:]?[ \t]?((?:[0-9OILYSZBGQTD|/](?:[ \t]|[.-](?=\d))?){11,16})")
 #: Lo que la letra a mano hace de cada cifra al leerla (UPD3102756, sellos de
 #: Bolívar Sur leídos por la IA): la Y es un 4, la D un 0.
 _LETRA_POR_CIFRA = {
@@ -355,10 +547,12 @@ def radicado_escrito(texto: str, anio: int | None = None) -> str | None:
         anio = int(recibido.group(3))
     for hallado in _RE_ESCRITO.finditer(plano):
         # Los finales posibles: donde acaba cada grupo, con no más letras de
-        # las que se perdonan.
+        # las que se perdonan. El punto y el guion entre grupos también los
+        # separan: «RE23102024.03978», «Re 231020232-1059» (7975593, UPD3126960
+        # págs. 44 y 9; 2026-11-13).
         crudos: dict[int, str] = {}
         crudo = ""
-        for grupo in hallado.group(1).split():
+        for grupo in re.sub(r"(?<=\d)[.-](?=\d)", " ", hallado.group(1)).split():
             # Un grupo sin cifras ya es otra palabra: la «O» de «OFICINA».
             if not any(c.isdigit() for c in grupo):
                 break
@@ -469,7 +663,29 @@ def folios_del_sello_de_tinta(texto: str) -> int | None:
         palabra, cifra = hallado.group(1), int(hallado.group(2))
         if _NUMEROS_EN_LETRA.get(palabra) == cifra and cifra > 0:
             return cifra
+    # Y como se llena en Magangué (7975593, 2026-11-12): «(5) cinco Folios»,
+    # con la cifra delante y la palabra que dice lo mismo; «8 folios.» o «No DE
+    # FOLIOS: 10», la cifra sola junto a la palabra «folios». Nunca un número
+    # largo: el «No DE FOLIOS: 202260173102» es el número interno, corrido de
+    # renglón.
+    for hallado in _CIFRA_Y_PALABRA.finditer(plano):
+        cifra, palabra = int(hallado.group(1)), hallado.group(2)
+        if _NUMEROS_EN_LETRA.get(palabra) == cifra and cifra > 0:
+            return cifra
+    for patron in (_CIFRA_Y_FOLIOS, _FOLIOS_Y_CIFRA):
+        if (hallado := patron.search(plano)) and 0 < int(hallado.group(1)) <= FOLIOS_DE_UN_ESCRITO:
+            return int(hallado.group(1))
     return None
+
+
+#: «(5) CINCO FOLIOS».
+_CIFRA_Y_PALABRA = re.compile(r"\(\s*(\d{1,2})\s*\)\s*([A-Z]{2,12})")
+#: «8 FOLIOS».
+_CIFRA_Y_FOLIOS = re.compile(r"(?<![\d.,/-])(\d{1,2})\s*F[O0]L[I1L][O0]S?\b")
+#: «No DE FOLIOS: 10».
+_FOLIOS_Y_CIFRA = re.compile(r"D[EF]\s+F[O0]L[I1L][O0]S\W{0,3}\s*(\d{1,2})(?![\d.,/-])")
+#: Más folios que éstos no los declara un escrito de la caja: es una lectura mala.
+FOLIOS_DE_UN_ESCRITO = 60
 
 
 def _fecha(plano: str) -> date | None:

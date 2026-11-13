@@ -38,10 +38,22 @@ class PageGroup:
     #: (lo pidió el operador el 2026-11-11: «cuando un documento tenga su sello…
     #: agarra el RE para colocarlo en el nombre»).
     re_en_el_nombre: bool = False
+    #: El orden en que sus hojas se escriben en el PDF, si no es el del papel:
+    #: el acuerdo de pago, con su reconocimiento primero si está fechado y si no
+    #: al final (lo dictó el operador el 2026-11-12). ``page_numbers`` sigue en el
+    #: orden del papel, que es con el que se inventaría y se fecha.
+    orden: tuple[int, ...] | None = None
 
     @property
     def size(self) -> int:
         return len(self.page_numbers)
+
+    @property
+    def en_el_pdf(self) -> list[int]:
+        """Sus hojas en el orden en que van en el PDF escrito."""
+        if self.orden is not None and sorted(self.orden) == sorted(self.page_numbers):
+            return list(self.orden)
+        return list(self.page_numbers)
 
 
 @dataclass(frozen=True, slots=True)

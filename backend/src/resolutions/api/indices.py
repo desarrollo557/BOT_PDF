@@ -184,6 +184,13 @@ def fila_de_proceso(job, destino: str | Path | None = None):
     comprobada = informe.get("comprobacion_de_la_entrega") or {}
     if comprobada.get("problemas"):
         avisos.append(comprobada.get("resumen"))
+    # Los PDF con dos o más sellos de RE distinto, con lo que hizo el agente
+    # (el operador, 2026-11-12: «me avises»).
+    varios = [v for v in informe.get("varios_sellos") or [] if isinstance(v, dict)]
+    if varios:
+        from .worker.correspondencia import aviso_de_varios_sellos
+
+        avisos.append(aviso_de_varios_sellos(varios))
     return FilaDeProceso(
         pdf=Path(job.filename).name,
         habilidad=habilidad_del_proceso(job),

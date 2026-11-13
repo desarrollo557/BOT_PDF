@@ -199,7 +199,8 @@ def comprobar_en_el_disco(
     for grupo in agrupacion.groups:
         nombre = assembly.written.get(grupo.code.value)
         if nombre:
-            esperado[nombre] = [p for p in grupo.page_numbers if p not in assembly.unwritable_pages]
+            # En el orden en que se escribió: el acuerdo de pago lleva el suyo.
+            esperado[nombre] = [p for p in grupo.en_el_pdf if p not in assembly.unwritable_pages]
     return comprobar_archivos(origen, esperado, directorio, huellas)
 
 

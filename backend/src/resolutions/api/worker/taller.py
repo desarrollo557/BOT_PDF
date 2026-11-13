@@ -472,6 +472,34 @@ class Taller:
             encabezado="Texto del acta de grado",
         )
 
+    def lector_de_actas_colectivas(self):
+        """Quien saca con la IA, del texto de un acta colectiva, su número, su fecha y la lista de sus graduados.
+
+        El libro manuscrito de Odontología (UPD3859802, 2026-11-12): cada acta
+        gradúa a una promoción -- treinta y tantos renglones «1. Castillo
+        Castilla Freddy C.C. 45.761.728 de Cartagena» --, y la respuesta es una
+        línea por graduado: de ahí el tope de tokens, muy por encima del de un
+        graduado. Lee el texto que el OCR de pago ya sacó, no la imagen: se
+        paga por tokens. Con «Solo OCR» no hay, y la lista se lee por regla.
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_resumen import MistralResumenConfig, MistralResumidor
+        from ...domain.acta_grado import INSTRUCCIONES_DEL_ACTA_COLECTIVA
+
+        return MistralResumidor(
+            api_key=llave,
+            config=MistralResumenConfig(max_tokens=2500, temperatura=0.0),
+            consumo=self.consumo,
+            turnos=self.turnos_de_ia,
+            instrucciones=INSTRUCCIONES_DEL_ACTA_COLECTIVA,
+            encabezado="Texto del acta de grado colectiva",
+        )
+
     def verificador_de_fichas(self):
         """Quien mira otra vez, con la IA, las casillas que le faltan a la ficha de un estudiante.
 

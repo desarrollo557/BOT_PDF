@@ -53,6 +53,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import PurePath
 
+from ..domain.acta_grado import es_libro_de_actas_colectivas
 from ..domain.auditoria import NO_AUDITADO, PdfAuditado, veredicto
 from ..domain.auditoria_de_filas import (
     error_de_fecha,
@@ -81,7 +82,7 @@ from .auditoria_de_filas import (
 from .control import Cancelled
 from .fuid import FuidRow
 from .integridad_de_los_datos import auditar_los_datos
-from .perfiles_de_revision import perfil_de
+from .perfiles_de_revision import REGLAS_DEL_LIBRO_COLECTIVO, perfil_de
 from .ports import JuezDeCosturas, JuezDeDatos
 from .revisor_de_cortes import COSTURAS_POR_PREGUNTA
 from .revisor_de_fechas import (
@@ -112,6 +113,9 @@ def auditar_un_pdf(
     juez_de_datos: JuezDeDatos | None = None,
     filas_del_indice_electronico: Sequence[Mapping[str, object]] | None = None,
     lo_leido: Sequence[Mapping[str, object]] = (),
+    varios_sellos: Sequence[Mapping[str, object]] = (),
+    folios: Mapping[int, int] | None = None,
+    marcas: Mapping[int, str] | None = None,
 ) -> PdfAuditado:
     """Lo que la auditoría encuentra en un PDF entregado.
 
@@ -165,11 +169,23 @@ def auditar_un_pdf(
     # piezas del acuerdo y la Habeas Data --; las de una persona por PDF, dos
     # cédulas sí.
     patrones = perfil_de(habilidad).patrones(textos)
+    if perfil_de(habilidad).clave == "actas-de-grado" and es_libro_de_actas_colectivas(list(textos.values())):
+        # El libro de actas colectivas (UPD3859802, 2026-11-12) lleva en el PDF
+        # de cada acta a toda su promoción: varias cédulas no son un error. Se
+        # reconoce en el mismo texto que la auditoría ya tiene; si no se
+        # reconoce -- la capa es basura --, la regla del perfil dice la excepción
+        # a la IA que decide lo dudoso.
+        patrones = perfil_de(habilidad).patrones(
+            textos, una_persona_por_pdf=False, reglas=REGLAS_DEL_LIBRO_COLECTIVO
+        )
     costuras = revisar_costuras(
         documentos,
         textos,
         cruces=patrones.cruces,
         una_persona_por_pdf=patrones.una_persona_por_pdf,
+        # El folio a mano de cada hoja, como lo leyó el revisor al procesar: el
+        # que sigue es prueba contra un corte y el 1 contra una unión (2026-11-12).
+        folios=folios,
     )
     fuera = [c for c in costuras if c.fuera_del_margen]
     preguntar = []
@@ -190,7 +206,9 @@ def auditar_un_pdf(
         ventana = sorted(
             {q for c in tanda for q in (c.izquierda - 1, c.izquierda, c.derecha, c.derecha + 1) if q in todas}
         )
-        huellas = [huella_para_la_ia(q, textos.get(q, "") or "") for q in ventana]
+        # Con las marcas de cada hoja -- folio a mano, sello --, para que la IA
+        # razone con lo mismo que el revisor (2026-11-12).
+        huellas = [huella_para_la_ia(q, textos.get(q, "") or "", marcas=(marcas or {}).get(q)) for q in ventana]
         preguntadas = len(tanda)
         try:
             respuesta = juez.decidir(huellas, [(c.izquierda, c.derecha) for c in tanda], patrones.reglas) or {}
@@ -251,18 +269,62 @@ def auditar_un_pdf(
             f"el índice de su carpeta tiene {filas_del_indice} filas y la carpeta {pdf_en_su_carpeta} PDF"
         )
 
+    # Los PDF entregados con dos o más sellos de RE distinto (2026-11-12): se
+    # avisan todos; el que el agente dejó en revisión es una duda.
+    avisos, de_los_sellos = avisos_de_varios_sellos(conciliacion.archivos, varios_sellos)
+    dudas.extend(de_los_sellos)
+
     return PdfAuditado(
         pdf,
         veredicto(errores, dudas),
-        tuple(errores + dudas),
+        tuple(errores + dudas + avisos),
         paginas=len(origen),
         archivos=len(entregados),
         costuras=len(costuras),
         dentro_del_margen=len(costuras) - len(fuera),
         preguntadas_a_la_ia=preguntadas,
         habilidad=habilidad,
-        extra={"fechas": dict(fechas.cuentas)} if fechas is not None else {},
+        extra={
+            **({"fechas": dict(fechas.cuentas)} if fechas is not None else {}),
+            **({"varios_sellos": len(avisos) + len(de_los_sellos)} if avisos or de_los_sellos else {}),
+        },
     )
+
+
+#: Lo que el agente dejó sin decidir de un PDF con varios sellos.
+_SELLOS_EN_REVISION = "en revisión"
+
+
+def avisos_de_varios_sellos(
+    archivos: Sequence[ArchivoEntregado], varios_sellos: Sequence[Mapping[str, object]]
+) -> tuple[list[str], list[str]]:
+    """Los PDF entregados que siguen con dos o más sellos de RE distinto: (avisos, dudas).
+
+    Cada uno de ``varios_sellos`` (de la constancia) se casa con su PDF
+    entregado por sus hojas del original, no por su nombre: la carpeta del NIC
+    los renumera. El que el agente dejó «en revisión» es una duda; el que
+    confirmó la IA o explica una regla, un aviso que no cambia el veredicto.
+    """
+    por_hojas = {frozenset(p for p in archivo.paginas if p is not None): archivo for archivo in archivos}
+    avisos: list[str] = []
+    dudas: list[str] = []
+    for varios in varios_sellos:
+        try:
+            hojas = frozenset(int(p) for p in varios.get("paginas") or [])
+            sellos = [(int(s["pagina"]), str(s["re"])) for s in varios.get("sellos") or []]
+        except (TypeError, ValueError, KeyError):
+            continue
+        archivo = por_hojas.get(hojas)
+        if archivo is None or len(sellos) < 2:
+            continue
+        estado = str(varios.get("estado") or _SELLOS_EN_REVISION)
+        texto = (
+            f"«{archivo.nombre}» trae {len(sellos)} sellos de RE distinto: "
+            + ", ".join(f"{radicado} (pág. {pagina})" for pagina, radicado in sellos)
+            + f"; {estado}"
+        )
+        (dudas if estado == _SELLOS_EN_REVISION else avisos).append(texto)
+    return avisos, dudas
 
 
 # -- las fechas de lo entregado (2026-11-10) ------------------------------------------------

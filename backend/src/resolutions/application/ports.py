@@ -190,11 +190,13 @@ class VeredictoDeCostura:
 
     ``decision`` es «continua» -- la hoja derecha sigue el documento de la
     izquierda --, «abre» -- empieza otro -- o «no_se». ``cita`` es el texto del
-    papel en que se apoya: sin cita no se mueve nada.
+    papel en que se apoya: sin cita no se mueve nada. ``razon``, cómo razonó
+    la IA con las señales de las dos hojas (2026-11-12), para el informe.
     """
 
     decision: str
     cita: str = ""
+    razon: str = ""
 
 
 @dataclass(frozen=True, slots=True)

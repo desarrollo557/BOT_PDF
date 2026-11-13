@@ -93,6 +93,15 @@ class Constancia:
     #: origen. La auditoría de cierre lo suma al papel de esas hojas; sin él,
     #: daba por «no escrita» la fecha que la IA leyó bien (2026-11-11).
     lo_leido: list[dict] = field(default_factory=list)
+    #: Los PDF entregados con dos o más sellos de RE distinto, con lo que hizo el
+    #: agente (``correspondencia.pdf_con_varios_sellos``): la auditoría de cierre
+    #: los avisa todos, y duda de los que el agente dejó en revisión (2026-11-12).
+    varios_sellos: list[dict] = field(default_factory=list)
+    #: El folio escrito a mano en la esquina de cada hoja del origen y lo que
+    #: cada hoja trae fuera de su texto (folio, sello): con ellos razona la
+    #: auditoría de cierre como razonó el revisor al procesar (2026-11-12).
+    folios: dict = field(default_factory=dict)
+    marcas: dict = field(default_factory=dict)
     #: El principio y el final del PDF de origen (``firma_del_origen``): dice si
     #: es el mismo aunque se haya copiado y tenga otra fecha.
     firma: str | None = None
@@ -145,6 +154,9 @@ def leer(ruta: Path) -> Constancia | None:
         or not isinstance(constancia.unidades, list)
         or (constancia.indice is not None and not isinstance(constancia.indice, dict))
         or not isinstance(constancia.lo_leido, list)
+        or not isinstance(constancia.varios_sellos, list)
+        or not isinstance(constancia.folios, dict)
+        or not isinstance(constancia.marcas, dict)
         or (constancia.firma is not None and not isinstance(constancia.firma, str))
         or type(constancia.version) is not int
     ):

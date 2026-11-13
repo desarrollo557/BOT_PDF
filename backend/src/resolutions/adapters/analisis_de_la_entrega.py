@@ -310,6 +310,11 @@ def escribir_analisis(
                 *[[s["carpeta"], "Sin PDF en el origen", s["motivo"], s.get("evidencia", "")] for s in comparacion.get("sin_pdf", [])],
                 *[[a["carpeta"], "Archivo suelto en la raíz", "no es un PDF: no se procesa", ""] for a in comparacion.get("archivos_en_la_raiz", [])],
                 *[[s["carpeta"], "Sobra en el destino", s["motivo"], s.get("evidencia", "")] for s in comparacion.get("sobran", [])],
+                # Los PDF con dos o más sellos de RE distinto (2026-11-12).
+                *[
+                    [f"{v['pdf']} → {v['archivo']}", "PDF con 2 o más sellos", v.get("estado", ""), v.get("sellos", "")]
+                    for v in comparacion.get("varios_sellos", [])
+                ],
             ],
             color_en=1,
         )

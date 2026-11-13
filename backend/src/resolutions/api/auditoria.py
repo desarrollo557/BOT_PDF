@@ -344,9 +344,22 @@ def cuadrar(runner, run, *, detener: Callable[[], bool] = lambda: False, avance=
     # Los registros: una fila del índice por PDF entregado.
     documentos = filas = 0
     no_cuadran = []
+    # Y todos los PDF entregados con dos o más sellos de RE distinto, no sólo
+    # los de la muestra (el operador, 2026-11-12: «me avises»).
+    varios_sellos = []
     for entrega in entregas:
         if entrega.vigencia is not Vigencia.VIGENTE or entrega.constancia is None:
             continue
+        varios_sellos.extend(
+            {
+                "pdf": entrega.relativa,
+                "archivo": Path(str(varios.get("archivo") or "")).name,
+                "sellos": ", ".join(str(s.get("re")) for s in varios.get("sellos") or [] if isinstance(s, dict)),
+                "estado": str(varios.get("estado") or ""),
+            }
+            for varios in entrega.constancia.varios_sellos
+            if isinstance(varios, dict)
+        )
         pdfs = len(entrega.pdf_entregados)
         documentos += pdfs
         indice = entrega.constancia.indice
@@ -380,6 +393,8 @@ def cuadrar(runner, run, *, detener: Callable[[], bool] = lambda: False, avance=
         "faltan": faltan[:DETALLE_MAXIMO],
         "pdf_sin_entregar": pdf_sin_entregar[:DETALLE_MAXIMO],
         "registros_que_no_cuadran": no_cuadran[:DETALLE_MAXIMO],
+        "pdf_con_varios_sellos": len(varios_sellos),
+        "varios_sellos": varios_sellos[:DETALLE_MAXIMO],
         "completa": not sin_entregar and not no_cuadran,
     }
     return comparacion, entregas
@@ -555,7 +570,23 @@ def _auditar_uno(entrega: EntregaVista, juez, indices: dict, *, juez_de_datos=No
         filas_del_indice_electronico=_filas_del_indice_electronico(entrega, indices),
         # Lo que la IA o el sello leyeron para fechar y la capa no trae (2026-11-11).
         lo_leido=entrega.constancia.lo_leido,
+        # Los PDF con dos o más sellos de RE distinto (2026-11-12).
+        varios_sellos=entrega.constancia.varios_sellos,
+        # Y el folio a mano y las marcas de cada hoja, para razonar como el revisor.
+        folios=_enteros(entrega.constancia.folios),
+        marcas={int(p): str(m) for p, m in entrega.constancia.marcas.items() if str(p).isdigit()},
     )
+
+
+def _enteros(folios: dict) -> dict[int, int]:
+    """Los folios de la constancia, con sus claves y valores enteros."""
+    salida = {}
+    for pagina, folio in folios.items():
+        try:
+            salida[int(pagina)] = int(folio)
+        except (TypeError, ValueError):
+            continue
+    return salida
 
 
 def _filas_del_indice_electronico(entrega: EntregaVista, indices: dict) -> list[dict]:
@@ -738,7 +769,9 @@ def etapa_de(comparacion: dict | None, muestra: dict | None) -> tuple[str, str]:
             partes.append(f"faltan {len(comparacion['pdf_sin_entregar'])} PDF")
         if comparacion["registros_que_no_cuadran"]:
             partes.append(f"{len(comparacion['registros_que_no_cuadran'])} índices que no cuadran")
-    margen = (muestra or {}).get("margen") or {}
+        if comparacion.get("pdf_con_varios_sellos"):
+            partes.append(f"{comparacion['pdf_con_varios_sellos']} PDF con 2 o más sellos")
+    margen =(muestra or {}).get("margen") or {}
     # La habilidad que se sale de su margen aunque la corrida entera no: sus
     # errores no se diluyen en los aciertos de las demás.
     fuera = [

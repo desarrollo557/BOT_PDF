@@ -288,7 +288,9 @@ def fila_hecha(fila: Mapping[str, object]) -> FuidRow | None:
 CONVERSORES: dict[str, Callable[[Mapping[str, object]], FuidRow | None]] = {
     TIPO_DOCUMENTAL: fuid_actas_de_consejo.fila_del_fuid,
     fuid_actas_de_grado.ACTA_DE_GRADO: fuid_actas_de_grado.fila_del_fuid,
-    fuid_actas_de_grado.CEREMONIA: _sin_fila,
+    # La resolución que autoriza los grados sí lleva fila; la hoja de la
+    # ceremonia, no (2026-11-12).
+    fuid_actas_de_grado.CEREMONIA: fuid_actas_de_grado.fila_de_la_ceremonia,
     HISTORIA_ACADEMICA: fuid_historias.fila_del_fuid,
     NOMINA: fuid_nominas.fila_del_fuid,
     SIN_ESTUDIANTE: _sin_fila,

@@ -80,7 +80,17 @@ def numero_impreso(texto: str) -> str | None:
         numero = crudo.translate(_LETRA_A_CIFRA)
         if re.fullmatch(r"\d+(?:[/-]\d+)?", numero) and numero.strip("0/-"):
             return numero
-    return None
+    # El acta a mano: «ACTA 01» en su renglón, «Acta de Grado #03». Sólo cifras:
+    # «ACTA ANTERIOR» no es un número (UPD3859802, 2026-11-12).
+    corto = _NUMERO_CORTO.search(_clave(texto))
+    numero = (corto.group("numero") or corto.group("numero_con_numeral")) if corto else None
+    return numero if numero and numero.strip("0") else None
+
+
+_NUMERO_CORTO = re.compile(
+    r"(?m)^\W*ACTA\s+(?:DE\s+GRADO\s+)?(?:N\W?[O0]?\W{0,3}|#\s*)?(?P<numero>\d{1,3})\s*$"
+    r"|ACTA\s+DE\s+GRADO\s*#\s*(?P<numero_con_numeral>\d{1,3})\b"
+)
 
 
 # -- la cédula ----------------------------------------------------------------
@@ -180,6 +190,12 @@ def _cedula_pegada(clave: str) -> str | None:
 _COMO = re.compile(r"PROFESIONAL\s+COMO\W{0,2}\s*(?P<titulo>[^,\n]+?)\s*(?:,|SEGUN|\n|$)")
 #: Y al principio: «el título de: ENFERMERA», «otorga el título de; / ENFERMERO».
 _TITULO_DE = re.compile(r"TITULO\s+DE\W{0,2}[ \t]*\n?[ \t]*(?P<titulo>[^\n]+)")
+#: Y en el acta a mano, en varios renglones hasta «a la estudiante»: «el Título de
+#: ESPECIALISTAS EN ENFERMERIA MEDICO QUIRURGICA con énfasis en / QUIROFANO Y
+#: RECUPERACION a la estudiante NURY…» (UPD3859802 pág. 110, 2026-11-12).
+_TITULO_HASTA_EL_ESTUDIANTE = re.compile(
+    r"TITULO\s+DE\W{0,2}\s*(?P<titulo>[^\n]+(?:\n+[^\n]+){0,3}?)\s+AL?\W?\s*(?:LA\s+)?ESTUDIANTE\b"
+)
 #: Lo que se cuela en el renglón del título en el formulario.
 #: Lo que se cuela detrás del título: el rótulo «al estudiante» -- también mal
 #: leído, «3L ESTUDIANTE», «A(F ESTUDIANTE» --, con lo que lo sigue.
@@ -218,10 +234,10 @@ def titulo(texto: str) -> str | None:
     """El título que se otorga: «ESPECIALISTA EN GESTION DE LA CALIDAD Y AUDITORIA EN SALUD»."""
     clave = _clave(texto)
     candidatos = []
-    for patron in (_COMO, _TITULO_DE):
+    for patron in (_COMO, _TITULO_DE, _TITULO_HASTA_EL_ESTUDIANTE):
         for match in patron.finditer(clave):
             inicio, fin = match.span("titulo")
-            original = _sin_cola(_limpio(texto[inicio:fin]))
+            original = _sin_cola(_limpio(" ".join(texto[inicio:fin].split())))
             if len(original) >= 4:
                 candidatos.append(original)
     # El de «como:» va entero en un renglón; el de «título de:» a veces se parte
@@ -250,7 +266,8 @@ _CONECTORES = {"DE", "DEL", "LA", "LAS", "LOS", "Y", "SAN", "SANTA"}
 #: «al profesional MARTHA LUCIA HERRERA VILLAMIZAR ,portador de la cédula».
 _EN_EL_RENGLON = re.compile(
     r"\bAL?\s+(?:LA\s+)?(?:PROFESIONAL|ESTUDIANTE|SENOR(?:A|ITA)?|EGRESAD[OA])?\s*"
-    r"(?P<nombre>[A-Z][A-Z .']{4,70}?)\s*,?\s*PORTADOR"
+    # «PORTADOR» también mal leído en la letra a mano: «notador», «potador».
+    r"(?P<nombre>[A-Z][A-Z .']{4,70}?)\s*,?\s*(?:PORTADOR|[NP]O[RT]?TADOR)"
 )
 
 
@@ -333,6 +350,12 @@ def _es_formulario(texto: str, titulo_leido: str | None) -> bool:
     return any(palabra in _NO_SON_NOMBRE for palabra in clave.split()) or bool(re.search(r"\d", clave))
 
 
+_NOMBRE_DE_LA_ESTUDIANTE = re.compile(
+    r"EL\s+NOMBRE\s+DE\s+(?:LA|EL)\s+(?:ESTUDIANTE|EGRESAD[AO])S?\s*:?\s+"
+    r"([A-Z][A-Z ]{6,70}?)(?=\s*(?:[,.;]|PORTADOR|IDENTIFICAD|CON\s+C|QUIEN|COMO\s|EN\s+EL|$))"
+)
+
+
 def nombre(texto: str, titulo_leido: str | None = None) -> str | None:
     """El nombre del graduado, en mayúsculas y con sus tildes."""
     renglones = [renglon.strip() for renglon in texto.splitlines()]
@@ -340,6 +363,14 @@ def nombre(texto: str, titulo_leido: str | None = None) -> str | None:
     hasta = next(
         (i for i, c in enumerate(claves) if "CONSTANCIA" in c or "INTERVINIERON" in c), len(claves)
     )
+
+    # La constancia: «… aparece relacionada entre otros el nombre de la
+    # estudiante CLARA ELENA DE JESUS BARRAGAN CORREA» (Odontología,
+    # UPD3859820 pág. 245, 2026-11-12).
+    if (relacionada := _NOMBRE_DE_LA_ESTUDIANTE.search(" ".join(claves))) is not None:
+        candidato = _como_nombre(relacionada.group(1))
+        if _parece_nombre(candidato, titulo_leido):
+            return candidato
 
     # Moderna: el nombre en su renglón, justo antes de «Portador».
     for indice, clave in enumerate(claves[:hasta]):
@@ -605,11 +636,62 @@ LARGO_IMPOSIBLE = 15
 _TERMINAN_EN_X = frozenset({"FELIX", "ALEX", "MAX", "ROUX", "MARX"})
 
 
+def _partidas_unidas(palabras: list[str], conocidas: Collection[str]) -> list[str]:
+    """«DEL CAR MEN» → DEL CARMEN, «MER CADO» → MERCADO: dos trozos que juntos son un nombre conocido.
+
+    Sólo si uno de los dos trozos, corto, no es él mismo un nombre conocido:
+    «ANA MARIA» no se une (Odontología, 2026-11-12).
+    """
+    if not conocidas:
+        return palabras
+    unidas: list[str] = []
+    indice = 0
+    while indice < len(palabras):
+        actual = palabras[indice]
+        siguiente = palabras[indice + 1] if indice + 1 < len(palabras) else None
+        if siguiente is not None:
+            a, b = _clave(actual), _clave(siguiente)
+            if (a + b) in conocidas and min(len(a), len(b)) <= 4 and (a not in conocidas or b not in conocidas):
+                unidas.append(actual + siguiente)
+                indice += 2
+                continue
+        unidas.append(actual)
+        indice += 1
+    return unidas
+
+
+#: Los rótulos del acta y de su margen, que nunca son el nombre de nadie:
+#: «POST GRADO» (la nota al margen del acta manuscrita), «ACTA DE GRADO NO»,
+#: «DEL MES DE DICIEMBRE», «REMONIA PRIVADA SOLICITUD» (UPD3859802, 2026-11-12).
+_ROTULOS = frozenset(
+    {
+        "POST", "POSTGRADO", "PREGRADO", "GRADO", "GRACIO", "ACTA", "ACTAS", "NO", "NRO", "SIN", "NUMERO", "DEL",
+        "DE", "LA", "EL", "MES", "DIA", "DIAS", "ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO",
+        "AGOSTO", "SEPTIEMBRE", "SETIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE", "CEREMONIA", "REMONIA",
+        "PRIVADA", "SOLEMNE", "SOLICITUD", "CIUDAD", "CONVENIO", "UNIVERSIDAD", "FACULTAD", "COLECTIVA",
+        # «al estudiante» con el hueco vacío: UPD3859802 pág. 3 salía «ESTUDIANTE» (2026-11-13).
+        "ESTUDIANTE", "ESTUDIANTES", "AL", "A",
+        # «PARA CONSTANCIA DE LO EXPUESTO», el cierre del acta, tomado por nombre
+        # en el libro entero de UPD3859802 (págs. 138, 141, 147; 2026-11-13).
+        "PARA", "CONSTANCIA", "CONSTANCIO", "LO", "EXPUESTO", "COMPLEMENTARIO", "PROGRAMA",
+    }
+)
+
+
+def es_rotulo_y_no_nombre(nombre_leido: str | None) -> bool:
+    """Si lo leído como nombre es sólo un rótulo del acta: «POST GRADO», «ACTA DE GRADO NO»."""
+    palabras = [_clave(p).strip(".:,") for p in (nombre_leido or "").split()]
+    return bool(palabras) and all(p in _ROTULOS or p.isdigit() for p in palabras)
+
+
 def nombre_limpio(nombre_leido: str | None, titulo_leido: str | None = None, conocidas: Collection[str] = ()) -> str | None:
     """El nombre del graduado sin lo que no es suyo: el título pegado, la basura y la «X» de chequeo."""
-    if not nombre_leido:
-        return nombre_leido
-    palabras = nombre_leido.split()
+    if not nombre_leido or es_rotulo_y_no_nombre(nombre_leido):
+        return None
+    # «COMPLEMENTARIO MARIA VICTORIA BENSON GALVEZ»: el rótulo del programa de
+    # la lista delante del graduado (UPD3859802 pág. 69).
+    nombre_leido = re.sub(r"^(?:PROGRAMA\s+)?COMPLEMENTARIO\W*\s+", "", nombre_leido, flags=re.IGNORECASE)
+    palabras = _partidas_unidas(nombre_leido.split(), conocidas)
     # «JOSE MARIO GUARDO ROA INGENIERO CIVIL»: desde la primera palabra del
     # título que va detrás de un nombre de dos palabras o más, nada es nombre.
     corte = next((i for i, palabra in enumerate(palabras) if i >= 2 and _es_del_titulo(palabra, titulo_leido)), None)
@@ -688,7 +770,12 @@ _AL_Y_UNA_PALABRA = re.compile(r"\s+AL\W?\s+\S+$")
 #: «ENFERMERA y le expide el presente…», «LICENCIADAS EN ENFERMERÍA, según
 #: recomendación…», «ENFERMERA, la es…» (UPD3859800, Odontología, 2026-10-31).
 #: La coma sola no: «ESPECIALISTA EN TEORÍA, MÉTODOS Y TÉCNICAS…» es un título.
-_COLA_DE_LA_FRASE = re.compile(r"\s*,?\s*(?:\bY\s+(?:LE|SE)\b|\bLA\s+ES\b|\bSEGUN\b|\bQUE\b|\bCONFORME\b).*$")
+_COLA_DE_LA_FRASE = re.compile(
+    r"\s*,?\s*(?:\bY\s+(?:LE|SE)\b|\bLA\s+ES\b|\bSEGUN\b|\bQUE\b|\bCONFORME\b"
+    # «ENFERMERA APARECIENDO RELACIONADA ENTRE OTROS EL NOMBRE» y «ENFERMERA EL»
+    # de la constancia (Odontología, UPD3859820 págs. 245-246, 2026-11-12).
+    r"|\bAPARECIEND\w*|\bRELACIONAD\w*|\bEL\s*$).*$"
+)
 
 
 def titulo_limpio(titulo_leido: str | None) -> str | None:
@@ -807,6 +894,287 @@ def titulos_unificados(titulos: Sequence[str | None]) -> list[str | None]:
             continue
         mejor = max(del_mismo_genero, key=lambda otro: _parecido(titulo, otro))
         resultado.append(mejor if _mismo_titulo(titulo, mejor) else titulo)
+    return resultado
+
+
+# -- lo que el operador pidió auditar en Odontología (2026-11-12) ----------------------------
+#
+# Revisado a ojo contra el papel de las cajas 00C003288-90 (actas de grado de
+# Enfermería): el rector o el decano del pie pegado al graduado (la IA lo lee en
+# la misma hoja y gana), la cédula vuelta letras tras el «No.», el lugar de
+# expedición, la cola del título partida en el renglón del nombre y los títulos
+# con una letra mal leída.
+
+#: Las palabras de los títulos de grado, para llevar a ellas la mal leída
+#: (ENFERMENA, ENFERMERS, QUIROPANO, ENFASUS, SUFANTIL).
+VOCABULARIO_DE_LOS_TITULOS = frozenset(
+    {
+        "ESPECIALISTA", "ESPECIALIZACION", "ENFERMERIA", "ENFERMERA", "ENFERMERO", "MEDICO", "QUIRURGICA",
+        "ENFASIS", "QUIROFANO", "RECUPERACION", "CUIDADOS", "INTENSIVOS", "URGENCIAS", "NEUROCIRUGIA",
+        "MATERNO", "INFANTIL", "PERINATOLOGIA", "NEONATOLOGIA", "SALUD", "OCUPACIONAL", "FAMILIAR",
+        "LICENCIADA", "LICENCIADO", "CIENCIAS", "ODONTOLOGO", "ODONTOLOGA", "ODONTOLOGIA",
+    }
+)
+#: Cuánto se tiene que parecer una palabra a la del vocabulario para corregirla.
+PARECIDO_DE_LA_PALABRA_DEL_TITULO = 0.84
+
+
+def titulo_del_vocabulario(titulo: str | None) -> str | None:
+    """El título con cada palabra mal leída llevada a la del vocabulario de títulos que se le parece.
+
+    Sólo palabras de cinco letras o más, y sólo si se parecen
+    ``PARECIDO_DE_LA_PALABRA_DEL_TITULO``: «ENFERMENA» → ENFERMERA, «QUIROPANO»
+    → QUIROFANO. El paréntesis abierto de «ENFERMERS (O» se cierra.
+    """
+    if not titulo:
+        return titulo
+    palabras = []
+    for palabra in _clave(titulo).split():
+        if len(palabra) >= 5 and palabra not in VOCABULARIO_DE_LOS_TITULOS:
+            # En orden alfabético: ante el empate de «ENFERMERS» gana ENFERMERA,
+            # que es lo que escribe la mano en «ENFERMERA (O)».
+            parecida = max(
+                sorted(VOCABULARIO_DE_LOS_TITULOS),
+                key=lambda otra: difflib.SequenceMatcher(None, palabra, otra).ratio(),
+            )
+            if difflib.SequenceMatcher(None, palabra, parecida).ratio() >= PARECIDO_DE_LA_PALABRA_DEL_TITULO:
+                palabra = parecida
+        palabras.append(palabra)
+    corregido = re.sub(r"\(\s*([AO])\s*$", r"(\1)", " ".join(palabras))
+    return titulo if corregido == _clave(titulo) else corregido
+
+
+#: Lo que en el renglón del nombre ya es la cédula: «No.», «Nº», «C.C.».
+_DE_LA_CEDULA = frozenset({"NO", "NRO", "N", "CC", "C"})
+#: Los lugares de expedición que se pegan tras el nombre en las listas: «… DE CARTAGENA».
+LUGARES_DE_EXPEDICION = frozenset(
+    {
+        "CARTAGENA", "TURBACO", "BARRANQUILLA", "ARJONA", "SINCE", "MAHATES", "MONTERIA", "MAGANGUE",
+        "SINCELEJO", "BOGOTA", "CERETE", "COROZAL", "MOMPOS", "CORDOBA", "BOLIVAR", "SUCRE", "LORICA",
+        "SAHAGUN", "SANTA", "MARTA", "VALLEDUPAR", "MEDELLIN", "BUCARAMANGA", "CALAMAR", "TURBANA",
+    }
+)
+
+
+#: Desde cuántas letras un trozo puede ser el principio o el final de una palabra del título.
+LETRAS_DE_UN_TROZO = 5
+#: Cuánto se tiene que parecer una palabra del nombre a una del título para
+#: serlo, y desde cuántas letras: con 0,8 y cinco letras, SALUM era SALUD y
+#: MATEO era MATERNO (medido sobre las 2 284 filas de Odontología).
+PARECIDO_A_UNA_DEL_TITULO = 0.85
+LETRAS_PARA_PARECERSE = 6
+
+
+def _es_trozo_del_titulo(clave: str, del_titulo: Sequence[str]) -> bool:
+    """Si la palabra del nombre es un pedazo de una palabra de título: su final, su principio o una mal leída."""
+    if len(clave) < LETRAS_DE_UN_TROZO - 1:
+        return False
+    palabras = {p for p in (*del_titulo, *VOCABULARIO_DE_LOS_TITULOS) if len(p) >= LETRAS_DE_UN_TROZO}
+    for palabra in palabras:
+        if palabra == clave:
+            continue
+        # El principio con una letra cambiada no: QUIROZ y PERIÑAN son apellidos
+        # (QUIROFANO, PERINATOLOGIA), y se los quitaba a siete graduadas.
+        if palabra.endswith(clave) or (len(clave) >= LETRAS_DE_UN_TROZO and palabra.startswith(clave)):
+            return True
+        if len(clave) >= LETRAS_PARA_PARECERSE and difflib.SequenceMatcher(None, clave, palabra).ratio() >= PARECIDO_A_UNA_DEL_TITULO:
+            return True
+    return False
+
+
+def nombre_y_titulo_separados(nombre: str | None, titulo: str | None) -> tuple[str | None, str | None]:
+    """El nombre sin lo que es de la cédula, del lugar de expedición o de la cola del título, y el título completo.
+
+    - Desde el «No.», «C.C.» o una cifra, nada es nombre: «BELKYS JUDITH
+      JIMENEZ BLANCO NO ASSBB» (la cédula 45.593.688 vuelta letras).
+    - «… DE CARTAGENA» al final es el lugar de expedición.
+    - La cola de un título en dos o tres renglones cae en el renglón del nombre:
+      «ERNESTINA Y RECUPERACION GUADALUPE…» con el título «…QUIROFANO», «LOIDA
+      ESTER RUGIA…» con «…NEUROCI». Esas palabras vuelven al título y el resto
+      del nombre se queda: no se corta en ellas.
+    """
+    if not nombre:
+        return nombre, titulo
+    # El título con sus palabras ya corregidas: «QUIROPANO» es QUIROFANO, y
+    # detrás de él va «Y RECUPERACION».
+    titulo = titulo_del_vocabulario(titulo)
+    palabras = nombre.split()
+    claves = [_clave(p) for p in palabras]
+    corte = next(
+        (i for i, c in enumerate(claves) if i >= 2 and (c.strip(".:") in _DE_LA_CEDULA or re.search(r"\d.*\d", c))),
+        None,
+    )
+    if corte is not None:
+        palabras, claves = palabras[:corte], claves[:corte]
+    if len(claves) >= 4 and claves[-2] == "DE" and claves[-1] in LUGARES_DE_EXPEDICION:
+        palabras, claves = palabras[:-2], claves[:-2]
+    del_titulo = _clave(titulo or "").split()
+    ultima = del_titulo[-1] if del_titulo else ""
+    quedan: list[str] = []
+    cola: list[str] = []
+    for indice, (palabra, clave_) in enumerate(zip(palabras, claves, strict=True)):
+        siguiente = claves[indice + 1] if indice + 1 < len(claves) else ""
+        # «NEUROCI» + «RUGIA», «NEURO» + «CIRUGIA»: el final de la palabra del título.
+        if ultima and len(clave_) >= 4 and (ultima + clave_) in VOCABULARIO_DE_LOS_TITULOS:
+            del_titulo[-1] = ultima = ultima + clave_
+            continue
+        # «Y RECUPERACION», «INTENSIVOS»: una palabra de título no es de nadie.
+        # Si el título no la trae, es su cola: vuelve a él.
+        if clave_ in ("Y", "CON", "EN") and (
+            siguiente in VOCABULARIO_DE_LOS_TITULOS or _es_trozo_del_titulo(siguiente, del_titulo)
+        ):
+            continue
+        if clave_ in VOCABULARIO_DE_LOS_TITULOS and indice >= 1:
+            if clave_ not in del_titulo and clave_ not in cola:
+                cola.append(clave_)
+            continue
+        # «RUGIA», «CIRUGIA» con el título ya entero («…NEUROCIRUGIA»), y
+        # «QUIRURI ENPASIS», pedazos mal leídos de QUIRURGICA y ENFASIS: el
+        # final o el principio de una palabra del título, o una que se le parece
+        # (UPD3859813, muestra con «OCR + IA» del 2026-11-12).
+        if indice >= 1 and _es_trozo_del_titulo(clave_, del_titulo):
+            continue
+        quedan.append(palabra)
+    if "RECUPERACION" in cola and del_titulo and del_titulo[-1] == "QUIROFANO":
+        cola[cola.index("RECUPERACION")] = "Y RECUPERACION"
+    titulo_nuevo = " ".join(del_titulo + cola) if (cola or del_titulo != _clave(titulo or "").split()) else titulo
+    return (" ".join(quedan) or None), (titulo_nuevo or titulo)
+
+
+#: El renglón que sigue al del graduado: el final de su nombre, a máquina y en
+#: mayúsculas, delante de «portador»: «VERHELST portador de la cédula …».
+_COLA_ANTES_DE_PORTADOR = re.compile(r"^\W*((?:[A-ZÁÉÍÓÚÑ]{3,}\s+){1,3})[Pp][Oo][Rr][Tt][Aa][Dd][Oo][Rr]", re.MULTILINE)
+#: Cuánto se parece al título la palabra final del nombre que la otra lectura no ve.
+PARECIDO_DE_UN_TROZO_QUE_NADIE_VE = 0.75
+_NO_ES_COLA = frozenset({"AL", "LA", "EL", "DE", "DEL", "ESTUDIANTE", "SENORITA", "SENOR"})
+
+
+def nombre_con_la_cola_del_renglon(nombre: str | None, texto: str, titulo: str | None) -> str | None:
+    """El nombre completado con el apellido que la otra lectura ve delante de «portador», o ``None`` si no hace falta.
+
+    En UPD3859813 pág. 163 el nombre va en dos renglones, «al estudiante VIVIAN
+    LOPEZ» / «VERHELST portador …», con la segunda línea del título impresa
+    en medio. El OCR leyó «VIVIANA LOPEZ QUIRURI» (un trozo de QUIRURGICA); la
+    IA no vio el primer renglón pero sí «VERHELST portador» (fila 1792 del
+    FUID de Odontología, 2026-11-13). El nombre es el del OCR, sin la palabra
+    final que la IA no ve en la hoja y se parece a una del título, más el
+    apellido del renglón de «portador». Sólo si ese apellido no es del título
+    y el nombre no lo trae ya.
+    """
+    if not nombre or not texto:
+        return None
+    hallado = _COLA_ANTES_DE_PORTADOR.search(texto)
+    if hallado is None:
+        return None
+    del_titulo = set(_clave(titulo or "").split()) | VOCABULARIO_DE_LOS_TITULOS
+    cola = [p for p in (_clave(p) for p in hallado.group(1).split()) if p not in del_titulo and p not in _NO_ES_COLA]
+    palabras = nombre.split()
+    claves = [_clave(p) for p in palabras]
+    if not cola or all(c in claves for c in cola):
+        return None
+    en_la_hoja = set(re.findall(r"[A-Z]+", _clave(texto)))
+    largas = [t for t in del_titulo if len(t) >= LETRAS_DE_UN_TROZO]
+    while (
+        len(claves) > 2
+        and claves[-1] not in en_la_hoja
+        and any(difflib.SequenceMatcher(None, claves[-1], t).ratio() >= PARECIDO_DE_UN_TROZO_QUE_NADIE_VE for t in largas)
+    ):
+        palabras, claves = palabras[:-1], claves[:-1]
+    return " ".join([*palabras, *cola])
+
+
+#: Desde cuántas actas distintas una cola repetida de nombre es un firmante.
+VECES_DE_UN_FIRMANTE = 3
+
+
+#: El cargo de quien firma el acta, solo en su renglón -- «Rector», «Decano»,
+#: «El Secretario General» -- o detrás de su nombre en la frase: «Dr. Manuel
+#: Sierra Montero, Rector».
+_CARGO_DEL_PIE = r"(?:EL\s+|LA\s+)?(?:VICE)?(?:RECTOR|DECAN[OA]|SECRETARI[OA])\b"
+_RENGLON_DEL_CARGO = re.compile(rf"^\W*{_CARGO_DEL_PIE}[A-Z ]{{0,25}}\W*$")
+_NOMBRE_Y_CARGO = re.compile(rf"([A-Z][A-Z ]{{8,60}}?)\s*,\s*{_CARGO_DEL_PIE}")
+#: Cuánto se tiene que parecer la cola del nombre al firmante: la capa lee
+#: «CARLOS VILLALBA BHSTILLO» o «BüSTILLO» (UPD3859813, 2026-11-13).
+PARECIDO_AL_FIRMANTE = 0.85
+#: Desde cuántas hojas del libro con el mismo nombre sobre un cargo es un firmante.
+VECES_QUE_FIRMA = 2
+_TRATAMIENTOS = frozenset({"DR", "DRA", "LIC", "DOCTOR", "DOCTORA", "SR", "SRA", "ENFERMERA"})
+#: Palabras que no cierran el nombre de quien firma: la frase del cuerpo.
+_NO_ES_DE_UN_FIRMANTE = frozenset({"DE", "DEL", "LA", "Y", "EN", "ELLA", "QUE", "LOS", "POR", "INTERVINIERON"})
+
+
+def firmantes_del_libro(paginas: Sequence[str | None]) -> set[str]:
+    """Quienes firman las actas del libro sobre su cargo: las tres últimas palabras de su nombre.
+
+    El nombre va en el renglón de encima de «Rector», «Decano», «El Secretario
+    General», o delante del cargo en la frase «… Dr. Manuel Sierra Montero,
+    Rector; …». UPD3859813 lo dice en casi cada hoja: «CARLOS VILLALBA
+    BUSTILLO / Rector».
+    """
+    from collections import Counter
+
+    vistos: Counter[str] = Counter()
+    for texto in paginas:
+        renglones = [r for r in (_clave(r) for r in (texto or "").splitlines()) if r.strip()]
+        candidatos = [
+            renglones[i - 1] for i in range(1, len(renglones)) if _RENGLON_DEL_CARGO.match(renglones[i])
+        ]
+        candidatos += [m.group(1) for m in _NOMBRE_Y_CARGO.finditer(" ".join(renglones))]
+        for candidato in candidatos:
+            palabras = [p for p in re.findall(r"[A-Z]{2,}", candidato) if p not in _TRATAMIENTOS]
+            if len(palabras) >= 3 and not any(p in _NO_ES_DE_UN_FIRMANTE for p in palabras[-3:]):
+                vistos[" ".join(palabras[-3:])] += 1
+    # El que firma, firma muchas hojas -- aunque la capa lo escriba de varias
+    # maneras: «CARLOS VILLALBA BUSTILLO», «CARIXS VILLALBA BHSTILLO» --: lo
+    # que sale una sola vez, sin nada parecido, es basura de la letra («GU DE
+    # EZ», «EN ELLA INTERVINIERON»).
+    return {
+        firmante
+        for firmante in vistos
+        if sum(
+            veces
+            for otro, veces in vistos.items()
+            if difflib.SequenceMatcher(None, firmante, otro).ratio() >= PARECIDO_AL_FIRMANTE
+        )
+        >= VECES_QUE_FIRMA
+    }
+
+
+def sin_firmantes(nombres: Sequence[str | None], firmantes: Collection[str] = ()) -> list[str | None]:
+    """Los nombres de un libro sin el firmante del pie que se les pegó detrás.
+
+    «EDITH BARBOSA ZARAZA CARLOS VILLALBA BUSTILLO», «AMALFI ARIAS SIMANCAS JAIME
+    TRUCCO LEMAITRE»: el rector o el decano que firma al pie de cada acta. Las
+    mismas tres palabras al final del nombre de ``VECES_DE_UN_FIRMANTE``
+    graduados distintos o más no son de ninguno: dos personas no comparten
+    nombre y dos apellidos. Se quitan si queda un nombre de dos palabras o más.
+
+    Y con una sola vez basta si esas tres palabras son de quien el libro
+    muestra firmando sobre su cargo (``firmantes``, de ``firmantes_del_libro``):
+    «ELSA GRISOLLE FERNANDEZ CARLOS VILLALBA BUSTILLO» era la única con el
+    rector pegado en UPD3859813 (fila 1802 del FUID de Odontología, 2026-11-13).
+    """
+    from collections import Counter
+
+    colas = Counter()
+    for nombre in {n for n in nombres if n}:
+        claves = [_clave(p) for p in nombre.split()]
+        if len(claves) >= 5:
+            colas[" ".join(claves[-3:])] += 1
+    repetidas = {cola for cola, veces in colas.items() if veces >= VECES_DE_UN_FIRMANTE}
+
+    def es_firmante(cola: str) -> bool:
+        return cola in repetidas or any(
+            difflib.SequenceMatcher(None, cola, firmante).ratio() >= PARECIDO_AL_FIRMANTE for firmante in firmantes
+        )
+
+    resultado: list[str | None] = []
+    for nombre in nombres:
+        if nombre:
+            palabras = nombre.split()
+            if len(palabras) >= 5 and es_firmante(" ".join(_clave(p) for p in palabras[-3:])):
+                nombre = " ".join(palabras[:-3])
+        resultado.append(nombre)
     return resultado
 
 

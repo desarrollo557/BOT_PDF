@@ -15,6 +15,7 @@ sola imagen, son una página facturada por acta y no dos.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Sequence
 from io import BytesIO
 
@@ -176,6 +177,8 @@ class LectorDeFolios:
 
 #: Cuánto ancho lleva la etiqueta de la página a la izquierda de cada esquina.
 _ANCHO_DE_ETIQUETA = 260
+#: Las referencias a imágenes del OCR de pago: «![img-1.jpeg](img-1.jpeg)».
+_SIN_IMAGENES = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 
 
 def _fuente_de_etiqueta():
@@ -216,11 +219,16 @@ def folios_etiquetados(texto: str, paginas: Sequence[int]) -> dict[int, int]:
 
     pedidas = set(paginas)
     folios: dict[int, int] = {}
+    # Sin las referencias a imágenes que mete el OCR: el «1» de «![img-1.jpeg]»
+    # no es un folio (UPD2460819 hoja 155, 2026-11-12).
+    texto = _SIN_IMAGENES.sub(" ", texto)
     trozos = re.split(r"\bP\s?(\d{1,4})\b", texto)
     # re.split con un grupo: [antes, pagina, resto, pagina, resto, ...]
     for indice in range(1, len(trozos) - 1, 2):
         pagina = int(trozos[indice])
-        numero = re.search(r"(?<![\d.,])(\d{1,4})(?![\d.,])", trozos[indice + 1])
+        # El folio con su punto, «1.», como lo escribe la oficina de Afinia
+        # (2026-11-12); un importe -- «142.890» -- sigue sin ser folio.
+        numero = re.search(r"(?<![\d.,])(\d{1,4})(?!\d|[.,]\d)", trozos[indice + 1])
         if pagina in pedidas and numero and int(numero.group(1)) > 0:
             folios[pagina] = int(numero.group(1))
     return folios
