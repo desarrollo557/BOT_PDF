@@ -2718,6 +2718,290 @@ def juntar_graduados(
     return [graduado_ for _puesto, graduado_ in sorted(juntos, key=lambda par: par[0])]
 
 
+#: Las franjas en que se relee con zoom la hoja de una lista de graduados, de
+#: punta a punta y con el margen: un cuarto de hoja cada una, solapadas un
+#: renglón y medio para que ningún renglón quede partido. En una franja la IA
+#: pone la cédula del margen izquierdo -- o la escrita en alto, entre dos
+#: renglones -- junto al nombre de su renglón; en la hoja entera la corría al
+#: graduado de al lado o no la veía (UPD3859802, 2026-11-13: la hoja 85 de
+#: 1985 trae quince cédulas en el margen y salieron todas en su renglón).
+FRANJAS_DE_LA_LISTA: tuple[tuple[float, float], ...] = (
+    (0.0, 0.25),
+    (0.2, 0.45),
+    (0.4, 0.65),
+    (0.6, 0.85),
+    (0.8, 1.0),
+)
+#: Una cédula en el renglón ampliado: con sus puntos, con una cifra de más
+#: pegada delante de «/» (la «C» de «C/gena» leída como un 0: «45.525.2670/gena»)
+#: o sin separadores.
+_CEDULA_DE_LA_FRANJA = re.compile(
+    r"(?<![\d.,'’´])(\d{1,3}[.,'’´]\s?\d{6}|\d{1,3}(?:[.,'’´]\s?\d{3}){1,3}\d?|\d{4,6} \d{3,5}(?=/)|\d{6,10})(?!\d)"
+)
+#: Lo que no es del nombre en el renglón ampliado: el lugar abreviado del
+#: margen («C/ger», «Cfsm»), el rótulo de la cédula y los conectores.
+_NO_ES_DEL_NOMBRE_EN_LA_FRANJA = _NO_ES_DEL_NOMBRE_EN_LA_LISTA | {
+    "LA", "LAS", "LOS", "Y", "GER", "GENA", "GEN", "CFSM", "CGENA", "AP", "APARECE", "COMPLEMENT",
+}
+#: «no aparece» o «no ap.» escrito a lápiz en el renglón o en su margen.
+_NO_APARECE_EN_LA_FRANJA = re.compile(r"\bNO\W{0,3}AP(?:ARECE|\b|\.)")
+#: Cuántas palabras del nombre del graduado tiene que traer el renglón, y qué
+#: parte de ellas, para ser su renglón: el lugar del margen y la letra mal
+#: leída añaden o cambian palabras, pero el apellido se repite.
+PALABRAS_DEL_NOMBRE_EN_EL_RENGLON = 2
+PARTE_DEL_NOMBRE_EN_EL_RENGLON = 0.6
+#: Cuánto se tiene que parecer una palabra leída con zoom a la del nombre:
+#: «ASTUD» de la hoja y «Astrid» del zoom, «ORQCO» y «Orozco», 0,73 (hoja 85).
+PARECIDO_DE_UNA_PALABRA_AMPLIADA = 0.7
+#: Lo que el renglón tiene que superar al segundo graduado más parecido: el
+#: renglón que se parece igual a dos graduados no es de ninguno.
+VENTAJA_DEL_RENGLON = 0.15
+CEDULA_CON_ZOOM = "cédula leída con zoom en su renglón"
+
+
+@dataclass(frozen=True, slots=True)
+class RenglonAmpliado:
+    """Un renglón de la lista leído con zoom: las palabras de su nombre, su cédula y si dice «no aparece»."""
+
+    palabras: tuple[str, ...]
+    cedula: str | None = None
+    no_aparece: bool = False
+
+
+def _cedulas_de_la_franja(renglon: str) -> list[str]:
+    """Las cédulas del renglón ampliado, en su orden, las que tienen largo de cédula (``cedula_valida``).
+
+    Nueve cifras pegadas a «/» son ocho y la inicial del lugar: «45.525.2670/gena»
+    es la 45.525.267 de C/gena, y «40992 8675/mbis», la 40.992.867 de S/Andrés
+    (UPD3859802, hojas 133 y 142). «3'928794» es la 3.928.794.
+    """
+    cedulas = []
+    for hallada in _CEDULA_DE_LA_FRANJA.finditer(renglon):
+        cifras = re.sub(r"\D", "", hallada.group(1))
+        if len(cifras) == 9 and renglon[hallada.end(1) : hallada.end(1) + 1] == "/":
+            cifras = cifras[:-1]
+        if valida := cedula_valida(cifras):
+            cedulas.append(valida)
+    return cedulas
+
+
+def renglones_de_la_franja(texto: str) -> list[RenglonAmpliado]:
+    """Los renglones con nombre de una franja leída con zoom, cada uno con su cédula.
+
+    La cédula escrita en el margen izquierdo, o en alto entre dos renglones,
+    la lee la IA a veces en un renglón suyo, sin nombre: «45.450.533» y debajo
+    «C/ger 6- Nicula Del Socorro Boborcos Ortega». Esa cédula va al renglón
+    con nombre de debajo si no trae la suya, y si no, al de arriba.
+    """
+    # Cada renglón leído: sus palabras de nombre, sus cédulas y su «no aparece».
+    leidos: list[tuple[list[str], list[str], bool]] = []
+    for linea in (texto or "").splitlines():
+        if not linea.strip():
+            continue
+        palabras = [
+            p
+            for p in (_plano(palabra).strip() for palabra in _PALABRA_DEL_RENGLON.findall(linea))
+            if len(p) >= 3 and p not in _NO_ES_DEL_NOMBRE_EN_LA_FRANJA
+        ]
+        leidos.append((palabras, _cedulas_de_la_franja(linea), _NO_APARECE_EN_LA_FRANJA.search(_plano(linea)) is not None))
+    con_nombre = [i for i, (palabras, _c, _n) in enumerate(leidos) if len(palabras) >= PALABRAS_DEL_NOMBRE_EN_EL_RENGLON]
+    cedula_de: dict[int, str | None] = {i: (leidos[i][1][0] if leidos[i][1] else None) for i in con_nombre}
+    sueltas = [(i, leidos[i][1][0]) for i in range(len(leidos)) if i not in cedula_de and leidos[i][1]]
+    # El bloque: la IA devolvió los nombres y debajo sus cédulas, como dos
+    # columnas -- «15 De Seón Berrio Esther Helena» … «19 Fontela …», y luego
+    # «c.c 40992 8675/mbis» … «c.c 45541368» (hojas 121 y 142) --. Tantas
+    # cédulas seguidas como nombres sin cédula justo delante: van en orden.
+    usadas: set[int] = set()
+    inicio = 0
+    while inicio < len(sueltas):
+        fin = inicio
+        while fin + 1 < len(sueltas) and sueltas[fin + 1][0] == sueltas[fin][0] + 1:
+            fin += 1
+        bloque = sueltas[inicio : fin + 1]
+        delante = []
+        for i in reversed([i for i in con_nombre if i < bloque[0][0]]):
+            if cedula_de[i] is not None or leidos[i][2]:
+                break
+            delante.insert(0, i)
+        if len(bloque) >= 2 and len(delante) >= len(bloque):
+            for destino, (indice, cedula) in zip(delante[-len(bloque) :], bloque, strict=True):
+                cedula_de[destino] = cedula
+                usadas.add(indice)
+        inicio = fin + 1
+    # La suelta que queda va al renglón con nombre de debajo si no trae la
+    # suya, y si no, al de arriba: la del margen va en su propio renglón,
+    # encima del nombre («45.450.533» / «C/ger 6- Nicula …», hoja 85).
+    for indice, cedula in sueltas:
+        if indice in usadas:
+            continue
+        debajo = next((i for i in con_nombre if i > indice), None)
+        arriba = next((i for i in reversed(con_nombre) if i < indice), None)
+        for destino in (debajo, arriba):
+            if destino is not None and cedula_de[destino] is None:
+                cedula_de[destino] = cedula
+                break
+    # El renglón con dos cédulas lleva al final la escrita en alto del de
+    # debajo: «35 Joery Osorio Eliana 45.454.974 C/gena 38.859.944» y «36 Santos
+    # Saavedra Dora Patricia Buga» (hoja 79).
+    for posicion, i in enumerate(con_nombre):
+        siguiente = con_nombre[posicion + 1] if posicion + 1 < len(con_nombre) else None
+        if len(leidos[i][1]) >= 2 and siguiente is not None and cedula_de[siguiente] is None and not leidos[siguiente][2]:
+            cedula_de[siguiente] = leidos[i][1][-1]
+    return [RenglonAmpliado(tuple(leidos[i][0]), cedula_de[i], leidos[i][2]) for i in con_nombre]
+
+
+def _parecido_al_renglon(nombre: str | None, renglon: RenglonAmpliado) -> float:
+    """Cuánto del nombre del graduado está en el renglón ampliado: la media del parecido de cada palabra.
+
+    La media y no la cuenta: «Ruiz Larios Ingrid Del Carmen» se parece a «RUIZ
+    LARIOS JUGID DEL CARMEN» (0,89) mucho más que a «BARRIOS CARMONA PAOLA»
+    (0,65), aunque «Larios» y «Carmen» pasen por «Barrios» y «Carmona» (hoja 121).
+    Hacen falta al menos dos palabras del nombre en el renglón.
+    """
+    del_nombre = [p for p in _plano(nombre or "").split() if len(p) >= 3 and p not in _NO_ES_DEL_NOMBRE_EN_LA_FRANJA]
+    if len(del_nombre) < PALABRAS_DEL_NOMBRE_EN_EL_RENGLON or not renglon.palabras:
+        return 0.0
+    parecidos = [
+        max(difflib.SequenceMatcher(None, palabra, leida).ratio() for leida in renglon.palabras) for palabra in del_nombre
+    ]
+    if sum(1 for p in parecidos if p >= PARECIDO_DE_UNA_PALABRA_AMPLIADA) < PALABRAS_DEL_NOMBRE_EN_EL_RENGLON:
+        return 0.0
+    return sum(parecidos) / len(parecidos)
+
+
+def necesita_zoom(graduado_: GraduadoDelActa) -> bool:
+    """Si al graduado le falta la cédula sin que el papel diga por qué («no aparece», «no se graduó»)."""
+    return graduado_.cedula is None and not (graduado_.nota and ("no aparece" in graduado_.nota or "anotado en el papel" in graduado_.nota))
+
+
+def cedulas_con_zoom(
+    graduados: Sequence[GraduadoDelActa], franjas: Sequence[str], texto: str
+) -> tuple[list[GraduadoDelActa], list[str]]:
+    """Los graduados con la cédula de su renglón leído con zoom, y lo que se hizo para el acta.
+
+    Cada renglón ampliado es del graduado cuyo nombre trae
+    (``_parecido_al_renglon``), no del que va en su puesto: así se arregla la
+    cédula del margen que la lectura de la hoja entera corrió un renglón (acta
+    1 de 1985, hoja 85: la de Nivila Boborcos era la de Yenisy Bustamante). Lo
+    que se decide:
+
+    * el graduado sin cédula toma la de su renglón, si es válida y no es de otro;
+    * el que ya tiene una distinta la cambia sólo si la hoja también trae la
+      del zoom (dos lecturas la ven); si no, se queda la suya y se anota;
+    * el renglón que dice «no aparece» lo confirma en la nota;
+    * una cédula que el zoom le da a uno y la hoja le había dado a otro se le
+      quita a ese otro: era la de su vecino.
+
+    Dos renglones del mismo graduado con cédulas distintas no deciden nada.
+    """
+    renglones = [renglon for franja in franjas for renglon in renglones_de_la_franja(franja)]
+    if not renglones or not graduados:
+        return list(graduados), []
+    del_graduado: dict[int, list[RenglonAmpliado]] = {}
+    for renglon in renglones:
+        parecidos = sorted(((_parecido_al_renglon(g.nombre, renglon), i) for i, g in enumerate(graduados)), reverse=True)
+        mejor, indice = parecidos[0]
+        segundo = parecidos[1][0] if len(parecidos) > 1 else 0.0
+        if mejor >= PARTE_DEL_NOMBRE_EN_EL_RENGLON and mejor - segundo >= VENTAJA_DEL_RENGLON:
+            del_graduado.setdefault(indice, []).append(renglon)
+    seguidas = _cifras_seguidas(texto)
+
+    def en_la_hoja(cifras: str) -> bool:
+        return re.search(rf"(?<!\d){cifras}(?!\d)", seguidas) is not None
+
+    def la_de_la_hoja(cedula: str) -> str:
+        # La del zoom a una cifra de la que la hoja le dio a otro graduado es
+        # esa misma, mal leída por una de las dos: «46.500.293» del zoom y
+        # «45500293» de la hoja (hoja 85). Se queda la que la hoja también ve.
+        if en_la_hoja(cedula):
+            return cedula
+        for otro in graduados:
+            suya = otro.cedula or ""
+            if len(suya) == len(cedula) and sum(a != b for a, b in zip(suya, cedula, strict=True)) == 1 and en_la_hoja(suya):
+                return suya
+        return cedula
+
+    resultado = list(graduados)
+    por_el_zoom: dict[str, int] = {}
+    dice_no_aparece = {indice for indice, suyos in del_graduado.items() if any(renglon.no_aparece for renglon in suyos)}
+    leidas = corregidas = confirmadas = 0
+    for indice, suyos in del_graduado.items():
+        graduado_ = resultado[indice]
+        cedulas = {la_de_la_hoja(renglon.cedula) for renglon in suyos if renglon.cedula}
+        if len(cedulas) > 1:
+            resultado[indice] = replace(
+                graduado_,
+                nota=_con_nota(graduado_.nota, f"con zoom su renglón se leyó con dos cédulas ({', '.join(sorted(cedulas))}): revísela en el papel"),
+            )
+            continue
+        if not cedulas:
+            if graduado_.cedula is None and indice in dice_no_aparece:
+                resultado[indice] = replace(graduado_, nota=_con_nota(graduado_.nota, NOTA_NO_APARECE))
+                confirmadas += 1
+            continue
+        cedula = cedulas.pop()
+        leidas_con_zoom = {renglon.cedula for renglon in suyos if renglon.cedula}
+        if cedula not in leidas_con_zoom:
+            # La hoja y el zoom leyeron la misma cédula con una cifra distinta:
+            # se queda la que la hoja ve, y se dice. En la hoja 85 acertó la
+            # hoja una vez («45500293») y el zoom otra («36.544.509»).
+            graduado_ = replace(
+                graduado_,
+                nota=_con_nota(
+                    graduado_.nota,
+                    f"la hoja leyó la cédula {cedula} y el zoom la {leidas_con_zoom.pop()}: revise esa cifra en el papel",
+                ),
+            )
+            resultado[indice] = graduado_
+        if graduado_.cedula == cedula:
+            por_el_zoom[cedula] = indice
+            continue
+        if graduado_.cedula is None:
+            resultado[indice] = replace(graduado_, cedula=cedula, nota=_con_nota(graduado_.nota, CEDULA_CON_ZOOM))
+            por_el_zoom[cedula] = indice
+            leidas += 1
+        elif en_la_hoja(cedula):
+            resultado[indice] = replace(
+                graduado_,
+                cedula=cedula,
+                nota=_con_nota(
+                    graduado_.nota,
+                    f"la hoja le daba la {graduado_.cedula}, de otro renglón; con zoom en el suyo se leyó la {cedula}",
+                ),
+            )
+            por_el_zoom[cedula] = indice
+            corregidas += 1
+        else:
+            resultado[indice] = replace(
+                graduado_,
+                nota=_con_nota(graduado_.nota, f"con zoom en su renglón se leyó la cédula {cedula}: revísela en el papel"),
+            )
+    quitadas = 0
+    for indice, graduado_ in enumerate(resultado):
+        dueno = por_el_zoom.get(graduado_.cedula or "")
+        if dueno is not None and dueno != indice:
+            nota = _con_nota(graduado_.nota, f"la cédula {graduado_.cedula} es la del renglón de {resultado[dueno].nombre}")
+            if indice in dice_no_aparece:
+                nota = _con_nota(nota, NOTA_NO_APARECE)
+            resultado[indice] = replace(graduado_, cedula=None, nota=nota)
+            quitadas += 1
+        elif graduado_.cedula and indice in dice_no_aparece and dueno is None:
+            resultado[indice] = replace(
+                graduado_,
+                nota=_con_nota(graduado_.nota, f"su renglón dice «no aparece» y lleva la cédula {graduado_.cedula}: revísela en el papel"),
+            )
+    hecho = []
+    if leidas or corregidas or quitadas or confirmadas:
+        partes = [
+            f"{leidas} cédula(s) leída(s)" if leidas else "",
+            f"{corregidas} corregida(s) de renglón" if corregidas else "",
+            f"{quitadas} quitada(s) por ser de otro renglón" if quitadas else "",
+            f"{confirmadas} «no aparece» confirmado(s)" if confirmadas else "",
+        ]
+        hecho.append("con zoom en los renglones de la lista: " + ", ".join(p for p in partes if p))
+    return resultado, hecho
+
+
 def numero_en_el_encabezado(numero: str, texto: str) -> bool:
     """Si el número está en el encabezado del acta -- antes de «En la ciudad de …» --, y no en su cuerpo.
 

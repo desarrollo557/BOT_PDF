@@ -76,6 +76,7 @@ from ..domain.acta_consejo import (
 from ..domain.acta_grado import (
     CORREGIDO,
     DEDUCIDO,
+    FRANJAS_DE_LA_LISTA,
     ROTULO_DE_CEREMONIA,
     ActaDelLibro,
     GraduadoDelActa,
@@ -84,6 +85,7 @@ from ..domain.acta_grado import (
     actas_de_grado_del_pdf,
     actas_del_libro_colectivo,
     asunto_del_graduado,
+    cedulas_con_zoom,
     completar_acta,
     con_la_franja,
     datos_de_la_ia,
@@ -103,6 +105,7 @@ from ..domain.acta_grado import (
     lecturas_del_nombre,
     leer_acta_de_grado,
     mejor_lectura,
+    necesita_zoom,
     nombre_de_tres_lecturas,
     numero_en_el_encabezado,
     numero_y_rango,
@@ -227,6 +230,9 @@ MITADES_DE_LA_HOJA = (Band(0.0, 0.0, 1.0, 0.5), Band(0.0, 0.5, 1.0, 1.0))
 DPI_DE_LA_MITAD = 400
 #: La franja del medio del acta a mano de 1988-2012, donde va el nombre (2026-11-13).
 DPI_DE_LA_FRANJA_DEL_NOMBRE = 400
+#: Las franjas de la lista de un acta colectiva, releídas con zoom para sus
+#: cédulas (``_cedulas_de_las_colectivas_con_zoom``, 2026-11-13).
+DPI_DE_LA_FRANJA_DE_LA_LISTA = 400
 #: Cuánto se tienen que parecer los nombres de pila de dos lecturas para votarlos.
 PARECIDO_DE_LOS_NOMBRES_DE_PILA = 0.75
 #: Las palabras que deja en la capa cualquier acta impresa o a máquina.
@@ -1037,6 +1043,7 @@ class InventariarActa:
             self._releer_lo_que_falta(source, lecturas)
             self._verificar_con_la_ia(source, lecturas)
             self._leer_las_actas_colectivas(lecturas)
+            self._cedulas_de_las_colectivas_con_zoom(source, lecturas)
             if declarada and len(lecturas) == 1:
                 _contrastar_con_el_nombre(lecturas[0], paginas, *declarada)
             if not self._manuscrito:  # la IA leyó la fecha; la regla es contra el OCR gratis
@@ -2529,6 +2536,75 @@ class InventariarActa:
                 ultimo_de_la_serie[numero[:3]] = lectura.numero_hasta or numero
             fecha_anterior = lectura.acta.fecha or fecha_anterior
         _titulo_comun_del_libro(colectivas)
+
+    def _cedulas_de_las_colectivas_con_zoom(self, source: PageSource, lecturas: list[_Lectura]) -> None:
+        """La cédula de cada graduado de un acta colectiva, releída con zoom en su renglón.
+
+        El agente que mira de cerca la letra a mano: la hoja entera leída por
+        la IA corría al graduado de al lado la cédula escrita en el margen
+        izquierdo, no veía la escrita en alto entre dos renglones ni la de tinta
+        tenue (UPD3859802, 2026-11-13: 28 cédulas que el papel trae salían N/A,
+        y otras once en el graduado de al lado). Cada hoja de un acta con un graduado sin cédula --
+        y sin «no aparece» -- se relee en franjas de punta a punta, margen
+        incluido (``FRANJAS_DE_LA_LISTA``, a ``DPI_DE_LA_FRANJA_DE_LA_LISTA``),
+        y ``cedulas_con_zoom`` casa cada cédula con el nombre de su renglón. Se
+        paga una página por franja, y una hoja compartida por dos actas se
+        relee una vez. Sólo con «OCR + IA».
+        """
+        lector = self._relector_de_pago
+        if lector is None:
+            return
+        pendientes = [
+            lectura
+            for lectura in lecturas
+            if lectura.colectiva
+            and lectura.del_libro is not None
+            and not lectura.anulada
+            and any(necesita_zoom(graduado_) for graduado_ in lectura.graduados)
+        ]
+        hojas = sorted(
+            {
+                hoja
+                for lectura in pendientes
+                for hoja in lectura.del_libro.en_el_pdf  # type: ignore[union-attr]
+                # La hoja que la IA leyó sin un renglón de la lista -- el cuerpo
+                # del acta, la portada -- no tiene cédulas que buscar.
+                if puestos_de_la_lista(self._textos_de_la_ia.get(hoja, "")) or graduados_de_la_lista(self._textos_de_la_ia.get(hoja, ""))
+            }
+        )
+        if not hojas:
+            return
+        franjas: dict[int, list[str]] = {}
+        with hilos(self._workers) as lectores:
+            vuelo: list[tuple[int, Future]] = []
+            for hoja in hojas:
+                for arriba, abajo in FRANJAS_DE_LA_LISTA:
+                    self._control.check()
+                    try:
+                        imagen = source.render(hoja, Band(0.0, arriba, 1.0, abajo), DPI_DE_LA_FRANJA_DE_LA_LISTA)
+                    except Exception:  # noqa: BLE001 - esa franja no se relee
+                        logger.warning("no se pudo rasterizar la franja de la hoja %s", hoja, exc_info=True)
+                        continue
+                    vuelo.append((hoja, lectores.submit(lector.read, imagen)))
+            for hechas, (hoja, futuro) in enumerate(vuelo, start=1):
+                aguardar(futuro, self._control)
+                try:
+                    franjas.setdefault(hoja, []).append(futuro.result().text or "")
+                except Exception:  # noqa: BLE001 - la hoja se queda con lo que ya se leyó
+                    logger.warning("la IA no pudo releer una franja de la hoja %s", hoja, exc_info=True)
+                self._report(
+                    ProgressEvent(
+                        stage=Stage.VERIFYING,
+                        done=hechas,
+                        total=len(vuelo),
+                        detail=f"mirando con zoom las cédulas de {len(hojas)} hoja(s) de actas colectivas",
+                    )
+                )
+        for lectura in pendientes:
+            suyas = [franja for hoja in lectura.del_libro.en_el_pdf for franja in franjas.get(hoja, [])]  # type: ignore[union-attr]
+            texto = "\n".join(self._textos_de_la_ia.get(hoja, "") for hoja in lectura.del_libro.en_el_pdf)  # type: ignore[union-attr]
+            lectura.graduados, hecho = cedulas_con_zoom(lectura.graduados, suyas, texto)
+            lectura.razonado.extend(hecho)
 
     def _leer_una_colectiva(
         self,
