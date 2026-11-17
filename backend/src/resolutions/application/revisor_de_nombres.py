@@ -206,6 +206,38 @@ def revisar_los_nombres(
     return revisados
 
 
+def zona_para_mirar(source, pagina: int, regla, *, dpi: int = 200) -> bytes | None:
+    """La primera zona de la regla del nombre en la hoja ``pagina``, en JPEG, para la IA que mira el nombre.
+
+    Para los lectores de la aplicación (libros de diplomas, legajos de
+    matrículas), que no ubican su renglón: la regla de su perfil dice en qué
+    parte de la hoja escribe su papel el nombre.
+    """
+    from .ports import Band
+
+    if regla is None or not regla.zonas:
+        return None
+    arriba, abajo = regla.zonas[0]
+    try:
+        return source.render(pagina, Band(0.0, arriba, 1.0, abajo), dpi, formato="jpeg")
+    except TypeError:
+        # Una fuente que no sabe de formatos: el PNG de siempre.
+        return source.render(pagina, Band(0.0, arriba, 1.0, abajo), dpi)
+    except Exception:  # noqa: BLE001 - sin imagen, el nombre queda como se leyó
+        logger.debug("no se pudo recortar el nombre de la página %s", pagina, exc_info=True)
+        return None
+
+
+def de_la_habilidad(habilidad: str):
+    """La regla del nombre del perfil de la habilidad; ``None`` si no tiene una persona por documento."""
+    from .perfiles_de_revision import perfil_de
+
+    try:
+        return perfil_de(habilidad).regla_del_nombre
+    except Exception:  # noqa: BLE001 - sin perfil, sin regla
+        return None
+
+
 def _mirar(personas, votados, lecturas, candidatos, juez, control, lectores, documento) -> dict[Hashable, str]:
     """Lo que contesta la IA de cada persona, mirando su renglón con sus lecturas y sus candidatos al lado.
 

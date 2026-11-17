@@ -162,6 +162,9 @@ class BookReadingStats:
     #: entrega, para que quien revise una hoja pueda ver qué leyó la IA de
     #: ella sin volver a pagarla.
     lecturas: dict[int, str] = field(default_factory=dict, repr=False)
+    #: Lo que decidió el revisor de nombres común de cada cara (``NombreRevisado``),
+    #: por su página: el trabajo lo lleva al informe (2026-11-17).
+    nombres_revisados: dict = field(default_factory=dict, repr=False)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -239,7 +242,13 @@ class ReadDiplomaBook:
         mosaico_de_cedulas=None,
         mosaico_de_fechas=None,
         lectura_de_ahorro: bool = False,
+        #: La IA que mira la zona del nombre de cada cara (el revisor de
+        #: nombres común, 2026-11-17), y el padrón para sus candidatos.
+        juez_del_nombre=None,
+        padron=None,
     ) -> None:
+        self._juez_del_nombre = juez_del_nombre
+        self._padron = padron
         self._ocr = ocr
         self._progress = progress or NullProgressReporter()
         self._dpi = escalation_dpi
@@ -366,6 +375,10 @@ class ReadDiplomaBook:
         # cualquier relectura, para que ninguna mezcla de lecturas lo borre.
         records = self._marcar_continuaciones(records)
 
+        # El nombre de cada cara, con el revisor de nombres común a todas las
+        # habilidades (2026-11-17): la IA mira la zona del nombre, a todas.
+        records = self._revisar_los_nombres(source, records, stats)
+
         # Y lo último, con el libro entero leído: cuántas unidades se quedaron
         # sin cédula y sin nombre. No cambia nada de lo leído; lo declara.
         self._contar_sin_identidad(records, stats)
@@ -373,6 +386,56 @@ class ReadDiplomaBook:
         # Sin DONE: leer no es terminar. Quien anuncia el final es quien sabe
         # qué queda por hacer después, que es el trabajo y no el lector.
         return records, stats
+
+    def _revisar_los_nombres(self, source, records: list[DiplomaRecord], stats: BookReadingStats) -> list[DiplomaRecord]:
+        """El nombre de cada cara, con el revisor de nombres común a todas las habilidades.
+
+        El operador, 2026-11-17: «centralizarlas y conectarlas a todas las
+        habilidades». Cada nombre leído pasa por la misma decisión: la lista de
+        nombres conocidos y el padrón desempatan, la IA mira la zona del nombre
+        de su cara (la regla del perfil «diplomas») con el nombre leído y los
+        candidatos del padrón al lado, y sólo se acepta una corrección de
+        letras. El nombre cambiado lo dicen los avisos de la cara.
+        """
+        from .acta_consejo import nombres_conocidos
+        from .revisor_de_nombres import (
+            PorRevisar,
+            de_la_habilidad,
+            revisar_los_nombres,
+            zona_para_mirar,
+        )
+
+        regla = de_la_habilidad("diplomas")
+        con_nombre = [(indice, record) for indice, record in enumerate(records) if record.name]
+        if not con_nombre:
+            return records
+        personas = [
+            PorRevisar(
+                indice,
+                [record.name],
+                cedula=record.identity_number,
+                imagen=(lambda pagina=record.page_number: zona_para_mirar(source, pagina, regla))
+                if self._juez_del_nombre is not None
+                else None,
+                pagina=record.page_number,
+            )
+            for indice, record in con_nombre
+        ]
+        conocidas = nombres_conocidos() | (self._padron.palabras if self._padron is not None else frozenset())
+        revisados = revisar_los_nombres(
+            personas, conocidas=conocidas, padron=self._padron, juez=self._juez_del_nombre, control=self._control,
+        )
+        records = list(records)
+        for indice, revisado in revisados.items():
+            record = records[indice]
+            stats.nombres_revisados[record.page_number] = revisado
+            if revisado.nombre and revisado.nombre != record.name:
+                records[indice] = replace(
+                    record,
+                    name=revisado.nombre,
+                    warnings=[*record.warnings, f"nombre corregido; se leyó «{record.name}»"],
+                )
+        return records
 
     def _marcar_continuaciones(self, records: list[DiplomaRecord]) -> list[DiplomaRecord]:
         """Las caras que continúan el diploma anterior, marcadas y declaradas.

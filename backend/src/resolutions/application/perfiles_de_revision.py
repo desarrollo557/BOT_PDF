@@ -162,6 +162,9 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
         ),
         una_persona_por_pdf=True,
         alias=("libro de diplomas", "diploma", "diplomas", "registro de diplomas"),
+        # «Atención a que el señor…»: a máquina o a mano, nombres primero, en la
+        # mitad de arriba de la cara (el mosaico de nombres lo ancla ahí).
+        regla_del_nombre=ReglaDelNombre(orden=NOMBRES_PRIMERO, escritura=MIXTA, zonas=((0.1, 0.7),)),
     ),
     PerfilDeRevision(
         clave="actas-de-grado",
@@ -255,6 +258,8 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
         ),
         una_persona_por_pdf=True,
         alias=("legajo de matriculas", "matricula", "matriculas"),
+        # Las casillas APELLIDOS y NOMBRES de la carátula, arriba.
+        regla_del_nombre=ReglaDelNombre(orden=APELLIDOS_PRIMERO, escritura=A_MAQUINA, zonas=((0.05, 0.45),)),
     ),
     PerfilDeRevision(
         clave="resoluciones",

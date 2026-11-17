@@ -216,7 +216,13 @@ class InventoryDocument:
         mosaico_de_fechas=None,
         lectura_de_ahorro: bool = False,
         mistral_summary=None,  # MistralSummaryAdapter para resúmenes de actas
+        #: La IA que mira el nombre de cada documento y el padrón de la
+        #: Universidad: el revisor de nombres común (2026-11-17).
+        juez_del_nombre=None,
+        padron=None,
     ) -> None:
+        self._juez_del_nombre = juez_del_nombre
+        self._padron = padron
         self._ocr = ocr
         self._pipeline = pipeline
         self._grouping = grouping or GroupingEngine()
@@ -368,6 +374,8 @@ class InventoryDocument:
             mosaico_de_cedulas=self._mosaico_de_cedulas,
             mosaico_de_fechas=self._mosaico_de_fechas,
             lectura_de_ahorro=self._lectura_de_ahorro,
+            juez_del_nombre=self._juez_del_nombre,
+            padron=self._padron,
         )
         records, stats = lector.execute(source, paginas)
 
@@ -416,7 +424,8 @@ class InventoryDocument:
         fila, con tantos folios como hojas.
         """
         lector = ReadStudentRecords(
-            ocr=self._ocr, progress=self._progress, control=self._control
+            ocr=self._ocr, progress=self._progress, control=self._control,
+            juez_del_nombre=self._juez_del_nombre, padron=self._padron,
         )
         expedientes, stats = lector.execute(source)
 

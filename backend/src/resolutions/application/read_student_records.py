@@ -52,6 +52,9 @@ class RecordsReadingStats:
     failures: dict[int, str] = field(default_factory=dict)
     #: Cuántas hojas acabó respondiendo cada peldaño.
     provenance: dict[str, int] = field(default_factory=dict)
+    #: Lo que decidió el revisor de nombres común de cada estudiante, por su
+    #: primera hoja: el trabajo lo lleva al informe (2026-11-17).
+    nombres_revisados: dict = field(default_factory=dict, repr=False)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -75,7 +78,13 @@ class ReadStudentRecords:
         progress: ProgressReporter | None = None,
         escalation_dpi: int = ESCALATION_DPI,
         control: RunControl | None = None,
+        #: La IA que mira la zona del nombre (el revisor de nombres común,
+        #: 2026-11-17), y el padrón para sus candidatos.
+        juez_del_nombre=None,
+        padron=None,
     ) -> None:
+        self._juez_del_nombre = juez_del_nombre
+        self._padron = padron
         self._ocr = ocr
         self._progress = progress or NullProgressReporter()
         self._dpi = escalation_dpi
@@ -106,7 +115,59 @@ class ReadStudentRecords:
 
         expedientes = group_students(paginas)
         stats.students = len(expedientes)
+        # El nombre de cada estudiante, con el revisor de nombres común a todas
+        # las habilidades (2026-11-17): la IA mira la zona del nombre, a todos.
+        expedientes = self._revisar_los_nombres(source, expedientes, stats)
         return expedientes, stats
+
+    def _revisar_los_nombres(self, source, expedientes, stats: RecordsReadingStats):
+        """El nombre de cada estudiante -- apellidos y nombres -- con la pieza común de los nombres.
+
+        Lo que la IA corrige vuelve a sus dos casillas: las primeras palabras a
+        los apellidos, tantas como tenían, y lo demás a los nombres.
+        """
+        from dataclasses import replace
+
+        from .acta_consejo import nombres_conocidos
+        from .revisor_de_nombres import (
+            PorRevisar,
+            de_la_habilidad,
+            revisar_los_nombres,
+            zona_para_mirar,
+        )
+
+        regla = de_la_habilidad("matriculas")
+        con_nombre = [(indice, expediente) for indice, expediente in enumerate(expedientes) if expediente.nombre]
+        if not con_nombre:
+            return expedientes
+        personas = [
+            PorRevisar(
+                indice,
+                [expediente.nombre],
+                imagen=(lambda pagina=expediente.page_number: zona_para_mirar(source, pagina, regla))
+                if self._juez_del_nombre is not None
+                else None,
+                pagina=expediente.page_number,
+            )
+            for indice, expediente in con_nombre
+        ]
+        conocidas = nombres_conocidos() | (self._padron.palabras if self._padron is not None else frozenset())
+        revisados = revisar_los_nombres(
+            personas, conocidas=conocidas, padron=self._padron, juez=self._juez_del_nombre, control=self._control,
+        )
+        expedientes = list(expedientes)
+        for indice, revisado in revisados.items():
+            expediente = expedientes[indice]
+            stats.nombres_revisados[expediente.page_number] = revisado
+            if revisado.nombre and revisado.nombre != expediente.nombre:
+                palabras = revisado.nombre.split()
+                cuantos = len((expediente.apellidos or "").split())
+                expedientes[indice] = replace(
+                    expediente,
+                    apellidos=" ".join(palabras[:cuantos]) or expediente.apellidos,
+                    nombres=" ".join(palabras[cuantos:]) or expediente.nombres,
+                )
+        return expedientes
 
     def _read_page(
         self, source, page_number: int, stats: RecordsReadingStats

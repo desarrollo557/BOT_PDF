@@ -317,3 +317,64 @@ def test_cada_graduado_de_un_acta_colectiva_se_mira_en_su_hoja():
     con_nombre = [fila for fila in outcome.filas if fila.acta_colectiva and fila.nombre]
     assert len(miradas) >= len(con_nombre) and all(miradas)
     assert all(fila.revision_del_nombre for fila in con_nombre)
+
+
+# -- fase 4: diplomas y matrículas ---------------------------------------------------
+
+
+class _FuenteDeZonas:
+    """Una fuente que recorta lo que se le pide y anota qué zona."""
+
+    def __init__(self):
+        self.recortes = []
+
+    def render(self, pagina, banda=None, dpi=200, formato=None):
+        self.recortes.append((pagina, banda))
+        return b"zona"
+
+
+def test_los_diplomas_usan_el_revisor_comun():
+    from resolutions.application.read_diploma_book import (
+        BookReadingStats,
+        ReadDiplomaBook,
+    )
+    from resolutions.domain.diploma import DiplomaRecord
+
+    juez = SimpleNamespace(resumir=lambda texto, imagen=None: "ANGELICA MARIA CUELLO SALCEDO")
+    fuente = _FuenteDeZonas()
+    stats = BookReadingStats()
+    records = [
+        DiplomaRecord(page_number=3, name="ANGELICA MARIA CUELLC SALCEDO", identity_number="1047382991"),
+        DiplomaRecord(page_number=4),
+    ]
+    revisados = ReadDiplomaBook(juez_del_nombre=juez)._revisar_los_nombres(fuente, records, stats)
+    assert revisados[0].name == "ANGELICA MARIA CUELLO SALCEDO"
+    assert any("se leyó «ANGELICA MARIA CUELLC SALCEDO»" in aviso for aviso in revisados[0].warnings)
+    # La cara sin nombre no se mira; la otra, en la zona de la regla de su perfil.
+    assert [pagina for pagina, _ in fuente.recortes] == [3]
+    assert stats.nombres_revisados[3].estado == CORREGIDO
+    # Sin IA, el nombre leído queda igual.
+    sin_ia = ReadDiplomaBook()._revisar_los_nombres(fuente, records, BookReadingStats())
+    assert sin_ia[0].name == "ANGELICA MARIA CUELLC SALCEDO"
+
+
+def test_las_matriculas_usan_el_revisor_comun_y_devuelven_cada_casilla():
+    from resolutions.application.read_student_records import (
+        ReadStudentRecords,
+        RecordsReadingStats,
+    )
+    from resolutions.domain.matricula import StudentRecord
+
+    juez = SimpleNamespace(resumir=lambda texto, imagen=None: "BARRAGAN CORREA CLARENA DE JESUS")
+    stats = RecordsReadingStats()
+    expedientes = [StudentRecord(page_numbers=[1, 2], apellidos="BARRAGAN CORREA", nombres="CLARENA DE JESUZ")]
+    revisados = ReadStudentRecords(juez_del_nombre=juez)._revisar_los_nombres(_FuenteDeZonas(), expedientes, stats)
+    assert (revisados[0].apellidos, revisados[0].nombres) == ("BARRAGAN CORREA", "CLARENA DE JESUS")
+    assert stats.nombres_revisados[1].estado == CORREGIDO
+
+
+def test_diplomas_y_matriculas_declaran_su_nombre():
+    from resolutions.application.perfiles_de_revision import perfil_de
+
+    assert perfil_de("diplomas").regla_del_nombre is not None
+    assert perfil_de("matriculas").regla_del_nombre is not None

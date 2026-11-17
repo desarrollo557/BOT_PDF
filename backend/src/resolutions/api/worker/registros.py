@@ -12,6 +12,7 @@ se pidió, el FUID -- no depende de cuál de los dos sea.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from ...application.progress import Stage
 from .planillas import _escribir_fuid, _escribir_planilla
@@ -62,6 +63,10 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
         lectura_de_ahorro=taller.lectura_de_ahorro(),
         # Resúmenes de actas con Mistral
         mistral_summary=taller.mistral_summary(),
+        # El revisor de nombres común (2026-11-17): la IA mira el nombre de
+        # cada diploma y de cada matrícula, con el padrón de la Universidad.
+        juez_del_nombre=_juez_del_nombre(taller),
+        padron=_padron(taller),
     )
     source = PyMuPDFPageSource(taller.source, taller.name)
     try:
@@ -87,6 +92,13 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
 
     report = outcome.as_dict()
     report["task"] = str(task)
+    if revisados := getattr(outcome.reading, "nombres_revisados", None):
+        # Lo que dijo el revisor de nombres común, con la misma forma que las fechas.
+        from ...application.revisor_de_nombres import (
+            anotar_en_el_informe as anotar_los_nombres,
+        )
+
+        anotar_los_nombres(report, revisados, Path(taller.name).name)
     _dejar_las_lecturas(outcome, taller.destination)
     # El revisor de cortes (2026-11-05), con el perfil de su habilidad --
     # diplomas o matrículas --: una persona por PDF, dos cédulas distintas en
@@ -214,6 +226,20 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
 
 #: Cómo se llama el archivo con lo que el motor de pago contestó de cada cara.
 LECTURAS_IA = "_lecturas-ia.jsonl"
+
+
+def _juez_del_nombre(taller: Taller):
+    """La IA que mira el nombre de cada diploma y matrícula; ``None`` con «Solo OCR»."""
+    from .nombres_asegurados import jueces_del_trabajo
+
+    return jueces_del_trabajo(taller)[0]
+
+
+def _padron(taller: Taller):
+    """El padrón de la Universidad, para los candidatos que se le muestran a la IA."""
+    from .nombres_asegurados import padron_del_trabajo
+
+    return padron_del_trabajo(taller)
 
 
 def _dejar_las_lecturas(outcome, destination) -> None:
