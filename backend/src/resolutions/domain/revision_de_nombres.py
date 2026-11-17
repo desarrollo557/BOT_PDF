@@ -127,6 +127,27 @@ def decidir_el_nombre(
     return Decision(estado, final, por_la_ia=por_la_ia)
 
 
+def con_el_nombre_cambiado(texto: str | None, viejo: str | None, nuevo: str | None) -> str | None:
+    """El texto -- el nombre de un PDF, un asunto -- con el nombre viejo cambiado por el nuevo; ``None`` si no lo trae.
+
+    Cada habilidad escribe el nombre a su modo: con guiones en el PDF de una
+    historia o de una nómina («03_CASTELLAR-MEZA-TULIO-9064111.pdf»), con
+    espacios en el asunto («NOMINAS - CASTELLAR MEZA TULIO») o tal cual. Se
+    cambia en la forma en que esté, una vez.
+    """
+    if not texto or not viejo or not nuevo:
+        return None
+    formas = [
+        ("-".join(palabras(viejo)), "-".join(palabras(nuevo))),
+        (" ".join(palabras(viejo)), " ".join(palabras(nuevo))),
+        (viejo, nuevo),
+    ]
+    for antes, despues in formas:
+        if antes and antes in texto:
+            return texto.replace(antes, despues, 1)
+    return None
+
+
 def corregida_comparando(votado: NombreVotado, respuesta: str, lecturas: Sequence[str | None]) -> str | None:
     """Lo que la IA de texto corrigió comparando las lecturas, sólo en las palabras sin confirmar."""
     return corregir_con_la_ia(votado, respuesta, lecturas)

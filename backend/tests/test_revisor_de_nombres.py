@@ -27,6 +27,7 @@ from resolutions.domain.revision_de_nombres import (
     CORREGIDO,
     SE_LEYO_DISTINTO,
     SIN_DATO,
+    con_el_nombre_cambiado,
     decidir_el_nombre,
 )
 
@@ -378,3 +379,12 @@ def test_diplomas_y_matriculas_declaran_su_nombre():
 
     assert perfil_de("diplomas").regla_del_nombre is not None
     assert perfil_de("matriculas").regla_del_nombre is not None
+
+
+def test_el_nombre_se_cambia_en_la_forma_en_que_lo_trae_cada_habilidad():
+    """Con guiones en el PDF, con espacios en el asunto; lo que no lo trae no cambia."""
+    viejo, nuevo = "CASTELLAR AGUA TULIO", "CASTELLAR MEZA TULIO"
+    assert con_el_nombre_cambiado("03_CASTELLAR-AGUA-TULIO-9064111.pdf", viejo, nuevo) == "03_CASTELLAR-MEZA-TULIO-9064111.pdf"
+    assert con_el_nombre_cambiado("NOMINAS - CASTELLAR AGUA TULIO", viejo, nuevo) == "NOMINAS - CASTELLAR MEZA TULIO"
+    assert con_el_nombre_cambiado("01_ACTA DE GRADO 12 - 1990.pdf", viejo, nuevo) is None
+    assert con_el_nombre_cambiado(None, viejo, nuevo) is None

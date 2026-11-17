@@ -140,6 +140,20 @@ describe('las historias académicas (2026-11-17)', () => {
   it('los nombres por mirar: los dudosos primero, y nunca los confirmados', () => {
     const nombres = nombresPorMirar([job(historias)]);
     expect(nombres.map(({ fila }) => fila.nombre)).toEqual(['CANTILLO TORRES IVONNE', 'CAMPO TORREGROZA ETILVIA LEONOR']);
+    // Cada uno con su número en las filas del informe: con él se pide su renglón y se corrige.
+    expect(nombres.map(({ numero }) => numero)).toEqual([2, 1]);
     expect(nombresPorMirar([job(null)])).toEqual([]);
+  });
+
+  it('los nombres por mirar son de cualquier habilidad: graduados de un acta colectiva en la misma página', () => {
+    const acta = {
+      inventario_actas: [
+        { tipo: 'ACTA DE GRADO', nombre: 'PEREZ GOMEZ JUANA', pagina_inicial: 3, revision_del_nombre: { estado: 'duda' } },
+        { tipo: 'ACTA DE GRADO', nombre: 'RUIZ DIAZ PEDRO', pagina_inicial: 3, revision_del_nombre: { estado: 'corregido' } },
+        { tipo: 'NOMINA', nombre: 'CASTELLAR MEZA TULIO', revision_del_nombre: { estado: 'duda' } }
+      ]
+    } as unknown as Partial<Report>;
+    const nombres = nombresPorMirar([job(acta)]);
+    expect(nombres.map(({ numero }) => numero)).toEqual([3, 1, 2]);
   });
 });

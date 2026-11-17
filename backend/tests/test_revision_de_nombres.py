@@ -79,20 +79,20 @@ def trabajo(client, tmp_path):
 
 
 def test_el_renglon_del_nombre_se_ve_sin_abrir_el_pdf(client, trabajo):
-    respuesta = client.get(f"/api/jobs/{trabajo.id}/nombres/23/renglon.jpg")
+    respuesta = client.get(f"/api/jobs/{trabajo.id}/nombres/1/renglon.jpg")
     assert respuesta.status_code == 200, respuesta.text
     assert respuesta.headers["content-type"] == "image/jpeg" and respuesta.content[:2] == b"\xff\xd8"
     assert client.get(f"/api/jobs/{trabajo.id}/nombres/99/renglon.jpg").status_code == 404
-    assert client.get("/api/jobs/nada/nombres/23/renglon.jpg").status_code == 404
+    assert client.get("/api/jobs/nada/nombres/1/renglon.jpg").status_code == 404
 
 
 def test_corregir_el_nombre_mueve_todo_junto(client, trabajo, administrador):
     from resolutions.api import main
 
-    assert client.put(f"/api/jobs/{trabajo.id}/nombres/23", json={"nombre": NUEVO}).status_code == 401
-    assert client.put(f"/api/jobs/{trabajo.id}/nombres/23", json={"nombre": "X"}, headers=administrador).status_code == 422
+    assert client.put(f"/api/jobs/{trabajo.id}/nombres/1", json={"nombre": NUEVO}).status_code == 401
+    assert client.put(f"/api/jobs/{trabajo.id}/nombres/1", json={"nombre": "X"}, headers=administrador).status_code == 422
 
-    respuesta = client.put(f"/api/jobs/{trabajo.id}/nombres/23", json={"nombre": NUEVO.lower()}, headers=administrador)
+    respuesta = client.put(f"/api/jobs/{trabajo.id}/nombres/1", json={"nombre": NUEVO.lower()}, headers=administrador)
     assert respuesta.status_code == 200, respuesta.text
     assert respuesta.json()["archivo_generado"] == PDF_NUEVO
 
@@ -114,7 +114,7 @@ def test_corregir_el_nombre_mueve_todo_junto(client, trabajo, administrador):
 def test_confirmar_el_nombre_no_renombra_nada(client, trabajo, administrador):
     from resolutions.api import main
 
-    respuesta = client.put(f"/api/jobs/{trabajo.id}/nombres/23", json={"nombre": VIEJO}, headers=administrador)
+    respuesta = client.put(f"/api/jobs/{trabajo.id}/nombres/1", json={"nombre": VIEJO}, headers=administrador)
     assert respuesta.status_code == 200, respuesta.text
     assert respuesta.json()["estado"] == "confirmado por el operador"
     assert (main.contexto.settings.output_dir / trabajo.id / "UPD1" / PDF_VIEJO).is_file()
@@ -135,11 +135,81 @@ def test_el_fuid_del_trabajo_se_reescribe_con_el_nombre_corregido(client, admini
     escribir_fuid(informe["inventario_actas"], main.contexto.settings.output_dir / job.id / "UPD1__inventario.xlsx")
     main.contexto.registry.mark_done(job, informe)
 
-    respuesta = client.put(f"/api/jobs/{job.id}/nombres/23", json={"nombre": NUEVO}, headers=administrador)
+    respuesta = client.put(f"/api/jobs/{job.id}/nombres/1", json={"nombre": NUEVO}, headers=administrador)
     assert respuesta.status_code == 200 and not respuesta.json()["avisos"], respuesta.text
     hoja = openpyxl.load_workbook(main.contexto.settings.output_dir / job.id / "UPD1__inventario.xlsx").active
     celdas = {str(celda.value) for fila in hoja.iter_rows() for celda in fila if celda.value}
     assert any(NUEVO in celda for celda in celdas) and not any(VIEJO in celda for celda in celdas)
+
+
+# -- las demás habilidades: el nombre dentro del de su PDF y de su asunto ------------
+
+
+def test_corregir_el_nombre_de_una_nomina(client, administrador, tmp_path):
+    """Una nómina: el renglón por las zonas de su regla y el nombre cambiado dentro del PDF y del asunto."""
+    from resolutions.api import main
+
+    viejo, nuevo = "CASTELLAR AGUA TULIO", "CASTELLAR MEZA TULIO"
+    pdf_viejo, pdf_nuevo = "01_CASTELLAR-AGUA-TULIO-9064111.pdf", "01_CASTELLAR-MEZA-TULIO-9064111.pdf"
+    job = main.contexto.registry.create("NOMINAS 1972.pdf", tmp_path / "ya-no-esta.pdf")
+    _pdf(main.contexto.settings.output_dir / job.id / "NOMINAS 1972" / pdf_viejo, paginas=1)
+    main.contexto.registry.mark_done(job, {
+        "tipo": "nomina",
+        "outputs": [f"NOMINAS 1972/{pdf_viejo}"],
+        "groups": [{"code": pdf_viejo}],
+        "review_queue": [{"page": 7, "reason": f"{DUDA}"}],
+        "inventario_actas": [
+            {"tipo": "INDICE", "asunto": "INDICE", "pagina_inicial": 1, "pagina_final": 1},
+            {
+                "tipo": "NOMINA", "asunto": f"NOMINAS - {viejo}", "nombre": viejo, "cedula": "9064111",
+                "folios": 1, "pagina_inicial": 7, "pagina_final": 7, "archivo": "NOMINAS 1972.pdf",
+                "archivo_generado": pdf_viejo, "observaciones": "",
+                "revision_del_nombre": {"estado": "duda", "pagina_de_la_ficha": 7, "leido": viejo},
+            },
+        ],
+    })
+
+    # La fila 1 es el índice, que no es de una persona.
+    assert client.get(f"/api/jobs/{job.id}/nombres/1/renglon.jpg").status_code == 404
+    respuesta = client.get(f"/api/jobs/{job.id}/nombres/2/renglon.jpg")
+    assert respuesta.status_code == 200 and respuesta.content[:2] == b"\xff\xd8", respuesta.text
+
+    respuesta = client.put(f"/api/jobs/{job.id}/nombres/2", json={"nombre": nuevo}, headers=administrador)
+    assert respuesta.status_code == 200, respuesta.text
+    assert respuesta.json()["archivo_generado"] == pdf_nuevo
+    carpeta = main.contexto.settings.output_dir / job.id / "NOMINAS 1972"
+    assert (carpeta / pdf_nuevo).is_file() and not (carpeta / pdf_viejo).exists()
+    informe = main.contexto.registry.get(job.id).report
+    fila = informe["inventario_actas"][1]
+    assert (fila["nombre"], fila["asunto"], fila["archivo_generado"]) == (nuevo, f"NOMINAS - {nuevo}", pdf_nuevo)
+    assert informe["outputs"] == [f"NOMINAS 1972/{pdf_nuevo}"] and informe["review_queue"] == []
+
+
+def test_el_pdf_del_acta_colectiva_no_cambia_de_nombre(client, administrador, tmp_path):
+    """El graduado de un acta colectiva: su fila y su asunto cambian; el PDF del acta, que es de todos, no."""
+    from resolutions.api import main
+
+    pdf = "01_ACTA DE GRADO 12 - 1990.pdf"
+    job = main.contexto.registry.create("LIBRO.pdf", tmp_path / "ya-no-esta.pdf")
+    _pdf(main.contexto.settings.output_dir / job.id / "LIBRO" / pdf, paginas=1)
+    graduado = {
+        "tipo": "ACTA DE GRADO", "acta_colectiva": True, "nombre": "PEREZ GOMEZ JUANA",
+        "asunto": "ACTA DE GRADO 12 - PEREZ GOMEZ JUANA", "pagina_inicial": 3, "pagina_final": 3,
+        "archivo_generado": pdf, "revision_del_nombre": {"estado": "duda", "pagina_de_la_ficha": 3},
+    }
+    main.contexto.registry.mark_done(job, {
+        "tipo": "acta", "outputs": [f"LIBRO/{pdf}"],
+        "inventario_actas": [graduado, {**graduado, "nombre": "RUIZ DIAZ PEDRO", "asunto": "ACTA DE GRADO 12 - RUIZ DIAZ PEDRO"}],
+    })
+    assert client.get(f"/api/jobs/{job.id}/nombres/2/renglon.jpg").status_code == 200
+
+    respuesta = client.put(f"/api/jobs/{job.id}/nombres/1", json={"nombre": "PEREZ GOMEZ JUANITA"}, headers=administrador)
+    assert respuesta.status_code == 200, respuesta.text
+    assert respuesta.json()["archivo_generado"] == pdf
+    assert (main.contexto.settings.output_dir / job.id / "LIBRO" / pdf).is_file()
+    primera, segunda = main.contexto.registry.get(job.id).report["inventario_actas"]
+    assert primera["asunto"] == "ACTA DE GRADO 12 - PEREZ GOMEZ JUANITA"
+    assert segunda["nombre"] == "RUIZ DIAZ PEDRO"
 
 
 # -- el destino de una corrida de carpeta -------------------------------------------

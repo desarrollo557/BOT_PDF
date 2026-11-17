@@ -778,24 +778,26 @@ export function renameOutput(
 }
 
 /**
- * El recorte del renglón del nombre de un estudiante de historias: la parte de
- * arriba de su ficha y el pie de sus notas, para mirarlo sin abrir el PDF.
+ * Donde está escrito el nombre de la persona de la fila `numero` del informe
+ * (de 1 en adelante), recortado para mirarlo sin abrir el PDF: las zonas de la
+ * regla del nombre de su habilidad.
  */
-export function renglonDelNombreUrl(jobId: string, pagina: number): string {
-  return `${BASE}/jobs/${jobId}/nombres/${pagina}/renglon.jpg`;
+export function renglonDelNombreUrl(jobId: string, numero: number): string {
+  return `${BASE}/jobs/${jobId}/nombres/${numero}/renglon.jpg`;
 }
 
 /**
- * Confirma o corrige el nombre de un estudiante. El mismo nombre que ya tenía lo
- * confirma; otro lo corrige, y el PDF, el FUID, la entrega y el padrón se mueven
- * juntos (2026-11-17). `avisos` dice lo que no se pudo hacer.
+ * Confirma o corrige el nombre de la persona de la fila `numero`. El mismo
+ * nombre que ya tenía lo confirma; otro lo corrige, y el PDF, el FUID, la
+ * entrega y el padrón se mueven juntos (2026-11-17). `avisos` dice lo que no se
+ * pudo hacer.
  */
 export function corregirNombre(
   jobId: string,
-  pagina: number,
+  numero: number,
   nombre: string
 ): Promise<{ nombre: string; archivo_generado: string | null; estado: string; avisos: string[] }> {
-  return send(`${BASE}/jobs/${jobId}/nombres/${pagina}`, 'PUT', { nombre });
+  return send(`${BASE}/jobs/${jobId}/nombres/${numero}`, 'PUT', { nombre });
 }
 
 /** Delete one generated resolution: the file and its inventory row. */

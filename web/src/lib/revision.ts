@@ -54,14 +54,16 @@ export function whereItLanded(job: Job, page: number): Landing {
 /** Los estados de un nombre que la Revisión enseña: los que no aseguró la máquina. */
 const POR_MIRAR = new Set(['duda', 'corregido']);
 
-/** Un estudiante cuyo nombre conviene mirar, con su trabajo. */
+/** Una persona cuyo nombre conviene mirar, con su trabajo. */
 export interface NombrePorMirar {
   job: Job;
   fila: FilaDeActa;
+  /** Su número en las filas del informe, de 1 en adelante: con él se pide su renglón y se corrige. */
+  numero: number;
 }
 
 /**
- * Los estudiantes de historias académicas cuyo nombre la máquina no aseguró:
+ * Las personas, de cualquier habilidad, cuyo nombre la máquina no aseguró:
  * los que las lecturas no confirmaron («duda») y los que cambió la IA
  * («corregido»). Los dudosos primero, y luego en el orden del PDF.
  *
@@ -70,10 +72,10 @@ export interface NombrePorMirar {
 export function nombresPorMirar(jobs: Job[]): NombrePorMirar[] {
   const salida: NombrePorMirar[] = [];
   for (const job of jobs) {
-    for (const fila of job.report?.inventario_actas ?? []) {
+    (job.report?.inventario_actas ?? []).forEach((fila, indice) => {
       const estado = fila.revision_del_nombre?.estado;
-      if (estado && POR_MIRAR.has(estado) && fila.pagina_inicial !== undefined) salida.push({ job, fila });
-    }
+      if (estado && POR_MIRAR.has(estado)) salida.push({ job, fila, numero: indice + 1 });
+    });
   }
   return salida.sort(
     (a, b) =>

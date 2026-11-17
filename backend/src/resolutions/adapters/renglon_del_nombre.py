@@ -29,8 +29,19 @@ PIE_DE_LAS_NOTAS = (0.86, 1.0)
 PPP = 110
 
 
-def recorte_del_nombre(pdf: Path, ficha: int = 1, notas: int | None = 2) -> bytes | None:
-    """La parte de arriba de la página ``ficha`` y el pie de la ``notas``, apiladas en un JPEG; ``None`` si no se puede."""
+def recorte_del_nombre(
+    pdf: Path,
+    ficha: int = 1,
+    notas: int | None = 2,
+    *,
+    zonas: tuple[tuple[float, float], ...] = (ARRIBA_DE_LA_FICHA,),
+    zonas_de_la_siguiente: tuple[tuple[float, float], ...] = (PIE_DE_LAS_NOTAS,),
+) -> bytes | None:
+    """Las ``zonas`` de la página ``ficha`` y las de la ``notas``, apiladas en un JPEG; ``None`` si no se puede.
+
+    Sin zonas, las de la historia académica: arriba de la ficha y el pie de las
+    notas. Las demás habilidades pasan las de la regla de su nombre.
+    """
     try:
         import pymupdf
         from PIL import Image
@@ -39,7 +50,8 @@ def recorte_del_nombre(pdf: Path, ficha: int = 1, notas: int | None = 2) -> byte
     recortes = []
     try:
         with pymupdf.open(pdf) as documento:
-            for numero, (arriba, abajo) in ((ficha, ARRIBA_DE_LA_FICHA), (notas, PIE_DE_LAS_NOTAS)):
+            piezas = [(ficha, zona) for zona in zonas] + [(notas, zona) for zona in zonas_de_la_siguiente]
+            for numero, (arriba, abajo) in piezas:
                 if numero is None or not 1 <= numero <= documento.page_count:
                     continue
                 pagina = documento[numero - 1]

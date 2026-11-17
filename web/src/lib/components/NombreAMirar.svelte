@@ -4,8 +4,8 @@
   import type { FilaDeActa, Job } from '$lib/types';
 
   /**
-   * Un estudiante cuyo nombre la máquina no aseguró: el renglón de su ficha y el
-   * pie de sus notas, lo que leyó cada lectura y el nombre que quedó.
+   * Una persona -- de cualquier habilidad -- cuyo nombre la máquina no aseguró:
+   * donde está escrito en su papel, lo que leyó cada lectura y el nombre que quedó.
    *
    * El operador (2026-11-17): «la idea es tener los nombres de manera correcta».
    * Lo confirma con «Está bien» o lo corrige escribiéndolo, o pulsando una de
@@ -16,12 +16,14 @@
   interface Props {
     job: Job;
     fila: FilaDeActa;
+    /** Su número en las filas del informe: con él se pide su renglón y se corrige. */
+    numero: number;
   }
 
-  let { job, fila }: Props = $props();
+  let { job, fila, numero }: Props = $props();
 
   const revision = $derived(fila.revision_del_nombre);
-  const pagina = $derived(fila.pagina_inicial ?? 0);
+  const pagina = $derived(revision?.pagina_de_la_ficha ?? fila.pagina_inicial ?? 0);
   const dudoso = $derived(revision?.estado === 'duda');
 
   // Se siembra con el nombre que quedó, y se vuelve a sembrar si el servidor lo cambia.
@@ -67,7 +69,7 @@
     ocupado = true;
     error = null;
     try {
-      const hecho = await corregirNombre(job.id, pagina, plano(valor));
+      const hecho = await corregirNombre(job.id, numero, plano(valor));
       avisos = hecho.avisos;
     } catch (problema) {
       error = (problema as Error).message;
@@ -81,7 +83,7 @@
   {#if !sinImagen}
     <img
       class="renglon"
-      src={renglonDelNombreUrl(job.id, pagina)}
+      src={renglonDelNombreUrl(job.id, numero)}
       alt={`Renglón del nombre en la ficha, página ${pagina}`}
       loading="lazy"
       onerror={() => (sinImagen = true)}

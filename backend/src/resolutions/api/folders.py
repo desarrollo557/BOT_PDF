@@ -4235,8 +4235,9 @@ class FolderRunner:
                     ):
                         fila["nombre"] = nuevo["nombre"]
                         fila["archivo_generado"] = nuevo.get("archivo_generado")
-                        if "revision_del_nombre" in nuevo:
-                            fila["revision_del_nombre"] = nuevo["revision_del_nombre"]
+                        for campo in ("revision_del_nombre", "asunto"):
+                            if campo in nuevo:
+                                fila[campo] = nuevo[campo]
                         origen, carpeta = Path(clave), str(fila.get("carpeta") or "")
                         break
                 if origen is not None:
@@ -4264,9 +4265,15 @@ class FolderRunner:
                 if viejo.get("salida") and archivo.get("ruta") == viejo["salida"]:
                     archivo["ruta"] = nuevo.get("salida")
             for fila in constancia.actas:
-                if fila.get("pagina_inicial") == pagina and fila.get("archivo_generado") == viejo.get("archivo_generado"):
+                if (
+                    fila.get("pagina_inicial") == pagina
+                    and fila.get("archivo_generado") == viejo.get("archivo_generado")
+                    and fila.get("nombre") == viejo.get("nombre")
+                ):
                     fila["nombre"] = nuevo["nombre"]
                     fila["archivo_generado"] = nuevo.get("archivo_generado")
+                    if "asunto" in nuevo:
+                        fila["asunto"] = nuevo["asunto"]
             try:
                 with run.cerrojo:
                     constancias.escribir(ruta, constancia)
