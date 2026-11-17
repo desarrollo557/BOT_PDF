@@ -37,6 +37,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from ..domain.auditoria import MARGEN_ACEPTABLE
+from ..domain.revision_de_nombres import A_MANO, APELLIDOS_PRIMERO, ReglaDelNombre
 from .integridad_de_los_datos import DE_UNA_HISTORIA, DE_UNA_NOMINA, DatosEsperados
 from .revisor_de_cortes import REGLAS_DE_LA_CORRESPONDENCIA, Patrones
 
@@ -66,6 +67,11 @@ class PerfilDeRevision:
     #: de los dos agentes (el operador, 2026-11-10: «estar muy seguro de cada
     #: fecha en cada documento, sin importar la habilidad»).
     regla_de_fechas: str = "extremos"
+    #: Cómo es el nombre de la persona en su papel -- dónde está escrito, en qué
+    #: orden, a mano o a máquina --: la del revisor de nombres, el gemelo del de
+    #: fechas (el operador, 2026-11-17: «centralizarlas y conectarlas a todas las
+    #: habilidades»). ``None``: la habilidad no tiene una persona por documento.
+    regla_del_nombre: ReglaDelNombre | None = None
 
     @property
     def margen(self) -> float:
@@ -108,6 +114,8 @@ class PerfilDeRevision:
             "corrige": self.corrige,
             "margen_aceptable": self.margen,
             "datos": list(self.datos.campos) if self.datos else [],
+            "regla_de_fechas": self.regla_de_fechas,
+            "nombre_de_persona": self.regla_del_nombre.escritura if self.regla_del_nombre else None,
         }
 
 
@@ -187,6 +195,11 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
         una_persona_por_pdf=True,
         alias=("historias academicas", "historia academica", "historia-academica", "historias"),
         datos=DE_UNA_HISTORIA,
+        # Escrito a mano en el renglón «Nombre del estudiante», arriba de la
+        # ficha, y otra vez al pie de la hoja de notas que la sigue.
+        regla_del_nombre=ReglaDelNombre(
+            orden=APELLIDOS_PRIMERO, escritura=A_MANO, zonas=((0.02, 0.26),), zonas_de_la_siguiente=((0.86, 1.0),)
+        ),
     ),
     PerfilDeRevision(
         clave="nominas",

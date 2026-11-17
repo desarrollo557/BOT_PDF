@@ -252,6 +252,8 @@ def historias_academicas_job(payload: dict) -> dict:
         notas_del_nombre: dict[int, str] = {}
         #: Cómo quedó el nombre de cada estudiante y sus lecturas: para la Revisión.
         detalle_del_nombre: dict[int, dict] = {}
+        #: Lo que decidió el revisor de nombres de cada estudiante: sus cuentas van al informe.
+        nombres_revisados: dict = {}
         de_enfermeria = not de_medicina and not de_hojas and bool(lecturas)
         if de_medicina or de_hojas or de_enfermeria:
             if de_medicina:
@@ -260,7 +262,7 @@ def historias_academicas_job(payload: dict) -> dict:
                     texto = textos_de_la_ficha.get(unidad.pagina_de_la_ficha) if unidad.pagina_de_la_ficha else None
                     if texto and (leido := nombre_del_renglon(texto)):
                         lecturas.setdefault(unidad.paginas[0], []).append(leido)
-            _corregir_los_nombres(
+            nombres_revisados = _corregir_los_nombres(
                 payload, taller, source, de_pago, unidades, lecturas, renglones, hojas, conocidas, nombre,
                 notas_del_nombre,
                 releer=_releer_en_la_ficha(taller, source, conocidas) if de_enfermeria else None,
@@ -558,6 +560,14 @@ def historias_academicas_job(payload: dict) -> dict:
             for duda in unidad.dudas
         ],
     }
+    if nombres_revisados:
+        # Las cuentas del revisor de nombres, como las de fechas: sus dudas ya
+        # van en la cola por las de cada estudiante.
+        from ...application.revisor_de_nombres import (
+            anotar_en_el_informe as anotar_los_nombres,
+        )
+
+        anotar_los_nombres(report, nombres_revisados, nombre, a_la_cola=False)
     if pidio_dividir:
         report["outputs"] = salidas
         report["dividido"] = True
@@ -815,19 +825,10 @@ def _releer_en_medicina(taller, source):
 
 
 def _padron_del_trabajo(taller):
-    """El padrón de la Universidad, listo para buscar; vacío si no hay o no se deja leer."""
-    from ...domain.padron import IndiceDelPadron
+    """El padrón de la Universidad para este trabajo (``nombres_asegurados.padron_del_trabajo``)."""
+    from .nombres_asegurados import padron_del_trabajo
 
-    ruta = (taller.settings or {}).get("padron_path")
-    if not ruta:
-        return IndiceDelPadron([])
-    try:
-        from ...adapters.padron_jsonl import PadronEnArchivo
-
-        return IndiceDelPadron(PadronEnArchivo(ruta).personas())
-    except Exception:  # noqa: BLE001 - sin padrón, los nombres se leen igual
-        logger.warning("no se pudo leer el padrón %s", ruta, exc_info=True)
-        return IndiceDelPadron([])
+    return padron_del_trabajo(taller)
 
 
 def _nombres_del_operador(unidades, padron, notas_del_nombre, detalle) -> None:
@@ -909,112 +910,60 @@ def _imagen_del_nombre(source, unidad) -> bytes | None:
     return salida.getvalue()
 
 
-def _mirar_los_nombres(taller, mirar, por_unidad, votados, lecturas, nombre, pistas=None) -> dict[int, str]:
-    """Lo que contesta el juez del nombre de cada estudiante, mirando su renglón con sus lecturas al lado.
-
-    Con ``pistas``, las personas parecidas del padrón de la Universidad van
-    también, como candidatas: la IA decide mirando el papel (2026-11-17).
-
-    Las imágenes se recortan de a una -- el documento no se lee desde dos
-    hilos -- y se preguntan de a ``LECTORES_DE_IA``. El que falla queda con su
-    nombre votado.
-    """
-    from concurrent.futures import ThreadPoolExecutor
-
-    juez = taller.juez_del_nombre()
-    if juez is None:
-        return {}
-    imagenes: dict[int, bytes] = {}
-    for clave, votado in votados.items():
-        if votado.nombre:
-            taller.control.check()
-            if imagen := mirar(por_unidad[clave]):
-                imagenes[clave] = imagen
-
-    def preguntar(clave: int) -> tuple[int, str | None]:
-        suyas = list(dict.fromkeys(lectura for lectura in [votados[clave].nombre, *lecturas.get(clave, [])] if lectura))
-        texto = "\n".join(f"- {lectura}" for lectura in suyas)
-        if pista := (pistas or {}).get(clave):
-            texto = f"{texto}\n\n{pista}"
-        try:
-            return clave, juez.resumir(texto, imagen=imagenes[clave])
-        except Exception:  # noqa: BLE001 - sin el juez queda lo votado
-            logger.warning("la IA no miró el nombre de la página %s de %s", clave, nombre, exc_info=True)
-            return clave, None
-
-    with ThreadPoolExecutor(max_workers=LECTORES_DE_IA) as pool:
-        respuestas = dict(pool.map(preguntar, list(imagenes)))
-    return {clave: respuesta for clave, respuesta in respuestas.items() if respuesta}
-
-
 def _corregir_los_nombres(
     payload, taller, source, de_pago, unidades, lecturas, renglones, hojas, conocidas, nombre, notas_del_nombre,
     *, releer=None, a_revision=False, mirar=None, padron=None, detalle=None,
-) -> None:
-    """El nombre de cada estudiante, lo más parecido a lo que dice el renglón de su página.
+) -> dict:
+    """El nombre de cada estudiante, con el revisor de nombres común a todas las habilidades.
 
     Lo pidió el operador el 2026-11-03: «que si el nombre está mal escrito, la
     IA tenga la habilidad de colocarle una aproximación correcta y muy
-    cercana… lo más parecido a lo que se pueda leer en el renglón». Y el
+    cercana… lo más parecido a lo que se pueda leer en el renglón». El
     2026-11-17, para Enfermería: «que esté la IA para saber aproximar el nombre
-    y acertar con el nombre comparando».
+    y acertar con el nombre comparando». Y ese mismo día, que la herramienta
+    sea una para todas las habilidades: la decisión vive en
+    ``application/revisor_de_nombres.py`` (el voto, la otra mirada de lo
+    dudoso, la IA que mira el renglón, el padrón y lo que va a Revisión).
 
-    1. Las lecturas del estudiante votan cada palabra, y la lista de nombres
-       conocidos corrige la que nada confirma y está a una letra
-       (``nombre_por_consenso``). Gratis.
-    2. Si aún queda una palabra sin confirmar y se pidió la IA, se vuelve a
-       mirar el renglón del PDF con otro recorte y más zoom (``otra_mirada``,
-       con ``releer``: el pie y la ficha en Medicina, el renglón del nombre y
-       Observaciones en la ficha de Enfermería), o la cabecera de la hoja a
-       más resolución en las hojas sueltas. Esa lectura vota también.
-    3. Con ``mirar`` (la ficha de Enfermería), la IA mira la imagen del
-       renglón de cada estudiante con todas sus lecturas al lado y dice lo que
-       está escrito (``_mirar_los_nombres``, ``nombre_mirado``). Si no, lo que
-       siga sin confirmar lo corrige la IA comparando las lecturas en texto.
-       En los dos casos sólo se acepta una aproximación de lo leído.
+    Lo de las historias es de dónde sale cada cosa:
 
-    Si el nombre cambia, la fila dice qué se leyó. Con ``a_revision``, lo que ni
-    así se confirma y las lecturas no dicen igual va a revisión con ellas.
+    * **la otra mirada** (``releer``): el pie y la ficha en Medicina, el renglón
+      del nombre y Observaciones en la ficha de Enfermería, o la cabecera de la
+      hoja a más resolución en las hojas sueltas;
+    * **la imagen** que mira la IA (``mirar``, sólo la ficha de Enfermería);
+    * **el padrón**, cuyas personas parecidas van a la IA como candidatas.
 
-    Con ``padron`` (``domain/padron.py``), las personas parecidas de la
-    Universidad van a la IA como candidatas, y sus nombres cuentan como
-    lecturas para lo que se acepta de ella. En ``detalle`` queda, por
-    estudiante, cómo quedó su nombre -- «duda», «corregido» o «confirmado» -- y
-    sus lecturas: es lo que enseña la pantalla de Revisión.
+    Si el nombre cambia, la fila dice qué se leyó; con ``a_revision``, lo que
+    no se confirma va a la cola con sus lecturas; en ``detalle`` queda cómo
+    quedó cada nombre para la pantalla de Revisión. Devuelve lo revisado, para
+    el informe.
     """
     from dataclasses import replace
 
     from ...application.ports import Band
-    from ...domain.historia_academica import plano
-    from ...domain.historia_medicina import (
-        corregir_con_la_ia,
-        leer_hoja,
-        nombre_mirado,
-        nombre_por_consenso,
-    )
-    from ...domain.padron import para_la_ia
+    from ...application.revisor_de_nombres import PorRevisar
+    from ...domain.historia_medicina import leer_hoja
+    from ...domain.revision_de_nombres import A_REVISION
+    from .nombres_asegurados import asegurar_los_nombres
 
     por_unidad = {unidad.paginas[0]: unidad for unidad in unidades if unidad.ficha is not None}
-    votados = {clave: nombre_por_consenso(lecturas.get(clave, []), conocidas) for clave in por_unidad}
-    # Los que tienen palabras sin confirmar, y los que no tienen nombre: ningún
-    # documento sin nombre.
-    dudosos = [clave for clave, votado in votados.items() if votado.sin_confirmar or not votado.nombre]
 
-    if dudosos and de_pago is not None:
+    def otra_mirada(dudosos: list) -> dict:
         _anunciar(payload, Stage.IDENTIFYING, detail="volviendo a mirar el renglón de los nombres dudosos")
+        nuevas: dict[int, list[str]] = {}
         if renglones:
             # El renglón de cada uno, con otra mirada.
-            releer = releer or _releer_en_medicina(taller, source)
+            de_la_franja = releer or _releer_en_medicina(taller, source)
             por_franja: dict[object, list[tuple[int, int]]] = {}
             for clave in dudosos:
                 for franja, pagina in renglones.get(clave, []):
                     por_franja.setdefault(franja, []).append((clave, pagina))
             for franja, pares in por_franja.items():
                 taller.control.check()
-                leidos = releer(franja, [pagina for _, pagina in pares])
+                leidos = de_la_franja(franja, [pagina for _, pagina in pares])
                 for clave, pagina in pares:
                     if leido := leidos.get(pagina):
-                        lecturas.setdefault(clave, []).append(leido)
+                        nuevas.setdefault(clave, []).append(leido)
         else:
             # Hojas sueltas: su cabecera, a más resolución.
             cabeceras = _leer_paginas_con_la_ia(
@@ -1023,76 +972,53 @@ def _corregir_los_nombres(
             )
             for clave, texto in cabeceras.items():
                 if leido := leer_hoja(texto, por_unidad[clave].plantilla).nombre:
-                    lecturas.setdefault(clave, []).append(leido)
-        for clave in dudosos:
-            votados[clave] = nombre_por_consenso(lecturas.get(clave, []), conocidas)
+                    nuevas.setdefault(clave, []).append(leido)
+        return nuevas
 
+    personas = [
+        PorRevisar(
+            clave=clave,
+            lecturas=lecturas.get(clave, []),
+            cedula=unidad.ficha.cedula,
+            imagen=(lambda unidad=unidad: mirar(unidad)) if mirar else None,
+            pagina=unidad.pagina_de_la_ficha,
+        )
+        for clave, unidad in por_unidad.items()
+    ]
     # Con ``mirar``, la IA mira el renglón de cada estudiante, con sus lecturas
     # al lado: también el de los confirmados, porque el OCR se equivoca igual
     # en la página y en el renglón ampliado (CORTEZ por CORTES, en las dos).
-    candidatos: dict[int, list] = {}
-    if padron is not None and len(padron):
-        for clave, votado in votados.items():
-            cedula = por_unidad[clave].ficha.cedula
-            suyos = padron.parecidos(votado.nombre)
-            if (misma := padron.por_la_cedula(votado.nombre, cedula)) is not None and misma not in suyos:
-                suyos = [misma, *suyos]
-            if suyos:
-                candidatos[clave] = suyos
-    pistas = {clave: para_la_ia(suyos, por_unidad[clave].ficha.cedula) for clave, suyos in candidatos.items()}
-    miradas = (
-        _mirar_los_nombres(taller, mirar, por_unidad, votados, lecturas, nombre, pistas) if mirar and de_pago else {}
+    revisados = asegurar_los_nombres(
+        None,
+        personas,
+        taller=taller,
+        documento=nombre,
+        conocidas=conocidas,
+        padron=padron,
+        de_pago=de_pago is not None,
+        mirar=bool(mirar),
+        releer=otra_mirada if de_pago is not None else None,
+        a_revision=a_revision,
     )
-    corrector = taller.corrector_de_nombres() if de_pago is not None else None
-    for clave, votado in votados.items():
-        final = votado.nombre
-        corregido_por_la_ia = None
-        if final and clave in miradas:
-            todas = [votado.nombre, *[lectura for lectura in lecturas.get(clave, []) if lectura != votado.nombre]]
-            # Lo que la IA tome del padrón vale como lo que tome de una lectura.
-            todas += [persona.nombre for persona in candidatos.get(clave, [])]
-            corregido_por_la_ia = nombre_mirado(final, miradas[clave], todas)
-            if corregido_por_la_ia is None and " ".join(re.findall(r"[A-Z]+", plano(miradas[clave]))) == final:
-                # La IA lee lo mismo: eso lo confirma.
-                corregido_por_la_ia = final
-            final = corregido_por_la_ia or final
-        elif final and votado.sin_confirmar and corrector is not None:
-            todas = [votado.nombre, *[lectura for lectura in lecturas.get(clave, []) if lectura != votado.nombre]]
-            try:
-                respuesta = corrector.resumir("\n".join(f"- {lectura}" for lectura in todas if lectura))
-            except Exception:  # noqa: BLE001 - sin la IA queda lo votado
-                logger.warning("la IA no corrigió un nombre de %s", nombre, exc_info=True)
-            else:
-                corregido_por_la_ia = corregir_con_la_ia(votado, respuesta, todas)
-                final = corregido_por_la_ia or final
-        if not final:
+    for clave, revisado in revisados.items():
+        if not revisado.nombre:
             continue
         unidad = por_unidad[clave]
-        unidad.ficha = replace(unidad.ficha, nombre=final)
-        if votado.leido and final != votado.leido:
-            notas_del_nombre[clave] = f"nombre corregido; se leyó «{votado.leido}»"
-            logger.info("%s: «%s» → «%s» (lecturas: %s)", nombre, votado.leido, final, lecturas.get(clave))
-        distintas = list(dict.fromkeys(lectura for lectura in lecturas.get(clave, []) if lectura))
-        estado = "corregido" if votado.leido and final != votado.leido else "confirmado"
-        if a_revision and votado.sin_confirmar and not corregido_por_la_ia and len(distintas) > 1:
+        unidad.ficha = replace(unidad.ficha, nombre=revisado.nombre)
+        if revisado.cambio:
+            notas_del_nombre[clave] = f"nombre corregido; se leyó «{revisado.leido}»"
+            logger.info("%s: «%s» → «%s» (lecturas: %s)", nombre, revisado.leido, revisado.nombre, list(revisado.lecturas))
+        if revisado.estado == A_REVISION and revisado.motivo:
             # Ni otra mirada ni la IA lo confirman, y las lecturas no dicen
-            # igual: a revisión con todas, como antes con dos.
-            leidas = " / ".join(f"«{lectura}»" for lectura in distintas)
-            unidad.dudas.append(f"el nombre se leyó distinto en cada zona: {leidas}")
-            estado = "duda"
+            # igual: a revisión con todas.
+            unidad.dudas.append(revisado.motivo)
         if detalle is not None:
-            detalle[clave] = {
-                "estado": estado,
-                "pagina_de_la_ficha": unidad.pagina_de_la_ficha,
-                "leido": votado.leido,
-                "lecturas": distintas,
-                **({"de_la_ia": miradas[clave]} if clave in miradas else {}),
-                **({"padron": [persona.nombre for persona in candidatos[clave]]} if clave in candidatos else {}),
-            }
+            detalle[clave] = revisado.detalle
     logger.info(
-        "%s: %d nombres, %d con palabras dudosas, %d corregidos", nombre, len(votados), len(dudosos),
-        len(notas_del_nombre),
+        "%s: %d nombres, %d a revisión, %d corregidos", nombre, len(revisados),
+        sum(1 for revisado in revisados.values() if revisado.estado == A_REVISION), len(notas_del_nombre),
     )
+    return revisados
 
 
 def _leer_paginas_con_la_ia(

@@ -224,6 +224,19 @@ class JuezDeDatos(Protocol):
 
 
 @runtime_checkable
+class JuezDelNombre(Protocol):
+    """Mira la imagen de donde está escrito el nombre de una persona y dice lo que dice.
+
+    Recibe las lecturas del OCR -- y los candidatos del padrón -- como texto y
+    la imagen del renglón; contesta el nombre como está escrito. Lo que diga
+    sólo vale como corrección de letras de lo leído (``domain/revision_de_nombres.py``).
+    Sin imagen es un corrector de texto: compara las lecturas.
+    """
+
+    def resumir(self, texto: str, imagen: bytes | None = None) -> str: ...
+
+
+@runtime_checkable
 class JuezDeCosturas(Protocol):
     """Decide las costuras que salieron del margen de error del revisor.
 
