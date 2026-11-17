@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from datetime import date
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
 from ...adapters.renglon_del_nombre import recorte_del_nombre
+from ...application.revisor_de_nombres import EN_LA_COLA
 from ...domain.historia_academica import HISTORIA_ACADEMICA, Ficha
 from ...domain.padron import (
     CONFIRMADO_POR_EL_OPERADOR,
@@ -44,7 +46,7 @@ router = APIRouter()
 
 #: Lo que la Revisión de nombres le quita a la cola al confirmarlo o corregirlo:
 #: la duda del nombre, la diga la habilidad o el revisor común.
-DUDA_DEL_NOMBRE = SE_LEYO_DISTINTO
+DUDAS_DEL_NOMBRE = (SE_LEYO_DISTINTO, EN_LA_COLA)
 #: De qué habilidad es cada informe, para la regla de su nombre (``perfil.regla_del_nombre``).
 HABILIDAD_DEL_INFORME = {
     "historia-academica": "historias",
@@ -54,8 +56,19 @@ HABILIDAD_DEL_INFORME = {
 }
 
 
+def filas_de_personas(report: dict) -> list:
+    """Las filas del informe en que puede haber una persona, en el orden en que se numeran.
+
+    Primero las de ``inventario_actas`` (historias, nóminas, certificados,
+    actas de grado) y después las del FUID ya hecho (``filas_del_fuid``:
+    libros de diplomas y legajos de matrículas). La pantalla numera igual
+    (``nombresPorMirar`` en ``web/src/lib/revision.ts``).
+    """
+    return [*(report.get("inventario_actas") or []), *(report.get("filas_del_fuid") or [])]
+
+
 def _trabajo_y_fila(ctx, job_id: str, numero: int):
-    """El trabajo y la fila ``numero`` (de 1 en adelante) de su informe, si es de una persona.
+    """El trabajo, la fila ``numero`` (de 1 en adelante) de su informe si es de una persona, y si es del FUID.
 
     Por su número y no por su página: los graduados de un acta colectiva
     comparten la página y el PDF del acta.
@@ -63,11 +76,23 @@ def _trabajo_y_fila(ctx, job_id: str, numero: int):
     job = ctx.registry.get(job_id)
     if job is None or not job.report:
         raise HTTPException(status_code=404, detail="Ese trabajo ya no está en la pantalla.")
-    filas = job.report.get("inventario_actas") or []
+    filas = filas_de_personas(job.report)
     fila = filas[numero - 1] if 0 < numero <= len(filas) else None
     if not isinstance(fila, dict) or not (fila.get("nombre") or fila.get("revision_del_nombre")):
         raise HTTPException(status_code=404, detail=f"El trabajo no tiene una persona en la fila {numero}.")
-    return job, fila
+    return job, fila, numero > len(job.report.get("inventario_actas") or [])
+
+
+#: El archivo de una fila del FUID, en sus notas: «Archivo: 01_….pdf».
+_ARCHIVO_EN_LAS_NOTAS = re.compile(r"Archivo: ([^;]+)")
+
+
+def _archivo_de(fila: dict, del_fuid: bool) -> str | None:
+    """Cómo se llama el PDF de la persona: el de su fila, o el que dicen sus notas en una del FUID."""
+    if not del_fuid:
+        return fila.get("archivo_generado")
+    encontrado = _ARCHIVO_EN_LAS_NOTAS.search(str(fila.get("notas") or ""))
+    return encontrado.group(1).strip() if encontrado else None
 
 
 def _salida_de(report: dict, archivo: str | None) -> str | None:
@@ -90,10 +115,12 @@ def _dentro_del_trabajo(ctx, job_id: str, relativa: str) -> Path:
 
 
 def _regla_del_trabajo(job):
-    """La regla del nombre de la habilidad del trabajo, por el tipo de su informe."""
+    """La regla del nombre de la habilidad del trabajo, por el tipo de su informe o el de su documento."""
+    from ..retomar import tipo_del_informe
     from ..worker.nombres_asegurados import regla_del_nombre
 
-    habilidad = HABILIDAD_DEL_INFORME.get(str((job.report or {}).get("tipo") or ""))
+    report = job.report or {}
+    habilidad = HABILIDAD_DEL_INFORME.get(str(report.get("tipo") or "")) or tipo_del_informe(report)
     return regla_del_nombre(habilidad) if habilidad else None
 
 
@@ -105,7 +132,7 @@ async def renglon_del_nombre(ctx: Ctx, job_id: str, numero: int) -> Response:
     académica, la parte de arriba de su ficha -- que va primera en su PDF -- y
     el pie de sus notas; el acta colectiva, la hoja entera donde está su lista.
     """
-    job, fila = _trabajo_y_fila(ctx, job_id, numero)
+    job, fila, del_fuid = _trabajo_y_fila(ctx, job_id, numero)
     regla = _regla_del_trabajo(job)
     revision = fila.get("revision_del_nombre") or {}
     inicial = int(fila.get("pagina_inicial") or 1)
@@ -116,17 +143,19 @@ async def renglon_del_nombre(ctx: Ctx, job_id: str, numero: int) -> Response:
         zonas = {"zonas": ((0.0, 1.0),), "zonas_de_la_siguiente": ()}
     elif regla is not None and not historia:
         zonas = {"zonas": regla.zonas, "zonas_de_la_siguiente": regla.zonas_de_la_siguiente}
-    salida = _salida_de(job.report, fila.get("archivo_generado"))
+    salida = _salida_de(job.report, _archivo_de(fila, del_fuid))
+    folios = int(fila.get("folios") or 1)
     pdf: Path | None = None
     if salida and (ruta := _dentro_del_trabajo(ctx, job_id, salida)).is_file():
         pdf = ruta
         # La historia lleva su ficha primero; en las demás, la hoja va donde estaba.
         hoja = 1 if historia else max(1, donde - inicial + 1)
-        siguiente = hoja + 1 if int(fila.get("folios") or 1) > hoja else None
+        siguiente = hoja + 1 if folios > hoja else None
     elif job.source and Path(job.source).is_file():
         # Sólo se inventarió: la hoja en el original, mientras siga ahí.
         pdf, hoja = Path(job.source), donde
-        siguiente = hoja + 1 if hoja < int(fila.get("pagina_final") or hoja) else None
+        final = int(fila.get("pagina_final") or inicial + folios - 1)
+        siguiente = hoja + 1 if hoja < final else None
     if pdf is None:
         raise HTTPException(status_code=404, detail="El PDF de esta persona ya no está en el servicio.")
     imagen = await asyncio.to_thread(recorte_del_nombre, pdf, hoja, siguiente, **zonas)
@@ -166,7 +195,7 @@ async def corregir_nombre(ctx: Ctx, job_id: str, numero: int, payload: dict, qui
     padrón. Uno distinto es una corrección.
     """
     exigir_identificado(quien)
-    job, fila = _trabajo_y_fila(ctx, job_id, numero)
+    job, fila, del_fuid = _trabajo_y_fila(ctx, job_id, numero)
     nuevo = nombre_de_persona(str(payload.get("nombre") or ""))
     if nuevo is None:
         raise HTTPException(
@@ -175,7 +204,7 @@ async def corregir_nombre(ctx: Ctx, job_id: str, numero: int, payload: dict, qui
         )
     report = job.report
     viejo_nombre = fila.get("nombre")
-    viejo_archivo = fila.get("archivo_generado")
+    viejo_archivo = _archivo_de(fila, del_fuid)
     viejo_asunto = fila.get("asunto")
     viejo_salida = _salida_de(report, viejo_archivo)
     avisos: list[str] = []
@@ -207,27 +236,57 @@ async def corregir_nombre(ctx: Ctx, job_id: str, numero: int, payload: dict, qui
 
     # La fila y el informe que ve la pantalla.
     fila["nombre"] = nuevo
-    fila["archivo_generado"] = nuevo_archivo
     fila["revision_del_nombre"] = revision
     if nuevo_asunto is not None:
         fila["asunto"] = nuevo_asunto
-    if not confirmacion:
+    if del_fuid:
+        # Una fila del formato: su archivo va en sus notas, y nada de la
+        # revisión se escribe en ellas -- el FUID va al cliente sin notas de
+        # revisión --.
+        if viejo_archivo and nuevo_archivo != viejo_archivo:
+            fila["notas"] = str(fila.get("notas") or "").replace(f"Archivo: {viejo_archivo}", f"Archivo: {nuevo_archivo}")
+    else:
+        fila["archivo_generado"] = nuevo_archivo
+    if not confirmacion and not del_fuid:
         nota = f"nombre corregido por el operador; se leyó «{viejo_nombre}»"
         fila["observaciones"] = "; ".join(parte for parte in (fila.get("observaciones"), nota) if parte)
-        if nuevo_salida != viejo_salida:
-            report["outputs"] = [nuevo_salida if salida == viejo_salida else salida for salida in report.get("outputs") or []]
-            for grupo in report.get("groups") or []:
-                if isinstance(grupo, dict) and grupo.get("code") == viejo_archivo:
-                    grupo["code"] = nuevo_archivo
+    if not confirmacion and nuevo_salida != viejo_salida:
+        report["outputs"] = [nuevo_salida if salida == viejo_salida else salida for salida in report.get("outputs") or []]
+        for grupo in report.get("groups") or []:
+            if isinstance(grupo, dict) and grupo.get("code") == viejo_archivo:
+                grupo["code"] = nuevo_archivo
+        for item in (report.get("inventory") or {}).get("items") or []:
+            if isinstance(item, dict) and Path(str(item.get("file_name") or "")).name == viejo_archivo:
+                item["file_name"] = str(Path(str(item["file_name"])).with_name(nuevo_archivo).as_posix())
     pagina_de_la_cola = revision.get("pagina_de_la_ficha") or fila.get("pagina_inicial")
     report["review_queue"] = [
         entrada
         for entrada in report.get("review_queue") or []
-        if not (entrada.get("page") == pagina_de_la_cola and DUDA_DEL_NOMBRE in str(entrada.get("reason") or ""))
+        if not (
+            entrada.get("page") == pagina_de_la_cola
+            and any(duda in str(entrada.get("reason") or "") for duda in DUDAS_DEL_NOMBRE)
+        )
     ]
 
-    # El FUID del trabajo, junto a sus PDF.
-    if not confirmacion and report.get("inventario"):
+    # El FUID del trabajo, junto a sus PDF: el de un diploma o una matrícula,
+    # con su plantilla y sólo la fila de la persona cambiada.
+    if not confirmacion and del_fuid and report.get("fuid") and viejo_asunto and nuevo_asunto != viejo_asunto:
+        try:
+            from ..retomar import corregir_el_asunto, tipo_del_informe
+
+            ruta_del_fuid = _dentro_del_trabajo(ctx, job_id, str(report["fuid"]))
+            if not await asyncio.to_thread(
+                corregir_el_asunto,
+                ruta_del_fuid,
+                viejo_asunto,
+                nuevo_asunto,
+                orden=fila.get("orden"),
+                tipo=tipo_del_informe(report),
+            ):
+                avisos.append("el FUID del trabajo no trae la fila de esta persona: no se cambió")
+        except Exception as error:  # noqa: BLE001 - el nombre ya está corregido; se dice qué faltó
+            avisos.append(f"no se pudo reescribir el FUID del trabajo: {explicar_fallo(error)}")
+    if not confirmacion and not del_fuid and report.get("inventario"):
         try:
             from ...adapters.fuid_de_la_entrega import escribir_fuid
 
@@ -237,7 +296,21 @@ async def corregir_nombre(ctx: Ctx, job_id: str, numero: int, payload: dict, qui
             avisos.append(f"no se pudo reescribir el FUID del trabajo: {explicar_fallo(error)}")
 
     # El destino de la corrida: el PDF, la constancia y los FUID de la carpeta.
-    if not confirmacion and ctx.folders is not None:
+    if not confirmacion and ctx.folders is not None and del_fuid:
+        avisos += await asyncio.to_thread(
+            ctx.folders.corregir_nombre_del_fuid,
+            job,
+            int(fila.get("pagina_inicial") or 0),
+            {"nombre": viejo_nombre, "asunto": viejo_asunto, "archivo": viejo_archivo},
+            {
+                "nombre": nuevo,
+                "asunto": nuevo_asunto,
+                "archivo": nuevo_archivo,
+                "notas": fila.get("notas"),
+                "revision_del_nombre": revision,
+            },
+        )
+    elif not confirmacion and ctx.folders is not None:
         avisos += await asyncio.to_thread(
             ctx.folders.corregir_nombre,
             job,

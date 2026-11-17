@@ -1,7 +1,7 @@
 <script lang="ts">
   import { corregirNombre, renglonDelNombreUrl } from '$lib/api';
   import { enlaceAlDocumento } from '$lib/navegacion.svelte';
-  import type { FilaDeActa, Job } from '$lib/types';
+  import type { FilaConPersona, Job } from '$lib/types';
 
   /**
    * Una persona -- de cualquier habilidad -- cuyo nombre la máquina no aseguró:
@@ -15,7 +15,7 @@
    */
   interface Props {
     job: Job;
-    fila: FilaDeActa;
+    fila: FilaConPersona;
     /** Su número en las filas del informe: con él se pide su renglón y se corrige. */
     numero: number;
   }
@@ -79,17 +79,17 @@
   }
 </script>
 
-<article class="panel nombre" aria-label={`Nombre de ${fila.nombre ?? 'un estudiante'}`}>
+<article class="panel nombre" aria-label={`Nombre de ${fila.nombre ?? 'una persona'}`}>
   {#if !sinImagen}
     <img
       class="renglon"
       src={renglonDelNombreUrl(job.id, numero)}
-      alt={`Renglón del nombre en la ficha, página ${pagina}`}
+      alt={`Donde está escrito el nombre, página ${pagina}`}
       loading="lazy"
       onerror={() => (sinImagen = true)}
     />
   {:else}
-    <p class="sin-imagen">El PDF de este estudiante ya no está en el servicio: mírelo en el destino.</p>
+    <p class="sin-imagen">El PDF de esta persona ya no está en el servicio: mírelo en el destino.</p>
   {/if}
 
   <div class="cabeza">

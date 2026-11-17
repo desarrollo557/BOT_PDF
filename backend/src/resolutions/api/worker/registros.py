@@ -92,7 +92,8 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
 
     report = outcome.as_dict()
     report["task"] = str(task)
-    if revisados := getattr(outcome.reading, "nombres_revisados", None):
+    revisados = getattr(outcome.reading, "nombres_revisados", None) or {}
+    if revisados:
         # Lo que dijo el revisor de nombres común, con la misma forma que las fechas.
         from ...application.revisor_de_nombres import (
             anotar_en_el_informe as anotar_los_nombres,
@@ -116,6 +117,12 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
     # Las filas del inventario tal como salieron de la lectura. Si además se
     # escriben los archivos, más abajo se les añade el nombre de cada uno.
     filas = outcome.rows
+    if revisados:
+        # Cada fila con de quién es y cómo se revisó su nombre: la Revisión de
+        # nombres la enseña y la corrige como las de las demás habilidades.
+        from ...application.revisor_de_nombres import en_las_filas
+
+        filas = en_las_filas(filas, revisados)
 
     # 2. Entregar: el mismo tramo que las otras rutas -- describir, comprobar,
     #    escribir e inventariar. Lo que aquí cambia es cómo se llaman los

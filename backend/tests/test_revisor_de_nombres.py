@@ -388,3 +388,16 @@ def test_el_nombre_se_cambia_en_la_forma_en_que_lo_trae_cada_habilidad():
     assert con_el_nombre_cambiado("NOMINAS - CASTELLAR AGUA TULIO", viejo, nuevo) == "NOMINAS - CASTELLAR MEZA TULIO"
     assert con_el_nombre_cambiado("01_ACTA DE GRADO 12 - 1990.pdf", viejo, nuevo) is None
     assert con_el_nombre_cambiado(None, viejo, nuevo) is None
+
+
+def test_cada_fila_del_fuid_lleva_el_nombre_revisado_de_su_persona():
+    """Diplomas y matrículas: la fila que abre la página de la persona lleva su nombre y su revisión."""
+    from resolutions.application.fuid import FuidRow
+    from resolutions.application.revisor_de_nombres import NombreRevisado, en_las_filas
+
+    filas = [FuidRow(orden=1, asunto="ANGELICA CUELLO - MEDICO", pagina_inicial=3), FuidRow(orden=2, asunto="N/A", pagina_inicial=5)]
+    revisado = NombreRevisado(A_REVISION, "ANGELICA CUELLO", "ANGELICA CUELO", ("ANGELICA CUELO",), pagina=3)
+    primera, segunda = en_las_filas(filas, {3: revisado})
+    assert primera.nombre == "ANGELICA CUELLO" and primera.revision_del_nombre["estado"] == "duda"
+    assert primera == filas[0] and primera.as_cells() == filas[0].as_cells()
+    assert segunda is filas[1]

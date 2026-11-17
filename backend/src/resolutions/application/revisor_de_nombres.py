@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ..domain.historia_medicina import NombreVotado, nombre_por_consenso
 from ..domain.padron import IndiceDelPadron, para_la_ia
@@ -238,6 +238,26 @@ def de_la_habilidad(habilidad: str):
         return None
 
 
+
+def en_las_filas(filas: Sequence, revisados: Mapping[int, NombreRevisado]) -> list:
+    """Las filas del FUID, cada una con el nombre revisado de la persona cuya página la abre.
+
+    Para los lectores que escriben sus filas en el formato (``FuidRow``):
+    libros de diplomas y legajos de matrículas. El nombre ya va en el asunto;
+    esto deja además de quién es la fila y cómo se revisó su nombre, que es lo
+    que la Revisión de nombres enseña y corrige (2026-11-17). ``revisados`` va
+    por la página que abre a cada persona, como ``pagina_inicial``.
+    """
+    salida = []
+    for fila in filas:
+        revisado = revisados.get(getattr(fila, "pagina_inicial", None))
+        salida.append(
+            replace(fila, nombre=revisado.nombre, revision_del_nombre=revisado.detalle)
+            if revisado is not None and revisado.nombre
+            else fila
+        )
+    return salida
+
 def _mirar(personas, votados, lecturas, candidatos, juez, control, lectores, documento) -> dict[Hashable, str]:
     """Lo que contesta la IA de cada persona, mirando su renglón con sus lecturas y sus candidatos al lado.
 
@@ -280,6 +300,10 @@ def _mirar(personas, votados, lecturas, candidatos, juez, control, lectores, doc
     return {clave: respuesta for clave, respuesta in respuestas.items() if respuesta}
 
 
+#: Cómo empieza en la cola de Revisión la duda que deja el revisor de nombres:
+#: con esto la Revisión de nombres la saca al confirmar o corregir el nombre.
+EN_LA_COLA = "revisor de nombres"
+
 def anotar_en_el_informe(
     report: dict, revisados: Mapping[Hashable, NombreRevisado], documento: str, *, a_la_cola: bool = True
 ) -> None:
@@ -317,7 +341,7 @@ def anotar_en_el_informe(
             a_revision += 1
             if a_la_cola:
                 report.setdefault("review_queue", []).append(
-                    {"page": revisado.pagina or 1, "reason": f"revisor de nombres, {documento}: {revisado.motivo}"}
+                    {"page": revisado.pagina or 1, "reason": f"{EN_LA_COLA}, {documento}: {revisado.motivo}"}
                 )
     if corregidos or a_revision:
         partes = [

@@ -156,4 +156,16 @@ describe('las historias académicas (2026-11-17)', () => {
     const nombres = nombresPorMirar([job(acta)]);
     expect(nombres.map(({ numero }) => numero)).toEqual([3, 1, 2]);
   });
+
+  it('las filas del FUID de un libro de diplomas se numeran después de las de actas, como en el servidor', () => {
+    const libro = {
+      inventario_actas: [{ tipo: 'NOMINA', nombre: 'CASTELLAR MEZA TULIO', revision_del_nombre: { estado: 'confirmado' } }],
+      filas_del_fuid: [
+        { orden: 1, asunto: 'OTRO - MEDICO', pagina_inicial: 1 },
+        { orden: 2, asunto: 'ANGELICA CUELO - MEDICO', pagina_inicial: 2, nombre: 'ANGELICA CUELO', revision_del_nombre: { estado: 'duda' } }
+      ]
+    } as unknown as Partial<Report>;
+    const nombres = nombresPorMirar([job(libro)]);
+    expect(nombres.map(({ numero, fila }) => [numero, fila.nombre])).toEqual([[3, 'ANGELICA CUELO']]);
+  });
 });

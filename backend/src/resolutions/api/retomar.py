@@ -273,6 +273,47 @@ def entregar_fuid(
     )
 
 
+def tipo_del_informe(informe: Mapping | None) -> str | None:
+    """El tipo de documento de un informe -- «diploma», «matricula» --, en la raíz o en sus cuentas."""
+    informe = informe or {}
+    tipo = informe.get("document_type") or (informe.get("stats") or {}).get("document_type")
+    return str(tipo) if tipo else None
+
+def corregir_el_asunto(
+    ruta: Path, viejo: str, nuevo: str, *, orden: object = None, tipo: str | None = None
+) -> bool:
+    """El asunto de una fila de un FUID ya escrito, con el nombre de su persona corregido.
+
+    Lo pide la Revisión de nombres (2026-11-17) para el FUID de un libro de
+    diplomas o de un legajo de matrículas: el del trabajo y el que se entregó
+    junto al libro, que puede traer además lo entregado en una vuelta anterior.
+    Se leen sus filas y se vuelve a escribir con la plantilla de su tipo y con
+    su oficina, como al retomar un libro, cambiando sólo ese asunto.
+
+    La fila se busca por su asunto; si dos lo comparten, por su orden. Dice si
+    la encontró: una planilla sin esa fila no se toca.
+    """
+    from ..adapters.fuid_inventory import FuidInventory
+    from ..adapters.fuid_reader import filas_de_fuid
+    from ..application.fuid import Cabecera
+    from ..application.inventory_document import default_template, template_for
+    from ..domain.doctype import DocumentType
+
+    filas, oficina = filas_de_fuid(ruta)
+    candidatas = [indice for indice, fila in enumerate(filas) if fila.asunto.strip() == viejo.strip()]
+    if len(candidatas) > 1 and orden is not None:
+        candidatas = [indice for indice in candidatas if str(filas[indice].orden) == str(orden)] or candidatas[:1]
+    if not candidatas:
+        return False
+    filas[candidatas[0]] = replace(filas[candidatas[0]], asunto=nuevo)
+    try:
+        plantilla = template_for(DocumentType(tipo or DocumentType.DIPLOMA))
+    except ValueError:
+        plantilla = default_template()
+    FuidInventory(plantilla).write(filas, ruta, cabecera=Cabecera(oficina_productora=oficina or None))
+    return True
+
+
 def escribir_control(
     controles: list[ControlDeUnLibro],
     destino: Path,

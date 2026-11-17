@@ -179,6 +179,8 @@ export interface Report {
   inventario?: string;
   inventario_error?: string;
   inventario_actas?: FilaDeActa[];
+  /** Las filas del FUID ya hechas (libros de diplomas, legajos de matrículas…). */
+  filas_del_fuid?: FilaDelFuid[];
   /** El Índice Electrónico que dejó una caja de correspondencia, si lo dejó. */
   indice_electronico?: string;
   /** Por qué no se escribió el índice o la planilla; también va en `notices`. */
@@ -393,6 +395,29 @@ export interface FilaDeActa {
   archivo_generado?: string | null;
   /** Cómo quedó el nombre de un estudiante y qué se leyó (2026-11-17). */
   revision_del_nombre?: RevisionDelNombre;
+}
+
+/**
+ * Una fila del FUID ya hecha, como la deja el informe de un libro de diplomas o
+ * de un legajo de matrículas. Sólo lo que lee la pantalla: el asunto, dónde
+ * empieza y, si es de una persona, quién es y cómo se revisó su nombre.
+ */
+export interface FilaDelFuid {
+  orden: number;
+  asunto: string;
+  folios?: number;
+  notas?: string;
+  pagina_inicial?: number | null;
+  nombre?: string | null;
+  revision_del_nombre?: RevisionDelNombre | null;
+}
+
+/** Lo que la Revisión de nombres necesita de una fila, sea de actas o del FUID. */
+export interface FilaConPersona {
+  nombre?: string | null;
+  pagina_inicial?: number | null;
+  pagina_final?: number;
+  revision_del_nombre?: RevisionDelNombre | null;
 }
 
 /**

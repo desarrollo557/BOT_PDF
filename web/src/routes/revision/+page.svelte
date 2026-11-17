@@ -142,11 +142,10 @@
       Nombres por confirmar (<span class="tabular">{nombres.length}</span>)
     </h2>
     <p class="advice">
-      Personas (historias, nóminas, certificados, actas de grado) cuyo nombre la máquina no pudo asegurar: las
-      lecturas no coincidieron o la IA lo cambió. Mire el renglón y pulse «Está bien», o escríbalo bien y pulse
-      «Corregir». Al corregir cambian a la
-      vez el nombre del PDF, el FUID y la entrega, y el nombre queda en el padrón de la Universidad para la
-      próxima vez que aparezca esa cédula.
+      Personas (historias, nóminas, certificados, actas de grado, diplomas, matrículas) cuyo nombre la máquina no
+      pudo asegurar: las lecturas no coincidieron o la IA lo cambió. Mire el renglón y pulse «Está bien», o
+      escríbalo bien y pulse «Corregir». Al corregir cambian a la vez el nombre del PDF, el FUID y la entrega, y el
+      nombre queda en el padrón de la Universidad para la próxima vez que aparezca esa cédula.
     </p>
     <div class="grid-de-nombres">
       {#each nombres.slice(0, nombresVisibles) as { job, fila, numero } (`${job.id}-${numero}`)}

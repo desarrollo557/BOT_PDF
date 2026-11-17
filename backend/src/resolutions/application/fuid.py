@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 #: Lo que el instructivo del formato manda escribir donde no hay dato. Nunca se
 #: deja en blanco -- una celda vacía no dice "no aplica", dice "se olvidó" -- y
@@ -51,6 +51,14 @@ class FuidRow:
     #: de la lista de archivos y desde ahí todo queda corrido una fila --, y un
     #: inventario corrido una fila es peor que uno sin nombres de archivo.
     pagina_inicial: int | None = None
+    #: De quién es la unidad, cuando es de una persona: el graduado de un
+    #: diploma, el estudiante de una matrícula. Tampoco es una columna -- ya va
+    #: en el asunto --: es lo que la Revisión de nombres enseña y corrige
+    #: (2026-11-17), con lo que decidió el revisor de nombres común
+    #: (``NombreRevisado.detalle``). Fuera de la comparación: dos filas iguales
+    #: en el formato son iguales aunque una traiga cómo se revisó su nombre.
+    nombre: str | None = field(default=None, compare=False)
+    revision_del_nombre: dict | None = field(default=None, compare=False)
 
     def as_cells(self) -> list[object]:
         """Los valores en el orden de las columnas A a P de la plantilla."""

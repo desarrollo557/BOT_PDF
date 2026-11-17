@@ -212,6 +212,76 @@ def test_el_pdf_del_acta_colectiva_no_cambia_de_nombre(client, administrador, tm
     assert segunda["nombre"] == "RUIZ DIAZ PEDRO"
 
 
+# -- diplomas y matrículas: sus filas son ya del FUID -------------------------------
+
+DIPLOMA_VIEJO = "ANGELICA MARIA CUELO SALCEDO"
+DIPLOMA_NUEVO = "ANGELICA MARIA CUELLO SALCEDO"
+TITULO = "ESPECIALISTA EN GERENCIA EN SALUD"
+
+
+def _libro_de_diplomas(carpeta: Path, nombre_del_fuid: str = "LIBRO__FUID.xlsx") -> dict:
+    """El informe de un libro de diplomas con una persona dudosa, su PDF y su FUID escritos en ``carpeta``."""
+    from dataclasses import asdict
+
+    from resolutions.adapters.fuid_inventory import FuidInventory
+    from resolutions.application.fuid import FuidRow
+    from resolutions.application.inventory_document import template_for
+    from resolutions.domain.doctype import DocumentType
+
+    pdf = f"{DIPLOMA_VIEJO} - {TITULO}.pdf"
+    _pdf(carpeta / pdf, paginas=1)
+    filas = [
+        FuidRow(orden=1, asunto=f"OTRO GRADUADO DE PRUEBA - {TITULO}", pagina_inicial=1, notas="Archivo: OTRO.pdf"),
+        FuidRow(
+            orden=2, asunto=f"{DIPLOMA_VIEJO} - {TITULO}", pagina_inicial=2, notas=f"Archivo: {pdf}",
+            nombre=DIPLOMA_VIEJO,
+            revision_del_nombre={"estado": "duda", "pagina_de_la_ficha": 2, "leido": DIPLOMA_VIEJO},
+        ),
+    ]
+    FuidInventory(template_for(DocumentType.DIPLOMA)).write(filas, carpeta / nombre_del_fuid)
+    return {
+        "document": "LIBRO.pdf",
+        "stats": {"document_type": "diploma"},
+        "fuid": nombre_del_fuid,
+        "outputs": [pdf],
+        "inventory": {"items": [{"file_name": pdf, "first_page": 2, "page_numbers": [2]}]},
+        "review_queue": [{"page": 2, "reason": "revisor de nombres, LIBRO.pdf: el nombre no se pudo confirmar"}],
+        "filas_del_fuid": [asdict(fila) for fila in filas],
+    }
+
+
+def test_corregir_el_nombre_de_un_diploma(client, administrador, tmp_path):
+    """Una fila del FUID: el número sigue a las de actas; cambian el PDF, el asunto, sus notas y el FUID del trabajo."""
+    pytest.importorskip("openpyxl")
+    from resolutions.adapters.fuid_reader import filas_de_fuid
+    from resolutions.api import main
+
+    job = main.contexto.registry.create("LIBRO.pdf", tmp_path / "ya-no-esta.pdf")
+    carpeta = main.contexto.settings.output_dir / job.id
+    main.contexto.registry.mark_done(job, _libro_de_diplomas(carpeta))
+
+    # La fila 1 del FUID no es de una persona revisada; la 2 sí.
+    assert client.get(f"/api/jobs/{job.id}/nombres/1/renglon.jpg").status_code == 404
+    respuesta = client.get(f"/api/jobs/{job.id}/nombres/2/renglon.jpg")
+    assert respuesta.status_code == 200 and respuesta.content[:2] == b"\xff\xd8", respuesta.text
+
+    respuesta = client.put(f"/api/jobs/{job.id}/nombres/2", json={"nombre": DIPLOMA_NUEVO}, headers=administrador)
+    assert respuesta.status_code == 200 and not respuesta.json()["avisos"], respuesta.text
+    pdf_nuevo = f"{DIPLOMA_NUEVO} - {TITULO}.pdf"
+    assert respuesta.json()["archivo_generado"] == pdf_nuevo
+    assert (carpeta / pdf_nuevo).is_file()
+    informe = main.contexto.registry.get(job.id).report
+    fila = informe["filas_del_fuid"][1]
+    assert (fila["nombre"], fila["asunto"], fila["notas"]) == (
+        DIPLOMA_NUEVO, f"{DIPLOMA_NUEVO} - {TITULO}", f"Archivo: {pdf_nuevo}",
+    )
+    assert "archivo_generado" not in fila and "observaciones" not in fila
+    assert informe["outputs"] == [pdf_nuevo] and informe["inventory"]["items"][0]["file_name"] == pdf_nuevo
+    assert informe["review_queue"] == []
+    asuntos = [fila.asunto for fila in filas_de_fuid(carpeta / "LIBRO__FUID.xlsx")[0]]
+    assert asuntos == [f"OTRO GRADUADO DE PRUEBA - {TITULO}", f"{DIPLOMA_NUEVO} - {TITULO}"]
+
+
 # -- el destino de una corrida de carpeta -------------------------------------------
 
 
@@ -270,3 +340,114 @@ def test_la_correccion_llega_al_destino_de_la_corrida(tmp_path):
     # Fuera de una corrida, nada.
     otro = registro.create("suelto.pdf", tmp_path / "suelto.pdf")
     assert motor.corregir_nombre(otro, 23, {}, {"nombre": NUEVO}) == []
+
+
+def test_la_correccion_de_un_diploma_llega_al_destino_de_la_corrida(tmp_path):
+    """El PDF entregado, su constancia y el FUID del libro junto a sus PDF: todo junto."""
+    pytest.importorskip("openpyxl")
+    from resolutions.adapters.fuid_reader import filas_de_fuid
+    from resolutions.api import constancia as constancias
+
+    settings = replace(
+        Settings(), upload_dir=tmp_path / "uploads", output_dir=tmp_path / "outputs",
+        ledger_path=tmp_path / "inventory.jsonl", pausa_tras_fallos=0.01,
+    )
+    settings.ensure_directories()
+    origen, destino = tmp_path / "origen", tmp_path / "destino"
+    (origen / "CAJA 1").mkdir(parents=True)
+    destino.mkdir()
+    (origen / "CAJA 1" / "LIBRO.pdf").write_bytes(b"%PDF-1.4 fake")
+    registro = JobRegistry()
+
+    async def procesar(job):
+        registro.mark_done(job, _libro_de_diplomas(settings.output_dir / job.id))
+
+    motor = FolderRunner(registro, settings, procesar, watch_interval=0.01)
+
+    async def correr():
+        run = motor.start(str(origen), str(destino), task="both")
+        for _ in range(400):
+            if not run.active:
+                return run
+            await asyncio.sleep(0.01)
+        return run
+
+    run = asyncio.run(correr())
+    job = registro.get(run.job_ids[0])
+    pdf_viejo, pdf_nuevo = f"{DIPLOMA_VIEJO} - {TITULO}.pdf", f"{DIPLOMA_NUEVO} - {TITULO}.pdf"
+    entregado = next(destino.rglob(pdf_viejo))
+    (fuid,) = list(entregado.parent.glob("*__FUID.xlsx"))
+
+    avisos = motor.corregir_nombre_del_fuid(
+        job, 2,
+        {"nombre": DIPLOMA_VIEJO, "asunto": f"{DIPLOMA_VIEJO} - {TITULO}", "archivo": pdf_viejo},
+        {"nombre": DIPLOMA_NUEVO, "asunto": f"{DIPLOMA_NUEVO} - {TITULO}", "archivo": pdf_nuevo},
+    )
+    assert avisos == []
+    assert (entregado.parent / pdf_nuevo).is_file() and not entregado.exists()
+    # La constancia sabe cómo se llama ahora: la corrida siguiente no lo da por faltante.
+    (ruta,) = [ruta for ruta in entregado.parent.glob("*.json")]
+    rutas = [archivo["ruta"] for archivo in constancias.leer(ruta).archivos]
+    assert any(ruta.endswith(pdf_nuevo) for ruta in rutas) and not any(ruta.endswith(pdf_viejo) for ruta in rutas)
+    # El FUID del libro junto a sus PDF, que es el que lee el general.
+    asuntos = [fila.asunto for fila in filas_de_fuid(fuid)[0]]
+    assert f"{DIPLOMA_NUEVO} - {TITULO}" in asuntos and f"{DIPLOMA_VIEJO} - {TITULO}" not in asuntos
+    # Fuera de una corrida, nada.
+    otro = registro.create("suelto.pdf", tmp_path / "suelto.pdf")
+    assert motor.corregir_nombre_del_fuid(otro, 2, {}, {"nombre": DIPLOMA_NUEVO}) == []
+
+
+def test_la_correccion_de_una_matricula_llega_al_fuid_de_su_carpeta(tmp_path):
+    """La fila de una matrícula va al FUID de su subcarpeta y al general: los dos con el nombre corregido."""
+    openpyxl = pytest.importorskip("openpyxl")
+    from dataclasses import asdict
+
+    from resolutions.application.fuid import FuidRow
+
+    viejo, nuevo = "PEREZ GOMEZ JUANA", "PEREZ GOMEZ JUANITA"
+    settings = replace(
+        Settings(), upload_dir=tmp_path / "uploads", output_dir=tmp_path / "outputs",
+        ledger_path=tmp_path / "inventory.jsonl", pausa_tras_fallos=0.01,
+    )
+    settings.ensure_directories()
+    origen, destino = tmp_path / "origen", tmp_path / "destino"
+    (origen / "CAJA 1").mkdir(parents=True)
+    destino.mkdir()
+    (origen / "CAJA 1" / "LEGAJO.pdf").write_bytes(b"%PDF-1.4 fake")
+    registro = JobRegistry()
+    fila = FuidRow(
+        orden=1, asunto=f"{viejo} - MEDICINA", pagina_inicial=1, folios=2, nombre=viejo,
+        revision_del_nombre={"estado": "duda", "pagina_de_la_ficha": 1, "leido": viejo},
+    )
+
+    async def procesar(job):
+        _pdf(settings.output_dir / job.id / f"{viejo} - MEDICINA.pdf")
+        registro.mark_done(job, {
+            "document": "LEGAJO.pdf", "stats": {"document_type": "matricula"},
+            "outputs": [f"{viejo} - MEDICINA.pdf"], "filas_del_fuid": [asdict(fila)],
+        })
+
+    motor = FolderRunner(registro, settings, procesar, watch_interval=0.01)
+
+    async def correr():
+        run = motor.start(str(origen), str(destino), task="both")
+        for _ in range(400):
+            if not run.active:
+                return run
+            await asyncio.sleep(0.01)
+        return run
+
+    run = asyncio.run(correr())
+    job = registro.get(run.job_ids[0])
+    assert list(destino.rglob("*__FUID.xlsx")), "la corrida no escribió el FUID de la carpeta"
+
+    avisos = motor.corregir_nombre_del_fuid(
+        job, 1,
+        {"nombre": viejo, "asunto": f"{viejo} - MEDICINA", "archivo": None},
+        {"nombre": nuevo, "asunto": f"{nuevo} - MEDICINA", "archivo": None},
+    )
+    assert avisos == []
+    for fuid in [*destino.rglob("*__FUID.xlsx"), *destino.rglob("00.FUID GENERAL.xlsx")]:
+        hoja = openpyxl.load_workbook(fuid).active
+        celdas = " ".join(str(celda.value) for fila in hoja.iter_rows() for celda in fila if celda.value)
+        assert f"{nuevo} - MEDICINA" in celdas and f"{viejo} - MEDICINA" not in celdas, fuid.name

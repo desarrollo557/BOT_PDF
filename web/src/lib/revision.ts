@@ -1,4 +1,4 @@
-import type { FilaDeActa, Job } from './types';
+import type { FilaConPersona, Job } from './types';
 
 /**
  * Dónde acabó archivada una página que hay que revisar.
@@ -57,9 +57,19 @@ const POR_MIRAR = new Set(['duda', 'corregido']);
 /** Una persona cuyo nombre conviene mirar, con su trabajo. */
 export interface NombrePorMirar {
   job: Job;
-  fila: FilaDeActa;
+  fila: FilaConPersona;
   /** Su número en las filas del informe, de 1 en adelante: con él se pide su renglón y se corrige. */
   numero: number;
+}
+
+/**
+ * Las filas del informe en que puede haber una persona, numeradas como las
+ * numera el servidor (`filas_de_personas` en `routers/nombres.py`): primero las
+ * de actas (historias, nóminas, certificados, actas de grado) y después las del
+ * FUID ya hecho (libros de diplomas, legajos de matrículas).
+ */
+function filasDePersonas(job: Job): FilaConPersona[] {
+  return [...(job.report?.inventario_actas ?? []), ...(job.report?.filas_del_fuid ?? [])];
 }
 
 /**
@@ -72,7 +82,7 @@ export interface NombrePorMirar {
 export function nombresPorMirar(jobs: Job[]): NombrePorMirar[] {
   const salida: NombrePorMirar[] = [];
   for (const job of jobs) {
-    (job.report?.inventario_actas ?? []).forEach((fila, indice) => {
+    filasDePersonas(job).forEach((fila, indice) => {
       const estado = fila.revision_del_nombre?.estado;
       if (estado && POR_MIRAR.has(estado)) salida.push({ job, fila, numero: indice + 1 });
     });

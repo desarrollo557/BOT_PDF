@@ -4287,6 +4287,99 @@ class FolderRunner:
         self._pedir_generales(run)
         return avisos
 
+    def corregir_nombre_del_fuid(self, job: Job, pagina: int, viejo: dict, nuevo: dict) -> list[str]:
+        """Lleva al destino el nombre corregido de un diploma o una matrícula (2026-11-17).
+
+        Sus filas son ya del formato (``filas_del_fuid``) y se entregan por otro
+        camino que las actas: sus PDF en la carpeta del documento
+        (``_output_dir``), con su constancia al lado. Todo junto otra vez:
+
+        - el PDF entregado, si su nombre lleva el de la persona;
+        - la constancia, para que la corrida siguiente no lo dé por faltante;
+        - su fila en la corrida (las matrículas), de donde salen el FUID de la
+          subcarpeta y el general;
+        - el FUID del libro junto a sus PDF (los diplomas), que es el que lee
+          el general.
+
+        ``viejo`` y ``nuevo`` traen «nombre», «asunto» y «archivo»; ``nuevo``,
+        además, «notas» y «revision_del_nombre». Devuelve lo que no se pudo
+        hacer. Fuera de una corrida de carpeta, nada.
+        """
+        avisos: list[str] = []
+        run = self._runs.get(str((job.origen or {}).get("id") or ""))
+        if run is None or job.id not in run.job_ids:
+            return avisos
+        origen = run.source / job.filename
+        carpeta_de_entrega = self._output_dir(run, origen, job)
+        antes_de, despues_de = viejo.get("archivo"), nuevo.get("archivo")
+
+        if antes_de and despues_de and antes_de != despues_de:
+            antes, despues = carpeta_de_entrega / antes_de, carpeta_de_entrega / despues_de
+            try:
+                if despues.exists():
+                    avisos.append(f"en el destino ya hay un «{despues.name}»: no se renombró «{antes.name}»")
+                elif antes.exists():
+                    os.replace(antes, despues)
+            except OSError as error:
+                avisos.append(f"no se pudo renombrar «{antes.name}» en el destino: {explicar_fallo(error)}")
+            ruta = self._ruta_de_la_constancia(run, origen, actas=False)
+            constancia = constancias.leer(ruta)
+            if constancia is not None:
+                for archivo in constancia.archivos:
+                    entregado = str(archivo.get("ruta") or "")
+                    if entregado == antes_de or entregado.endswith(("/" + antes_de, "\\" + antes_de)):
+                        archivo["ruta"] = entregado[: len(entregado) - len(antes_de)] + despues_de
+                try:
+                    with run.cerrojo:
+                        constancias.escribir(ruta, constancia)
+                except OSError as error:
+                    avisos.append(f"no se pudo actualizar la constancia de «{origen.name}»: {explicar_fallo(error)}")
+
+        # Su fila en la corrida: la de una matrícula va al FUID de su subcarpeta.
+        carpeta: str | None = None
+        with run.cerrojo:
+            for clave, aportado in run.aportes.items():
+                if Path(clave).name != Path(job.filename).name:
+                    continue
+                for fila in aportado[0]:
+                    datos = fila.get("fuid")
+                    if (
+                        isinstance(datos, dict)
+                        and datos.get("pagina_inicial") == pagina
+                        and datos.get("asunto") == viejo.get("asunto")
+                    ):
+                        datos["nombre"] = nuevo.get("nombre")
+                        datos["revision_del_nombre"] = nuevo.get("revision_del_nombre")
+                        if nuevo.get("asunto"):
+                            datos["asunto"] = nuevo["asunto"]
+                        if antes_de and despues_de:
+                            datos["notas"] = str(datos.get("notas") or "").replace(
+                                f"Archivo: {antes_de}", f"Archivo: {despues_de}"
+                            )
+                        carpeta = str(fila.get("carpeta") or "")
+                        break
+                if carpeta is not None:
+                    run.version_de_carpeta[carpeta] = run.version_de_carpeta.get(carpeta, 0) + 1
+                    break
+        if carpeta is not None:
+            error_de_antes = run.inventario_error
+            self._escribir_inventario_de_actas(run, solo_carpeta=carpeta)
+            if run.inventario_error and run.inventario_error != error_de_antes:
+                avisos.append(f"el FUID de la carpeta: {run.inventario_error}")
+
+        # El FUID del libro, junto a sus PDF: el general lo lee de ahí.
+        from .retomar import corregir_el_asunto, fuid_del_libro, tipo_del_informe
+
+        libro = fuid_del_libro(carpeta_de_entrega)
+        if libro is not None and viejo.get("asunto") and nuevo.get("asunto") and viejo["asunto"] != nuevo["asunto"]:
+            try:
+                with run.cerrojo:
+                    corregir_el_asunto(libro, viejo["asunto"], nuevo["asunto"], tipo=tipo_del_informe(job.report))
+            except Exception as error:  # noqa: BLE001 - lo demás ya se corrigió; se dice qué faltó
+                avisos.append(f"no se pudo reescribir el FUID de «{libro.name}»: {explicar_fallo(error)}")
+        self._pedir_generales(run)
+        return avisos
+
     def _ordenar_la_caja(self, run: FolderRun, carpeta: Path) -> None:
         """La carpeta de un NIC como un solo expediente: sus PDF seguidos y un índice.
 
