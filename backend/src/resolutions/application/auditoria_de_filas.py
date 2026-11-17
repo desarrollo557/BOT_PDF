@@ -225,6 +225,8 @@ def auditar_una_fila(
             "sin_dato": list(revision.sin_dato),
             # Como en la muestra de PDF: cuántos documentos en cada estado.
             "fechas": {estado_de_las_fechas(revision.confirmados, errores, dudas): 1},
+            # Y el nombre de su persona, igual (2026-11-17).
+            "nombres": {estado_del_nombre(revision.confirmados, errores, dudas): 1},
         },
     )
 
@@ -247,6 +249,31 @@ def estado_de_las_fechas(confirmados: Sequence[str], errores: Sequence[str], dud
     if any(c.startswith(_DE_FECHA) for c in confirmados):
         return FECHAS_CONFIRMADAS
     return FECHAS_SIN_DATO
+
+
+#: Cómo quedó el nombre de la persona de una fila auditada (2026-11-17): lo que
+#: el resumen de la muestra cuenta, como las fechas.
+NOMBRE_CONFIRMADO = "confirmados"
+NOMBRE_CON_ERROR = "con error"
+NOMBRE_EN_DUDA = "en duda"
+NOMBRE_SIN_DATO = "sin nombre"
+_DEL_NOMBRE = ("el nombre",)
+
+
+def estado_del_nombre(confirmados: Sequence[str], errores: Sequence[str], dudas: Sequence[str]) -> str:
+    """Cómo salió el nombre de la persona de una fila, después de la IA: con error, en duda, confirmado o sin nombre.
+
+    El nombre lo contrasta ``_revisar_una_persona`` con la misma pieza que el
+    revisor de nombres al procesar (``nombre_en_el_texto``): sus hallazgos y su
+    confirmación empiezan por «el nombre».
+    """
+    if any(e.startswith(_DEL_NOMBRE) for e in errores):
+        return NOMBRE_CON_ERROR
+    if any(d.startswith(_DEL_NOMBRE) for d in dudas):
+        return NOMBRE_EN_DUDA
+    if any(c.startswith(_DEL_NOMBRE) for c in confirmados):
+        return NOMBRE_CONFIRMADO
+    return NOMBRE_SIN_DATO
 
 
 def _patrones_de_la_habilidad(habilidad: str, fila: Mapping[str, object]) -> tuple[list[str], list[str]]:

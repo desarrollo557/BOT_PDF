@@ -116,6 +116,21 @@ class TestLaMuestraDeFilas:
         assert filas[0] == (FILA, "actas_consejo", BIEN, 22, 2, None)
         assert filas[1][2:] == (ERROR, 9, 0, "la fecha 12/03/1998 no está en el acta")
 
+    def test_las_fechas_y_los_nombres_de_la_muestra_se_dicen(self, tmp_path):
+        # 2026-11-17: lo que dijeron de la muestra el auditor de fechas y el de nombres.
+        muestra = _muestra_de_filas(
+            [PdfAuditado(FILA, BIEN, paginas=22, habilidad="historias")],
+            fechas={"documentos": 3, "revisados": 3, "confirmadas": 2, "con error": 0, "en duda": 1, "sin fechas": 0},
+            nombres={"documentos": 3, "revisados": 2, "confirmados": 2, "con error": 0, "en duda": 0, "sin nombre": 1},
+        )
+        resumen, *_ = _leer(tmp_path, muestra)
+        assert resumen["Muestra · fechas"] == "2 confirmadas · 0 con error · 1 en duda"
+        assert resumen["Muestra · nombres"] == "2 confirmados · 0 con error · 0 en duda"
+        # Sin nombres que revisar, no se dice nada de ellos.
+        otra = _muestra_de_filas([PdfAuditado(FILA, BIEN, paginas=22)], nombres={"documentos": 1, "revisados": 0})
+        resumen, *_ = _leer(tmp_path / "otra", otra)
+        assert "Muestra · nombres" not in resumen
+
     def test_la_ia_que_no_respondio_se_dice(self, tmp_path):
         """Una llave mala o una caída: el Excel no puede decir que la IA revisó (la revisión, 2026-11-09)."""
         muestra = _muestra_de_filas(

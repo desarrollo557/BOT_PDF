@@ -429,6 +429,20 @@ class TestUnaPersona:
         assert "la cédula" not in revision.confirmados
         assert not any(p.campo == "cedula" for p in revision.preguntas)
 
+    def test_la_muestra_cuenta_el_nombre_de_cada_persona_como_las_fechas(self):
+        # 2026-11-17: el auditor de cierre dice cuántos nombres confirmó, cuántos en duda o con error.
+        from resolutions.api.auditoria import resumen_de_los_nombres
+
+        bien = auditar_una_fila("fila 1", {"tipo": "HISTORIA ACADEMICA", "nombre": "MARIA FERNANDA PEREZ GOMEZ"}, [FICHA])
+        otro = auditar_una_fila("fila 2", {"tipo": "HISTORIA ACADEMICA", "nombre": "JUAN CARLOS HERRERA BLANCO"}, [FICHA])
+        sin = auditar_una_fila("fila 3", {"tipo": "HISTORIA ACADEMICA", "cedula": "45466499"}, [FICHA])
+        assert bien.extra["nombres"] == {"confirmados": 1}
+        assert otro.extra["nombres"] == {"en duda": 1}
+        assert sin.extra["nombres"] == {"sin nombre": 1}
+        assert resumen_de_los_nombres([bien, otro, sin]) == {
+            "documentos": 3, "revisados": 2, "confirmados": 1, "con error": 0, "en duda": 1, "sin nombre": 1,
+        }
+
     def test_el_acta_de_grado_se_revisa_como_persona(self):
         fila = {
             "tipo": "ACTA DE GRADO",

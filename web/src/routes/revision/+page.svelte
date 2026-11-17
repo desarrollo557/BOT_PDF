@@ -31,6 +31,22 @@
 
   /** Reasons collapse into families, because the fix differs by family. */
   const FAMILIES: { key: string; match: RegExp; label: string; advice: string }[] = [
+    // Los dos revisores comunes a todas las habilidades (2026-11-17), primero:
+    // su nota puede citar otras palabras de la lista («conflicto»…).
+    {
+      key: 'revisor-de-nombres',
+      match: /^revisor de nombres|se leyó distinto en cada zona/i,
+      label: 'Revisor de nombres',
+      advice:
+        'Nombres que las lecturas no confirmaron. Se miran arriba, en «Nombres por confirmar», con la imagen del renglón: confirmar o corregir quita la página de esta lista.'
+    },
+    {
+      key: 'revisor-de-fechas',
+      match: /^revisor de fechas/i,
+      label: 'Revisor de fechas',
+      advice:
+        'La fecha inicial o la final del documento no se pudo confirmar en su papel, o la que trae choca con la del documento. Hay que mirar la hoja y corregir el FUID si hace falta.'
+    },
     {
       key: 'sin-codigo',
       match: /sin código de resolución/i,

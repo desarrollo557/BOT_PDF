@@ -10,7 +10,15 @@
    */
   import DatosDelAgente from '$lib/components/DatosDelAgente.svelte';
   import Icono from '$lib/components/Icono.svelte';
-  import { ESTADOS, fraseDeFechas, notaDeFechas, porcentaje, repartoDePdf } from '$lib/agente';
+  import {
+    ESTADOS,
+    fraseDeFechas,
+    fraseDeNombres,
+    notaDeFechas,
+    notaDeNombres,
+    porcentaje,
+    repartoDePdf
+  } from '$lib/agente';
   import type { AgenteDeLaCorrida } from '$lib/types';
 
   interface Props {
@@ -26,6 +34,11 @@
   const fechas = $derived(fraseDeFechas(agente.fechas));
   const tonoDeFechas = $derived(
     agente.fechas?.a_revision ? 'warn' : agente.fechas?.corregidas ? 'accent' : 'good'
+  );
+  /** El revisor de nombres (2026-11-17): «Nombres: N confirmados · N corregidos · N a revisión». */
+  const nombres = $derived(fraseDeNombres(agente.nombres));
+  const tonoDeNombres = $derived(
+    agente.nombres?.a_revision ? 'warn' : agente.nombres?.corregidos ? 'accent' : 'good'
   );
   /** El registro, sin repetir: el mismo PDF relanzado contaría dos veces lo mismo. */
   const sucesos = $derived.by(() => {
@@ -106,6 +119,16 @@
       <span class="status-dot" aria-hidden="true"></span>
       <strong class="tabular">{fechas}</strong>
       <span class="nota tabular">{notaDeFechas(agente.fechas)}</span>
+    </p>
+  {/if}
+
+  {#if nombres && agente.nombres}
+    <!-- El nombre de cada persona contra su renglón (2026-11-17): confirmados,
+         corregidos por la IA o a Revisión, donde una persona los mira. -->
+    <p class="fechas" data-tono={tonoDeNombres} aria-live="polite">
+      <span class="status-dot" aria-hidden="true"></span>
+      <strong class="tabular">{nombres}</strong>
+      <span class="nota tabular">{notaDeNombres(agente.nombres)}</span>
     </p>
   {/if}
 

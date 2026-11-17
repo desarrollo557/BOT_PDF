@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -664,6 +664,34 @@ class FilaDeProceso:
     acceso: str = ""
     lectura_mb_s: float | None = None
     escritura_mb_s: float | None = None
+    #: Lo que dijeron de sus documentos el revisor de fechas y el de nombres
+    #: (2026-11-17): cuántos ``revisados``, ``confirmados``, ``corregidos`` y
+    #: ``a_revision``. ``None`` si el revisor no corrió en ese PDF.
+    fechas: dict | None = field(default=None, compare=False)
+    nombres: dict | None = field(default=None, compare=False)
+
+
+def cuentas_del_revisor(cuentas: dict | None, cosa: str) -> str:
+    """«189 confirmadas · 0 corregidas · 5 a revisión» -- o en masculino, para los nombres --; «—» sin revisar."""
+    if not cuentas or not cuentas.get("revisados"):
+        return "—"
+    femenino = cosa == "fechas"
+    return " · ".join(
+        [
+            f"{cuentas.get('confirmados') or 0} {'confirmadas' if femenino else 'confirmados'}",
+            f"{cuentas.get('corregidos') or 0} {'corregidas' if femenino else 'corregidos'}",
+            f"{cuentas.get('a_revision') or 0} a revisión",
+        ]
+    )
+
+
+def _sumar_las_cuentas(filas, cosa: str) -> dict:
+    """Las cuentas de un revisor en toda la corrida, PDF a PDF."""
+    total = {"revisados": 0, "confirmados": 0, "corregidos": 0, "a_revision": 0}
+    for fila in filas:
+        for clave in total:
+            total[clave] += int((getattr(fila, cosa) or {}).get(clave) or 0)
+    return total
 
 
 class ExcelInventarioDeProcesos:
@@ -685,6 +713,8 @@ class ExcelInventarioDeProcesos:
         ("Páginas", 9),
         ("Documentos", 11),
         ("En revisión", 11),
+        ("Fechas", 30),
+        ("Nombres", 30),
         ("Estado", 11),
         ("Inicio", 19),
         ("Duración", 10),
@@ -744,6 +774,14 @@ class ExcelInventarioDeProcesos:
             relleno=_PENDIENTE if any(f.en_revision for f in filas) else None,
         )
         row = _campo(sheet, row, span, "IA: páginas pagadas", sum(f.paginas_pagadas for f in filas))
+        # Lo que dijeron el revisor de fechas y el de nombres (2026-11-17).
+        for cosa, etiqueta in (("fechas", "Fechas de los documentos"), ("nombres", "Nombres de las personas")):
+            total = _sumar_las_cuentas(filas, cosa)
+            if total["revisados"]:
+                row = _campo(
+                    sheet, row, span, etiqueta, cuentas_del_revisor(total, cosa),
+                    relleno=_PENDIENTE if total["a_revision"] else None,
+                )
         if red:
             row = self._la_red(sheet, row + 1, span, red)
         _firma(sheet, row, span)
@@ -763,6 +801,8 @@ class ExcelInventarioDeProcesos:
                     f.paginas,
                     f.documentos,
                     f.en_revision,
+                    cuentas_del_revisor(f.fechas, "fechas"),
+                    cuentas_del_revisor(f.nombres, "nombres"),
                     f.estado,
                     _reloj(f.inicio),
                     f.duracion,

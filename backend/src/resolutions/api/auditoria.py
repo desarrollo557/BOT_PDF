@@ -136,6 +136,28 @@ def resumen_de_las_fechas(resultados: list[PdfAuditado]) -> dict:
     }
 
 
+#: Los estados del nombre de una persona auditada, en el orden en que se dicen (2026-11-17).
+ESTADOS_DE_LOS_NOMBRES = ("confirmados", "con error", "en duda", "sin nombre")
+
+
+def resumen_de_los_nombres(resultados: list[PdfAuditado]) -> dict:
+    """Cómo quedaron los nombres de las personas auditadas: cuántas en cada estado (2026-11-17).
+
+    Como las fechas: cuenta filas de la muestra; ``revisados`` son las que
+    traían un nombre que buscar en su papel. La muestra de PDF no los cuenta.
+    """
+    cuentas: Counter[str] = Counter()
+    for resultado in resultados:
+        for estado, cuantos in (resultado.extra.get("nombres") or {}).items():
+            cuentas[estado] += int(cuantos)
+    documentos = sum(cuentas.values())
+    return {
+        "documentos": documentos,
+        "revisados": documentos - cuentas.get("sin nombre", 0),
+        **{estado: cuentas.get(estado, 0) for estado in ESTADOS_DE_LOS_NOMBRES},
+    }
+
+
 def margenes_por_habilidad(resultados: list[PdfAuditado], *, con_dudas: bool = False) -> list[dict]:
     """La muestra partida por habilidad, cada una juzgada contra el margen de su perfil.
 
@@ -173,6 +195,7 @@ def margenes_por_habilidad(resultados: list[PdfAuditado], *, con_dudas: bool = F
                     unidad="fila" if con_dudas else "PDF",
                 ).as_dict(),
                 "fechas": resumen_de_las_fechas(suyos),
+                "nombres": resumen_de_los_nombres(suyos),
             }
         )
     salida.sort(key=lambda h: (-h["revisados"], h["habilidad"]))
@@ -496,6 +519,7 @@ def auditar_la_muestra(
         "margen": margen.as_dict(),
         "por_habilidad": margenes_por_habilidad(resultados),
         "fechas": resumen_de_las_fechas(resultados),
+        "nombres": resumen_de_los_nombres(resultados),
         "preguntadas_a_la_ia": sum(r.preguntadas_a_la_ia for r in resultados),
         "pdfs": [r.as_dict() for r in resultados],
     }
@@ -1086,6 +1110,7 @@ def auditar_las_filas(
         "margen": margen.as_dict(),
         "por_habilidad": margenes_por_habilidad(resultados, con_dudas=True),
         "fechas": resumen_de_las_fechas(resultados),
+        "nombres": resumen_de_los_nombres(resultados),
         "preguntadas_a_la_ia": sum(r.preguntadas_a_la_ia for r in resultados),
         "pdfs": [r.as_dict() for r in resultados],
     }

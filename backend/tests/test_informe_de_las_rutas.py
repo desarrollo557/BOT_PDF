@@ -79,6 +79,20 @@ class TestElContratoDelInforme:
         )
         assert claves_que_faltan(_correr(tmp_path, pdf, TaskKind.SPLIT)) == []
 
+    def test_al_solo_dividir_el_revisor_de_fechas_tambien_corre(self, tmp_path):
+        # 2026-11-17: «sin importar la habilidad», también sin FUID. El FUID, sólo si se pidió.
+        pdf = _pdf(
+            tmp_path,
+            [
+                ("RESOLUCION No. 00086 de 2023", "Dada en Cartagena de Indias, a los 14 dias del mes de marzo de 2023"),
+                ("", ""),
+            ],
+            nombre="resoluciones.pdf",
+        )
+        informe = _correr(tmp_path, pdf, TaskKind.SPLIT)
+        assert (informe.get("revision_de_fechas") or {}).get("revisados") == 1
+        assert "fuid" not in informe and "filas_del_fuid" not in informe
+
     def test_el_contrato_no_esta_vacio(self):
         """Una prueba que no comprueba nada pasa siempre."""
         assert len(CLAVES_OBLIGATORIAS) >= 8

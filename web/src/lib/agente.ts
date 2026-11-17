@@ -13,6 +13,9 @@ import type {
   EstadoDelSuceso,
   FechasDeLaCorrida,
   MovimientoDelRevisor,
+  NombresDeLaCorrida,
+  RevisionDeFechas,
+  RevisionDeNombres,
   RevisionDeCortes
 } from './types';
 
@@ -28,7 +31,10 @@ export const ESTADOS: Record<EstadoDelSuceso, { etiqueta: string; tono: Tono }> 
   datos: { etiqueta: 'Dato con error', tono: 'bad' },
   // El revisor de fechas (2026-11-10): corregida con prueba, o a revisión con su motivo.
   'fecha corregida': { etiqueta: 'Fecha corregida', tono: 'accent' },
-  'fecha a revisión': { etiqueta: 'Fecha a revisión', tono: 'warn' }
+  'fecha a revisión': { etiqueta: 'Fecha a revisión', tono: 'warn' },
+  // El revisor de nombres (2026-11-17): corregido por la IA mirando su renglón, o a Revisión.
+  'nombre corregido': { etiqueta: 'Nombre corregido', tono: 'accent' },
+  'nombre a revisión': { etiqueta: 'Nombre a revisión', tono: 'warn' }
 };
 
 /**
@@ -54,6 +60,63 @@ export function notaDeFechas(fechas: FechasDeLaCorrida): string {
     partes.push(`${fechas.preguntadas_a_la_ia} ${fechas.preguntadas_a_la_ia === 1 ? 'decidida' : 'decididas'} por la IA`);
   }
   return partes.join(' · ');
+}
+
+/**
+ * «Nombres: 25 confirmados · 3 corregidos · 1 a revisión», como las fechas (lo
+ * pidió el operador el 2026-11-17: las herramientas de las fechas, también para
+ * los nombres). `null` si el revisor de nombres aún no revisó a nadie.
+ */
+export function fraseDeNombres(nombres: NombresDeLaCorrida | null | undefined): string | null {
+  if (!nombres?.revisados) return null;
+  const partes = [
+    `${nombres.confirmados} ${nombres.confirmados === 1 ? 'confirmado' : 'confirmados'}`,
+    `${nombres.corregidos} ${nombres.corregidos === 1 ? 'corregido' : 'corregidos'}`,
+    `${nombres.a_revision} a revisión`
+  ];
+  return `Nombres: ${partes.join(' · ')}`;
+}
+
+/** La nota de la frase: las personas revisadas, las que no traen nombre y las que miró la IA. */
+export function notaDeNombres(nombres: NombresDeLaCorrida): string {
+  const partes = [`${nombres.revisados} ${nombres.revisados === 1 ? 'persona revisada' : 'personas revisadas'}`];
+  if (nombres.sin_dato) partes.push(`${nombres.sin_dato} sin nombre en su papel`);
+  if (nombres.preguntados_a_la_ia) {
+    partes.push(`${nombres.preguntados_a_la_ia} ${nombres.preguntados_a_la_ia === 1 ? 'mirada' : 'miradas'} por la IA`);
+  }
+  return partes.join(' · ');
+}
+
+/** Las cuentas del revisor de fechas de un documento, con la forma de las de la corrida. */
+export function fechasDelDocumento(revision: RevisionDeFechas | null | undefined): FechasDeLaCorrida | null {
+  if (!revision?.revisados) return null;
+  return {
+    revisados: revision.revisados,
+    confirmadas: revision.confirmada ?? 0,
+    corregidas: revision.corregida ?? 0,
+    a_revision: revision['a revisión'] ?? 0,
+    sin_dato: revision['sin dato'] ?? 0,
+    preguntadas_a_la_ia: revision.preguntadas_a_la_ia ?? 0
+  };
+}
+
+/** Las cuentas del revisor de nombres de un documento, con la forma de las de la corrida. */
+export function nombresDelDocumento(revision: RevisionDeNombres | null | undefined): NombresDeLaCorrida | null {
+  if (!revision?.revisados) return null;
+  return {
+    revisados: revision.revisados,
+    confirmados: revision.confirmado ?? 0,
+    corregidos: revision.corregido ?? 0,
+    a_revision: revision['a revisión'] ?? 0,
+    sin_dato: revision['sin dato'] ?? 0,
+    preguntados_a_la_ia: revision.preguntadas_a_la_ia ?? 0
+  };
+}
+
+/** Una línea por nombre corregido o a Revisión: ««OLEA» → «OLGA»» o ««JOHN PEREZ», sin confirmar». */
+export function lineaDeUnNombre(detalle: RevisionDeNombres['detalle'][number]): string {
+  if (detalle.estado === 'corregido') return `«${detalle.leido ?? '—'}» → «${detalle.nombre ?? '—'}»`;
+  return `«${detalle.nombre ?? detalle.leido ?? '—'}», ${detalle.motivo ?? 'sin confirmar'}`;
 }
 
 /** Cómo se llama cada dato que el agente revisa, en el orden en que se dice (2026-11-06). */

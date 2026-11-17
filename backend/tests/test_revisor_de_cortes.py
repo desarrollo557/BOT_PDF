@@ -742,6 +742,37 @@ class TestElAgenteDeLaCorrida:
             {"pdf": "LIBRO.pdf", "estado": "fecha a revisión", "texto": "fila 7: fechas: la fecha final 1994 cae fuera"}
         ]
 
+    def test_los_nombres_de_cada_persona_se_suman_en_vivo(self):
+        # 2026-11-17: el revisor de nombres, como el de fechas, en la misma pantalla.
+        from resolutions.application.revisor_de_cortes import AgenteDeLaCorrida
+
+        agente = AgenteDeLaCorrida()
+        bueno = revisar_los_cortes(_grupos(*CORTE_BUENO), TEXTOS, Patrones(abren=ABREN))
+        nombres = {
+            "revisados": 29, "confirmado": 25, "corregido": 3, "a revisión": 1, "sin dato": 0, "preguntadas_a_la_ia": 29,
+            "detalle": [
+                {"documento": "UPD1.pdf", "pagina": 5, "estado": "a revisión", "nombre": "JOHN PEREZ", "motivo": "sin confirmar"},
+                {"documento": "UPD1.pdf", "pagina": 9, "estado": "corregido", "nombre": "ALVAREZ LONDONO OLGA", "leido": "ALVAREZ LONDONO OLEA"},
+            ],
+        }
+        agente.sumar("UPD1.pdf", {**self._informe(bueno), "revision_de_nombres": nombres})
+        datos = agente.as_dict()
+        assert datos["nombres"] == {
+            "revisados": 29, "confirmados": 25, "corregidos": 3, "a_revision": 1, "sin_dato": 0, "preguntados_a_la_ia": 29,
+        }
+        assert datos["sucesos"][0] == {
+            "pdf": "UPD1.pdf",
+            "estado": "nombre corregido",
+            "texto": "UPD1.pdf: «ALVAREZ LONDONO OLEA» → «ALVAREZ LONDONO OLGA»",
+        }
+        # Un inventario sin dividir cuenta sus nombres y su suceso, no su PDF.
+        otro = AgenteDeLaCorrida()
+        otro.sumar("LIBRO.pdf", {"revision_de_nombres": {**nombres, "detalle": nombres["detalle"][:1]}})
+        assert otro.as_dict()["pdf"] == 0 and otro.as_dict()["nombres"]["revisados"] == 29
+        assert otro.as_dict()["sucesos"] == [
+            {"pdf": "LIBRO.pdf", "estado": "nombre a revisión", "texto": "UPD1.pdf: «JOHN PEREZ», sin confirmar"}
+        ]
+
     def test_sin_revisor_de_fechas_las_cuentas_quedan_en_cero(self):
         from resolutions.application.revisor_de_cortes import AgenteDeLaCorrida
 

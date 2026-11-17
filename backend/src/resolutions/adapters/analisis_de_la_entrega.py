@@ -101,6 +101,17 @@ def por_que_no_hay_muestra(muestra: dict) -> str:
     return f"{nada}: {motivo}. Sin muestra no hay margen de error que dar."
 
 
+def cuentas_de_la_muestra(resumen: dict | None, *, femenino: bool) -> str | None:
+    """«189 confirmadas · 2 con error · 5 en duda» de las fechas o los nombres de la muestra; ``None`` sin revisados."""
+    if not resumen or not resumen.get("revisados"):
+        return None
+    confirmados = resumen.get("confirmadas" if femenino else "confirmados", 0)
+    return (
+        f"{confirmados} {'confirmadas' if femenino else 'confirmados'} · "
+        f"{resumen.get('con error', 0)} con error · {resumen.get('en duda', 0)} en duda"
+    )
+
+
 def _texto_del_margen(margen: dict, de_filas: bool) -> str:
     """El error medido; en una muestra de filas sin nada revisado, dicho de filas y no de PDF."""
     if de_filas and not margen.get("revisados"):
@@ -240,6 +251,14 @@ def escribir_analisis(
                 ["Margen de error de la corrida", "Sin muestra: no hay margen de error que dar"],
                 ["Dictamen de la corrida", margen.get("texto_del_dictamen", "")],
             ]
+        # Las fechas y los nombres de la muestra contra su papel, con la misma
+        # pieza que los revisores al procesar (2026-11-17).
+        for etiqueta, clave, femenino in (
+            ("Muestra · fechas", "fechas", True),
+            ("Muestra · nombres", "nombres", False),
+        ):
+            if (texto := cuentas_de_la_muestra(muestra.get(clave), femenino=femenino)) is not None:
+                renglones.append([etiqueta, texto])
         # Cada habilidad contra el margen de su perfil (2026-11-05): el error
         # de una no se diluye en los aciertos de las demás.
         renglones += [

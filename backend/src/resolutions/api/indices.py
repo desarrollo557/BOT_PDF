@@ -206,7 +206,26 @@ def fila_de_proceso(job, destino: str | Path | None = None):
         operador=job.operator or "",
         destino=str(destino or job.destination or ""),
         observaciones="; ".join(str(a) for a in avisos if a),
+        fechas=_del_revisor(informe.get("revision_de_fechas"), "confirmada", "corregida"),
+        nombres=_del_revisor(informe.get("revision_de_nombres"), "confirmado", "corregido"),
     )
+
+
+def _del_revisor(resumen, confirmado: str, corregido: str) -> dict | None:
+    """Las cuentas del revisor de fechas o del de nombres de un trabajo, para su fila de proceso.
+
+    Las claves del informe son las de ``anotar_en_el_informe`` de cada revisor
+    («confirmada»/«corregida» en las fechas, «confirmado»/«corregido» en los
+    nombres, «a revisión» en los dos). ``None`` si no corrió.
+    """
+    if not isinstance(resumen, dict) or not resumen.get("revisados"):
+        return None
+    return {
+        "revisados": int(resumen.get("revisados") or 0),
+        "confirmados": int(resumen.get(confirmado) or 0),
+        "corregidos": int(resumen.get(corregido) or 0),
+        "a_revision": int(resumen.get("a revisión") or 0),
+    }
 
 
 def con_la_red(

@@ -188,8 +188,10 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
 
     # 3. Las planillas: el FUID si se pidió, y la misma planilla del documento
     #    para un libro de folios o un legajo de matrículas -- quien recibe la
-    #    carpeta necesita el listado, se haya cortado como se haya cortado.
-    if task.writes_inventory:
+    #    carpeta necesita el listado, se haya cortado como se haya cortado. El
+    #    revisor de fechas corre también al sólo dividir (2026-11-17): la
+    #    planilla junto a los PDF lleva la fecha de cada uno.
+    if task.writes_inventory or task.writes_documents:
         # El revisor de fechas (2026-11-10): la de cada diploma o los años de
         # cada expediente contra sus hojas, con la regla de su perfil. Sobre lo
         # ya leído -- la capa guardada con la fuente abierta y lo que la IA
@@ -215,16 +217,17 @@ def _record_split_job(payload: dict, task, tipo=None) -> dict:
             else None,
             aparte=getattr(outcome.reading, "lecturas", None),
         )
-        _escribir_fuid(
-            report,
-            filas,
-            settings=taller.settings,
-            destination=taller.destination,
-            name=taller.name,
-            document_type=outcome.document_type,
-            control=taller.control,
-            payload=payload,
-        )
+        if task.writes_inventory:
+            _escribir_fuid(
+                report,
+                filas,
+                settings=taller.settings,
+                destination=taller.destination,
+                name=taller.name,
+                document_type=outcome.document_type,
+                control=taller.control,
+                payload=payload,
+            )
     _escribir_planilla(report, taller.destination, payload)
 
     _anunciar(payload, Stage.DONE)

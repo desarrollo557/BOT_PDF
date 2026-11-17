@@ -16,6 +16,7 @@
   import FuidViewer from '$lib/components/FuidViewer.svelte';
   import Icono from '$lib/components/Icono.svelte';
   import JobCard from '$lib/components/JobCard.svelte';
+  import RevisoresDelDocumento from '$lib/components/RevisoresDelDocumento.svelte';
   import ValidationPanel from '$lib/components/ValidationPanel.svelte';
   import { jobStore } from '$lib/jobs.svelte';
   import { padreDe, vista } from '$lib/navegacion.svelte';
@@ -262,6 +263,14 @@
         integridad={job.report.integridad_de_los_datos}
         paginas={job.report.page_count}
       />
+    </div>
+  {/if}
+
+  {#if job.state === 'done' && (job.report?.revision_de_fechas?.revisados || job.report?.revision_de_nombres?.revisados)}
+    <!-- Los dos revisores comunes a todas las habilidades: las fechas
+         (2026-11-10) y los nombres (2026-11-17) de este documento. -->
+    <div class="seccion">
+      <RevisoresDelDocumento fechas={job.report?.revision_de_fechas} nombres={job.report?.revision_de_nombres} />
     </div>
   {/if}
 

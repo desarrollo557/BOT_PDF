@@ -4,8 +4,13 @@ import {
   cinta,
   filasDeLosDatos,
   frase,
+  fechasDelDocumento,
   fraseDeFechas,
+  fraseDeNombres,
+  lineaDeUnNombre,
+  nombresDelDocumento,
   notaDeFechas,
+  notaDeNombres,
   porQuien,
   porcentaje,
   queMovio,
@@ -180,5 +185,47 @@ describe('las fechas de cada documento (2026-11-10)', () => {
   it('los sucesos de fechas tienen su etiqueta y su tono', () => {
     expect(ESTADOS['fecha corregida']).toEqual({ etiqueta: 'Fecha corregida', tono: 'accent' });
     expect(ESTADOS['fecha a revisión']).toEqual({ etiqueta: 'Fecha a revisión', tono: 'warn' });
+  });
+});
+
+describe('los nombres de cada persona (2026-11-17)', () => {
+  const nombres = { revisados: 29, confirmados: 25, corregidos: 3, a_revision: 1, sin_dato: 0, preguntados_a_la_ia: 29 };
+
+  it('la frase dice confirmados, corregidos y a revisión', () => {
+    expect(fraseDeNombres(nombres)).toBe('Nombres: 25 confirmados · 3 corregidos · 1 a revisión');
+    expect(fraseDeNombres({ ...nombres, confirmados: 1, corregidos: 1 })).toBe('Nombres: 1 confirmado · 1 corregido · 1 a revisión');
+    expect(fraseDeNombres(undefined)).toBeNull();
+    expect(fraseDeNombres({ ...nombres, revisados: 0 })).toBeNull();
+  });
+
+  it('la nota cuenta las personas, las que no traen nombre y las que miró la IA', () => {
+    expect(notaDeNombres(nombres)).toBe('29 personas revisadas · 29 miradas por la IA');
+    expect(notaDeNombres({ ...nombres, revisados: 1, sin_dato: 2, preguntados_a_la_ia: 0 })).toBe(
+      '1 persona revisada · 2 sin nombre en su papel'
+    );
+  });
+
+  it('los sucesos de nombres tienen su etiqueta y su tono', () => {
+    expect(ESTADOS['nombre corregido']).toEqual({ etiqueta: 'Nombre corregido', tono: 'accent' });
+    expect(ESTADOS['nombre a revisión']).toEqual({ etiqueta: 'Nombre a revisión', tono: 'warn' });
+  });
+});
+
+describe('la ficha del documento: sus fechas y sus nombres (2026-11-17)', () => {
+  it('las cuentas del informe toman la forma de las de la corrida', () => {
+    const fechas = { revisados: 4, confirmada: 3, corregida: 0, 'a revisión': 1, 'sin dato': 0, preguntadas_a_la_ia: 1, detalle: [] };
+    expect(fraseDeFechas(fechasDelDocumento(fechas))).toBe('Fechas: 3 confirmadas · 0 corregidas · 1 a revisión');
+    const nombres = { revisados: 29, confirmado: 25, corregido: 3, 'a revisión': 1, 'sin dato': 0, preguntadas_a_la_ia: 29, detalle: [] };
+    expect(fraseDeNombres(nombresDelDocumento(nombres))).toBe('Nombres: 25 confirmados · 3 corregidos · 1 a revisión');
+    expect(fechasDelDocumento(null)).toBeNull();
+    expect(nombresDelDocumento({ ...nombres, revisados: 0 })).toBeNull();
+  });
+
+  it('cada nombre corregido dice lo leído y lo que quedó; el de Revisión, por qué', () => {
+    const base = { documento: 'UPD1.pdf', pagina: 9, nombre: 'ALVAREZ LONDONO OLGA', leido: 'ALVAREZ LONDONO OLEA' };
+    expect(lineaDeUnNombre({ ...base, estado: 'corregido' })).toBe('«ALVAREZ LONDONO OLEA» → «ALVAREZ LONDONO OLGA»');
+    expect(lineaDeUnNombre({ ...base, estado: 'a revisión', motivo: 'el nombre se leyó distinto en cada zona' })).toBe(
+      '«ALVAREZ LONDONO OLGA», el nombre se leyó distinto en cada zona'
+    );
   });
 });

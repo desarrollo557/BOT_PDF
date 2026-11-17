@@ -45,8 +45,11 @@ def _split_job(payload: dict, task) -> dict:
 
     # 2. Las planillas: el FUID sobre la misma lectura -- las páginas ya están
     #    agrupadas y no hace falta volver a abrir el documento -- y la planilla
-    #    del documento, junto a los PDF.
-    if task.writes_inventory:
+    #    del documento, junto a los PDF. El revisor de fechas corre también al
+    #    sólo dividir (2026-11-17): la planilla que va junto a los PDF lleva la
+    #    fecha de cada resolución, y el operador pidió asegurarla «sin importar
+    #    la habilidad». El FUID, sólo si se pidió.
+    if task.writes_inventory or task.writes_documents:
         from ...application.fuid import con_los_archivos
         from ...application.resolution_fuid import filas_de_resoluciones
         from ...domain.fechas_extremas import EXPEDICION
@@ -94,16 +97,17 @@ def _split_job(payload: dict, task) -> dict:
         if archivos:
             filas = con_los_archivos(filas, archivos)
 
-        _escribir_fuid(
-            report,
-            filas,
-            settings=taller.settings,
-            destination=taller.destination,
-            name=taller.name,
-            document_type=None,
-            control=taller.control,
-            payload=payload,
-        )
+        if task.writes_inventory:
+            _escribir_fuid(
+                report,
+                filas,
+                settings=taller.settings,
+                destination=taller.destination,
+                name=taller.name,
+                document_type=None,
+                control=taller.control,
+                payload=payload,
+            )
     _escribir_planilla(report, taller.destination, payload)
 
     _anunciar(payload, Stage.DONE)

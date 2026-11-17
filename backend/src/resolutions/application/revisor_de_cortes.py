@@ -446,6 +446,15 @@ class AgenteDeLaCorrida:
     fechas_a_revision: int = 0
     fechas_sin_dato: int = 0
     fechas_preguntadas_a_la_ia: int = 0
+    #: El revisor de nombres (2026-11-17): de cada persona, si su nombre se
+    #: confirmó, la IA lo corrigió mirando su renglón o va a Revisión. Cuenta
+    #: personas, no PDF: un acta colectiva o un libro traen muchas.
+    nombres_revisados: int = 0
+    nombres_confirmados: int = 0
+    nombres_corregidos: int = 0
+    nombres_a_revision: int = 0
+    nombres_sin_dato: int = 0
+    nombres_preguntados_a_la_ia: int = 0
     #: Lo último que merece contarse -- una corrección, una revisión, un
     #: problema en el disco --, lo más nuevo primero.
     sucesos: deque = field(default_factory=lambda: deque(maxlen=SUCESOS_EN_VIVO))
@@ -457,11 +466,15 @@ class AgenteDeLaCorrida:
         comprobacion = informe.get("comprobacion_de_la_entrega") or {}
         datos = informe.get("integridad_de_los_datos") or {}
         fechas = informe.get("revision_de_fechas") or {}
+        nombres = informe.get("revision_de_nombres") or {}
         if fechas:
             # Las fechas cuentan en todas las habilidades, también en las que
             # no parten PDF (2026-11-10): un inventario sin dividir también
             # tiene fechas que asegurar.
             self._sumar_las_fechas(pdf, fechas, solo_ellas=not (revision or comprobacion or datos))
+        if nombres:
+            # Los nombres, igual (2026-11-17): en toda habilidad con persona.
+            self._sumar_los_nombres(pdf, nombres, solo_ellos=not (revision or comprobacion or datos))
         if not revision and not comprobacion and not datos:
             # Una habilidad que no parte PDF -- un inventario sin dividir --
             # no tiene costuras que revisar: no cuenta.
@@ -469,6 +482,7 @@ class AgenteDeLaCorrida:
         estado = str(revision.get("estado") or "no corrió")
         problemas = list(comprobacion.get("problemas") or [])
         de_las_fechas = _lo_de_las_fechas(fechas)
+        de_los_nombres = _lo_de_los_nombres(nombres)
         with self._candado:
             self.pdf += 1
             if estado == "validado":
@@ -513,10 +527,15 @@ class AgenteDeLaCorrida:
                 # Una fecha corregida es un cambio en lo entregado: pesa más
                 # que una costura que sólo hay que mirar.
                 self.sucesos.appendleft({"pdf": pdf, **de_las_fechas})
+            elif de_los_nombres and de_los_nombres["estado"] == "nombre corregido":
+                # Un nombre corregido también cambia lo entregado.
+                self.sucesos.appendleft({"pdf": pdf, **de_los_nombres})
             elif texto:
                 self.sucesos.appendleft({"pdf": pdf, "estado": estado, "texto": texto})
             elif de_las_fechas:
                 self.sucesos.appendleft({"pdf": pdf, **de_las_fechas})
+            elif de_los_nombres:
+                self.sucesos.appendleft({"pdf": pdf, **de_los_nombres})
 
     def _sumar_las_fechas(self, pdf: str, fechas: Mapping[str, object], *, solo_ellas: bool) -> None:
         """Las cuentas del revisor de fechas de un PDF; y su suceso, si el PDF no trae otra cosa que contar."""
@@ -530,6 +549,19 @@ class AgenteDeLaCorrida:
             self.fechas_preguntadas_a_la_ia += int(fechas.get("preguntadas_a_la_ia") or 0)
             if de_las_fechas:
                 self.sucesos.appendleft({"pdf": pdf, **de_las_fechas})
+
+    def _sumar_los_nombres(self, pdf: str, nombres: Mapping[str, object], *, solo_ellos: bool) -> None:
+        """Las cuentas del revisor de nombres de un PDF; y su suceso, si el PDF no trae otra cosa que contar."""
+        de_los_nombres = _lo_de_los_nombres(nombres) if solo_ellos else None
+        with self._candado:
+            self.nombres_revisados += int(nombres.get("revisados") or 0)
+            self.nombres_confirmados += int(nombres.get("confirmado") or 0)
+            self.nombres_corregidos += int(nombres.get("corregido") or 0)
+            self.nombres_a_revision += int(nombres.get("a revisión") or 0)
+            self.nombres_sin_dato += int(nombres.get("sin dato") or 0)
+            self.nombres_preguntados_a_la_ia += int(nombres.get("preguntadas_a_la_ia") or 0)
+            if de_los_nombres:
+                self.sucesos.appendleft({"pdf": pdf, **de_los_nombres})
 
     def as_dict(self) -> dict[str, object]:
         with self._candado:
@@ -562,6 +594,14 @@ class AgenteDeLaCorrida:
                     "sin_dato": self.fechas_sin_dato,
                     "preguntadas_a_la_ia": self.fechas_preguntadas_a_la_ia,
                 },
+                "nombres": {
+                    "revisados": self.nombres_revisados,
+                    "confirmados": self.nombres_confirmados,
+                    "corregidos": self.nombres_corregidos,
+                    "a_revision": self.nombres_a_revision,
+                    "sin_dato": self.nombres_sin_dato,
+                    "preguntados_a_la_ia": self.nombres_preguntados_a_la_ia,
+                },
                 "sucesos": list(self.sucesos),
             }
 
@@ -581,6 +621,29 @@ def _lo_de_las_fechas(fechas: Mapping[str, object]) -> dict[str, str] | None:
     return {
         "estado": "fecha corregida" if corregidas else "fecha a revisión",
         "texto": f"{primero.get('documento')}: {primero.get('nota')}{mas}",
+    }
+
+
+def _lo_de_los_nombres(nombres: Mapping[str, object]) -> dict[str, str] | None:
+    """El suceso del revisor de nombres de un PDF: la primera corrección, si no lo primero a Revisión; o nada.
+
+    Las claves de ``nombres`` son las de ``revisor_de_nombres.anotar_en_el_informe``:
+    su detalle sólo trae lo corregido y lo que va a Revisión.
+    """
+    detalle = [d for d in nombres.get("detalle") or [] if isinstance(d, Mapping)]
+    if not detalle:
+        return None
+    corregidos = [d for d in detalle if d.get("estado") == "corregido"]
+    primero = (corregidos or detalle)[0]
+    otros = len(corregidos or detalle) - 1
+    mas = f" (y {otros} más)" if otros else ""
+    if corregidos:
+        texto = f"«{primero.get('leido')}» → «{primero.get('nombre')}»"
+    else:
+        texto = f"«{primero.get('nombre') or primero.get('leido')}», {primero.get('motivo') or 'sin confirmar'}"
+    return {
+        "estado": "nombre corregido" if corregidos else "nombre a revisión",
+        "texto": f"{primero.get('documento')}: {texto}{mas}",
     }
 
 

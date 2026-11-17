@@ -206,6 +206,31 @@ export interface Report {
   integridad_de_los_datos?: IntegridadDeLosDatos | null;
   /** La fecha inicial y la final de cada documento contra su papel (2026-11-10). */
   revision_de_fechas?: RevisionDeFechas | null;
+  /** El nombre de cada persona contra su renglón (2026-11-17). */
+  revision_de_nombres?: RevisionDeNombres | null;
+}
+
+/**
+ * Lo que el revisor de nombres decidió de las personas de un trabajo (lo pidió
+ * el operador el 2026-11-17: las herramientas de las fechas, también para los
+ * nombres). Las claves son las del servicio (`revisor_de_nombres.anotar_en_el_informe`).
+ */
+export interface RevisionDeNombres {
+  revisados: number;
+  confirmado: number;
+  corregido: number;
+  'a revisión': number;
+  'sin dato': number;
+  preguntadas_a_la_ia: number;
+  /** Sólo lo corregido y lo que va a Revisión. */
+  detalle: {
+    documento: string;
+    pagina: number | null;
+    estado: 'corregido' | 'a revisión';
+    nombre: string | null;
+    leido: string | null;
+    motivo?: string;
+  }[];
 }
 
 /**
@@ -232,6 +257,16 @@ export interface FechasDeLaCorrida {
   a_revision: number;
   sin_dato: number;
   preguntadas_a_la_ia: number;
+}
+
+/** Los nombres de las personas de una corrida, sumados PDF a PDF (2026-11-17). */
+export interface NombresDeLaCorrida {
+  revisados: number;
+  confirmados: number;
+  corregidos: number;
+  a_revision: number;
+  sin_dato: number;
+  preguntados_a_la_ia: number;
 }
 
 /** En cuántos documentos un dato está bien, para mirar o con error. */
@@ -361,12 +396,21 @@ export interface AgenteDeLaCorrida {
   datos?: CuentasDeLosDatos;
   /** Las fechas de cada documento de la corrida (2026-11-10). Ausente en las anteriores. */
   fechas?: FechasDeLaCorrida;
+  /** Los nombres de cada persona de la corrida (2026-11-17). Ausente en las anteriores. */
+  nombres?: NombresDeLaCorrida;
   /** Lo último que corrigió, mandó a revisión o no cuadró en el disco; lo más nuevo primero. */
   sucesos: { pdf: string; estado: EstadoDelSuceso; texto: string }[];
 }
 
 /** Lo que cuenta un suceso del registro en vivo del agente. */
-export type EstadoDelSuceso = EstadoDelRevisor | 'problema' | 'datos' | 'fecha corregida' | 'fecha a revisión';
+export type EstadoDelSuceso =
+  | EstadoDelRevisor
+  | 'problema'
+  | 'datos'
+  | 'fecha corregida'
+  | 'fecha a revisión'
+  | 'nombre corregido'
+  | 'nombre a revisión';
 
 /** Una fila del inventario de actas de consejo: lo que se ve de cada PDF. */
 export interface FilaDeActa {

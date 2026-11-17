@@ -122,6 +122,29 @@ class TestElInventarioDeProcesos:
         assert "lectura 2,5 MB/s · escritura 110 MB/s" in resumen
 
 
+def test_las_fechas_y_los_nombres_de_cada_pdf_en_el_excel_de_procesos(tmp_path):
+    """El revisor de fechas y el de nombres (2026-11-17): su columna por PDF y su total en el resumen."""
+    from dataclasses import asdict, replace
+
+    from resolutions.api.indices import _del_revisor
+
+    fechas = _del_revisor({"revisados": 4, "confirmada": 3, "a revisión": 1}, "confirmada", "corregida")
+    nombres = _del_revisor({"revisados": 29, "confirmado": 25, "corregido": 3, "a revisión": 1}, "confirmado", "corregido")
+    assert _del_revisor({"revisados": 0}, "confirmada", "corregida") is None
+    con = replace(_fila(), fechas=fechas, nombres=nombres)
+    # La fila guardada en una constancia de antes, sin estas cuentas, se sigue leyendo.
+    vieja = {clave: valor for clave, valor in asdict(_fila("UPD2.pdf")).items() if clave not in ("fechas", "nombres")}
+    sin = FilaDeProceso(**vieja)
+    ruta = ExcelInventarioDeProcesos().write([con, sin], tmp_path, origen="ENFERMERIA")
+    libro = load_workbook(ruta)
+    valores = [celda.value for fila_ in libro["Procesos"].iter_rows() for celda in fila_]
+    assert "3 confirmadas · 0 corregidas · 1 a revisión" in valores
+    assert "25 confirmados · 3 corregidos · 1 a revisión" in valores
+    assert valores.count("—") >= 2
+    resumen = [celda.value for fila_ in libro["Resumen"].iter_rows() for celda in fila_ if celda.value]
+    assert "Nombres de las personas" in resumen and "25 confirmados · 3 corregidos · 1 a revisión" in resumen
+
+
 def _motor(ajustes, registro):
     async def run_job(job):
         salida = ajustes.output_dir / job.id / Path(job.filename).stem
