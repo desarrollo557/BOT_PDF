@@ -231,6 +231,11 @@ MITADES_DE_LA_HOJA = (Band(0.0, 0.0, 1.0, 0.5), Band(0.0, 0.5, 1.0, 1.0))
 DPI_DE_LA_MITAD = 400
 #: La franja del medio del acta a mano de 1988-2012, donde va el nombre (2026-11-13).
 DPI_DE_LA_FRANJA_DEL_NOMBRE = 400
+#: A cuánto mira la IA la franja del graduado: la letra se lee y la imagen no
+#: pasa de dos mil puntos de ancho (el revisor de nombres, 2026-11-17).
+DPI_DE_LA_FRANJA_PARA_MIRAR = 200
+#: Y la hoja entera del acta colectiva, donde la IA busca al graduado en su lista.
+DPI_DE_LA_HOJA_PARA_MIRAR = 150
 #: Las franjas de la lista de un acta colectiva, releídas con zoom para sus
 #: cédulas (``_cedulas_de_las_colectivas_con_zoom``, 2026-11-13).
 DPI_DE_LA_FRANJA_DE_LA_LISTA = 400
@@ -379,6 +384,9 @@ class FilaDeActa:
     #: Las hojas de su PDF que van también en el de otra acta y se cuentan allí,
     #: en la que empieza en ella: la suma de los folios no las cuenta dos veces.
     hojas_contadas_en_otra: tuple[int, ...] = ()
+    #: Cómo quedó el nombre del graduado y qué se leyó, del revisor de nombres
+    #: común (2026-11-17): lo que enseña la Revisión de nombres. No va al FUID.
+    revision_del_nombre: dict | None = None
 
 
 @dataclass(slots=True)
@@ -414,6 +422,9 @@ class ActaOutcome:
     #: Las hojas que van en su PDF lejos de su vecina del escaneo porque el
     #: libro sigue por su folio impreso: su salto no es un error de corte.
     cruces_por_el_folio: list[int] = field(default_factory=list)
+    #: Lo que decidió el revisor de nombres de cada graduado (``NombreRevisado``),
+    #: por su sesión: el trabajo lo lleva al informe.
+    nombres_revisados: dict = field(default_factory=dict, repr=False)
 
     @property
     def fila(self) -> FilaDeActa:
@@ -817,6 +828,10 @@ class _Lectura:
     nombre_leido: str | None = None
     #: Lo que se tomó del nombre del archivo, o en lo que discrepa del papel.
     nota_del_nombre: str | None = None
+    #: Lo que dijo el revisor de nombres común, para la fila (``revision_del_nombre``).
+    revision_del_nombre: dict | None = None
+    #: Y de cada graduado de un acta colectiva, por su orden en la lista.
+    revision_de_los_graduados: dict[int, dict] = field(default_factory=dict)
     #: La hoja leída por la IA, cuando se pidió: con ella se cruza cada campo.
     texto_de_la_ia: str | None = None
     #: Lo que el lector de texto de la IA entendió de esa hoja, validado.
@@ -947,7 +962,15 @@ class InventariarActa:
         #: fecha y la lista de sus graduados (un ``Resumidor`` con
         #: ``INSTRUCCIONES_DEL_ACTA_COLECTIVA``). Sin él, la lista se lee por regla.
         lector_de_actas_colectivas: Resumidor | None = None,
+        #: La IA que mira la franja del graduado con sus lecturas al lado (el
+        #: revisor de nombres común, 2026-11-17). Sin ella, sólo el voto.
+        juez_del_nombre=None,
+        #: El padrón de la Universidad (``IndiceDelPadron``), para los candidatos.
+        padron=None,
     ) -> None:
+        self._juez_del_nombre = juez_del_nombre
+        self._padron = padron
+        self._nombres_revisados: dict = {}
         self._lector_de_actas_colectivas = lector_de_actas_colectivas
         self._orden_del_libro: list[int] | None = None
         self._espera_para_reintentar = (
@@ -1101,6 +1124,7 @@ class InventariarActa:
             self._nombres_por_consenso(source, paginas, lecturas)
             self._nombres_manuscritos(source, lecturas)
             self._releer_los_nombres_dudosos(source, lecturas)
+            self._revisar_los_nombres(source, lecturas)
             self._fechas_manuscritas(source, lecturas)
             _los_examenes(lecturas)
             self._report(
@@ -1223,6 +1247,7 @@ class InventariarActa:
             colectivo=any(lectura.colectiva for lectura in lecturas),
             paginas_compartidas=compartidas,
             cruces_por_el_folio=_cruces_por_el_folio(lecturas),
+            nombres_revisados=dict(self._nombres_revisados),
         )
 
     # -- leer -----------------------------------------------------------------
@@ -2402,6 +2427,153 @@ class InventariarActa:
                 lectura.acta = replace(acta, nombre=votado)
             if duda:
                 lectura.razonado.append(duda)
+
+    def _revisar_los_nombres(self, source: PageSource, lecturas: list[_Lectura]) -> None:
+        """El nombre de cada graduado, con el revisor de nombres común a todas las habilidades.
+
+        El operador, 2026-11-17: «centralizarlas y conectarlas a todas las
+        habilidades». El voto ya lo hizo el acta (``consenso``, con sus pesos y
+        sus relecturas): el revisor común lo recibe votado y pone lo demás. La
+        IA mira la franja del graduado -- del 20 al 70 % de su hoja, donde va
+        «al estudiante … portador» -- con todas sus lecturas y los candidatos
+        del padrón al lado, a todos los graduados, y sólo se acepta una
+        corrección de letras o una elección entre lecturas. Lo que no se
+        confirma va a la cola de Revisión, que hasta hoy no recibía las dudas
+        del nombre del acta, sólo sus observaciones.
+        """
+        from ..domain.historia_medicina import NombreVotado
+        from .revisor_de_nombres import A_REVISION, PorRevisar, revisar_los_nombres
+
+        graduados = [
+            (indice, lectura)
+            for indice, lectura in enumerate(lecturas)
+            if lectura.acta.rotulo == ROTULO_DE_GRADO
+            and not lectura.tramo.ceremonia
+            and not lectura.colectiva
+            and lectura.acta.nombre
+        ]
+        colectivas = [(indice, lectura) for indice, lectura in enumerate(lecturas) if lectura.colectiva and lectura.graduados]
+        if not graduados and not colectivas:
+            return
+        conocidas = nombres_conocidos() | (self._padron.palabras if self._padron is not None else frozenset())
+        personas = []
+        for indice, lectura in graduados:
+            acta = lectura.acta
+            pagina = lectura.tramo.desde + (acta.pagina or 1) - 1
+            lecturas_del_nombre = [
+                acta.nombre,
+                lectura.nombre_leido,
+                *(zona_del_nombre(texto, titulo=acta.titulo, conocidas=conocidas) for texto, _peso in lectura.textos),
+            ]
+            # Lo que el voto del acta no confirmó, palabra por palabra.
+            sin_confirmar = tuple(palabras_de(acta.nombre)) if lectura.nombre_dudoso else ()
+            personas.append(
+                PorRevisar(
+                    indice,
+                    [nombre for nombre in lecturas_del_nombre if nombre],
+                    cedula=acta.cedula,
+                    imagen=(lambda pagina=pagina: self._franja_para_mirar(source, pagina)),
+                    pagina=pagina,
+                    votado=NombreVotado(acta.nombre, lectura.nombre_leido or acta.nombre, sin_confirmar),
+                )
+            )
+        # Las actas colectivas: cada graduado de su lista, mirado en la hoja del
+        # acta que lo nombra. Hasta hoy su nombre no tenía ningún control.
+        for indice, lectura in colectivas:
+            for graduado in lectura.graduados:
+                if not graduado.nombre:
+                    continue
+                pagina = self._hoja_del_graduado(lectura, graduado)
+                personas.append(
+                    PorRevisar(
+                        (indice, graduado.orden),
+                        [graduado.nombre],
+                        cedula=graduado.cedula,
+                        imagen=(lambda pagina=pagina: self._hoja_para_mirar(source, pagina)),
+                        pagina=pagina,
+                    )
+                )
+        if not personas:
+            return
+        self._report(
+            ProgressEvent(stage=Stage.VERIFYING, detail=f"asegurando el nombre de {len(personas)} graduado(s)")
+        )
+        revisados = revisar_los_nombres(
+            personas, conocidas=conocidas, padron=self._padron, juez=self._juez_del_nombre, control=self._control,
+        )
+        for de_quien, revisado in revisados.items():
+            if isinstance(de_quien, tuple):
+                self._con_el_graduado_revisado(lecturas[de_quien[0]], de_quien[1], revisado)
+                self._nombres_revisados[de_quien] = revisado
+                continue
+            indice = de_quien
+            lectura = lecturas[indice]
+            acta = lectura.acta
+            if revisado.nombre and revisado.nombre != acta.nombre:
+                lectura.razonado.append(
+                    f"el nombre: la IA, mirando la hoja, leyó «{revisado.nombre}»; se había leído «{acta.nombre}»"
+                )
+                lectura.acta = replace(acta, nombre=revisado.nombre)
+            if revisado.estado == A_REVISION:
+                lectura.nombre_dudoso = True
+            elif revisado.por_la_ia:
+                # La IA, mirando el papel, lo confirmó: ya no es un nombre dudoso.
+                lectura.nombre_dudoso = False
+                lectura.razonado = [r for r in lectura.razonado if not r.startswith("nombre dudoso")]
+            lectura.revision_del_nombre = revisado.detalle
+            self._nombres_revisados[indice + 1] = revisado
+
+    @staticmethod
+    def _con_el_graduado_revisado(lectura: _Lectura, orden: int, revisado) -> None:
+        """El graduado de la lista con el nombre que dejó el revisor, y su detalle para la fila."""
+        for posicion, graduado in enumerate(lectura.graduados):
+            if graduado.orden != orden:
+                continue
+            if revisado.nombre and revisado.nombre != graduado.nombre:
+                nota = f"nombre corregido; se leyó «{graduado.nombre}»"
+                lectura.graduados[posicion] = replace(
+                    graduado, nombre=revisado.nombre, nota="; ".join(n for n in (graduado.nota, nota) if n)
+                )
+            lectura.revision_de_los_graduados[orden] = revisado.detalle
+            return
+
+    def _hoja_del_graduado(self, lectura: _Lectura, graduado) -> int:
+        """La hoja del acta colectiva que nombra al graduado: la que trae su cédula o más palabras de su nombre."""
+        hojas = list(lectura.tramo.en_el_pdf) or [lectura.tramo.desde]
+        cedula = re.sub(r"\D", "", graduado.cedula or "")
+        palabras = set(palabras_de(graduado.nombre or ""))
+
+        def cuanto(hoja: int) -> tuple[int, int]:
+            texto = self._textos_de_la_ia.get(hoja) or ""
+            sin_puntos = re.sub(r"(?<=\d)[.,\s](?=\d)", "", texto)
+            return (int(bool(cedula) and cedula in sin_puntos), len(palabras & set(palabras_de(texto))))
+
+        return max(hojas, key=cuanto)
+
+    def _hoja_para_mirar(self, source: PageSource, pagina: int) -> bytes | None:
+        """La hoja entera del acta colectiva, en JPEG, para la IA que busca en ella el nombre del graduado."""
+        if self._juez_del_nombre is None:
+            return None
+        try:
+            return source.render(pagina, None, DPI_DE_LA_HOJA_PARA_MIRAR, formato="jpeg")
+        except TypeError:
+            return source.render(pagina, None, DPI_DE_LA_HOJA_PARA_MIRAR)
+        except Exception:  # noqa: BLE001 - sin imagen, el nombre queda como se leyó
+            logger.debug("no se pudo recortar la hoja %s del acta colectiva", pagina, exc_info=True)
+            return None
+
+    def _franja_para_mirar(self, source: PageSource, pagina: int) -> bytes | None:
+        """La franja del graduado -- del 20 al 70 % de su hoja --, en JPEG, para la IA que mira el nombre."""
+        if self._juez_del_nombre is None:
+            return None
+        try:
+            return source.render(pagina, Band(0.0, 0.2, 1.0, 0.7), DPI_DE_LA_FRANJA_PARA_MIRAR, formato="jpeg")
+        except TypeError:
+            # Una fuente que no sabe de formatos: el PNG de siempre.
+            return source.render(pagina, Band(0.0, 0.2, 1.0, 0.7), DPI_DE_LA_FRANJA_PARA_MIRAR)
+        except Exception:  # noqa: BLE001 - sin imagen, el nombre queda votado
+            logger.debug("no se pudo recortar la franja del graduado de la página %s", pagina, exc_info=True)
+            return None
 
     def _franja_del_nombre(self, source: PageSource, lectura: _Lectura, referencia: str) -> str | None:
         """El nombre del acta a mano de 1988-2012, de la franja del medio ampliada y leída por la IA.
@@ -3625,7 +3797,8 @@ def _fila(
     """
     acta, folios, tramo = lectura.acta, lectura.folios, lectura.tramo
     if acta.rotulo in (ROTULO_DE_CEREMONIA, ROTULO_DE_GRADO):
-        return _fila_de_grado(lectura, archivo=archivo, carpeta=carpeta, ilegibles=ilegibles)
+        fila = _fila_de_grado(lectura, archivo=archivo, carpeta=carpeta, ilegibles=ilegibles)
+        return replace(fila, revision_del_nombre=lectura.revision_del_nombre) if lectura.revision_del_nombre else fila
     sin_resumen = None if lectura.sin_resumen == por_eleccion else lectura.sin_resumen
     if folios.motivo == SIN_IA_PARA_EL_FOLIO:
         folios = replace(folios, motivo=None)
@@ -4121,6 +4294,7 @@ def _filas_de_la_colectiva(
                 cedula=graduado_.cedula or "",
                 acta_colectiva=rotulo,
                 folios_en=primero if puesto else "",
+                revision_del_nombre=lectura.revision_de_los_graduados.get(graduado_.orden),
             )
         )
     return filas

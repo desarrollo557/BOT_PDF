@@ -228,6 +228,10 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
             # El libro de actas colectivas manuscrito (UPD3859802, 2026-11-12):
             # la lista de graduados de cada acta, leída del texto por la IA.
             lector_de_actas_colectivas=taller.lector_de_actas_colectivas() if grado else None,
+            # El revisor de nombres común (2026-11-17): la IA mira la franja de
+            # cada graduado, con los candidatos del padrón de la Universidad.
+            juez_del_nombre=_juez_del_nombre(taller) if grado else None,
+            padron=_padron(taller) if grado else None,
         ).execute(source, document_name=Path(taller.name).name, carpeta=carpeta)
     finally:
         source.close()
@@ -348,6 +352,14 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
         # La pantalla de Archivo lee la fecha de la primera acta del informe.
         report["fecha_inicial"] = report["fecha_final"] = outcome.filas[0].fecha
     revisor.anotar(report)
+    if outcome.nombres_revisados:
+        # Lo que dijo el revisor de nombres común de cada graduado: sus cuentas
+        # y, por primera vez, sus dudas en la cola de Revisión (2026-11-17).
+        from ...application.revisor_de_nombres import (
+            anotar_en_el_informe as anotar_los_nombres,
+        )
+
+        anotar_los_nombres(report, outcome.nombres_revisados, Path(taller.name).name)
     # Para el libro mayor es un archivo inventariado entero, que es lo que es:
     # así aparece en la pantalla de Archivo con su acta y su fecha.
     report["task"] = str(TaskKind.INVENTORY_FILE)
@@ -394,6 +406,21 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
         report["inventario_error"] = f"{type(error).__name__}: {error}"
     _anunciar(payload, Stage.DONE)
     return report
+
+
+def _juez_del_nombre(taller: Taller):
+    """La IA que mira la franja del graduado (``taller.juez_del_nombre``); ``None`` con «Solo OCR» o si falla."""
+    from .nombres_asegurados import jueces_del_trabajo
+
+    juez, _corrector = jueces_del_trabajo(taller)
+    return juez
+
+
+def _padron(taller: Taller):
+    """El padrón de la Universidad, para los candidatos que se le muestran a la IA."""
+    from .nombres_asegurados import padron_del_trabajo
+
+    return padron_del_trabajo(taller)
 
 
 def _lector_de_cifras(taller: Taller):

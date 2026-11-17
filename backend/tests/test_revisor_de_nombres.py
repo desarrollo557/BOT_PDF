@@ -239,3 +239,81 @@ def test_nominas_y_certificados_declaran_su_nombre():
 
     assert perfil_de("nominas").regla_del_nombre.escritura == A_MANO
     assert perfil_de("certificados").regla_del_nombre.escritura == A_MAQUINA
+
+
+# -- fase 3: actas de grado ----------------------------------------------------------
+
+
+def test_las_actas_de_grado_usan_el_revisor_comun():
+    """El voto del acta se respeta; la IA mira la franja del graduado y lo que corrige va a la fila y al informe."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_acta_consejo import Fuente
+    from test_acta_grado import MODERNA_COMPLETA
+
+    from resolutions.application.acta_consejo import GRADO, InventariarActa
+
+    acta = MODERNA_COMPLETA.replace("BALLESTAS", "BALLESTAZ")
+    vistas = []
+
+    class JuezDeLaFranja:
+        def resumir(self, texto, imagen=None):
+            vistas.append(imagen)
+            return "ANDRES FELIPE BALLESTAS MENDOZA"
+
+    outcome = InventariarActa(perfil=GRADO, juez_del_nombre=JuezDeLaFranja()).execute(
+        Fuente([acta]), document_name="acta.pdf"
+    )
+    (fila,) = outcome.filas
+    assert fila.nombre == "ANDRES FELIPE BALLESTAS MENDOZA"
+    assert fila.revision_del_nombre["estado"] == "corregido"
+    assert "BALLESTAZ" in fila.revision_del_nombre["leido"]
+    assert vistas and all(vistas)
+    # Lo que va al informe: las cuentas del revisor de nombres, con la misma forma que las fechas.
+    informe: dict = {}
+    anotar_en_el_informe(informe, outcome.nombres_revisados, "acta.pdf")
+    assert informe[CLAVE_DEL_INFORME][CORREGIDO] == 1
+    # Sin IA, el voto del acta queda como estaba.
+    sin_ia = InventariarActa(perfil=GRADO).execute(Fuente([acta]), document_name="acta.pdf")
+    assert sin_ia.filas[0].nombre == "ANDRES FELIPE BALLESTAZ MENDOZA"
+
+
+def test_las_actas_de_grado_declaran_su_nombre():
+    from resolutions.application.perfiles_de_revision import perfil_de
+
+    assert perfil_de("actas-de-grado").regla_del_nombre is not None
+
+
+def test_cada_graduado_de_un_acta_colectiva_se_mira_en_su_hoja():
+    """La lista del acta colectiva no tenía control del nombre: la IA mira la hoja que nombra a cada graduado."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_actas_colectivas import LIBRO, IaDePago, LectorDeColectivas, Libro
+
+    from resolutions.application.acta_consejo import GRADO, InventariarActa
+
+    miradas = []
+
+    class JuezDeLaHoja:
+        def resumir(self, texto, imagen=None):
+            miradas.append(imagen)
+            leido = texto.split("\n", 1)[0].removeprefix("- ")
+            # Mirando la hoja, la IA lee bien el apellido que la lista trajo con una letra cambiada.
+            return leido.replace("ACEVEDO", "AZEVEDO") if "KAROLAY" in leido else leido
+
+    outcome = InventariarActa(
+        perfil=GRADO, relector_de_pago=IaDePago(LIBRO), lector_de_actas_colectivas=LectorDeColectivas(),
+        juez_del_nombre=JuezDeLaHoja(),
+    ).execute(Libro(LIBRO), document_name="UPD3859802.pdf", carpeta="00C003288\\UPD3859802")
+    karolay = next(fila for fila in outcome.filas if fila.nombre and "KAROLAY" in fila.nombre)
+    assert "AZEVEDO" in karolay.nombre
+    assert karolay.revision_del_nombre["estado"] == "corregido"
+    assert "se leyó" in karolay.observaciones
+    # Cada graduado de la lista se miró, con la hoja entera de su acta.
+    con_nombre = [fila for fila in outcome.filas if fila.acta_colectiva and fila.nombre]
+    assert len(miradas) >= len(con_nombre) and all(miradas)
+    assert all(fila.revision_del_nombre for fila in con_nombre)

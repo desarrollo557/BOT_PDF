@@ -32,7 +32,7 @@ from collections.abc import Callable, Hashable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from ..domain.historia_medicina import nombre_por_consenso
+from ..domain.historia_medicina import NombreVotado, nombre_por_consenso
 from ..domain.padron import IndiceDelPadron, para_la_ia
 from ..domain.revision_de_nombres import (
     A_REVISION,
@@ -64,6 +64,10 @@ class PorRevisar:
     imagen: Callable[[], bytes | None] | None = None
     #: La página donde está escrito, para la cola de Revisión.
     pagina: int | None = None
+    #: El nombre que ya votó la habilidad con su propio voto (las actas de
+    #: grado, con ``consenso``): el revisor no lo vuelve a votar ni lo relee, y
+    #: pone lo demás -- la IA que mira, el padrón, la decisión, la cola --.
+    votado: NombreVotado | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,9 +132,16 @@ def revisar_los_nombres(
     """
     lecturas = {persona.clave: list(persona.lecturas) for persona in personas}
     por_clave = {persona.clave: persona for persona in personas}
-    votados = {clave: nombre_por_consenso(lecturas[clave], conocidas) for clave in lecturas}
+    votados = {
+        clave: por_clave[clave].votado or nombre_por_consenso(lecturas[clave], conocidas) for clave in lecturas
+    }
 
-    dudosos = [clave for clave, votado in votados.items() if votado.sin_confirmar or not votado.nombre]
+    # Lo que ya votó la habilidad no se vuelve a mirar aquí: lo hizo ella.
+    dudosos = [
+        clave
+        for clave, votado in votados.items()
+        if por_clave[clave].votado is None and (votado.sin_confirmar or not votado.nombre)
+    ]
     if dudosos and releer is not None:
         try:
             nuevas = releer(dudosos)

@@ -41,6 +41,7 @@ from ..domain.revision_de_nombres import (
     A_MANO,
     A_MAQUINA,
     APELLIDOS_PRIMERO,
+    MIXTA,
     NOMBRES_PRIMERO,
     ReglaDelNombre,
 )
@@ -178,6 +179,9 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
         ),
         una_persona_por_pdf=True,
         alias=("actas de grado", "acta de grado", "acta"),
+        # «Al estudiante … portador»: a máquina en las modernas y a mano en las
+        # de 1988 a 2012, a media hoja (``_franja_del_nombre``, del 20 al 70 %).
+        regla_del_nombre=ReglaDelNombre(orden=NOMBRES_PRIMERO, escritura=MIXTA, zonas=((0.2, 0.7),)),
     ),
     PerfilDeRevision(
         clave="actas-de-consejo",
