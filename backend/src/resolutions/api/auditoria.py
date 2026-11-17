@@ -558,7 +558,10 @@ def _auditar_uno(entrega: EntregaVista, juez, indices: dict, *, juez_de_datos=No
     # El FUID entregado en su carpeta, para las habilidades que esperan datos
     # de cada documento (2026-11-06): una vez por carpeta.
     del_fuid = None
-    if perfil_de(entrega.constancia.habilidad).datos is not None:
+    perfil = perfil_de(entrega.constancia.habilidad)
+    # Y en las que tienen una persona por documento, para sus nombres: el libro
+    # de diplomas no deja filas en la constancia (2026-11-17).
+    if perfil.datos is not None or perfil.regla_del_nombre is not None:
         clave = ("fuid", entrega.base)
         if clave not in indices:
             indices[clave] = _filas_del_fuid_de(entrega.base)

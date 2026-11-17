@@ -337,3 +337,42 @@ class FuidInventory:
                     end_row=numero,
                     end_column=firma.columna + firma.ancho_combinado - 1,
                 )
+
+
+#: La columna del asunto en la fila de ``FuidRow.as_cells``, contada desde 1.
+COLUMNA_DEL_ASUNTO = 3
+
+
+def cambiar_el_asunto(ruta: Path, viejo: str, nuevo: str, *, orden: object = None) -> bool:
+    """El asunto de una fila de un FUID ya escrito, cambiado en su celda y nada más.
+
+    Para la Revisión de nombres (2026-11-17): el nombre corregido de una persona
+    llega al FUID que ya está en el destino -- el de su carpeta, el de su libro,
+    el general --. Se cambia la celda en el mismo archivo, con openpyxl como lo
+    escribió el escritor, en lugar de volver a escribirlo desde una plantilla:
+    tras un reinicio no se sabe con cuál se escribió el general, y el resto del
+    archivo -- la cabecera, las firmas, las demás filas -- queda como estaba.
+
+    La fila se busca por su asunto, desde la primera de registros; si dos lo
+    comparten, por su número de orden. Dice si la encontró: una planilla sin
+    esa fila no se toca.
+    """
+    libro = load_workbook(ruta)
+    try:
+        hoja = libro[HOJA] if HOJA in libro.sheetnames else libro.worksheets[0]
+        buscado = str(viejo or "").strip()
+        candidatas = [
+            numero
+            for numero in range(PRIMERA_FILA, (hoja.max_row or 0) + 1)
+            if str(hoja.cell(row=numero, column=COLUMNA_DEL_ASUNTO).value or "").strip() == buscado
+        ]
+        if len(candidatas) > 1 and orden is not None:
+            suyas = [n for n in candidatas if str(hoja.cell(row=n, column=1).value or "").strip() == str(orden)]
+            candidatas = suyas or candidatas[:1]
+        if not buscado or not candidatas:
+            return False
+        hoja.cell(row=candidatas[0], column=COLUMNA_DEL_ASUNTO).value = nuevo
+        guardar_libro(libro, ruta)
+        return True
+    finally:
+        libro.close()

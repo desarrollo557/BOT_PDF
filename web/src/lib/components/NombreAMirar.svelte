@@ -1,7 +1,7 @@
 <script lang="ts">
   import { corregirNombre, renglonDelNombreUrl } from '$lib/api';
   import { enlaceAlDocumento } from '$lib/navegacion.svelte';
-  import type { FilaConPersona, Job } from '$lib/types';
+  import type { FilaConPersona } from '$lib/types';
 
   /**
    * Una persona -- de cualquier habilidad -- cuyo nombre la máquina no aseguró:
@@ -14,13 +14,20 @@
    * estudiante sale de la lista.
    */
   interface Props {
-    job: Job;
+    jobId: string;
+    /** El documento del trabajo, como lo reconoce el operador. */
+    documento: string;
     fila: FilaConPersona;
     /** Su número en las filas del informe: con él se pide su renglón y se corrige. */
     numero: number;
+    /**
+     * Tras guardar. Un trabajo en memoria vuelve por el canal en vivo; uno
+     * guardado en disco no, y la pantalla vuelve a pedir la lista (2026-11-17).
+     */
+    onguardado?: () => void;
   }
 
-  let { job, fila, numero }: Props = $props();
+  let { jobId, documento, fila, numero, onguardado }: Props = $props();
 
   const revision = $derived(fila.revision_del_nombre);
   const pagina = $derived(revision?.pagina_de_la_ficha ?? fila.pagina_inicial ?? 0);
@@ -69,8 +76,9 @@
     ocupado = true;
     error = null;
     try {
-      const hecho = await corregirNombre(job.id, numero, plano(valor));
+      const hecho = await corregirNombre(jobId, numero, plano(valor));
       avisos = hecho.avisos;
+      onguardado?.();
     } catch (problema) {
       error = (problema as Error).message;
     } finally {
@@ -83,7 +91,7 @@
   {#if !sinImagen}
     <img
       class="renglon"
-      src={renglonDelNombreUrl(job.id, numero)}
+      src={renglonDelNombreUrl(jobId, numero)}
       alt={`Donde está escrito el nombre, página ${pagina}`}
       loading="lazy"
       onerror={() => (sinImagen = true)}
@@ -96,7 +104,7 @@
     <span class="pill {dudoso ? 'pill-warn' : 'pill-neutral'}">
       {dudoso ? 'Sin confirmar' : 'Corregido por la IA'}
     </span>
-    <a class="documento" href={enlaceAlDocumento(job.id, 'revision')} title={job.filename}>{job.filename}</a>
+    <a class="documento" href={enlaceAlDocumento(jobId, 'revision')} title={documento}>{documento}</a>
     <span class="paginas tabular">
       pág. {pagina}{fila.pagina_final && fila.pagina_final !== pagina ? `–${fila.pagina_final}` : ''}
     </span>

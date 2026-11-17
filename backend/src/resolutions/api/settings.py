@@ -198,6 +198,10 @@ class Settings:
     #: usuarios y por lo mismo: tiene que sobrevivir a reiniciar y a borrar las
     #: salidas. Lo escribe el servicio y lo leen los trabajos.
     padron_path: Path = DEFAULT_ROOT / "padron.jsonl"
+    #: Los nombres por confirmar de cada trabajo (2026-11-17): la Revisión de
+    #: nombres sobrevive a reiniciar y a que la corrida saque de la memoria los
+    #: trabajos viejos. Junto al padrón, por lo mismo.
+    nombres_por_revisar_dir: Path = DEFAULT_ROOT / "nombres-por-revisar"
 
     #: La plantilla oficial del FUID. Vacío significa la que viaja con el
     #: programa; se pone una ruta cuando la Universidad publique otra versión
@@ -266,6 +270,9 @@ class Settings:
                 os.environ.get("RESOLUTIONS_USERS", DEFAULT_ROOT / "usuarios.jsonl")
             ),
             padron_path=Path(os.environ.get("RESOLUTIONS_PADRON", DEFAULT_ROOT / "padron.jsonl")),
+            nombres_por_revisar_dir=Path(
+                os.environ.get("RESOLUTIONS_NOMBRES_POR_REVISAR", DEFAULT_ROOT / "nombres-por-revisar")
+            ),
             sweep_seconds=_float("RESOLUTIONS_SWEEP_SECONDS", 30.0),
             fuid_template=os.environ.get("RESOLUTIONS_FUID_TEMPLATE") or None,
             fuid_caja=os.environ.get("RESOLUTIONS_FUID_CAJA", ""),
@@ -280,6 +287,7 @@ class Settings:
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
         self.users_path.parent.mkdir(parents=True, exist_ok=True)
         self.padron_path.parent.mkdir(parents=True, exist_ok=True)
+        self.nombres_por_revisar_dir.mkdir(parents=True, exist_ok=True)
 
     def as_worker_payload(self) -> dict[str, object]:
         """Only what a worker process needs, and nothing that cannot be pickled."""

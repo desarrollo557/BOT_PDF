@@ -76,6 +76,7 @@ from .fechas_extremas import (
     fechas_de_la_fila,
     texto_acotado,
 )
+from .revision_de_nombres import nombre_del_asunto
 
 #: Lo que no se leyó, como va en el inventario.
 NO_LEIDO = "N/A"
@@ -371,6 +372,7 @@ def revisar_la_fila(
     regla_de_fechas: str = EXTREMOS,
     ventana: tuple[int, int] | None = None,
     legible: bool | None = None,
+    nombre_en_el_asunto: bool = False,
 ) -> RevisionDeLaFila:
     """La fila contra el texto de sus páginas (``textos``, en orden desde su primera página).
 
@@ -386,6 +388,9 @@ def revisar_la_fila(
     sin dato y no en duda: la letra a mano no es un error de la entrega
     (2026-11-10). Lo que no depende del texto -- los folios contra las
     páginas, una fecha fuera de los años del libro -- se sigue diciendo.
+
+    ``nombre_en_el_asunto``: en una fila del FUID, el nombre de su persona va
+    delante del título en el asunto (diplomas y matrículas, 2026-11-17).
     """
     if legible is None:
         legible = texto_legible(textos)
@@ -395,7 +400,7 @@ def revisar_la_fila(
     if clase == "persona":
         revision = _revisar_una_persona(fila, textos)
     elif clase == "fuid":
-        revision = _revisar_una_fila_del_fuid(fila, textos)
+        revision = _revisar_una_fila_del_fuid(fila, textos, nombre_en_el_asunto=nombre_en_el_asunto)
     else:
         revision = RevisionDeLaFila()
     if not legible:
@@ -696,33 +701,59 @@ def _revisar_una_persona(fila: Mapping[str, object], textos: Sequence[str]) -> R
             confirmados.append(dicho)
         else:
             preguntas.append(Pregunta(campo, numero, f"{dicho} {numero} no aparece en su papel"))
-    nombre = _leido(fila.get("nombre"))
-    if nombre:
-        if nombre_en_el_texto(nombre, texto):
-            confirmados.append("el nombre")
-        else:
-            preguntas.append(Pregunta("nombre", nombre, f"el nombre «{nombre}» no aparece en su papel"))
+    _revisar_el_nombre(_leido(fila.get("nombre")), texto, preguntas, confirmados)
     return RevisionDeLaFila(preguntas=tuple(preguntas), confirmados=tuple(confirmados))
 
 
-def _revisar_una_fila_del_fuid(fila: Mapping[str, object], textos: Sequence[str]) -> RevisionDeLaFila:
+def _revisar_el_nombre(nombre: str, texto: str, preguntas: list[Pregunta], confirmados: list[str]) -> None:
+    """El nombre de la persona contra su papel: confirmado, o pregunta para la IA si no está.
+
+    La misma pieza que el revisor de nombres al procesar (``nombre_en_el_texto``):
+    el nombre con una o dos letras cambiadas por el OCR sigue siendo el mismo.
+    """
+    if not nombre:
+        return
+    if nombre_en_el_texto(nombre, texto):
+        confirmados.append("el nombre")
+    else:
+        preguntas.append(Pregunta("nombre", nombre, f"el nombre «{nombre}» no aparece en su papel"))
+
+
+def _revisar_una_fila_del_fuid(
+    fila: Mapping[str, object], textos: Sequence[str], *, nombre_en_el_asunto: bool = False
+) -> RevisionDeLaFila:
+    """El número del documento de una fila del FUID contra su papel; y el nombre de su persona, si lo trae.
+
+    El nombre es el de la fila (``nombre``, que dejan los diplomas y las
+    matrículas desde el 2026-11-17) o, con ``nombre_en_el_asunto``, el que va
+    delante del título en su asunto (``nombre_del_asunto``): el FUID entregado
+    de un libro de diplomas no tiene columna de nombre.
+    """
     datos = fila.get("fuid") if isinstance(fila.get("fuid"), Mapping) else fila
+    texto = "\n".join(textos)
+    preguntas: list[Pregunta] = []
+    confirmados: list[str] = []
+    sin_dato: list[str] = []
     numero = cifras(_leido(datos.get("consecutivo_inicial")))  # type: ignore[union-attr]
     if len(numero) < 2:
-        return RevisionDeLaFila(sin_dato=("el número del documento",))
-    texto = "\n".join(textos)
-    # «RESOLUCION 00031»: el número tras su rótulo, con o sin ceros; suelto,
-    # sólo con todas sus cifras y tres o más: «0031» no lo confirma «31 de
-    # marzo», ni «05» el «artículo 5» (la revisión, 2026-11-09).
-    sin_ceros = numero.lstrip("0") or "0"
-    rotulado = re.search(
-        rf"\b(?:RESOLUCION|ACUERDO|DECRETO|CIRCULAR|ACTA|N|NO|NUM|NUMERO)\s*0*{sin_ceros}\b", plano(texto)
-    )
-    if rotulado or (len(numero) >= 3 and numero_en_el_texto(numero, texto)):
-        return RevisionDeLaFila(confirmados=("el número del documento",))
-    return RevisionDeLaFila(
-        preguntas=(Pregunta("consecutivo", numero, f"el número {numero} no aparece en su papel"),)
-    )
+        sin_dato.append("el número del documento")
+    else:
+        # «RESOLUCION 00031»: el número tras su rótulo, con o sin ceros; suelto,
+        # sólo con todas sus cifras y tres o más: «0031» no lo confirma «31 de
+        # marzo», ni «05» el «artículo 5» (la revisión, 2026-11-09).
+        sin_ceros = numero.lstrip("0") or "0"
+        rotulado = re.search(
+            rf"\b(?:RESOLUCION|ACUERDO|DECRETO|CIRCULAR|ACTA|N|NO|NUM|NUMERO)\s*0*{sin_ceros}\b", plano(texto)
+        )
+        if rotulado or (len(numero) >= 3 and numero_en_el_texto(numero, texto)):
+            confirmados.append("el número del documento")
+        else:
+            preguntas.append(Pregunta("consecutivo", numero, f"el número {numero} no aparece en su papel"))
+    nombre = _leido(datos.get("nombre"))  # type: ignore[union-attr]
+    if not nombre and nombre_en_el_asunto:
+        nombre = nombre_del_asunto(_leido(datos.get("asunto"))) or ""  # type: ignore[union-attr]
+    _revisar_el_nombre(nombre, texto, preguntas, confirmados)
+    return RevisionDeLaFila(preguntas=tuple(preguntas), confirmados=tuple(confirmados), sin_dato=tuple(sin_dato))
 
 
 def _corregida_por_la_sesion(fecha: date, textos: Sequence[str]) -> Correccion | None:

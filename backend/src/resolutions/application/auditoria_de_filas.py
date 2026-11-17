@@ -187,6 +187,8 @@ def auditar_una_fila(
         regla_de_fechas=regla_de_fechas_de(habilidad),
         ventana=ventana,
         legible=legible,
+        # Diplomas y matrículas: el nombre, del asunto de su fila del FUID (2026-11-17).
+        nombre_en_el_asunto=_con_persona(habilidad),
     )
     errores = list(revision.errores)
     dudas = list(revision.dudas)
@@ -238,6 +240,16 @@ FECHAS_CON_ERROR = "con error"
 FECHAS_EN_DUDA = "en duda"
 FECHAS_SIN_DATO = "sin fechas"
 _DE_FECHA = ("la fecha", "fecha")
+
+
+def _con_persona(habilidad: str) -> bool:
+    """Si la habilidad tiene una persona por documento: su perfil declara la regla de su nombre."""
+    from .perfiles_de_revision import perfil_de
+
+    try:
+        return perfil_de(habilidad).regla_del_nombre is not None
+    except Exception:  # noqa: BLE001 - sin perfil, sin persona
+        return False
 
 
 def estado_de_las_fechas(confirmados: Sequence[str], errores: Sequence[str], dudas: Sequence[str]) -> str:

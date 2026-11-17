@@ -32,6 +32,7 @@ from ..adapters.mysql_inventory import (
     MySQLInventory,
     settings_from_env,
 )
+from ..adapters.nombres_por_revisar import NombresPorRevisarEnDisco
 from ..adapters.padron_jsonl import PadronEnArchivo
 from ..adapters.user_store import FileUserStore
 from ..application.usuarios import Usuarios
@@ -119,6 +120,7 @@ def _arrancar() -> Contexto:
         usuarios=Usuarios(FileUserStore(settings.users_path)),
         procesar=process_document_job,
         padron=PadronEnArchivo(settings.padron_path),
+        nombres_por_revisar=NombresPorRevisarEnDisco(settings.nombres_por_revisar_dir),
     )
 
 

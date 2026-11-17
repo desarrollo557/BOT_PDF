@@ -29,6 +29,7 @@ def client(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
     from resolutions.adapters.ledger import InventoryLedger
+    from resolutions.adapters.nombres_por_revisar import NombresPorRevisarEnDisco
     from resolutions.adapters.padron_jsonl import PadronEnArchivo
     from resolutions.adapters.user_store import FileUserStore
     from resolutions.api import main
@@ -48,6 +49,7 @@ def client(tmp_path, monkeypatch):
         # Y el padrón de personas, por lo mismo: cada trabajo terminado anota
         # en él (2026-11-17).
         padron_path=tmp_path / "padron.jsonl",
+        nombres_por_revisar_dir=tmp_path / "nombres-por-revisar",
         # Long enough that the background ticker never fires mid-test; the sweep
         # is exercised directly instead, where its timing is not a coin flip.
         sweep_seconds=3600.0,
@@ -61,6 +63,9 @@ def client(tmp_path, monkeypatch):
         main.contexto, "usuarios", Usuarios(FileUserStore(settings.users_path))
     )
     monkeypatch.setattr(main.contexto, "padron", PadronEnArchivo(settings.padron_path))
+    monkeypatch.setattr(
+        main.contexto, "nombres_por_revisar", NombresPorRevisarEnDisco(settings.nombres_por_revisar_dir)
+    )
     monkeypatch.setattr(
         main.contexto, "janitor", IdleJanitor(registry, settings, referenced=ledger.job_ids)
     )

@@ -4204,6 +4204,32 @@ class FolderRunner:
         if getattr(self._settings, "liberar_salidas", False):
             self._liberar_salidas(job)
 
+    def tiene_la_corrida(self, job) -> bool:
+        """Si la corrida del trabajo sigue en memoria: sus correcciones van por ella."""
+        run = self._runs.get(str((getattr(job, "origen", None) or {}).get("id") or ""))
+        return run is not None and job.id in run.job_ids
+
+    def donde_se_entrega(self, job) -> dict[str, str] | None:
+        """Dónde deja la corrida lo de este trabajo en el destino; ``None`` fuera de una corrida en memoria.
+
+        Para la Revisión de nombres (2026-11-17): se guarda con los nombres por
+        confirmar del trabajo, y con ello se corrige en el destino aunque la
+        corrida ya no esté -- tras un reinicio --. Son las rutas que usa la
+        entrega, no unas que se le parezcan: el espejo de sus actas, la carpeta
+        de sus PDF, sus dos constancias y el FUID general.
+        """
+        run = self._runs.get(str((getattr(job, "origen", None) or {}).get("id") or ""))
+        if run is None or job.id not in run.job_ids:
+            return None
+        origen = run.source / job.filename
+        return {
+            "espejo": str(self._espejo(run, origen)),
+            "carpeta": str(self._output_dir(run, origen, job)),
+            "constancia_de_actas": str(self._ruta_de_la_constancia(run, origen, actas=True)),
+            "constancia": str(self._ruta_de_la_constancia(run, origen, actas=False)),
+            "general": str(self._ruta_del_inventario(run)),
+        }
+
     def corregir_nombre(self, job: Job, pagina: int, viejo: dict, nuevo: dict) -> list[str]:
         """Lleva al destino el nombre que el operador corrigió en la Revisión (2026-11-17).
 
@@ -4368,13 +4394,13 @@ class FolderRunner:
                 avisos.append(f"el FUID de la carpeta: {run.inventario_error}")
 
         # El FUID del libro, junto a sus PDF: el general lo lee de ahí.
-        from .retomar import corregir_el_asunto, fuid_del_libro, tipo_del_informe
+        from .retomar import corregir_el_asunto, fuid_del_libro
 
         libro = fuid_del_libro(carpeta_de_entrega)
         if libro is not None and viejo.get("asunto") and nuevo.get("asunto") and viejo["asunto"] != nuevo["asunto"]:
             try:
                 with run.cerrojo:
-                    corregir_el_asunto(libro, viejo["asunto"], nuevo["asunto"], tipo=tipo_del_informe(job.report))
+                    corregir_el_asunto(libro, viejo["asunto"], nuevo["asunto"])
             except Exception as error:  # noqa: BLE001 - lo demás ya se corrigió; se dice qué faltó
                 avisos.append(f"no se pudo reescribir el FUID de «{libro.name}»: {explicar_fallo(error)}")
         self._pedir_generales(run)

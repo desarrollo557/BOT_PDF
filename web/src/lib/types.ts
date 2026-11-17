@@ -456,6 +456,18 @@ export interface FilaDelFuid {
   revision_del_nombre?: RevisionDelNombre | null;
 }
 
+/**
+ * Una persona por mirar de un trabajo que ya no está en memoria, como se guardó
+ * en disco (`GET /api/nombres-por-revisar`, 2026-11-17): tras un reinicio, o
+ * porque la corrida sacó de la memoria a los trabajos viejos.
+ */
+export interface NombreGuardado {
+  job_id: string;
+  documento: string;
+  numero: number;
+  fila: FilaConPersona;
+}
+
 /** Lo que la Revisión de nombres necesita de una fila, sea de actas o del FUID. */
 export interface FilaConPersona {
   nombre?: string | null;

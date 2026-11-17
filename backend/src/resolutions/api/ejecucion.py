@@ -279,6 +279,12 @@ async def _correr(ctx: Contexto, job: Job, hilos: int | None) -> None:
         except Exception:  # noqa: BLE001 - the split succeeded either way
             logger.warning("could not record %s in the inventory", job.filename, exc_info=True)
         _anotar_en_el_padron(ctx, job, report)
+        # Sus personas por mirar, en disco (2026-11-17): la Revisión de nombres
+        # las sigue enseñando tras un reinicio o cuando la corrida lo saca de
+        # la memoria. Con dónde se entrega, mientras la corrida está.
+        from .routers.nombres import guardar_los_por_revisar
+
+        guardar_los_por_revisar(ctx, job)
     except Cancelled:
         # No es un fallo: es lo que el operador pidió. Se distingue de un error
         # porque un lote con documentos cancelados no está roto.

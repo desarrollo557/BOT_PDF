@@ -59,6 +59,7 @@ from ..domain.auditoria_de_filas import (
     error_de_fecha,
     fecha_escrita,
     fechas_sin_prueba_si_no_se_leen,
+    nombre_en_el_texto,
     paginas_de_la_fila,
     plano,
     texto_legible,
@@ -71,11 +72,15 @@ from ..domain.fechas_extremas import (
     fechas_de_la_fila,
 )
 from ..domain.revision_de_cortes import Decision, huella_para_la_ia, revisar_costuras
+from ..domain.revision_de_nombres import nombre_del_asunto
 from .auditoria_de_filas import (
     FECHAS_CON_ERROR,
     FECHAS_CONFIRMADAS,
     FECHAS_EN_DUDA,
     FECHAS_SIN_DATO,
+    NOMBRE_CONFIRMADO,
+    NOMBRE_EN_DUDA,
+    NOMBRE_SIN_DATO,
     regla_de_fechas_de,
     ventana_de_la_auditoria,
 )
@@ -252,6 +257,16 @@ def auditar_un_pdf(
         dudas.extend(fechas.dudas)
         preguntadas += fechas.preguntadas
 
+    # El nombre de cada persona de cada PDF entregado contra sus hojas
+    # (2026-11-17), en las habilidades con una persona por documento: como las
+    # fechas, con la misma pieza que el revisor de nombres al procesar.
+    nombres = None
+    if perfil_de(habilidad).regla_del_nombre is not None and (filas or filas_del_fuid):
+        nombres = auditar_los_nombres(
+            conciliacion.archivos, textos, filas, filas_del_fuid=filas_del_fuid, lo_leido=lo_leido
+        )
+        dudas.extend(nombres.dudas)
+
     # Los datos de cada PDF contra su fila del FUID entregado (2026-11-06).
     if (esperados := perfil_de(habilidad).datos) is not None:
         de_los_datos, dudas_de_los_datos = auditar_los_datos(
@@ -286,6 +301,7 @@ def auditar_un_pdf(
         habilidad=habilidad,
         extra={
             **({"fechas": dict(fechas.cuentas)} if fechas is not None else {}),
+            **({"nombres": dict(nombres.cuentas)} if nombres is not None and nombres.cuentas else {}),
             **({"varios_sellos": len(avisos) + len(de_los_sellos)} if avisos or de_los_sellos else {}),
         },
     )
@@ -423,6 +439,100 @@ def filas_por_archivo(
 
 def _sin_la_carpeta(nombre: str) -> str:
     return PurePath(nombre.replace("\\", "/")).name.upper()
+
+
+# -- los nombres de lo entregado (2026-11-17) -------------------------------------------------
+
+
+@dataclass(slots=True)
+class NombresAuditados:
+    """Lo que la auditoría encontró en los nombres de las personas de los PDF entregados de un original."""
+
+    dudas: list[str] = field(default_factory=list)
+    #: Por estado (``NOMBRE_*`` de la auditoría de filas), cuántas personas.
+    cuentas: Counter = field(default_factory=Counter)
+
+
+def _nombre_de_la_fila(fila: Mapping[str, object]) -> str | None:
+    """El nombre de la persona de una fila de la constancia: el suyo o el de su fila del FUID (matrículas)."""
+    datos = fila.get("fuid") if isinstance(fila.get("fuid"), Mapping) else {}
+    nombre = str(fila.get("nombre") or datos.get("nombre") or "").strip()  # type: ignore[union-attr]
+    return nombre or None
+
+
+def auditar_los_nombres(
+    archivos: Sequence[ArchivoEntregado],
+    textos: Mapping[int, str],
+    filas: Sequence[Mapping[str, object]],
+    *,
+    filas_del_fuid: Sequence[FuidRow] | None = None,
+    lo_leido: Sequence[Mapping[str, object]] = (),
+) -> NombresAuditados:
+    """El nombre de cada persona de cada PDF entregado contra el texto de sus hojas del original.
+
+    La otra mitad de la muestra de PDF (2026-11-17): la de filas ya contaba el
+    nombre de cada persona. El operador: usar las herramientas de las fechas
+    también para los nombres, en todas las habilidades.
+
+    - **De quién es cada PDF:** sus filas de la constancia, por el nombre del
+      PDF (``archivo_generado``) o por la hoja en que empieza si sólo una
+      empieza en ella. Un acta colectiva trae a todos sus graduados.
+    - **Sin filas en la constancia** -- un libro de diplomas --: las del FUID
+      entregado, en orden, si son tantas como PDF; su nombre, el que va
+      delante del título en el asunto (``nombre_del_asunto``).
+    - **El contraste** es el del revisor de nombres, gratis
+      (``nombre_en_el_texto``): una o dos letras del OCR no lo cambian. Lo que
+      no aparece es duda, con su motivo: sin la IA no hay prueba de error.
+    - **Un texto que no se deja leer** -- letra a mano -- no dice nada: ni bien
+      ni mal, y no cuenta.
+    """
+    resultado = NombresAuditados()
+    por_archivo: dict[str, list[Mapping[str, object]]] = {}
+    por_hoja: dict[int, list[Mapping[str, object]]] = {}
+    for fila in filas:
+        if not isinstance(fila, Mapping) or fila.get(DE_TODO_EL_ORIGINAL):
+            continue
+        generado = str(fila.get("archivo_generado") or "")
+        if generado:
+            por_archivo.setdefault(_sin_la_carpeta(generado), []).append(fila)
+        elif paginas := paginas_de_la_fila(fila):
+            por_hoja.setdefault(paginas[0], []).append(fila)
+    por_orden = (
+        list(filas_del_fuid)
+        if not filas and filas_del_fuid and len(filas_del_fuid) == len(archivos)
+        else None
+    )
+    leido_por_hoja: dict[int, list[str]] = {}
+    for leido in lo_leido:
+        texto = str(leido.get("texto") or "") if isinstance(leido, Mapping) else ""
+        for pagina in (leido.get("paginas") or []) if texto else []:
+            if isinstance(pagina, int):
+                leido_por_hoja.setdefault(pagina, []).append(texto)
+
+    for indice, archivo in enumerate(archivos):
+        suyas = por_archivo.get(_sin_la_carpeta(str(archivo.nombre)))
+        if suyas is None and archivo.primera is not None:
+            en_la_hoja = por_hoja.get(archivo.primera, [])
+            suyas = en_la_hoja if len(en_la_hoja) == 1 else []
+        nombres = [nombre for fila in suyas or [] if (nombre := _nombre_de_la_fila(fila))]
+        if not nombres and por_orden is not None and (nombre := nombre_del_asunto(por_orden[indice].asunto)):
+            nombres = [nombre]
+        if not nombres:
+            resultado.cuentas[NOMBRE_SIN_DATO] += 1
+            continue
+        suyos = [textos.get(p, "") or "" for p in archivo.paginas if p is not None] + [
+            texto for p in archivo.paginas if p is not None for texto in leido_por_hoja.get(p, ())
+        ]
+        if not texto_legible(suyos):
+            continue
+        texto = "\n".join(suyos)
+        for nombre in dict.fromkeys(nombres):
+            if nombre_en_el_texto(nombre, texto):
+                resultado.cuentas[NOMBRE_CONFIRMADO] += 1
+            else:
+                resultado.cuentas[NOMBRE_EN_DUDA] += 1
+                resultado.dudas.append(f"«{archivo.nombre}»: el nombre «{nombre}» no aparece en sus hojas")
+    return resultado
 
 
 def titulo_del_archivo(nombre: str, prefijo: str = "") -> str:

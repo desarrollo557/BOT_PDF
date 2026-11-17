@@ -443,6 +443,23 @@ class TestUnaPersona:
             "documentos": 3, "revisados": 2, "confirmados": 1, "con error": 0, "en duda": 1, "sin nombre": 1,
         }
 
+    def test_el_diploma_del_fuid_entregado_cuenta_el_nombre_de_su_asunto(self):
+        # 2026-11-17: el FUID de un libro de diplomas no tiene columna de nombre; el asunto lo lleva delante del título.
+        from resolutions.domain.revision_de_nombres import nombre_del_asunto
+
+        assert nombre_del_asunto("MARIA FERNANDA PEREZ GOMEZ - ODONTOLOGO") == "MARIA FERNANDA PEREZ GOMEZ"
+        assert nombre_del_asunto("ODONTOLOGO") is None
+        assert nombre_del_asunto("RESOLUCION 123 - RESUELVE") is None
+        diploma = {"tipo": "FILA DEL FUID", "fuid": {"asunto": "MARIA FERNANDA PEREZ GOMEZ - ODONTOLOGO", "consecutivo_inicial": "45466499"}}
+        de_diplomas = auditar_una_fila("fila 1", diploma, [FICHA], habilidad="diplomas")
+        assert de_diplomas.extra["nombres"] == {"confirmados": 1}
+        # Una resolución no es de una persona: su asunto no se lee como un nombre.
+        resolucion = auditar_una_fila("fila 2", diploma, [FICHA], habilidad="resoluciones")
+        assert resolucion.extra["nombres"] == {"sin nombre": 1}
+        # La fila que ya trae de quién es -- una matrícula desde el 2026-11-17 --, por su nombre.
+        otra = {"tipo": "FILA DEL FUID", "fuid": {"asunto": "MEDICINA", "nombre": "JUAN CARLOS HERRERA BLANCO"}}
+        assert auditar_una_fila("fila 3", otra, [FICHA], habilidad="matriculas").extra["nombres"] == {"en duda": 1}
+
     def test_el_acta_de_grado_se_revisa_como_persona(self):
         fila = {
             "tipo": "ACTA DE GRADO",

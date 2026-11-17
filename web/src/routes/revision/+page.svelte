@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { downloadUrl } from '$lib/api';
+  import { downloadUrl, fetchNombresGuardados } from '$lib/api';
   import EncabezadoDePagina from '$lib/components/EncabezadoDePagina.svelte';
   import Icono from '$lib/components/Icono.svelte';
   import { jobStore } from '$lib/jobs.svelte';
   import NombreAMirar from '$lib/components/NombreAMirar.svelte';
   import { nombresPorMirar, whereItLanded } from '$lib/revision';
   import { enlaceAlDocumento } from '$lib/navegacion.svelte';
-  import type { Job } from '$lib/types';
+  import type { Job, NombreGuardado } from '$lib/types';
 
   /**
    * The queue of what the machine refused to guess at.
@@ -120,11 +120,26 @@
   const failedDocuments = $derived(jobStore.reviewable.filter((job) => job.state === 'failed'));
 
   /**
-   * Los nombres de historias académicas que la máquina no aseguró (2026-11-17):
-   * se confirman o se corrigen aquí, viendo el renglón. Los de la cola de
-   * siempre se quedan abajo, con su motivo.
+   * Los nombres que la máquina no aseguró, de cualquier habilidad con persona
+   * (2026-11-17): se confirman o se corrigen aquí, viendo el renglón. Los de la
+   * cola de siempre se quedan abajo, con su motivo.
+   *
+   * Los de los trabajos que ya no están en memoria llegan guardados en disco:
+   * tras un reinicio, o porque la corrida sacó de la memoria a los viejos. Se
+   * piden al entrar y tras corregir uno de ellos.
    */
-  const nombres = $derived(nombresPorMirar(jobStore.reviewable));
+  let guardados = $state<NombreGuardado[]>([]);
+  async function pedirLosGuardados() {
+    try {
+      guardados = await fetchNombresGuardados();
+    } catch {
+      // Sin ellos, la pantalla enseña los de los trabajos en memoria, como antes.
+    }
+  }
+  $effect(() => {
+    void pedirLosGuardados();
+  });
+  const nombres = $derived(nombresPorMirar(jobStore.reviewable, guardados));
   /** Cuántos se enseñan a la vez: cada uno trae su imagen. */
   const NOMBRES_A_LA_VEZ = 24;
   let nombresVisibles = $state(NOMBRES_A_LA_VEZ);
@@ -164,8 +179,8 @@
       nombre queda en el padrón de la Universidad para la próxima vez que aparezca esa cédula.
     </p>
     <div class="grid-de-nombres">
-      {#each nombres.slice(0, nombresVisibles) as { job, fila, numero } (`${job.id}-${numero}`)}
-        <NombreAMirar {job} {fila} {numero} />
+      {#each nombres.slice(0, nombresVisibles) as { jobId, documento, fila, numero, guardado } (`${jobId}-${numero}`)}
+        <NombreAMirar {jobId} {documento} {fila} {numero} onguardado={guardado ? pedirLosGuardados : undefined} />
       {/each}
     </div>
     {#if nombres.length > nombresVisibles}

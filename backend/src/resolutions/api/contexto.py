@@ -21,6 +21,7 @@ from typing import Annotated, Any
 from fastapi import Depends, Request
 
 from ..adapters.ledger import InventoryLedger
+from ..adapters.nombres_por_revisar import NombresPorRevisarEnDisco
 from ..adapters.padron_jsonl import PadronEnArchivo
 from ..application.usuarios import Usuarios
 from .folders import FolderRunner
@@ -72,6 +73,10 @@ class Contexto:
     #: trabajo terminado y cada nombre que el operador corrige. Sin él -- en
     #: las pruebas que no lo ponen --, no se anota nada.
     padron: PadronEnArchivo | None = None
+    #: Los nombres por confirmar de cada trabajo, en disco (2026-11-17): la
+    #: Revisión de nombres los enseña aunque el trabajo ya no esté en memoria.
+    #: Sin él -- en las pruebas que no lo ponen --, la Revisión vive en memoria.
+    nombres_por_revisar: NombresPorRevisarEnDisco | None = None
 
 
 def contexto_de(request: Request) -> Contexto:

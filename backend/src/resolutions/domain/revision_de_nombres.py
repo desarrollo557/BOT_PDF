@@ -41,6 +41,16 @@ A_REVISION = "a revisión"
 SIN_DATO = "sin dato"
 #: Lo que dice la fila para la pantalla de Revisión (``revision_del_nombre.estado``).
 ESTADO_DE_LA_FILA = {CONFIRMADO: "confirmado", CORREGIDO: "corregido", A_REVISION: "duda", SIN_DATO: "sin dato"}
+#: Los estados de una fila que una persona tiene que mirar: lo que las lecturas
+#: no confirmaron y lo que cambió la IA. Los enseña la Revisión de nombres, y
+#: con alguno así el trabajo se guarda para ella (2026-11-17).
+POR_MIRAR = frozenset({ESTADO_DE_LA_FILA[A_REVISION], ESTADO_DE_LA_FILA[CORREGIDO]})
+
+
+def por_mirar(fila: object) -> bool:
+    """Si la persona de la fila está por mirar en la Revisión de nombres."""
+    revision = fila.get("revision_del_nombre") if isinstance(fila, dict) else None
+    return isinstance(revision, dict) and revision.get("estado") in POR_MIRAR
 
 #: El motivo de lo que va a Revisión: lo busca también quien lo saca de la cola al corregirlo.
 SE_LEYO_DISTINTO = "el nombre se leyó distinto en cada zona"
@@ -147,6 +157,24 @@ def con_el_nombre_cambiado(texto: str | None, viejo: str | None, nuevo: str | No
             return texto.replace(antes, despues, 1)
     return None
 
+
+def nombre_del_asunto(asunto: str | None) -> str | None:
+    """El nombre de la persona en el asunto «NOMBRE - TÍTULO» de un diploma o una matrícula; ``None`` si no lo trae.
+
+    Para la auditoría de cierre, que lee el FUID entregado y éste no tiene
+    columna de nombre: el asunto lo lleva delante del título o la carrera
+    («ANGELICA MARIA CUELLO SALCEDO - ESPECIALISTA EN GERENCIA EN SALUD»). Sólo
+    si trae las dos partes y la primera tiene forma de nombre, sin cifras: un
+    asunto con el título solo -- el diploma sin nombre leído -- no es un nombre.
+    """
+    if not asunto or " - " not in asunto:
+        return None
+    primera = asunto.split(" - ", 1)[0].strip()
+    if re.search(r"\d", primera):
+        return None
+    from .padron import nombre_de_persona
+
+    return nombre_de_persona(primera)
 
 def corregida_comparando(votado: NombreVotado, respuesta: str, lecturas: Sequence[str | None]) -> str | None:
     """Lo que la IA de texto corrigió comparando las lecturas, sólo en las palabras sin confirmar."""

@@ -11,6 +11,13 @@ PDF del estudiante -- en el trabajo y en el destino --, la constancia de la
 entrega, el FUID de la subcarpeta y el general (``FolderRunner.corregir_nombre``).
 Y lo que el operador dice va al padrón de la Universidad (``domain/padron.py``):
 la próxima vez que esa cédula aparezca, su nombre ya está escrito.
+
+Sobrevive a un reinicio (2026-11-17): al terminar, el trabajo con personas por
+mirar se guarda en disco (``guardar_los_por_revisar``) con dónde se entregó.
+Sin el trabajo en memoria -- tras un reinicio, o porque la corrida sacó de ella
+a los viejos -- la pantalla lo pide a ``GET /api/nombres-por-revisar``, y la
+corrección va por la corrida si sigue abierta o, si no, por el disco
+(``correccion_en_el_destino``).
 """
 
 from __future__ import annotations
@@ -19,8 +26,9 @@ import asyncio
 import logging
 import os
 import re
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
@@ -35,7 +43,11 @@ from ...domain.padron import (
     cedula_de_persona,
     nombre_de_persona,
 )
-from ...domain.revision_de_nombres import SE_LEYO_DISTINTO, con_el_nombre_cambiado
+from ...domain.revision_de_nombres import (
+    SE_LEYO_DISTINTO,
+    con_el_nombre_cambiado,
+    por_mirar,
+)
 from ..contexto import Ctx
 from ..errores import explicar_fallo
 from ..identidad import Quien, exigir_identificado
@@ -67,14 +79,84 @@ def filas_de_personas(report: dict) -> list:
     return [*(report.get("inventario_actas") or []), *(report.get("filas_del_fuid") or [])]
 
 
+#: Lo del informe que se guarda para la Revisión de nombres: lo que lleva a las
+#: personas y lo que hace falta para corregirlas sin el trabajo en memoria.
+CLAVES_GUARDADAS = ("tipo", "document_type", "fuid", "inventario", "outputs", "inventario_actas", "filas_del_fuid")
+
+
+def guardar_los_por_revisar(ctx, job) -> None:
+    """El trabajo con personas por mirar, en disco; sin ninguna, se quita (2026-11-17).
+
+    Al terminar el trabajo y tras cada confirmación o corrección. Guarda dónde
+    se entrega lo suyo (``donde_se_entrega``) mientras la corrida está en
+    memoria, y lo conserva después: es lo que deja corregir el destino tras un
+    reinicio. Que falle no toca el trabajo.
+    """
+    almacen = getattr(ctx, "nombres_por_revisar", None)
+    report = getattr(job, "report", None)
+    if almacen is None or not isinstance(report, dict):
+        return
+    try:
+        if not any(por_mirar(fila) for fila in filas_de_personas(report)):
+            almacen.quitar(job.id)
+            return
+        informe = {clave: report[clave] for clave in CLAVES_GUARDADAS if clave in report}
+        if (stats := report.get("stats")) and isinstance(stats, dict) and stats.get("document_type"):
+            informe["stats"] = {"document_type": stats["document_type"]}
+        donde = getattr(job, "en_el_destino", None)
+        if donde is None and getattr(ctx, "folders", None) is not None:
+            donde = ctx.folders.donde_se_entrega(job)
+        if donde is None and (anterior := almacen.leer(job.id)):
+            donde = anterior.get("en_el_destino")
+        almacen.guardar(
+            job.id,
+            {
+                "job_id": job.id,
+                "documento": job.filename,
+                "guardado": datetime.now(UTC).isoformat(),
+                "oficina": getattr(job, "oficina", None),
+                "origen": getattr(job, "origen", None) or {},
+                "en_el_destino": donde,
+                "informe": informe,
+            },
+        )
+    except Exception:  # noqa: BLE001 - la Revisión en memoria sigue valiendo
+        logger.warning("no se pudieron guardar los nombres por revisar de %s", job.filename, exc_info=True)
+
+
+def _trabajo_guardado(ctx, job_id: str):
+    """El trabajo como se guardó para la Revisión de nombres; ``None`` si no está.
+
+    Tiene lo que la Revisión usa de un trabajo -- su nombre, su informe, su
+    origen --, y ``guardado`` para no publicarlo en la pantalla en vivo.
+    """
+    almacen = getattr(ctx, "nombres_por_revisar", None)
+    entrada = almacen.leer(job_id) if almacen is not None else None
+    if not entrada or not isinstance(entrada.get("informe"), dict):
+        return None
+    return SimpleNamespace(
+        id=job_id,
+        filename=str(entrada.get("documento") or job_id),
+        report=entrada["informe"],
+        source=None,
+        oficina=entrada.get("oficina"),
+        origen=entrada.get("origen") or {},
+        en_el_destino=entrada.get("en_el_destino"),
+        guardado=True,
+    )
+
+
 def _trabajo_y_fila(ctx, job_id: str, numero: int):
     """El trabajo, la fila ``numero`` (de 1 en adelante) de su informe si es de una persona, y si es del FUID.
 
     Por su número y no por su página: los graduados de un acta colectiva
-    comparten la página y el PDF del acta.
+    comparten la página y el PDF del acta. Si el trabajo ya no está en
+    memoria, el que se guardó para la Revisión.
     """
     job = ctx.registry.get(job_id)
     if job is None or not job.report:
+        job = _trabajo_guardado(ctx, job_id)
+    if job is None:
         raise HTTPException(status_code=404, detail="Ese trabajo ya no está en la pantalla.")
     filas = filas_de_personas(job.report)
     fila = filas[numero - 1] if 0 < numero <= len(filas) else None
@@ -156,12 +238,49 @@ async def renglon_del_nombre(ctx: Ctx, job_id: str, numero: int) -> Response:
         pdf, hoja = Path(job.source), donde
         final = int(fila.get("pagina_final") or inicial + folios - 1)
         siguiente = hoja + 1 if hoja < final else None
+    elif (entregado := _en_el_destino(ctx, job, _archivo_de(fila, del_fuid), salida)) is not None:
+        # Las salidas del servicio ya se limpiaron: el PDF que se entregó.
+        pdf = entregado
+        hoja = 1 if historia else max(1, donde - inicial + 1)
+        siguiente = hoja + 1 if folios > hoja else None
     if pdf is None:
         raise HTTPException(status_code=404, detail="El PDF de esta persona ya no está en el servicio.")
     imagen = await asyncio.to_thread(recorte_del_nombre, pdf, hoja, siguiente, **zonas)
     if imagen is None:
         raise HTTPException(status_code=404, detail="No se pudo recortar el nombre de este PDF.")
     return Response(content=imagen, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+def _en_el_destino(ctx, job, archivo: str | None, salida: str | None) -> Path | None:
+    """El PDF de la persona en el destino, por lo que se guardó de dónde se entrega; ``None`` si no está.
+
+    El de las actas, en el espejo por su salida; el de las demás, en la
+    carpeta de sus PDF. Una carpeta de red no se abre sin la corrida: no hay
+    credenciales.
+    """
+    from ...adapters import red_smb
+
+    donde = getattr(job, "en_el_destino", None)
+    if donde is None and getattr(ctx, "folders", None) is not None:
+        donde = ctx.folders.donde_se_entrega(job)
+    if donde is None:
+        donde = _guardado_en_el_destino(ctx, job.id)
+    if not donde or not archivo:
+        return None
+    candidatos = []
+    if salida and donde.get("espejo"):
+        candidatos.append(Path(donde["espejo"]) / salida)
+    if donde.get("carpeta"):
+        candidatos.append(Path(donde["carpeta"]) / archivo)
+    for candidato in candidatos:
+        if red_smb.por_smb(str(candidato)):
+            continue
+        try:
+            if candidato.is_file():
+                return candidato
+        except OSError:
+            continue
+    return None
 
 
 def _nombre_nuevo_del_pdf(ctx, job_id, fila, viejo_nombre, viejo_archivo, viejo_salida, nuevo) -> str | None:
@@ -196,6 +315,7 @@ async def corregir_nombre(ctx: Ctx, job_id: str, numero: int, payload: dict, qui
     """
     exigir_identificado(quien)
     job, fila, del_fuid = _trabajo_y_fila(ctx, job_id, numero)
+    fila_vieja = dict(fila)
     nuevo = nombre_de_persona(str(payload.get("nombre") or ""))
     if nuevo is None:
         raise HTTPException(
@@ -272,7 +392,7 @@ async def corregir_nombre(ctx: Ctx, job_id: str, numero: int, payload: dict, qui
     # con su plantilla y sólo la fila de la persona cambiada.
     if not confirmacion and del_fuid and report.get("fuid") and viejo_asunto and nuevo_asunto != viejo_asunto:
         try:
-            from ..retomar import corregir_el_asunto, tipo_del_informe
+            from ..retomar import corregir_el_asunto
 
             ruta_del_fuid = _dentro_del_trabajo(ctx, job_id, str(report["fuid"]))
             if not await asyncio.to_thread(
@@ -281,7 +401,6 @@ async def corregir_nombre(ctx: Ctx, job_id: str, numero: int, payload: dict, qui
                 viejo_asunto,
                 nuevo_asunto,
                 orden=fila.get("orden"),
-                tipo=tipo_del_informe(report),
             ):
                 avisos.append("el FUID del trabajo no trae la fila de esta persona: no se cambió")
         except Exception as error:  # noqa: BLE001 - el nombre ya está corregido; se dice qué faltó
@@ -296,7 +415,34 @@ async def corregir_nombre(ctx: Ctx, job_id: str, numero: int, payload: dict, qui
             avisos.append(f"no se pudo reescribir el FUID del trabajo: {explicar_fallo(error)}")
 
     # El destino de la corrida: el PDF, la constancia y los FUID de la carpeta.
-    if not confirmacion and ctx.folders is not None and del_fuid:
+    # Por la corrida si sigue en memoria; si no -- tras un reinicio --, por el
+    # disco, con lo que se guardó de dónde se entrega.
+    con_la_corrida = ctx.folders is not None and ctx.folders.tiene_la_corrida(job)
+    de_una_corrida = (getattr(job, "origen", None) or {}).get("tipo") == "carpeta"
+    if not confirmacion and not con_la_corrida and de_una_corrida:
+        from ..correccion_en_el_destino import corregir_en_el_destino
+
+        avisos += await asyncio.to_thread(
+            corregir_en_el_destino,
+            getattr(job, "en_el_destino", None) or _guardado_en_el_destino(ctx, job.id),
+            int(fila.get("pagina_inicial") or 0),
+            {
+                "nombre": viejo_nombre,
+                "archivo": viejo_archivo,
+                "salida": viejo_salida,
+                "asunto": viejo_asunto,
+                "asunto_del_fuid": _asunto_en_el_fuid(fila_vieja, del_fuid),
+            },
+            {
+                "nombre": nuevo,
+                "archivo": nuevo_archivo,
+                "salida": nuevo_salida,
+                "asunto": nuevo_asunto,
+                "asunto_del_fuid": _asunto_en_el_fuid(fila, del_fuid),
+                "revision_del_nombre": revision,
+            },
+        )
+    elif not confirmacion and con_la_corrida and del_fuid:
         avisos += await asyncio.to_thread(
             ctx.folders.corregir_nombre_del_fuid,
             job,
@@ -310,7 +456,7 @@ async def corregir_nombre(ctx: Ctx, job_id: str, numero: int, payload: dict, qui
                 "revision_del_nombre": revision,
             },
         )
-    elif not confirmacion and ctx.folders is not None:
+    elif not confirmacion and con_la_corrida:
         avisos += await asyncio.to_thread(
             ctx.folders.corregir_nombre,
             job,
@@ -340,10 +486,64 @@ async def corregir_nombre(ctx: Ctx, job_id: str, numero: int, payload: dict, qui
         except Exception:  # noqa: BLE001 - la corrección ya se hizo
             logger.warning("no se pudo anotar en el padrón el nombre de %s", job.filename, exc_info=True)
 
-    ctx.registry.publish(job)
+    if not getattr(job, "guardado", False):
+        ctx.registry.publish(job)
+    # Lo que queda por mirar de este trabajo, en disco: sin nada, se quita.
+    await asyncio.to_thread(guardar_los_por_revisar, ctx, job)
     logger.info(
         "%s: nombre de la fila %s %s por %s: «%s» → «%s»",
         job.filename, numero, "confirmado" if confirmacion else "corregido", quien.nombre if quien else "?",
         viejo_nombre, nuevo,
     )
     return {"nombre": nuevo, "archivo_generado": nuevo_archivo, "estado": revision["estado"], "avisos": avisos}
+
+
+def _guardado_en_el_destino(ctx, job_id: str) -> dict | None:
+    """Dónde se entrega lo del trabajo, según lo que se guardó para la Revisión."""
+    almacen = getattr(ctx, "nombres_por_revisar", None)
+    entrada = almacen.leer(job_id) if almacen is not None else None
+    return (entrada or {}).get("en_el_destino")
+
+
+def _asunto_en_el_fuid(fila: dict, del_fuid: bool) -> str | None:
+    """El asunto de la fila como va escrito en el FUID entregado: con él se encuentra su celda.
+
+    La fila del FUID lo trae tal cual; la de las demás habilidades, como la
+    escribe el FUID de la entrega (``fila_del_fuid``): el de una historia es su
+    nombre, el de un acta de grado «NOMBRE - ESPECIALIDAD».
+    """
+    if del_fuid:
+        return fila.get("asunto")
+    try:
+        from ...adapters.fuid_de_la_entrega import fila_del_fuid
+
+        hecha = fila_del_fuid(fila)
+    except Exception:  # noqa: BLE001 - sin su asunto, el FUID no se toca
+        return None
+    return hecha.asunto if hecha is not None else None
+
+
+@router.get("/api/nombres-por-revisar")
+async def nombres_guardados(ctx: Ctx) -> list[dict[str, object]]:
+    """Las personas por mirar de los trabajos que ya no están en memoria, como se guardaron (2026-11-17).
+
+    Las de los trabajos en memoria las enseña la pantalla desde el trabajo en
+    vivo; éstas son las que, sin esto, se perdían tras un reinicio o cuando la
+    corrida sacaba de la memoria a los trabajos viejos. Cada una con su número
+    de fila, el mismo con que se pide su renglón y se corrige.
+    """
+    almacen = getattr(ctx, "nombres_por_revisar", None)
+    if almacen is None:
+        return []
+    salida: list[dict[str, object]] = []
+    for entrada in await asyncio.to_thread(almacen.todas):
+        job_id = str(entrada.get("job_id") or "")
+        vivo = ctx.registry.get(job_id)
+        if not job_id or (vivo is not None and vivo.report):
+            continue
+        for numero, fila in enumerate(filas_de_personas(entrada.get("informe") or {}), start=1):
+            if por_mirar(fila):
+                salida.append(
+                    {"job_id": job_id, "documento": entrada.get("documento") or job_id, "numero": numero, "fila": fila}
+                )
+    return salida

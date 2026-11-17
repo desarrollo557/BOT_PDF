@@ -1,4 +1,4 @@
-import type { FilaConPersona, Job } from './types';
+import type { FilaConPersona, Job, NombreGuardado } from './types';
 
 /**
  * Dónde acabó archivada una página que hay que revisar.
@@ -56,10 +56,14 @@ const POR_MIRAR = new Set(['duda', 'corregido']);
 
 /** Una persona cuyo nombre conviene mirar, con su trabajo. */
 export interface NombrePorMirar {
-  job: Job;
+  jobId: string;
+  /** El documento del trabajo, como lo reconoce el operador. */
+  documento: string;
   fila: FilaConPersona;
   /** Su número en las filas del informe, de 1 en adelante: con él se pide su renglón y se corrige. */
   numero: number;
+  /** Si viene de lo guardado en disco y no de un trabajo en memoria (2026-11-17). */
+  guardado?: boolean;
 }
 
 /**
@@ -79,18 +83,35 @@ function filasDePersonas(job: Job): FilaConPersona[] {
  *
  * El operador (2026-11-17): «la idea es tener los nombres de manera correcta».
  */
-export function nombresPorMirar(jobs: Job[]): NombrePorMirar[] {
+export function nombresPorMirar(jobs: Job[], guardados: NombreGuardado[] = []): NombrePorMirar[] {
   const salida: NombrePorMirar[] = [];
+  const enMemoria = new Set<string>();
   for (const job of jobs) {
+    if (job.report) enMemoria.add(job.id);
     filasDePersonas(job).forEach((fila, indice) => {
       const estado = fila.revision_del_nombre?.estado;
-      if (estado && POR_MIRAR.has(estado)) salida.push({ job, fila, numero: indice + 1 });
+      if (estado && POR_MIRAR.has(estado)) {
+        salida.push({ jobId: job.id, documento: job.filename, fila, numero: indice + 1 });
+      }
+    });
+  }
+  // Los de los trabajos que ya no están en memoria, como se guardaron (2026-11-17):
+  // el que vuelve a estar en memoria se ve en vivo, no dos veces.
+  for (const guardado of guardados) {
+    const estado = guardado.fila.revision_del_nombre?.estado;
+    if (enMemoria.has(guardado.job_id) || !estado || !POR_MIRAR.has(estado)) continue;
+    salida.push({
+      jobId: guardado.job_id,
+      documento: guardado.documento,
+      fila: guardado.fila,
+      numero: guardado.numero,
+      guardado: true
     });
   }
   return salida.sort(
     (a, b) =>
       Number(b.fila.revision_del_nombre?.estado === 'duda') - Number(a.fila.revision_del_nombre?.estado === 'duda') ||
-      a.job.filename.localeCompare(b.job.filename) ||
+      a.documento.localeCompare(b.documento) ||
       (a.fila.pagina_inicial ?? 0) - (b.fila.pagina_inicial ?? 0)
   );
 }

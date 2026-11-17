@@ -967,3 +967,57 @@ class TestLoLeidoFueraDeLaCapa:
         otra = tmp_path / "vieja.json"
         otra.write_text(json.dumps(vieja), encoding="utf-8")
         assert constancias.leer(otra).lo_leido == []
+
+# -- los nombres de la muestra de PDF (2026-11-17) -------------------------------------------
+
+_FICHAS = {
+    1: "UNIVERSIDAD DE CARTAGENA HISTORIA ACADEMICA Nombre del estudiante: CAMPO TORREGROZA ETILVIA LEONOR",
+    2: "Notas del primer semestre de la carrera de enfermeria con sus calificaciones finales",
+    3: "UNIVERSIDAD DE CARTAGENA HISTORIA ACADEMICA Nombre del estudiante: ALVAREZ LONDONO OLGA",
+}
+
+
+class TestLosNombresDeLaMuestraDePdf:
+    def test_cada_persona_contra_las_hojas_de_su_pdf(self):
+        filas = [
+            {"nombre": "CAMPO TORREGROZA ETILVIA LEONOR", "archivo_generado": "01_CAMPO.pdf", "pagina_inicial": 1},
+            {"nombre": "HERRERA BLANCO JUAN CARLOS", "archivo_generado": "02_ALVAREZ.pdf", "pagina_inicial": 3},
+        ]
+        nombres = entrega_app.auditar_los_nombres(
+            [ArchivoEntregado("UPD1/01_CAMPO.pdf", (1, 2)), ArchivoEntregado("UPD1/02_ALVAREZ.pdf", (3,))],
+            _FICHAS, filas,
+        )
+        assert nombres.cuentas == {"confirmados": 1, "en duda": 1}
+        assert nombres.dudas == ["«UPD1/02_ALVAREZ.pdf»: el nombre «HERRERA BLANCO JUAN CARLOS» no aparece en sus hojas"]
+
+    def test_el_libro_de_diplomas_por_el_asunto_de_su_fuid(self):
+        """Sin filas en la constancia: las del FUID entregado, en orden, con el nombre delante del título."""
+        from resolutions.application.fuid import FuidRow
+
+        hojas = {1: "Diploma que otorga a ANGELICA MARIA CUELLO SALCEDO el titulo de", 2: "Diploma a PEDRO PEREZ GOMEZ"}
+        del_fuid = [
+            FuidRow(orden=1, asunto="ANGELICA MARIA CUELLO SALCEDO - ESPECIALISTA EN SALUD"),
+            FuidRow(orden=2, asunto="ESPECIALISTA EN SALUD"),
+        ]
+        archivos = [ArchivoEntregado("A.pdf", (1,)), ArchivoEntregado("B.pdf", (2,))]
+        nombres = entrega_app.auditar_los_nombres(archivos, hojas, [], filas_del_fuid=del_fuid)
+        assert nombres.cuentas == {"confirmados": 1, "sin nombre": 1}
+        # Tantas filas como PDF, o no se casan.
+        assert entrega_app.auditar_los_nombres(archivos[:1], hojas, [], filas_del_fuid=del_fuid).cuentas == {"sin nombre": 1}
+
+    def test_la_letra_a_mano_no_dice_nada_y_el_pdf_cuenta_sus_nombres(self):
+        fila = {"nombre": "CAMPO TORREGROZA ETILVIA LEONOR", "archivo_generado": "01_CAMPO.pdf", "pagina_inicial": 1}
+        ilegible = entrega_app.auditar_los_nombres([ArchivoEntregado("01_CAMPO.pdf", (1,))], {1: "~~ ## ,, ."}, [fila])
+        assert not ilegible.cuentas and not ilegible.dudas
+        # El PDF auditado entero: sus nombres en ``extra``, como sus fechas; y su duda, entre sus hallazgos.
+        otra = {"nombre": "HERRERA BLANCO JUAN CARLOS", "archivo_generado": "02_ALVAREZ.pdf", "pagina_inicial": 3}
+        resultado = auditar_un_pdf(
+            "UPD1.pdf", [A, B, C], _FICHAS, {"01_CAMPO.pdf": [A, B], "02_ALVAREZ.pdf": [C]},
+            habilidad="historias", filas_de_la_constancia=[fila, otra],
+        )
+        assert resultado.extra["nombres"] == {"confirmados": 1, "en duda": 1}
+        assert any("HERRERA BLANCO JUAN CARLOS" in hallazgo for hallazgo in resultado.hallazgos)
+        # En una habilidad sin persona -- resoluciones --, los nombres no se cuentan.
+        sin = auditar_un_pdf("UPD1.pdf", [A, B, C], _FICHAS, {"01.pdf": [A, B], "02.pdf": [C]}, habilidad="resoluciones",
+                             filas_de_la_constancia=[fila])
+        assert "nombres" not in sin.extra

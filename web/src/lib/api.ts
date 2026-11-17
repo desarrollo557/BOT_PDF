@@ -16,7 +16,8 @@ import type {
   RetomarChoice,
   SourceDisposition,
   UsuarioApi,
-  FuidTabla
+  FuidTabla,
+  NombreGuardado
 } from './types';
 
 const BASE = '/api';
@@ -798,6 +799,17 @@ export function corregirNombre(
   nombre: string
 ): Promise<{ nombre: string; archivo_generado: string | null; estado: string; avisos: string[] }> {
   return send(`${BASE}/jobs/${jobId}/nombres/${numero}`, 'PUT', { nombre });
+}
+
+/**
+ * Las personas por mirar de los trabajos que ya no están en memoria, como se
+ * guardaron en disco (2026-11-17): la Revisión de nombres sobrevive a un
+ * reinicio. Las de los trabajos en memoria llegan con el trabajo en vivo.
+ */
+export async function fetchNombresGuardados(): Promise<NombreGuardado[]> {
+  const response = await pedir(`${BASE}/nombres-por-revisar`, { headers: attribution() });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
 }
 
 /** Delete one generated resolution: the file and its inventory row. */

@@ -157,6 +157,19 @@ describe('las historias académicas (2026-11-17)', () => {
     expect(nombres.map(({ numero }) => numero)).toEqual([3, 1, 2]);
   });
 
+  it('los guardados en disco se suman, salvo los del trabajo que sigue en memoria (2026-11-17)', () => {
+    const fila = { nombre: 'PEREZ GOMEZ JUANA', pagina_inicial: 3, revision_del_nombre: { estado: 'duda' as const } };
+    const guardados = [
+      { job_id: 'viejo', documento: 'UPD9.pdf', numero: 4, fila },
+      { job_id: 'job-1', documento: 'expediente.pdf', numero: 1, fila },
+      { job_id: 'otro', documento: 'UPD8.pdf', numero: 2, fila: { ...fila, revision_del_nombre: { estado: 'confirmado' as const } } }
+    ];
+    const nombres = nombresPorMirar([job(historias)], guardados);
+    const deDisco = nombres.filter((nombre) => nombre.guardado);
+    expect(deDisco.map(({ jobId, documento, numero }) => [jobId, documento, numero])).toEqual([['viejo', 'UPD9.pdf', 4]]);
+    expect(nombres.filter((nombre) => nombre.jobId === 'job-1')).toHaveLength(2);
+  });
+
   it('las filas del FUID de un libro de diplomas se numeran después de las de actas, como en el servidor', () => {
     const libro = {
       inventario_actas: [{ tipo: 'NOMINA', nombre: 'CASTELLAR MEZA TULIO', revision_del_nombre: { estado: 'confirmado' } }],

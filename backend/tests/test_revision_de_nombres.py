@@ -451,3 +451,139 @@ def test_la_correccion_de_una_matricula_llega_al_fuid_de_su_carpeta(tmp_path):
         hoja = openpyxl.load_workbook(fuid).active
         celdas = " ".join(str(celda.value) for fila in hoja.iter_rows() for celda in fila if celda.value)
         assert f"{nuevo} - MEDICINA" in celdas and f"{viejo} - MEDICINA" not in celdas, fuid.name
+
+
+# -- la Revisión sobrevive a un reinicio (2026-11-17) ---------------------------------
+
+
+def test_el_almacen_guarda_un_archivo_por_trabajo(tmp_path):
+    from resolutions.adapters.nombres_por_revisar import NombresPorRevisarEnDisco
+
+    almacen = NombresPorRevisarEnDisco(tmp_path / "nombres")
+    almacen.guardar("abc123", {"job_id": "abc123", "informe": {}})
+    almacen.guardar("def456", {"job_id": "def456", "informe": {}})
+    assert almacen.leer("abc123") == {"job_id": "abc123", "informe": {}}
+    assert sorted(e["job_id"] for e in almacen.todas()) == ["abc123", "def456"]
+    almacen.quitar("abc123")
+    assert almacen.leer("abc123") is None and [e["job_id"] for e in almacen.todas()] == ["def456"]
+    # Un nombre que se sale de la carpeta no se lee ni se escribe.
+    assert almacen.leer("../fuera") is None
+    with pytest.raises(ValueError):
+        almacen.guardar("../fuera", {})
+    assert not list(tmp_path.glob("*.tmp")) and not list((tmp_path / "nombres").glob(".*.tmp"))
+
+
+def test_sin_el_trabajo_en_memoria_la_revision_sigue(client, administrador, tmp_path):
+    """El trabajo terminado se guarda; fuera de la memoria, la pantalla lo pide, lo ve y lo corrige."""
+    from resolutions.api import main
+    from resolutions.api.routers.nombres import guardar_los_por_revisar
+
+    job = main.contexto.registry.create("UPD1.pdf", tmp_path / "ya-no-esta.pdf")
+    _pdf(main.contexto.settings.output_dir / job.id / "UPD1" / PDF_VIEJO)
+    main.contexto.registry.mark_done(job, _informe())
+    guardar_los_por_revisar(main.contexto, job)
+    # Mientras está en memoria, la pantalla lo ve en vivo: la lista guardada no lo repite.
+    assert client.get("/api/nombres-por-revisar").json() == []
+
+    main.contexto.registry.remove(job.id)  # un reinicio, o la corrida que lo saca de la memoria
+    (guardada,) = client.get("/api/nombres-por-revisar").json()
+    assert (guardada["job_id"], guardada["documento"], guardada["numero"]) == (job.id, "UPD1.pdf", 1)
+    assert guardada["fila"]["nombre"] == VIEJO
+    assert client.get(f"/api/jobs/{job.id}/nombres/1/renglon.jpg").status_code == 200
+
+    respuesta = client.put(f"/api/jobs/{job.id}/nombres/1", json={"nombre": NUEVO}, headers=administrador)
+    assert respuesta.status_code == 200, respuesta.text
+    assert (main.contexto.settings.output_dir / job.id / "UPD1" / PDF_NUEVO).is_file()
+    # Ya no queda nadie por mirar: se quita, y el padrón tiene a la persona.
+    assert client.get("/api/nombres-por-revisar").json() == []
+    assert main.contexto.nombres_por_revisar.leer(job.id) is None
+    assert main.contexto.padron.personas()[0].nombre == NUEVO
+
+
+def test_tras_un_reinicio_la_correccion_llega_al_destino_por_el_disco(tmp_path, monkeypatch):
+    """Sin la corrida en memoria: el PDF entregado, la constancia y el FUID de la carpeta y el general."""
+    openpyxl = pytest.importorskip("openpyxl")
+    from resolutions.api import constancia as constancias
+    from resolutions.api.correccion_en_el_destino import corregir_en_el_destino
+    from resolutions.api.routers.nombres import _asunto_en_el_fuid
+
+    settings = replace(
+        Settings(), upload_dir=tmp_path / "uploads", output_dir=tmp_path / "outputs",
+        ledger_path=tmp_path / "inventory.jsonl", pausa_tras_fallos=0.01,
+    )
+    settings.ensure_directories()
+    origen, destino = tmp_path / "origen", tmp_path / "destino"
+    (origen / "CAJA 1").mkdir(parents=True)
+    destino.mkdir()
+    (origen / "CAJA 1" / "UPD1.pdf").write_bytes(b"%PDF-1.4 fake")
+    registro = JobRegistry()
+
+    async def procesar(job):
+        _pdf(settings.output_dir / job.id / "UPD1" / PDF_VIEJO)
+        registro.mark_done(job, _informe())
+
+    motor = FolderRunner(registro, settings, procesar, watch_interval=0.01)
+
+    async def correr():
+        run = motor.start(str(origen), str(destino), task="both")
+        for _ in range(400):
+            if not run.active:
+                return run
+            await asyncio.sleep(0.01)
+        return run
+
+    run = asyncio.run(correr())
+    job = registro.get(run.job_ids[0])
+    donde = motor.donde_se_entrega(job)  # lo que se guarda al terminar el trabajo
+    entregado = next(destino.rglob(PDF_VIEJO))
+    vieja = job.report["inventario_actas"][0]
+    nueva = {**vieja, "nombre": NUEVO, "archivo_generado": PDF_NUEVO}
+
+    avisos = corregir_en_el_destino(
+        donde, 23,
+        {"nombre": VIEJO, "archivo": PDF_VIEJO, "salida": f"UPD1/{PDF_VIEJO}",
+         "asunto_del_fuid": _asunto_en_el_fuid(vieja, False)},
+        {"nombre": NUEVO, "archivo": PDF_NUEVO, "salida": f"UPD1/{PDF_NUEVO}",
+         "asunto_del_fuid": _asunto_en_el_fuid(nueva, False), "revision_del_nombre": {"estado": "corregido por el operador"}},
+    )
+    assert avisos == []
+    assert (entregado.parent / PDF_NUEVO).is_file() and not entregado.exists()
+    (ruta,) = list(destino.rglob(f"{constancias.CARPETA_DE_ACTAS}/*.json"))
+    constancia = constancias.leer(ruta)
+    assert f"UPD1/{PDF_NUEVO}" in [archivo["ruta"] for archivo in constancia.archivos]
+    assert [(f["nombre"], f["archivo_generado"]) for f in constancia.actas] == [(NUEVO, PDF_NUEVO)]
+    fuids = [*destino.rglob("*__FUID.xlsx"), *destino.rglob("00.FUID GENERAL.xlsx")]
+    assert fuids
+    for fuid in fuids:
+        hoja = openpyxl.load_workbook(fuid).active
+        celdas = " ".join(str(celda.value) for fila in hoja.iter_rows() for celda in fila if celda.value)
+        assert NUEVO in celdas and VIEJO not in celdas, fuid.name
+    # Sin saber dónde se entregó, o con un destino de red sin la corrida, se dice. En Docker
+    # la red va por el cliente propio, con las credenciales sólo en memoria (en Windows, por el sistema).
+    from resolutions.adapters import red_smb
+
+    assert corregir_en_el_destino(None, 23, {}, {})
+    monkeypatch.setattr(red_smb, "NATIVA", False)
+    assert "red" in corregir_en_el_destino({"espejo": "//servidor/recurso/UPD1"}, 23, {}, {})[0]
+
+
+def test_el_trabajo_guardado_de_una_corrida_que_ya_no_esta_se_corrige_en_el_destino(client, administrador, tmp_path):
+    """La corrida no está en memoria: la corrección va al destino por lo que se guardó de dónde se entrega."""
+    from resolutions.api import main
+    from resolutions.api.routers.nombres import guardar_los_por_revisar
+
+    job = main.contexto.registry.create(
+        "CAJA 1/UPD1.pdf", tmp_path / "ya-no-esta.pdf", origen={"id": "corrida-que-ya-no-esta", "tipo": "carpeta"}
+    )
+    _pdf(main.contexto.settings.output_dir / job.id / "UPD1" / PDF_VIEJO)
+    main.contexto.registry.mark_done(job, _informe())
+    guardar_los_por_revisar(main.contexto, job)
+    espejo = tmp_path / "destino" / "CAJA 1"
+    _pdf(espejo / "UPD1" / PDF_VIEJO)
+    almacen = main.contexto.nombres_por_revisar
+    almacen.guardar(job.id, {**almacen.leer(job.id), "en_el_destino": {"espejo": str(espejo), "carpeta": str(espejo / "UPD1")}})
+    main.contexto.registry.remove(job.id)
+
+    respuesta = client.put(f"/api/jobs/{job.id}/nombres/1", json={"nombre": NUEVO}, headers=administrador)
+    assert respuesta.status_code == 200 and respuesta.json()["avisos"] == [], respuesta.text
+    assert (espejo / "UPD1" / PDF_NUEVO).is_file() and not (espejo / "UPD1" / PDF_VIEJO).exists()
