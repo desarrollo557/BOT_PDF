@@ -40,6 +40,7 @@ la de la plantilla y no se toca: el operador la dio por fija.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass, replace
 from pathlib import Path
@@ -111,6 +112,49 @@ def _leido(valor: object) -> str | None:
     """El dato tal como se leyó, o ``None`` si no se leyó: vacío o N/A."""
     texto = str(valor or "").strip()
     return texto if texto and texto != NO_LEIDO else None
+
+
+#: El PDF en que quedó la fila, en su columna de resultado: «Dividido en
+#: 03_X.pdf» al partir un libro, o «Ya era un acta…; se entrega como 01_X.pdf»
+#: (``acta_consejo.SE_ENTREGA_COMO``, 2026-11-13).
+SU_PDF = re.compile(r"(?:^Dividido en |; se entrega como )(.+\.pdf)$", re.IGNORECASE)
+
+
+def nombre_del_pdf(fila: Mapping[str, object]) -> str | None:
+    """El nombre del PDF de la fila sin su orden ni su extensión: «ACTA DE GRADO NO. 01 - 27-11-1980».
+
+    Es lo que el operador ve en la carpeta y busca desde el FUID; ``None`` si
+    la fila no dice en qué PDF quedó (sólo se inventarió).
+    """
+    archivo = str(fila.get("archivo_generado") or "")
+    if not archivo and (su_pdf := SU_PDF.search(str(fila.get("resultado") or ""))):
+        archivo = su_pdf.group(1)
+    nombre = re.split(r"[\\/]", archivo)[-1]
+    nombre = re.sub(r"^\d+_", "", re.sub(r"\.pdf$", "", nombre, flags=re.IGNORECASE)).strip()
+    return nombre or None
+
+
+def _plano(texto: str) -> str:
+    sin_tildes = unicodedata.normalize("NFD", texto).encode("ascii", "ignore").decode()
+    return " ".join(sin_tildes.upper().split())
+
+
+def con_su_acta(asunto: str, pdf: str | None) -> str:
+    """El asunto del graduado de un acta colectiva con el nombre del PDF de su acta delante.
+
+    «ACTA DE GRADO NO. 01 - 27-11-1980 - CARMEN TERESA PEREZ BOHANQUEZ -
+    ENFERMERA»: el acta colectiva lleva a toda su promoción en un PDF, y la
+    fila de cada graduado no se encontraba en la carpeta por su nombre (el
+    operador, 2026-11-13: «busco los PDF con el nombre que está en el
+    inventario y no aparecen»). Eligió seguir con un PDF por acta y que la fila
+    empiece por el nombre de ese PDF. Si el PDF ya se llama como el asunto, o
+    el asunto es el comienzo del nombre del PDF, el asunto es el PDF.
+    """
+    if not pdf:
+        return asunto
+    if _plano(pdf) == _plano(asunto) or _plano(pdf).startswith(_plano(asunto)):
+        return pdf
+    return f"{pdf} - {asunto}"
 
 
 #: El número tras «No.» en el encabezado del acta: «ACTA DE GRADO No. 01/05».
@@ -196,8 +240,10 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
         )
     elif acta.endswith(ANULADA):
         # El acta anulada no gradúa a nadie (UPD3859802, 2026-11-13): su fila
-        # es la del acta, que lo dice, y no la de un graduado en blanco.
-        asunto = " - ".join(parte for parte in (acta, _leido(fila.get("titulo"))) if parte)
+        # es la del acta, que lo dice, y no la de un graduado en blanco. Con el
+        # nombre de su PDF, que es el del acta con su fecha, para encontrarlo.
+        rotulo = (nombre_del_pdf(fila) if fila.get("acta_colectiva") else None) or acta
+        asunto = " - ".join(parte for parte in (rotulo, _leido(fila.get("titulo"))) if parte)
         desde_hasta = (_numero_del_acta(fila).removesuffix(f" {ANULADA}"), NO_LEIDO)
     else:
         # El graduado (2026-11-05): el asunto es el nombre y la especialidad,
@@ -209,6 +255,10 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
             acta=_leido(fila.get("acta")),
             cedula=_leido(fila.get("cedula")),
         )
+        if fila.get("acta_colectiva"):
+            # El acta colectiva va en un PDF con toda su promoción: la fila del
+            # graduado empieza por el nombre de ese PDF (2026-11-13).
+            asunto = con_su_acta(asunto, nombre_del_pdf(fila))
         desde_hasta = (_numero_del_acta(fila), cedula)
     return FuidRow(
         orden=0,
@@ -229,6 +279,19 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
         notas=str(fila.get("observaciones") or ""),
         pagina_inicial=fila.get("pagina_inicial"),  # type: ignore[arg-type]
     )
+
+
+def _asunto_como_su_pdf(acta: str, pdf: str | None) -> str:
+    """El asunto de la resolución de la ceremonia: el nombre de su PDF, «RESOLUCION 02214 - … DE- ENFERMERO (A) - 15-12-2021».
+
+    El asunto «… TITULO DE: ENFERMERO» no encontraba el PDF «… TITULO DE-
+    ENFERMERO … - 15-12-2021»: Windows no deja «:» en un nombre y el PDF lleva
+    la fecha (Odontología, 2026-11-13: 46 resoluciones). El mismo texto, también
+    si el nombre se recortó para caber en la ruta: el asunto entero ya no se
+    encontraba buscándolo en la carpeta (13 de las 46), y el operador pidió el
+    2026-11-05 que el PDF y el FUID digan lo mismo.
+    """
+    return pdf or acta
 
 
 def fila_de_la_ceremonia(fila: Mapping[str, object]) -> FuidRow | None:
@@ -253,7 +316,7 @@ def fila_de_la_ceremonia(fila: Mapping[str, object]) -> FuidRow | None:
     paginas = hasta - desde + 1 if isinstance(desde, int) and isinstance(hasta, int) and hasta >= desde else 1
     return FuidRow(
         orden=0,
-        asunto=acta,
+        asunto=_asunto_como_su_pdf(acta, nombre_del_pdf(fila)),
         codigo_trd="",
         consecutivo_inicial=completo,
         consecutivo_final=completo,

@@ -321,14 +321,29 @@ def _acta_consejo_job(payload: dict, *, grado: bool = False) -> dict:
                 raise
             logger.warning("no se pudo dividir %s", taller.name, exc_info=True)
             no_se_dividio = f"{type(error).__name__}: {error}"
+    # Un PDF que ya era un acta se entrega entero, pero con el nombre de su fila
+    # y no con el del cliente: «01_ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 022
+    # - 17-12-2012.pdf», como si fuera un libro de una sola acta (el operador,
+    # 2026-11-13: buscaba en la carpeta los PDF por lo que dice el FUID). Sólo
+    # en una corrida de carpeta, que es la que lo copia al destino: una subida
+    # suelta no escribe ese PDF en ningún sitio.
+    entregada_como = (
+        _nombre_del_acta_suelta(outcome, taller.destination)
+        if pidio_dividir and division is None and not no_se_dividio and payload.get("destination")
+        else None
+    )
     outcome.filas = resultado_de_cada_acta(
         outcome.filas,
         division.salidas if division else None,
         pidio_dividir=pidio_dividir,
         no_se_dividio=no_se_dividio,
+        entregada_como=entregada_como,
     )
 
     report = outcome.as_dict()
+    if entregada_como:
+        # Lo lee quien copia el PDF al destino (``_entregar_actas``).
+        report["nombre_del_pdf"] = entregada_como
     if primera_corregida:
         # La pantalla de Archivo lee la fecha de la primera acta del informe.
         report["fecha_inicial"] = report["fecha_final"] = outcome.filas[0].fecha
@@ -674,6 +689,34 @@ def _sesiones_con_su_fecha(
                 sesion = replace(sesion, nombre=nombre_de_la_sesion(ahora))
         nuevas.append(sesion)
     return nuevas
+
+
+def _nombre_del_acta_suelta(outcome, destino: Path) -> str | None:
+    """«01_ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 022 - 17-12-2012.pdf»: el PDF que ya era un acta.
+
+    Con la misma regla con que el ensamblador nombra las actas de un libro --
+    el orden, el nombre tal cual y en mayúsculas, recortado para caber en la
+    ruta --, así un acta suelta y una partida se llaman igual. ``None`` si se
+    entrega con el nombre del cliente (``nombre_del_acta_suelta``).
+    """
+    from ...adapters.pymupdf_assembler import name_budget
+    from ...application.acta_consejo import nombre_del_acta_suelta
+    from ...domain.naming import output_filename
+    from ...domain.resolution_code import ResolutionCode
+
+    nombre = nombre_del_acta_suelta(outcome)
+    if not nombre:
+        return None
+    return output_filename(
+        ResolutionCode(value="01", raw="01"),
+        None,
+        budget=name_budget(destino),
+        prefix=None,
+        mayusculas=True,
+        kind=nombre,
+        literal=True,
+    )
+
 
 def _revisar_las_filas_del_fuid(
     revisor: _RevisorDeFechas,

@@ -375,6 +375,10 @@ class FolderRun:
     version_escrita: dict[str, tuple[int, int]] = field(default_factory=dict, repr=False)
     #: Uno solo escribe los FUID de la corrida a la vez.
     cerrojo_de_escritura: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    #: El nombre de cada acta suelta entregada con el de su fila, por carpeta
+    #: espejo: {nombre en minúsculas: el origen que lo tiene}. Dos sueltas que
+    #: se llamaran igual se pisaban al copiar (la revisión, 2026-11-13).
+    nombres_de_sueltas: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
     #: Por qué no se pudo escribir, si falló.
     inventario_error: str | None = None
     #: El control de calidad del último inventario escrito: filas completas,
@@ -3202,6 +3206,9 @@ class FolderRunner:
         self._retirar_lo_que_sumo(run, origin)
         filas = (job.report or {}).get("inventario_actas") or []
         if filas:
+            # El nombre del acta suelta, antes de anotar sus filas: si ya es el
+            # de otro PDF de su carpeta, se entrega con el del cliente.
+            filas = self._sin_pisar_otra_suelta(run, job, origin, filas)
             # La carpeta de cada fila es su ruta desde la raíz elegida: con
             # subcarpetas, «00C003284\UPD3859772» y no sólo «UPD3859772». Es lo
             # que agrupa el Excel de cada subcarpeta y lo que encadena sus folios.
@@ -3684,6 +3691,72 @@ class FolderRunner:
         """
         return self._en_destino(run, self._carpeta_de(run, origin))
 
+    def _sin_pisar_otra_suelta(
+        self, run: FolderRun, job: Job, origin: Path, filas: list[dict]
+    ) -> list[dict]:
+        """Las filas del acta suelta, con el nombre de su fila sólo si no es ya el de otro PDF de su carpeta.
+
+        El acta que ya era un PDF se entrega con el nombre de su fila --
+        «01_ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 022 - 17-12-2012.pdf» --,
+        y dos de la misma UPD pueden llamarse igual: la misma acta escaneada dos
+        veces. La copia de la segunda pisaba a la primera sin avisar (la
+        revisión, 2026-11-13). Si el nombre ya es de otro origen -- en esta
+        corrida, en la constancia de otro o un archivo que nadie reclama --, se
+        entrega con el del cliente, que en su carpeta es único, y se avisa.
+        Se llama con ``run.cerrojo`` tomado: las entregas van de una en una.
+        """
+        from ..application.acta_consejo import SE_ENTREGA_COMO
+
+        report = job.report or {}
+        nombre = Path(str(report.get("nombre_del_pdf") or "")).name.strip()
+        if not nombre:
+            return filas
+        espejo = self._espejo(run, origin)
+        propio = str(self._relative(run, origin))
+        duenos = run.nombres_de_sueltas.setdefault(str(espejo), {})
+        dueno = duenos.get(nombre.lower()) or self._dueno_del_nombre(espejo, nombre, propio)
+        if dueno is None or dueno == propio:
+            duenos[nombre.lower()] = propio
+            return filas
+        report.pop("nombre_del_pdf", None)
+        sin_el_nombre = [
+            {**fila, "resultado": str(fila.get("resultado") or "").split(f"; {SE_ENTREGA_COMO} ")[0]}
+            for fila in filas
+        ]
+        report["inventario_actas"] = sin_el_nombre
+        self._avisar(
+            run,
+            f"«{origin.name}»: «{nombre}» ya es de «{Path(dueno).name}» en la misma carpeta; "
+            "se entrega con su nombre de origen para no pisarlo.",
+        )
+        return sin_el_nombre
+
+    @staticmethod
+    def _dueno_del_nombre(espejo: Path, nombre: str, propio: str) -> str | None:
+        """Qué otro origen tiene ya ``nombre`` en ``espejo``, por las constancias de sus PDF; ``None`` si nadie.
+
+        Un archivo con ese nombre que no reclama ninguna constancia -- de una
+        entrega sin constancia, o puesto a mano -- tampoco se pisa.
+        """
+        clave = nombre.lower()
+        try:
+            rutas = sorted((espejo / constancias.CARPETA_DE_ACTAS).glob("*.json"))
+        except OSError:
+            rutas = []
+        reclamado = False
+        for ruta in rutas:
+            otra = constancias.leer(ruta)
+            if otra is None or not any(str(a.get("ruta") or "").lower() == clave for a in otra.archivos):
+                continue
+            if otra.origen != propio:
+                return otra.origen
+            reclamado = True
+        try:
+            existe = (espejo / nombre).exists()
+        except OSError:
+            existe = False
+        return f"{nombre} (ya estaba en la carpeta)" if existe and not reclamado else None
+
     def _entregar_actas(
         self, run: FolderRun, job: Job, origin: Path, huella: tuple[int, int] = (0, 0)
     ) -> Entrega:
@@ -3692,7 +3765,9 @@ class FolderRunner:
         * Un libro que se dividió: sus actas, en una carpeta con el nombre del
           libro (``UPD3859772\\2N° 002…\\03_ACTA-EXTRAORDINARIA-NO-017….pdf``).
         * Un PDF que ya era un acta, cuando se pidió dividir: el PDF tal cual,
-          para que el destino quede completo como la fuente.
+          para que el destino quede completo como la fuente, con el nombre de
+          su fila si el trabajo lo trae (``nombre_del_pdf``, 2026-11-13:
+          «01_ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 022 - 17-12-2012.pdf»).
         * Si sólo se pidió inventariar, no se copia ningún PDF: el destino lleva
           la misma estructura de carpetas, cada una con su Excel.
 
@@ -3711,8 +3786,10 @@ class FolderRunner:
         elif run.task in (str(TaskKind.SPLIT), str(TaskKind.BOTH)):
             # Desde la copia que se procesó: un origen de la red no es una ruta
             # de este equipo, y copiarlo por su nombre daba «No se encontró…
-            # se movió, se renombró o se borró» (Z:, 2026-10-29).
-            copias = [(self._copia_local(run, origin), espejo / origin.name)]
+            # se movió, se renombró o se borró» (Z:, 2026-10-29). Con el
+            # nombre de su fila del FUID, no con el del cliente (2026-11-13).
+            nombre = Path(str(report.get("nombre_del_pdf") or "")).name.strip() or origin.name
+            copias = [(self._copia_local(run, origin), espejo / nombre)]
         else:
             copias = []
         ruta_de_la_constancia = self._ruta_de_la_constancia(run, origin, actas=True)

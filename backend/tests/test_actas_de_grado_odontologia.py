@@ -177,6 +177,27 @@ class TestLaHojaQueNoEsUnActa:
         assert fila.consecutivo_inicial == fila.consecutivo_final == "01633-2024"
         assert fila_de_la_ceremonia({**base, "acta": "CEREMONIA DE GRADO - ACTAS 05418726 A 05418731"}) is None
 
+    def test_el_asunto_de_la_resolucion_es_el_nombre_de_su_pdf(self):
+        """El «:» que Windows no deja en el PDF y su fecha: el asunto no lo encontraba (2026-11-13)."""
+        base = {"tipo": "CEREMONIA DE GRADO", "carpeta": "00C003290/UPD3859817", "fecha": "15-12-2021",
+                "pagina_inicial": 3, "pagina_final": 3, "archivo": "UPD3859817.pdf",
+                "acta": "RESOLUCION 02214 - OTORGAR EL TITULO DE: ENFERMERO (A)"}
+        dividida = {**base, "resultado": "Dividido en 03_RESOLUCION 02214 - OTORGAR EL TITULO DE- ENFERMERO (A) - 15-12-2021.pdf"}
+        assert fila_de_la_ceremonia(dividida).asunto == "RESOLUCION 02214 - OTORGAR EL TITULO DE- ENFERMERO (A) - 15-12-2021"
+        # Sólo inventariada, sin PDF: lo que se leyó.
+        assert fila_de_la_ceremonia({**base, "resultado": "Inventariada"}).asunto == base["acta"]
+
+    def test_la_resolucion_con_el_pdf_recortado_es_su_pdf(self):
+        """El nombre del PDF se recorta para caber en la ruta: el asunto es ese mismo nombre, que es el que se busca."""
+        base = {"tipo": "CEREMONIA DE GRADO", "carpeta": "00C003290/UPD3859815", "fecha": "07-12-2017",
+                "pagina_inicial": 3, "pagina_final": 3, "archivo": "UPD3859815.pdf",
+                "acta": "RESOLUCION 02725 - CEREMONIA SOLEMNE Y COLECTIVA DE GRADUACION PARA OTORGAR EL TITULO DE: ENFERMERO (A)"}
+        recortada = {**base, "resultado": "Dividido en 03_RESOLUCION 02725 - CEREMONIA SOLEMNE Y COLECTIVA DE GRAD.pdf"}
+        assert fila_de_la_ceremonia(recortada).asunto == "RESOLUCION 02725 - CEREMONIA SOLEMNE Y COLECTIVA DE GRAD"
+        # Desambiguado al escribirlo («-P3»): el asunto es el PDF.
+        pisado = {**base, "resultado": "Dividido en 03_RESOLUCION 02725 - CEREMONIA-P3.pdf"}
+        assert fila_de_la_ceremonia(pisado).asunto == "RESOLUCION 02725 - CEREMONIA-P3"
+
 
 # -- UPD3859813 (2026-11-13): el rector que firma y el apellido del renglón de «portador» --
 

@@ -25,25 +25,11 @@ poner el resumen en el asunto: «un FUID limpio, manejando el original».
 from __future__ import annotations
 
 import re
-import unicodedata
 from collections.abc import Mapping
 
 from ..application.fuid import FuidRow
-from ..domain.acta_consejo import sin_cortes
+from ..domain.acta_consejo import serie_del_acta, sin_cortes
 from .fuid_actas_de_grado import NO_LEIDO, ubicacion
-
-#: El consejo que dice el papel, por la palabra que lo nombra en la fila.
-_CONSEJOS = (
-    ("CONSEJO ACADEMICO", "ACTA DE CONSEJO ACADEMICO"),
-    ("CONSEJO SUPERIOR", "ACTA DE CONSEJO SUPERIOR"),
-    ("COMITE", "ACTA DE COMITE"),
-)
-_DE_FACULTAD = "ACTA DE CONSEJO DE FACULTAD"
-
-
-def _plano(texto: object) -> str:
-    sin_tildes = unicodedata.normalize("NFD", str(texto or "")).encode("ascii", "ignore").decode()
-    return " ".join(sin_tildes.upper().split())
 
 
 def _fecha(fecha: object) -> str:
@@ -64,11 +50,9 @@ def asunto_del_acta(fila: Mapping[str, object]) -> str:
     El número va en el consecutivo inicial y final, que es su columna; en el
     asunto lo quitó el operador el 2026-11-11: «que quede sin el número de
     acta», «ACTA DE CONSEJO DE FACULTAD - EXTRAORDINARIA - El Consejo…».
+    Es también el comienzo del nombre de su PDF (``serie_del_acta``, 2026-11-13).
     """
-    acta = _plano(fila.get("acta"))
-    serie = next((nombre for palabra, nombre in _CONSEJOS if palabra in acta), _DE_FACULTAD)
-    sesion = "EXTRAORDINARIA" if "EXTRAORDINARI" in acta else "ORDINARIA" if "ORDINARI" in acta else ""
-    return serie + (f" - {sesion}" if sesion else "")
+    return serie_del_acta(str(fila.get("acta") or ""))
 
 
 def asunto_con_resumen(fila: Mapping[str, object], resumen: str | None = None) -> str:

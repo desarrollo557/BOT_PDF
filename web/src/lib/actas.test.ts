@@ -9,6 +9,7 @@
  * en la carpeta de descargas no le dice a nadie de qué caja salió.
  */
 import { describe, expect, it } from 'vitest';
+import { describirArchivo } from './actas';
 import type { Health } from './api';
 import { nombreDeLaDescarga } from './api';
 import { HABILIDADES, motivoNoDisponible } from './habilidades';
@@ -64,5 +65,36 @@ describe('nombreDeLaDescarga', () => {
 
   it('sin cabecera no inventa un nombre', () => {
     expect(nombreDeLaDescarga(null)).toBeNull();
+  });
+});
+
+describe('describirArchivo', () => {
+  it('lee el nombre de antes, en guiones', () => {
+    expect(describirArchivo('03_ACTA-EXTRAORDINARIA-NO-017-16-08-2012.pdf')).toEqual({
+      orden: '03',
+      titulo: 'ACTA EXTRAORDINARIA No. 017',
+      fecha: '16-08-2012'
+    });
+  });
+
+  it('lee el acta de consejo con lo que dice su fila del FUID (2026-11-13)', () => {
+    expect(describirArchivo('01_ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 022 - 17-12-2012.pdf')).toEqual({
+      orden: '01',
+      titulo: 'ACTA DE CONSEJO DE FACULTAD · ORDINARIA · 022',
+      fecha: '17-12-2012'
+    });
+  });
+
+  it('lee el acta colectiva y el graduado, con espacios', () => {
+    expect(describirArchivo('01_ACTA DE GRADO NO. 01 - 27-11-1980.pdf')).toEqual({
+      orden: '01',
+      titulo: 'ACTA DE GRADO NO. 01',
+      fecha: '27-11-1980'
+    });
+    expect(describirArchivo('02_MARTHA LUCIA HERRERA - ENFERMERA.pdf')).toEqual({
+      orden: '02',
+      titulo: 'MARTHA LUCIA HERRERA · ENFERMERA',
+      fecha: null
+    });
   });
 });

@@ -25,12 +25,39 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 
 from .fechas import MESES
+
+#: El consejo que dice el papel, por la palabra que lo nombra en el rótulo del
+#: acta. El que no dice ninguno es el de facultad.
+_CONSEJOS = (
+    ("CONSEJO ACADEMICO", "ACTA DE CONSEJO ACADEMICO"),
+    ("CONSEJO SUPERIOR", "ACTA DE CONSEJO SUPERIOR"),
+    ("COMITE", "ACTA DE COMITE"),
+)
+ACTA_DE_FACULTAD = "ACTA DE CONSEJO DE FACULTAD"
+
+
+def serie_del_acta(acta: str) -> str:
+    """«ACTA DE CONSEJO DE FACULTAD - ORDINARIA»: el consejo y la sesión, sin el número.
+
+    Es el comienzo del asunto del acta en el FUID y del nombre de su PDF, y los
+    dos salen de aquí para que no discrepen: el operador buscaba en la carpeta
+    los PDF por lo que dice su fila y no los encontraba (Odontología,
+    2026-11-13). ``acta`` es el rótulo leído, «ACTA ORDINARIA No. 022».
+    """
+    plano = " ".join(
+        unicodedata.normalize("NFD", acta or "").encode("ascii", "ignore").decode().upper().split()
+    )
+    serie = next((nombre for palabra, nombre in _CONSEJOS if palabra in plano), ACTA_DE_FACULTAD)
+    sesion = "EXTRAORDINARIA" if "EXTRAORDINARI" in plano else "ORDINARIA" if "ORDINARI" in plano else ""
+    return serie + (f" - {sesion}" if sesion else "")
+
 
 #: Lo que el operador pidió que el resumen no mencione nunca. Es el primer punto
 #: del orden del día de todas las actas, una formalidad que no dice nada de lo

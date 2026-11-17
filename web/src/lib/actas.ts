@@ -26,8 +26,11 @@ export function actasDelInforme(
  *
  * «03_ACTA-EXTRAORDINARIA-NO-017-16-08-2012.pdf» es el orden en el libro, el
  * acta y su fecha escritos para el disco. En la tarjeta se leen como lo que
- * son: «03 · ACTA EXTRAORDINARIA No. 017 · 16-08-2012». Un nombre que no siga
- * esa forma se enseña tal cual, sin la extensión.
+ * son: «03 · ACTA EXTRAORDINARIA No. 017 · 16-08-2012». Desde el 2026-11-13 el
+ * acta de consejo se llama con lo que dice su fila del FUID, con espacios:
+ * «03_ACTA DE CONSEJO DE FACULTAD - EXTRAORDINARIA - 017 - 16-08-2012.pdf», que
+ * se lee «ACTA DE CONSEJO DE FACULTAD · EXTRAORDINARIA · 017». Un nombre que no
+ * siga ninguna de las dos formas se enseña tal cual, sin la extensión.
  */
 export function describirArchivo(nombre: string): {
   orden: string | null;
@@ -40,13 +43,16 @@ export function describirArchivo(nombre: string): {
   const conOrden = /^(\d{1,3})[-_](.+)$/.exec(base);
   const orden = conOrden ? conOrden[1] : null;
   let resto = conOrden ? conOrden[2] : base;
-  const conFecha = /-(\d{2}-\d{2}-\d{4})(?=_|$)/.exec(resto);
+  // La fecha, pegada con un guion o tras « - »: el nombre con espacios.
+  const conFecha = /(?:\s+-\s+|-)(\d{2}-\d{2}-\d{4})(?=_|$)/.exec(resto);
   const fecha = conFecha ? conFecha[1] : null;
   if (conFecha) resto = resto.slice(0, conFecha.index) + resto.slice(conFecha.index + conFecha[0].length);
   const titulo = resto
+    .replace(/\s+-\s+/g, ' · ')
     .replace(/_/g, ' · ')
     .replace(/-/g, ' ')
     .replace(/\bNO (\d)/, 'No. $1')
+    .replace(/\s{2,}/g, ' ')
     .trim();
   return { orden, titulo: titulo || base, fecha };
 }

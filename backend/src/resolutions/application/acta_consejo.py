@@ -69,6 +69,7 @@ from ..domain.acta_consejo import (
     numeros_del_nombre,
     numeros_escritos,
     renglones_repetidos,
+    serie_del_acta,
     sin_actas_ajenas_al_nombre,
     sin_anexos_anteriores,
     texto_para_resumir,
@@ -536,7 +537,7 @@ _NO_VALE_EN_UNA_CARPETA = re.compile(r'[<>:"/\\|?*]+')
 
 
 def nombre_de_la_sesion(fila: FilaDeActa) -> str:
-    """«ACTA EXTRAORDINARIA No. 017 - 16-08-2012»: el acta y su fecha.
+    """«ACTA DE CONSEJO DE FACULTAD - EXTRAORDINARIA - 017 - 16-08-2012»: lo que dice su fila del FUID.
 
     Es lo que lleva el PDF de la sesión detrás de su número de orden, y es por
     lo que se busca.
@@ -560,6 +561,20 @@ def nombre_de_la_sesion(fila: FilaDeActa) -> str:
         return asunto_del_graduado(
             leido(fila.nombre), leido(fila.titulo), acta=leido(fila.acta), cedula=leido(fila.cedula)
         )
+    if fila.tipo == TIPO_DOCUMENTAL:
+        # El acta de consejo se llama con lo que dice su fila del FUID: el
+        # comienzo del asunto, el número de la columna D y la fecha de la F,
+        # «ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 022 - 17-12-2012». Lo eligió
+        # el operador el 2026-11-13: buscaba en la carpeta los PDF por lo que
+        # dice el FUID y «01_ACTA-ORDINARIA-NO-022-17-12-2012.pdf» no salía. Lo
+        # que no se leyó no entra: ni un «N/A» ni un número inventado.
+        numero = fila.numero.strip()
+        partes = [
+            serie_del_acta(fila.acta),
+            *([numero] if numero and numero != NO_APLICA else []),
+            *([fila.fecha] if fila.fecha != NO_APLICA else []),
+        ]
+        return _NO_VALE_EN_UNA_CARPETA.sub("-", " - ".join(partes)).strip(" .")
     partes = [fila.acta if fila.acta != NO_APLICA else "ACTA SIN NUMERO"]
     if fila.fecha != NO_APLICA:
         partes.append(fila.fecha)
@@ -567,14 +582,16 @@ def nombre_de_la_sesion(fila: FilaDeActa) -> str:
 
 
 def _con_nombre_literal(fila: FilaDeActa) -> bool:
-    """Si el PDF de esta fila se llama con su nombre tal cual: el del graduado y las hojas de su ceremonia.
+    """Si el PDF de esta fila se llama con su nombre tal cual, con espacios y no en guiones.
 
     El graduado se llama igual que su asunto en el FUID, «01_MARTHA LUCIA
     HERRERA - ENFERMERA.pdf» (2026-11-05), y la ceremonia de su libro, con el
-    mismo formato. El acta manuscrita de examen (caja 3362) sigue como se
+    mismo formato. El acta de consejo, como el comienzo de su fila del FUID,
+    «01_ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 022 - 17-12-2012.pdf»
+    (2026-11-13). El acta manuscrita de examen (caja 3362) sigue como se
     entregó: su asunto en el FUID es otro, el examen primero.
     """
-    if fila.tipo == ROTULO_DE_CEREMONIA or fila.acta_colectiva:
+    if fila.tipo in (ROTULO_DE_CEREMONIA, TIPO_DOCUMENTAL) or fila.acta_colectiva:
         return True
     return fila.tipo == TIPO_DE_GRADO and not es_acta_de_examen(fila.acta)
 
@@ -667,6 +684,37 @@ def dividir_actas(
 
 YA_ERA_UN_ACTA = "Ya era un acta: inventariada sin dividir"
 SOLO_INVENTARIADA = "Inventariada"
+#: Lo que sigue a ``YA_ERA_UN_ACTA`` cuando el PDF se entrega con el nombre de
+#: su fila y no con el del cliente: «…; se entrega como 01_ACTA DE….pdf».
+SE_ENTREGA_COMO = "se entrega como"
+
+
+def nombre_del_acta_suelta(outcome: ActaOutcome) -> str | None:
+    """Con qué se nombra el PDF que ya era un acta, sin el orden: «ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 022 - 17-12-2012».
+
+    Hasta el 2026-11-13 se entregaba con el nombre que le puso el cliente
+    («1N°22-17 DE DICIEMBRE DE 2012.pdf») y su fila del FUID no se encontraba
+    en la carpeta por nada de lo que dice. Ahora se llama como el PDF de un
+    libro de una sola acta: con lo que dice su fila. ``None`` -- y el nombre
+    del cliente -- si no es una sola sesión o si su nombre no va tal cual: el
+    acta manuscrita de examen de la 3362 sigue como se entregó. Tampoco si su
+    fila no dice nada que la distinga -- el acta de consejo sin número ni
+    fecha leídos, el graduado sin nombre --: el del cliente dice más que
+    «ACTA DE CONSEJO DE FACULTAD» (la revisión, 2026-11-13).
+    """
+    sesiones = [sesion for sesion in outcome.sesiones if sesion.orden]
+    if len(sesiones) != 1 or not sesiones[0].literal or not outcome.filas:
+        return None
+    fila = outcome.filas[0]
+
+    def leido(valor: str) -> bool:
+        return bool(valor.strip()) and valor.strip() != NO_APLICA
+
+    if fila.tipo == TIPO_DOCUMENTAL and not (leido(fila.numero) or leido(fila.fecha)):
+        return None
+    if fila.tipo == TIPO_DE_GRADO and not fila.acta_colectiva and not leido(fila.nombre):
+        return None
+    return sesiones[0].nombre
 
 
 def resultado_de_cada_acta(
@@ -675,6 +723,7 @@ def resultado_de_cada_acta(
     *,
     pidio_dividir: bool,
     no_se_dividio: str | None = None,
+    entregada_como: str | None = None,
 ) -> list[FilaDeActa]:
     """Las filas con lo que se hizo con cada acta escrito en su columna.
 
@@ -682,8 +731,8 @@ def resultado_de_cada_acta(
     (``fila.sesion``), que empieza por «NN_», el orden del libro; las filas de
     un acta colectiva, todas el mismo. En los informes de antes, sin sesión, la
     fila N es el PDF N. De un PDF que ya era un acta y se pidió dividir, que no
-    hizo falta. Si dividir falló -- ``no_se_dividio`` --, por qué. Y si sólo se
-    pidió inventariar, eso.
+    hizo falta, y con qué nombre se entrega (``entregada_como``). Si dividir
+    falló -- ``no_se_dividio`` --, por qué. Y si sólo se pidió inventariar, eso.
     """
     resultados: list[FilaDeActa] = []
     for puesto, fila in enumerate(filas, start=1):
@@ -695,7 +744,7 @@ def resultado_de_cada_acta(
         elif no_se_dividio:
             texto = f"No se pudo dividir: {no_se_dividio}. Inventariada sin dividir"
         elif pidio_dividir:
-            texto = YA_ERA_UN_ACTA
+            texto = f"{YA_ERA_UN_ACTA}; {SE_ENTREGA_COMO} {entregada_como}" if entregada_como else YA_ERA_UN_ACTA
         else:
             texto = SOLO_INVENTARIADA
         resultados.append(replace(fila, resultado=texto))

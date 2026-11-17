@@ -445,10 +445,56 @@ class TestElInventario:
             ("05408123", "1085165668"),
             ("05408124", "1047389211"),
         ]
-        assert del_rango[0].asunto.startswith("CASTILLO CASTILLA FREDDY - ENFERMER")
+        # Cada graduado con el nombre del PDF de su acta delante: así se
+        # encuentra en la carpeta desde su fila (el operador, 2026-11-13).
+        acta = "ACTA DE GRADO 05408120 A 05408124 - 26-09-2008"
+        assert del_rango[0].asunto.startswith(f"{acta} - CASTILLO CASTILLA FREDDY - ENFERMER")
+        assert all(f.asunto.startswith(f"{acta} - ") for f in del_rango)
         assert del_rango[0].folios >= 1 and del_rango[0].folios_siar == 2
         assert all(f.folios == 0 and f.folios_siar == 0 for f in del_rango[1:])
         assert all("03_ACTA DE GRADO 05408120 A 05408124 - 26-09-2008.pdf" in f.notas for f in del_rango)
+
+    def test_el_individual_del_libro_ya_se_llama_como_su_asunto(self):
+        outcome, _ia = _inventariar(lector=LectorDeColectivas())
+        salidas = [f"UPD3859802/{s.orden:02d}_{s.nombre}.pdf" for s in outcome.sesiones]
+        filas = resultado_de_cada_acta(outcome.filas, salidas, pidio_dividir=True)
+        fuid = filas_del_fuid([asdict(fila) for fila in filas])
+        (nury,) = [f for f in fuid if f.asunto.startswith("NURY VARELA ESCUDERO")]
+        assert f"04_{nury.asunto}.pdf" in [s.rsplit("/", 1)[-1] for s in salidas]
+
+    def test_cada_fila_encuentra_su_pdf_por_el_comienzo_del_asunto(self):
+        """El operador buscaba los PDF por lo que dice el FUID y no salían (2026-11-13)."""
+        outcome, _ia = _inventariar(lector=LectorDeColectivas())
+        salidas = [f"UPD3859802/{s.orden:02d}_{s.nombre}.pdf" for s in outcome.sesiones]
+        filas = resultado_de_cada_acta(outcome.filas, salidas, pidio_dividir=True)
+        nombres = [s.rsplit("/", 1)[-1].split("_", 1)[1].removesuffix(".pdf") for s in salidas]
+        for fila in filas_del_fuid([asdict(fila) for fila in filas]):
+            assert any(fila.asunto == nombre or fila.asunto.startswith(f"{nombre} - ") for nombre in nombres), fila.asunto
+
+    def test_con_su_acta(self):
+        from resolutions.adapters.fuid_actas_de_grado import con_su_acta
+
+        acta = "ACTA DE GRADO NO. 01 - 27-11-1980"
+        assert con_su_acta("ANA PEREZ - ENFERMERA", acta) == f"{acta} - ANA PEREZ - ENFERMERA"
+        # El PDF que ya se llama como el graduado, o que empieza por el asunto, es el asunto.
+        assert con_su_acta("ANA PÉREZ - ENFERMERA", "ANA PEREZ - ENFERMERA") == "ANA PEREZ - ENFERMERA"
+        assert con_su_acta("ACTA DE GRADO No. 05 ANULADA", "ACTA DE GRADO NO. 05 ANULADA - 12-12-2003") == (
+            "ACTA DE GRADO NO. 05 ANULADA - 12-12-2003"
+        )
+        assert con_su_acta("ANA PEREZ - ENFERMERA", None) == "ANA PEREZ - ENFERMERA"
+
+    def test_el_acta_anulada_lleva_el_nombre_de_su_pdf(self):
+        from resolutions.adapters.fuid_actas_de_grado import fila_del_fuid
+
+        anulada = {
+            "tipo": "ACTA DE GRADO", "acta": "ACTA DE GRADO No. 05 ANULADA", "titulo": "ENFERMERA (O)",
+            "fecha": "12-12-2003", "acta_colectiva": "ACTA DE GRADO No. 05 ANULADA",
+            "carpeta": "00C003288", "archivo": "UPD3859802-ACTAS DE GRADO.pdf",
+            "resultado": "Dividido en 71_ACTA DE GRADO NO. 05 ANULADA - 12-12-2003.pdf",
+        }
+        fila = fila_del_fuid(anulada)
+        assert fila.asunto == "ACTA DE GRADO NO. 05 ANULADA - 12-12-2003 - ENFERMERA (O)"
+        assert fila.consecutivo_inicial == "05"
 
     def test_el_nombre_del_pdf_lleva_la_fecha_revisada(self):
         outcome, _ia = _inventariar(lector=LectorDeColectivas())

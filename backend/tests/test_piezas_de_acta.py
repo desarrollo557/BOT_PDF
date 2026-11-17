@@ -218,10 +218,13 @@ class TestDividirUnLibro:
             ("01", [1, 2, 3, 4]),
             ("02", [5, 6, 7]),
         ]
+        # Con lo que dice su fila del FUID: el comienzo del asunto, el número y
+        # la fecha, con espacios (el operador, 2026-11-13).
         assert [g.kind for g in reparto.groups] == [
-            "ACTA ORDINARIA No. 002 - 02-02-2012",
-            "ACTA EXTRAORDINARIA No. 017 - 16-08-2012",
+            "ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 002 - 02-02-2012",
+            "ACTA DE CONSEJO DE FACULTAD - EXTRAORDINARIA - 017 - 16-08-2012",
         ]
+        assert all(g.nombre_literal for g in reparto.groups)
         assert division.salidas[0].startswith("libro/01_")
 
     def test_la_fila_lleva_sus_piezas_con_paginas(self):
@@ -237,7 +240,114 @@ class TestDividirUnLibro:
             archivo="a.pdf", acta="N/A", fecha="N/A", folio_inicial="N/A",
             folio_final="N/A", folios=1, resumen="N/A",
         )
-        assert nombre_de_la_sesion(fila) == "ACTA SIN NUMERO"
+        # Lo que no se leyó no entra: ni el «N/A», que lleva una barra.
+        assert nombre_de_la_sesion(fila) == "ACTA DE CONSEJO DE FACULTAD"
+        con_barra = FilaDeActa(
+            archivo="a.pdf", acta="ACTA ORDINARIA No. 0/22", fecha="17-12-2012", folio_inicial=1,
+            folio_final=4, folios=4, resumen="N/A", numero="0/22",
+        )
+        assert nombre_de_la_sesion(con_barra) == "ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 0-22 - 17-12-2012"
+
+
+class TestElPdfSeLlamaComoSuFila:
+    """El operador, 2026-11-13: buscaba en la carpeta los PDF por lo que dice el FUID y no salían."""
+
+    def test_el_pdf_empieza_como_el_asunto_y_lleva_el_numero_y_la_fecha_de_la_fila(self):
+        from dataclasses import asdict
+
+        from resolutions.adapters.fuid_actas_de_consejo import fila_del_fuid
+
+        outcome = InventariarActa().execute(_Fuente(_libro()), document_name="libro.pdf")
+
+        for sesion, fila in zip(outcome.sesiones, outcome.filas, strict=True):
+            del_fuid = fila_del_fuid(asdict(fila))
+            serie = del_fuid.asunto.split(" - ")[0:2]
+            assert sesion.nombre == " - ".join(
+                [*serie, del_fuid.consecutivo_inicial, del_fuid.fecha_inicial.replace("/", "-")]
+            )
+            assert sesion.literal
+
+    def test_el_consejo_academico_y_el_superior_se_nombran_por_su_consejo(self):
+        from resolutions.application.acta_consejo import FilaDeActa
+
+        def fila(acta: str) -> FilaDeActa:
+            return FilaDeActa(
+                archivo="a.pdf", acta=acta, fecha="05-05-2015", folio_inicial=1, folio_final=2,
+                folios=2, resumen="N/A", numero="005",
+            )
+
+        assert nombre_de_la_sesion(fila("ACTA DE CONSEJO ACADÉMICO EXTRAORDINARIA No. 005")) == (
+            "ACTA DE CONSEJO ACADEMICO - EXTRAORDINARIA - 005 - 05-05-2015"
+        )
+        assert nombre_de_la_sesion(fila("CONSEJO SUPERIOR - ACTA No. 005")) == (
+            "ACTA DE CONSEJO SUPERIOR - 005 - 05-05-2015"
+        )
+
+    def test_el_acta_suelta_se_entrega_con_el_nombre_de_su_fila(self, tmp_path):
+        from dataclasses import asdict
+
+        from resolutions.adapters.fuid_de_la_entrega import archivo_de
+        from resolutions.api.worker.inventario import _nombre_del_acta_suelta
+        from resolutions.application.acta_consejo import (
+            SE_ENTREGA_COMO,
+            YA_ERA_UN_ACTA,
+            nombre_del_acta_suelta,
+            resultado_de_cada_acta,
+        )
+
+        sola = [
+            MEMBRETE + "ACTA ORDINARIA No. 022\nLunes 17 de diciembre de 2012\nSe reunió el Consejo."
+        ]
+        outcome = InventariarActa().execute(_Fuente(sola), document_name="1N°22-17 DE DICIEMBRE DE 2012.pdf")
+
+        assert nombre_del_acta_suelta(outcome) == "ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 022 - 17-12-2012"
+        nombre = _nombre_del_acta_suelta(outcome, tmp_path)
+        assert nombre == "01_ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 022 - 17-12-2012.pdf"
+        filas = resultado_de_cada_acta(outcome.filas, None, pidio_dividir=True, entregada_como=nombre)
+        assert filas[0].resultado == f"{YA_ERA_UN_ACTA}; {SE_ENTREGA_COMO} {nombre}"
+        # La fila del FUID sabe en qué PDF quedó.
+        assert archivo_de(asdict(filas[0])) == nombre
+
+    def test_el_acta_de_examen_suelta_sigue_con_el_nombre_del_cliente(self):
+        from types import SimpleNamespace
+
+        from resolutions.application.acta_consejo import (
+            SesionDeActa,
+            nombre_del_acta_suelta,
+        )
+        from resolutions.domain.piezas_de_acta import PiezaDeActa
+
+        pieza = (PiezaDeActa(ACTA, 1, 2),)
+        examen = SimpleNamespace(sesiones=[SesionDeActa(1, "ACTA-DE-EXAMEN", pieza, literal=False)])
+        assert nombre_del_acta_suelta(examen) is None
+        libro = SimpleNamespace(
+            sesiones=[SesionDeActa(1, "A", pieza, literal=True), SesionDeActa(2, "B", pieza, literal=True)]
+        )
+        assert nombre_del_acta_suelta(libro) is None
+
+    def test_sin_numero_ni_fecha_sigue_con_el_nombre_del_cliente(self):
+        """«ACTA DE CONSEJO DE FACULTAD» sola dice menos que el nombre del cliente (la revisión, 2026-11-13)."""
+        from types import SimpleNamespace
+
+        from resolutions.application.acta_consejo import (
+            FilaDeActa,
+            SesionDeActa,
+            nombre_del_acta_suelta,
+        )
+        from resolutions.domain.piezas_de_acta import PiezaDeActa
+
+        def suelta(numero: str, fecha: str) -> SimpleNamespace:
+            fila = FilaDeActa(
+                archivo="a.pdf", acta="ACTA ORDINARIA", fecha=fecha, folio_inicial=1, folio_final=2,
+                folios=2, resumen="N/A", numero=numero,
+            )
+            sesion = SesionDeActa(1, nombre_de_la_sesion(fila), (PiezaDeActa(ACTA, 1, 2),), literal=True)
+            return SimpleNamespace(sesiones=[sesion], filas=[fila])
+
+        assert nombre_del_acta_suelta(suelta("", "N/A")) is None
+        assert nombre_del_acta_suelta(suelta("N/A", "N/A")) is None
+        assert nombre_del_acta_suelta(suelta("022", "N/A")) == "ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 022"
+        assert nombre_del_acta_suelta(suelta("", "17-12-2012")) == "ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 17-12-2012"
 
 
 class TestLaEntregaEnCarpeta:
@@ -310,6 +420,94 @@ class TestLaEntregaEnCarpeta:
             "UPD/UPD2/UPD2__FUID.xlsx",
             "UPD/UPD2/acta.pdf",
         ]
+
+    def test_el_acta_suelta_llega_con_el_nombre_de_su_fila(self, corrida):
+        """Con el nombre que le dio el trabajo y no con el del cliente (2026-11-13)."""
+        from resolutions.api.jobs import Job
+
+        runner, run, _settings = corrida
+        run.task = "both"
+        sub = run.source / "UPD2"
+        sub.mkdir()
+        (sub / "1N°22-17 DE DICIEMBRE DE 2012.pdf").write_bytes(b"%PDF suelta")
+        nombre = "01_ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 022 - 17-12-2012.pdf"
+        job = Job(
+            id="j3", filename="UPD2/1N°22-17 DE DICIEMBRE DE 2012.pdf",
+            source=sub / "1N°22-17 DE DICIEMBRE DE 2012.pdf", owns_source=False,
+        )
+        job.report = {
+            "inventario_actas": [
+                {"archivo": "1N°22-17 DE DICIEMBRE DE 2012.pdf", "acta": "ACTA ORDINARIA No. 022",
+                 "fecha": "17-12-2012", "folio_inicial": 1, "folio_final": 4, "folios": 4, "resumen": "N/A",
+                 "observaciones": "", "pagina_inicial": 1, "pagina_final": 4, "numero": "022"},
+            ],
+            "nombre_del_pdf": nombre,
+        }
+
+        runner._deliver(run, job, sub / "1N°22-17 DE DICIEMBRE DE 2012.pdf")
+
+        entregados = sorted(p.relative_to(run.destination).as_posix() for p in run.destination.rglob("*.*") if ".bot-" not in p.as_posix())
+        assert entregados == sorted(["UPD/UPD2/UPD2__FUID.xlsx", f"UPD/UPD2/{nombre}"])
+        assert (run.destination / "UPD" / "UPD2" / nombre).read_bytes() == b"%PDF suelta"
+
+    @staticmethod
+    def _suelta(run, sub, archivo: str, nombre: str, contenido: bytes, id_: str):
+        from resolutions.api.jobs import Job
+        from resolutions.application.acta_consejo import SE_ENTREGA_COMO, YA_ERA_UN_ACTA
+
+        (sub / archivo).write_bytes(contenido)
+        job = Job(id=id_, filename=f"{sub.name}/{archivo}", source=sub / archivo, owns_source=False)
+        job.report = {
+            "inventario_actas": [
+                {"archivo": archivo, "acta": "ACTA ORDINARIA No. 022", "fecha": "17-12-2012",
+                 "folio_inicial": 1, "folio_final": 4, "folios": 4, "resumen": "N/A",
+                 "observaciones": "", "pagina_inicial": 1, "pagina_final": 4, "numero": "022",
+                 "resultado": f"{YA_ERA_UN_ACTA}; {SE_ENTREGA_COMO} {nombre}"},
+            ],
+            "nombre_del_pdf": nombre,
+        }
+        return job
+
+    def test_dos_sueltas_con_el_mismo_nombre_no_se_pisan(self, corrida):
+        """La misma acta escaneada dos veces: la segunda pisaba a la primera (la revisión, 2026-11-13)."""
+        from resolutions.application.acta_consejo import YA_ERA_UN_ACTA
+
+        runner, run, _settings = corrida
+        run.task = "both"
+        sub = run.source / "UPD2"
+        sub.mkdir()
+        nombre = "01_ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 022 - 17-12-2012.pdf"
+        primera = self._suelta(run, sub, "1N°22.pdf", nombre, b"%PDF primera", "j4")
+        segunda = self._suelta(run, sub, "2N°22 copia.pdf", nombre, b"%PDF segunda", "j5")
+
+        runner._deliver(run, primera, sub / "1N°22.pdf")
+        runner._deliver(run, segunda, sub / "2N°22 copia.pdf")
+
+        espejo = run.destination / "UPD" / "UPD2"
+        assert (espejo / nombre).read_bytes() == b"%PDF primera"
+        # La segunda, con su nombre de origen, que en su carpeta es único.
+        assert (espejo / "2N°22 copia.pdf").read_bytes() == b"%PDF segunda"
+        assert "nombre_del_pdf" not in segunda.report
+        assert segunda.report["inventario_actas"][0]["resultado"] == YA_ERA_UN_ACTA
+        assert any("2N°22 copia.pdf" in aviso and "1N°22.pdf" in aviso for aviso in run.avisos)
+        # Volver a entregar la primera no la aparta de su nombre: es suyo.
+        runner._deliver(run, self._suelta(run, sub, "1N°22.pdf", nombre, b"%PDF primera", "j6"), sub / "1N°22.pdf")
+        assert (espejo / nombre).read_bytes() == b"%PDF primera"
+
+    def test_un_archivo_que_ya_estaba_y_nadie_reclama_no_se_pisa(self, corrida):
+        runner, run, _settings = corrida
+        run.task = "both"
+        sub = run.source / "UPD2"
+        sub.mkdir()
+        nombre = "01_ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 022 - 17-12-2012.pdf"
+        espejo = run.destination / "UPD" / "UPD2"
+        espejo.mkdir(parents=True)
+        (espejo / nombre).write_bytes(b"%PDF puesto a mano")
+
+        runner._deliver(run, self._suelta(run, sub, "1N°22.pdf", nombre, b"%PDF nueva", "j7"), sub / "1N°22.pdf")
+
+        assert (espejo / nombre).read_bytes() == b"%PDF puesto a mano"
+        assert (espejo / "1N°22.pdf").read_bytes() == b"%PDF nueva"
 
 
 class TestLosFoliosDeUnLibro:

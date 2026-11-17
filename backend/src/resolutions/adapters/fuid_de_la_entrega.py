@@ -62,7 +62,9 @@ _EXCEL_DE_ACTAS = "ACTAS *__inventario*.xlsx"
 _HOJA_DE_ACTAS = "Inventario de actas"
 _AUTOR_DE_ACTAS = "División de documentos AFINIA"
 
-_DIVIDIDO = re.compile(r"^Dividido en (.+\.pdf)$", re.IGNORECASE)
+#: «Dividido en 03_X.pdf», o el acta suelta que se entrega con el nombre de su
+#: fila: «Ya era un acta…; se entrega como 01_X.pdf» (2026-11-13).
+_DIVIDIDO = fuid_actas_de_grado.SU_PDF
 _FECHA = re.compile(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})")
 
 
@@ -302,7 +304,7 @@ CONVERSORES: dict[str, Callable[[Mapping[str, object]], FuidRow | None]] = {
 def archivo_de(fila: Mapping[str, object]) -> str:
     """El archivo de la fila: el PDF en que quedó, o el original y sus páginas."""
     generado = str(fila.get("archivo_generado") or "")
-    if not generado and (dividido := _DIVIDIDO.match(str(fila.get("resultado") or ""))):
+    if not generado and (dividido := _DIVIDIDO.search(str(fila.get("resultado") or ""))):
         generado = dividido.group(1)
     if generado:
         return generado
