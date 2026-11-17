@@ -458,6 +458,113 @@ def test_la_tarjeta_mal_leida_se_corrige_con_la_fecha_de_nacimiento():
     assert leer_ficha("Cédula o tarjeta No. 61720803173 Libreta Militar No.").tarjeta == "617208-03173"
 
 
+#: Lo que leyó la IA (Mistral OCR) en las fichas de UPD3859725 (2026-11-17).
+_ACOSTA_TRONCOSO = (
+    "|  Nombre del estudiante. JERESA. ACOSTA TRONCOSO  |\n|  Lugar de nacimiento SANTA MARTHA  |\n"
+    "|  Fecha de nacimiento 20 - Mayo / 57.  |\n|  Estado civil Soltera  |\n"
+    "Cédula o tarjeta No. 57 052 0 074 71 Libreta Oscar Santa Martha.\nNombre del acudiente (s)"
+)
+_CASTILLO_GARCIA = (
+    "Nombre del estudiante. MARIA LOURDES CASTILLO GARCIA.\nLugar de nacimiento Soplaviento (Pol)\n"
+    "Fecha de nacimiento Feb 11/56.\nEstado civil Soltera\nCédula o tarjeta No. 570 21102670\n"
+    "Nombre del acudiente (s)"
+)
+
+
+def test_la_tarjeta_a_mano_leida_en_grupos_sueltos():
+    """UPD3859725, págs. 3 y 23 (2026-11-17): el FUID las llevó N/A.
+
+    La IA devuelve la tarjeta escrita a mano en grupos sueltos -- «57 052 0 074
+    71», «570 21102670» -- y sólo se reconocía junta o con guion.
+    """
+    assert (leer_ficha(_ACOSTA_TRONCOSO).cedula, leer_ficha(_ACOSTA_TRONCOSO).tarjeta) == (None, "570520-07471")
+    # Nacida el «Feb 11/56» y la tarjeta dice 570211: va como está escrita,
+    # una fecha bien formada no es una mala lectura.
+    assert (leer_ficha(_CASTILLO_GARCIA).cedula, leer_ficha(_CASTILLO_GARCIA).tarjeta) == (None, "570211-02670")
+    # Con el lugar de expedición detrás, y su comienzo no es una cédula de siete cifras.
+    ficha = leer_ficha("Fecha de nacimiento Feb 11/56\nCédula o tarjeta No. 5702110 2670 de Soplaviento (Bol)\nNombre del acudiente")
+    assert (ficha.cedula, ficha.tarjeta) == (None, "570211-02670")
+    tabla = "| Cédula o tarjeta No. | 57 05 20 07471 | Libreta Militar No. | de Santa Marta |\n| Nombre del acudiente (s) |"
+    assert leer_ficha(tabla).tarjeta == "570520-07471"
+
+
+def test_la_tarjeta_a_mano_con_guiones():
+    """UPD3859725, págs. 39, 45 y 49 (2026-11-17), como las leyó la IA y como dice el papel."""
+    assert leer_ficha("Cédula o tarjeta No. 5-8-01-11-00277 Libro de Mimio Fundacion (Hag).").tarjeta == "580111-00277"
+    assert leer_ficha("Cédula o tarjeta No. 5-61223-00272 Sistema Militar No.").tarjeta == "561223-00272"
+    # La fecha de nacimiento mal leída («25-1/30/58», 1930) no tumba una tarjeta
+    # separada como tal, con la fecha aparte.
+    granger = (
+        "| FECHA DE NACIMIENTO | 25-1/30/58. | | ESTADO CIVIL | SOLTERA. |\n"
+        "| Cédula o tarjeta No. | 58-0325-03770 Lic. M. 45.438.461 0/geria |\n| Nombre del acudiente (s) |"
+    )
+    assert leer_ficha(granger).tarjeta == "580325-03770"
+
+
+def test_la_tarjeta_escrita_fuera_de_su_renglon():
+    """Blanco Lozano (UPD3859725, pág. 13, 2026-11-17): «560314-02935» dos renglones por encima del de la cédula."""
+    ficha = (
+        "FECHA DE NACIMIENTO 14 MARZO/56 | ESTADO CIVIL SOLTERO | BACHILLER DEL COLEGIO NUESTRA S.A. DEL CARMEN "
+        "(DPT) DEL | TEJEDOR 560314-02935 EMPRESA DE BACHILLER REGISTRADO FECHA 1/26. | | BAJO EL FOLIO DEL LIBRO "
+        "| | CEDULA O TARJETA NO. LIBRETA MILITAR NO. | | NOMBRE DEL ACUDIENTE (S) | | DIRECCION: TEL."
+    )
+    assert leer_ficha(ficha).tarjeta == "560314-02935"
+    # Sin la fecha de nacimiento que la confirme, o con otra, no: puede ser de otra persona.
+    assert leer_ficha(ficha.replace("14 MARZO/56", "")).tarjeta is None
+    assert leer_ficha(ficha.replace("14 MARZO/56", "2 JULIO/49")).tarjeta is None
+    # Ni la del acudiente.
+    acudiente = ficha.replace("TEJEDOR 560314-02935", "TEJEDOR") + " 560314-02935"
+    assert leer_ficha(acudiente).tarjeta is None
+
+
+def test_la_cedula_con_su_sigla_manda_sobre_la_tarjeta():
+    """La ficha trae las dos -- la tarjeta y, después, la cédula con su «C.C» --: la cédula manda (2026-11-17)."""
+    # «C.C = 26.925.528», con el signo entre la sigla y el número (pág. 15).
+    buelvas = "Cédula o tarjeta No. 258.470 de Ref. Miter No. C.C. = 26.925.528\nNombre del acudiente (s)"
+    assert leer_ficha(buelvas).cedula == "26925528"
+    # «C.I.C», la C.C que la IA leyó con una I en medio (págs. 67 y 81).
+    orozco = "Fecha de nacimiento 10-Mayo/58. Cédula o tarjeta No. 58 0510-00410 de C/gnn. C.I.C 45.443.342 C/gnn. Nombre del acudiente (s)"
+    ficha = leer_ficha(orozco)
+    assert (ficha.cedula, ficha.tarjeta, ficha.identificacion) == ("45443342", "580510-00410", ("cédula", "45443342"))
+    roncaldo = "Cédula o tarjeta No. (55030601458) Librería al final de la (Mag) .CIC 45.442.621\nNombre del acudiente (s)"
+    assert leer_ficha(roncaldo).identificacion == ("cédula", "45442621")
+
+
+def test_unos_grupos_sueltos_que_no_son_tarjeta():
+    nacida = "Fecha de nacimiento 20 - Mayo / 57. "
+    # Contra la fecha de nacimiento en más de un dígito, y sin la fecha aparte: no es la suya.
+    assert leer_ficha(nacida + "Cédula o tarjeta No. 64 03 230 1234 Libreta Militar No.").tarjeta is None
+    # Ni sin el rótulo de la cédula.
+    assert leer_ficha(nacida + "Teléfono 57 052 0 074 71").tarjeta is None
+    # La cédula escrita con espacios de miles sigue siendo cédula.
+    assert leer_ficha("Cédula o tarjeta No. 45 466 499 Libreta Militar No.").cedula == "45466499"
+
+
+def test_la_fecha_de_nacimiento_es_la_que_sigue_al_dia():
+    """El año es el número que sigue al día: «Feb 11/56 … 5702110 2670» daba 1970 (2026-11-17)."""
+    from resolutions.domain.historia_academica import _nacimiento
+
+    assert _nacimiento("FECHA DE NACIMIENTO FEB 11/56 CEDULA O TARJETA NO. 5702110 2670") == "560211"
+    assert _nacimiento("FECHA DE NACIMIENTO MAYO 20 DE 1957 TEL 64321") == "570520"
+    assert _nacimiento("FECHA DE NACIMIENTO 20-05-57") == "570520"
+    assert _nacimiento("FECHA DE NACIMIENTO DIC 8 1961") == "611208"
+
+
+def test_la_ia_pone_la_tarjeta_en_la_cedula():
+    """El rótulo dice «Cédula o tarjeta No.» y la IA dio la tarjeta como cédula: con once cifras se descartaba."""
+    from resolutions.domain.historia_academica import LEIDO, leer_la_verificacion
+
+    verificacion = leer_la_verificacion('{"cedula": "57052007471", "tarjeta": ""}', _ACOSTA_TRONCOSO)
+    assert verificacion.numeros == {"tarjeta": "57052007471"}
+    assert verificacion.estados["tarjeta"] == LEIDO
+    # Una cédula de verdad se queda en su clave.
+    con_cedula = "Cédula o tarjeta No. 45.466.499 de C/gena Libreta Militar No."
+    assert leer_la_verificacion('{"cedula": "45466499", "tarjeta": ""}', con_cedula).numeros == {"cedula": "45466499"}
+    # Y si la IA ya dio la tarjeta, la cédula de once cifras no la pisa.
+    otra = leer_la_verificacion('{"cedula": "57052007471", "tarjeta": "57052007471"}', _ACOSTA_TRONCOSO)
+    assert otra.numeros == {"tarjeta": "57052007471"}
+
+
 def test_el_lugar_de_expedicion_leido_como_cifras_no_vuelve_tarjeta_a_la_cedula():
     """Tovar Orozco (UPD3859727, pág. 89, 2026-11-09): en el papel «45.466.499 de C/gena», de Cartagena.
 

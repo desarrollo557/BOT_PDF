@@ -241,8 +241,12 @@ def _parece_cedula(cifras: str) -> bool:
 #: 00C003277 (2026-10-30).
 _TARJETA = re.compile(r"(?<!\d)(\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))\s?[-–]\s?(\d{3,5})(?!\d)")
 #: «C.C 45.474.260», la cédula con su sigla en cualquier casilla: la ficha de
-#: los 80 la escribe a veces en la de la libreta militar.
-_CC = re.compile(r"\b[CE]\s?\.?\s?[CEQOG]\b\.?\s*(?:N[O0]?\.?\s*|#\s*)?(\d{1,3}(?:[.,'\s\-]{1,2}\d{3}|\d{3}){1,3})\b")
+#: los 80 la escribe a veces en la de la libreta militar. También «C.C. =
+#: 26.925.528» (Buelvas Roncallo, UPD3859725, pág. 15) y «C.I.C 45.443.342», la
+#: «C.C» que la IA leyó con una I en medio (Orozco Jiménez, pág. 67; 2026-11-17).
+_CC = re.compile(
+    r"\b[CE]\s?\.?\s?(?:I\s?\.?\s?)?[CEQOG]\b\.?\s*(?:[=:]\s*)?(?:N[O0]?\.?\s*|#\s*)?(\d{1,3}(?:[.,'\s\-]{1,2}\d{3}|\d{3}){1,3})\b"
+)
 #: «TI 66263 en trámite»: la tarjeta rotulada, aunque sea corta (UPD3859718, pág. 37).
 _TI = re.compile(r"\bT\s?\.?\s?I\b\.?\s*(?:N[O0]?\.?\s*|#\s*)?(\d[\d.\-]{3,13}\d)")
 #: «Libreta Militar No. 7.341.226», «Libreta Militar: 1047382»: el número justo
@@ -274,7 +278,10 @@ def _nacimiento(p: str) -> str | None:
         numeros = [numeros[0], numeros[2]]
     if mes is None or len(numeros) < 2 or not 1 <= mes <= 12 or not 1 <= int(numeros[0]) <= 31:
         return None
-    return f"{numeros[-1][-2:]}{mes:02d}{int(numeros[0]):02d}"
+    # El año es el número que sigue al día, no el último: lo que va detrás --
+    # el teléfono, la cédula del renglón de abajo -- no es la fecha («Feb
+    # 11/56 … 5702110 2670» daba 700211; 2026-11-17).
+    return f"{numeros[1][-2:]}{mes:02d}{int(numeros[0]):02d}"
 
 
 def _puede_ser_tarjeta(cifras: str, nacimiento: str | None) -> bool:
@@ -328,10 +335,59 @@ def _con_la_fecha_de_nacimiento(tarjeta: str, nacimiento: str | None) -> str:
 
     «61720803173» en la ficha de Cabarcas Pardo, nacida el «Dic 8 1.961»: es
     611208-03173 (UPD3859718, pág. 17). Sólo un dígito: más ya no es la misma.
+
+    Y sólo si lo leído no es una fecha: «570211-02670» es lo que dice el papel
+    de Castillo García, nacida el «Feb 11/56» (UPD3859725, pág. 23,
+    2026-11-17). Una fecha bien formada no es una mala lectura, y el número va
+    al FUID como está escrito.
     """
-    if nacimiento and sum(a != b for a, b in zip(tarjeta[:6], nacimiento, strict=False)) == 1:
+    if (
+        nacimiento
+        and not _parece_fecha(tarjeta[:6])
+        and sum(a != b for a, b in zip(tarjeta[:6], nacimiento, strict=False)) == 1
+    ):
         return nacimiento + tarjeta[6:]
     return tarjeta
+
+
+#: Cifras separadas sólo por espacios o guiones, como devuelve la IA la tarjeta
+#: escrita a mano: «57 052 0 074 71», «570 21102670», «5-8-01-11-00277»,
+#: «58-0325-03770». Nunca con puntos de miles: eso es una cédula.
+_EN_GRUPOS = re.compile(r"(?<![\d.,'’])\d+(?:\s?[-–]\s?\d+| \d+){1,6}(?![\d.,'’]?\d)")
+
+
+def _tarjeta_en_grupos(zona: str, nacimiento: str | None) -> str | None:
+    """La tarjeta de identidad escrita a mano y leída en grupos sueltos de cifras, o ``None``.
+
+    En el renglón «Cédula o tarjeta No.» la IA leyó «57 052 0 074 71» (Acosta
+    Troncoso, nacida el «20 - Mayo / 57») y «570 21102670» (Castillo García):
+    la tarjeta 570520-07471 y la 570211-02670 (UPD3859725, págs. 3 y 23,
+    2026-11-17). Sólo los patrones de la tarjeta con guion o sin espacios la
+    reconocían, y el FUID las llevó N/A.
+
+    Juntas, sus cifras son una tarjeta si son diez u once y empiezan por una
+    fecha, y además o la separan como una tarjeta -- un corte justo detrás de
+    la fecha: «58-0325-03770», «5-61223-00272» -- o no contradicen la de
+    nacimiento en más de un dígito. Lo primero basta: la fecha de nacimiento
+    también se lee mal («25-1/30/58» daba 1930 a Granger Quintana, pág. 45).
+    """
+    for hallado in _EN_GRUPOS.finditer(zona):
+        cifras = re.sub(r"\D", "", hallado.group(0))
+        if len(cifras) not in (10, 11) or _parece_cedula(cifras) or not _parece_fecha(cifras[:6]):
+            continue
+        # Cuántas cifras van antes de cada corte: con 6, la fecha va aparte.
+        partida_en_la_fecha = 6 in {
+            len(re.sub(r"\D", "", hallado.group(0)[: corte.end()]))
+            for corte in re.finditer(r"\d(?=\s?[-–]\s?\d|\s\d)", hallado.group(0))
+        }
+        if (
+            nacimiento
+            and not partida_en_la_fecha
+            and sum(a != b for a, b in zip(cifras[:6], nacimiento, strict=False)) > 1
+        ):
+            continue
+        return f"{cifras[:6]}-{cifras[6:]}"
+    return None
 
 
 #: Una cédula con sus puntos: «45.467.824», «57,446,637». En el primer grupo el
@@ -488,12 +544,17 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
         cifras = re.sub(r"\D", "", tarjeta)
         if len(cifras) == 11 and _parece_fecha(cifras[:6]):
             tarjeta = f"{cifras[:6]}-{cifras[6:]}"
+    elif desde >= 0 and (suelta := _tarjeta_en_grupos(zona, nacimiento)):
+        # «Cédula o tarjeta No. 57 052 0 074 71»: la tarjeta a mano, en grupos sueltos.
+        tarjeta = suelta
     if (hallado := _CC.search(zona)) and _parece_cedula(cifras := re.sub(r"\D", "", hallado.group(1))):
         cedula = cifras
     elif hallado := _CEDULA.search(zona):
         cifras = re.sub(r"\D", "", hallado.group(1))
-        if tarjeta and tarjeta.startswith(cifras):
-            pass  # el número del rótulo es la tarjeta de identidad
+        if tarjeta and re.sub(r"\D", "", tarjeta).startswith(cifras):
+            # El número del rótulo es la tarjeta de identidad: también el
+            # comienzo de una leída en grupos, «5702110 2670», no es una cédula.
+            pass
         elif len(cifras) == 6 and _parece_fecha(cifras):
             tarjeta = tarjeta or cifras
         elif len(cifras) in (10, 11) and not _parece_cedula(cifras) and (
@@ -527,6 +588,16 @@ def leer_ficha(texto: str, conocidas: Collection[str] = ()) -> Ficha:
         cifras = hallado.group(1).translate(_LETRA_POR_CIFRA) + hallado.group(2) + hallado.group(3)
         if cifras.isdigit() and _parece_cedula(cifras) and not (tarjeta and tarjeta.startswith(cifras[:6])):
             cedula = cifras
+    if cedula is None and tarjeta is None and nacimiento and desde >= 0:
+        # La tarjeta escrita fuera de su renglón -- dos más arriba, en el del
+        # diploma de bachiller: «560314-02935» (Blanco Lozano, UPD3859725, pág.
+        # 13, 2026-11-17) --: con su forma entera y la fecha de nacimiento de
+        # la estudiante al comienzo, es la suya. Nunca la del acudiente.
+        antes_del_acudiente = p[: hasta] if hasta > 0 else p
+        for hallado in _TARJETA.finditer(antes_del_acudiente):
+            if sum(a != b for a, b in zip(hallado.group(1), nacimiento, strict=False)) <= 1:
+                tarjeta = f"{hallado.group(1)}-{hallado.group(2)}"
+                break
     if cedula is None and tarjeta is None and (hallado := _DOCUMENTO_N.search(p)):
         # La ficha de 2003: el número tras «N°» del renglón «Documento de
         # Identificación»; es tarjeta si su casilla está marcada o si tiene
@@ -610,6 +681,11 @@ INSTRUCCIONES_PARA_VERIFICAR = (
     "- tarjeta: su tarjeta de identidad (T.I.): empieza por la fecha de nacimiento (AAMMDD) y nunca lleva "
     "puntos de miles.\n"
     "- libreta: su libreta militar.\n"
+    "El renglón «Cédula o tarjeta No.» trae una u otra: decide por su forma. Diez u once cifras que empiezan "
+    "por la fecha de nacimiento son la tarjeta, aunque el OCR las separe en grupos sueltos («57 052 0 074 71» "
+    "es la tarjeta 57052007471); con puntos de miles, de seis a ocho cifras (o diez si empieza por 1), o con "
+    "la sigla C.C., es la cédula. La libreta militar es la de su casilla. Pon el número en su clave y deja "
+    "las otras en VACIO.\n"
     "- codigo: su código o carné estudiantil; «54-9010033» es 549010033.\n"
     "- anio_ingreso: el año en que entró a la Universidad (no el del bachillerato ni el de nacimiento). Si la "
     "casilla «Año de ingreso» está en blanco, el primer año de su tabla de períodos académicos («Año 03 Período "
@@ -702,6 +778,17 @@ def leer_la_verificacion(respuesta: str, texto: str) -> Verificacion:
         datos = {}
     if not isinstance(datos, dict):
         datos = {}
+    cedula = re.sub(r"\D", "", str(datos.get("cedula") or ""))
+    if (
+        len(cedula) in (10, 11)
+        and not _parece_cedula(cedula)
+        and _parece_fecha(cedula[:6])
+        and not re.sub(r"\D", "", str(datos.get("tarjeta") or ""))
+    ):
+        # El rótulo dice «Cédula o tarjeta No.» y la IA puso la tarjeta en la
+        # cédula: con once cifras se descartaba (Acosta Troncoso, UPD3859725,
+        # pág. 3, 2026-11-17). Una tarjeta empieza por una fecha.
+        datos = {**datos, "tarjeta": datos["cedula"], "cedula": "VACIO"}
     numeros: dict[str, str] = {}
     estados: dict[str, str] = {}
     motivos: dict[str, str] = {}
