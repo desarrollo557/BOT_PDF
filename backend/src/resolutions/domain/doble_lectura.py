@@ -45,6 +45,10 @@ class Franja:
     #: Alto de la franja y margen por arriba, en fracción de la altura de la hoja.
     alto: float
     margen: float
+    #: El rótulo impreso que va justo debajo del campo, si lo hay: el campo es
+    #: la leyenda más cercana por encima de él, no la primera de la hoja
+    #: («Nombre del estudiante» y no «Nombre de los padres», 2026-11-17).
+    encima_de: tuple[str, ...] = ()
 
 
 def conciliar_numero(principal: str | None, segunda: str | None, campo: str) -> tuple[str | None, str | None]:
@@ -54,6 +58,33 @@ def conciliar_numero(principal: str | None, segunda: str | None, campo: str) -> 
     if not principal:
         return segunda, None
     return principal, f"{campo} se leyó {principal} en la página y {segunda} en el renglón ampliado"
+
+
+def desempatar_numero(
+    principal: str | None, segunda: str | None, tercera: str | None, campo: str
+) -> tuple[str | None, str | None, str | None]:
+    """El número que queda cuando la página y el renglón ampliado discrepan, con una tercera mirada.
+
+    La tercera es ``otra_mirada`` del mismo renglón: otro recorte y más zoom,
+    que no repite la segunda. Si dice lo mismo que una de las dos, vale esa: dos
+    de tres. En los diplomas, sobre 74 cédulas en disputa, dio la razón a la
+    página en trece. Y la página también se equivoca: «49.751.465» por
+    49.731.465 (CAMPO TORREGROZA, UPD3859718, pág. 23, 2026-11-17). Si no, se
+    queda la de la página y va a revisión con las tres. Devuelve el número, la
+    duda para revisión y la nota de cómo se decidió.
+    """
+    numero, duda = conciliar_numero(principal, segunda, campo)
+    if duda is None:
+        return numero, None, None
+    if tercera and tercera == principal:
+        return principal, None, None
+    if tercera and tercera == segunda:
+        return segunda, None, (
+            f"{campo} {segunda}, como se leyó dos veces en el renglón ampliado; la página decía {principal}"
+        )
+    if tercera:
+        duda = f"{duda} y {tercera} al mirarlo otra vez"
+    return numero, duda, None
 
 
 #: Cuánto se parecen dos palabras para tomarlas por la misma, mal leída.

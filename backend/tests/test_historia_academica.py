@@ -709,3 +709,97 @@ class TestElAgenteRevisaLasHistorias:
         assert revision["perfil"]["datos"] == ["nombre", "identificacion", "codigo", "fechas"]
         # El asunto del FUID es sólo el nombre.
         assert all(" - " not in (fila.get("nombre") or "") for fila in informe["inventario_actas"])
+
+
+#: El pie de la hoja de notas de CAMPO TORREGROZA (UPD3859718, pág. 24), leído por la IA.
+_NOTAS_DE_CAMPO = (
+    "|  Admin general | 3 |  | 0 | 37 |  | X | 4.06 |\n|   |  |  | X: 3.8 |\n\n"
+    "Observaciones:\n\nX General de la Carrera: 3.57\n\nCampo Torregroza Silvia.\n\n1.982-85."
+)
+
+
+def test_el_nombre_al_pie_de_las_notas():
+    """La hoja de notas repite el nombre a mano al pie: otra lectura que vota (2026-11-17)."""
+    from resolutions.domain.historia_academica import nombre_al_pie_de_las_notas
+
+    conocidas = {"CAMPO", "SILVIA", "TORREGROZA"}
+    assert nombre_al_pie_de_las_notas(_NOTAS_DE_CAMPO, conocidas) == "CAMPO TORREGROZA SILVIA"
+    # La de 1968 sólo trae el promedio bajo «Observaciones».
+    assert nombre_al_pie_de_las_notas("Observaciones:\n\nX gl = 3.67", conocidas) is None
+    assert nombre_al_pie_de_las_notas("REGISTRO ACADEMICO 1982", conocidas) is None
+
+
+def test_el_codigo_con_su_rotulo_mal_leido():
+    """«Observaciones: códico = 820414» (CAMPO TORREGROZA, pág. 23): el FUID lo llevó N/A."""
+    from resolutions.domain.historia_academica import junto_a_su_rotulo
+
+    texto = "|  Dirección: la mume Tel.  |\n|  Observaciones: códico = 820414  |"
+    assert leer_ficha(texto).codigo == "820414"
+    assert junto_a_su_rotulo("820414", texto, "codigo")
+
+
+def test_un_grado_antes_de_las_notas_es_una_mala_lectura():
+    """La IA leyó «Dic 18/81» en el recuadro del grado de CAMPO TORREGROZA, que dice 18/87: salía de 1981."""
+    notas = ["1.982 MATERIAS II Sem 2 P. ocd 1.983 III Sem 1984 VI Sem 1.986 VII Sem 1987 1.982-85"]
+    assert anios(notas, de_la_ficha=(None, 1981)) == (1982, 1987)
+    # Un grado que cuadra con las notas sí cuenta.
+    assert anios(notas, de_la_ficha=(None, 1988)) == (1982, 1988)
+    # Y un ingreso después de la última nota tampoco.
+    assert anios(notas, de_la_ficha=(1990, None)) == (1982, 1987)
+
+
+def test_la_ia_mira_el_renglon_de_cada_estudiante_de_enfermeria():
+    """El operador (2026-11-17): «que esté la IA para saber aproximar el nombre y acertar con el nombre comparando».
+
+    Cada estudiante de la ficha de Enfermería, también el confirmado, se le
+    muestra a la IA con su renglón y sus lecturas; lo que contesta vale si es
+    una aproximación de lo leído, y lo que no se confirma va a revisión.
+    """
+    from types import SimpleNamespace
+
+    from resolutions.api.worker.historias import _corregir_los_nombres
+    from resolutions.domain.historia_academica import FRANJA_DEL_NOMBRE, Expediente
+
+    respuestas = {
+        "CAMPO": "CAMPO TORREGROZA ETILVIA LEONOR",
+        "CORTEZ": "CORTES RIVERA ESPERANZA",
+        # Otra persona: no es una lectura de lo que dice el papel.
+        "LOPEZ": "PEREZ GOMEZ ANA",
+    }
+    pedidos = []
+
+    class Juez:
+        def resumir(self, texto, imagen=None):
+            pedidos.append(imagen)
+            return next(respuesta for clave, respuesta in respuestas.items() if clave in texto)
+
+    taller = SimpleNamespace(
+        control=SimpleNamespace(check=lambda: None),
+        juez_del_nombre=lambda: Juez(),
+        corrector_de_nombres=lambda: None,
+    )
+    unidades = [
+        Expediente(paginas=[1, 2], ficha=Ficha(nombre="CAMPO TERNEGROZA ETDRIA LEONOR"), pagina_de_la_ficha=1),
+        Expediente(paginas=[3, 4], ficha=Ficha(nombre="CORTEZ RIVERA ESPERANZA"), pagina_de_la_ficha=3),
+        Expediente(paginas=[5, 6], ficha=Ficha(nombre="LOPEZ GOMEZ ANA"), pagina_de_la_ficha=5),
+    ]
+    lecturas = {
+        1: ["CAMPO TERNEGROZA ETDRIA LEONOR", "CAMPO TORREGROZA SILVIA", "SAMPO TORREGROZA ETDIVIA LEONOR"],
+        3: ["CORTEZ RIVERA ESPERANZA", "ESPERANZA CORTEZ RIVERA"],
+        5: ["LOPEZ GOMEZ ANA", "LOPES GOMEZ ANA"],
+    }
+    renglones = {clave: [(FRANJA_DEL_NOMBRE, clave)] for clave in lecturas}
+    notas: dict[int, str] = {}
+    _corregir_los_nombres(
+        {}, taller, None, object(), unidades, lecturas, renglones, {}, set(), "UPD3859718.pdf", notas,
+        releer=lambda franja, paginas: {}, a_revision=True, mirar=lambda unidad: b"renglon",
+    )
+    assert [unidad.ficha.nombre for unidad in unidades] == [
+        "CAMPO TORREGROZA ETILVIA LEONOR", "CORTES RIVERA ESPERANZA", "LOPEZ GOMEZ ANA",
+    ]
+    # Los tres, con su imagen: también CORTEZ, que dos lecturas confirmaban.
+    assert pedidos == [b"renglon"] * 3
+    assert notas[1] == "nombre corregido; se leyó «CAMPO TERNEGROZA ETDRIA LEONOR»"
+    # Lo que la IA no pudo aproximar se queda como se leyó, a revisión con sus lecturas.
+    assert any("LOPES GOMEZ ANA" in duda for duda in unidades[2].dudas)
+    assert not unidades[0].dudas and not unidades[1].dudas

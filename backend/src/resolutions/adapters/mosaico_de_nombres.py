@@ -384,6 +384,48 @@ def _por_etiqueta(texto: str, tanda: Sequence[int]) -> dict[int, str] | None:
     return trozos
 
 
+def _por_etiqueta_en_bloques(texto: str, tanda: Sequence[int]) -> dict[int, str] | None:
+    """Los trozos por la etiqueta de cada franja, con todos los renglones que la siguen hasta la próxima.
+
+    Para las franjas de varios renglones (``MosaicoDeCampo``): en tabla o en
+    prosa, lo que va detrás de «[n]» es de la franja n hasta que aparece otra
+    etiqueta. Sólo vale si cada etiqueta aparece una vez y ningún trozo vuelve
+    vacío: las etiquetas sueltas en un bloque aparte, con las franjas detrás,
+    dejarían los trozos corridos.
+    """
+    esperadas = {int(pagina) for pagina in tanda}
+    trozos: dict[int, list[str]] = {}
+    actual: int | None = None
+    for renglon in texto.splitlines():
+        etiquetas = [int(e) for e in _ETIQUETA.findall(renglon) if int(e) in esperadas]
+        if len(etiquetas) > 1:
+            return None
+        if etiquetas:
+            actual = etiquetas[0]
+            if actual in trozos:
+                return None
+            trozos[actual] = []
+            renglon = _ETIQUETA.sub(" ", renglon)
+        if actual is not None:
+            trozos[actual].append(renglon)
+    # En el orden en que se apilaron: una etiqueta fuera de su sitio es una etiqueta cambiada.
+    if list(trozos) != [int(pagina) for pagina in tanda]:
+        return None
+    juntos = {pagina: "\n".join(renglones).replace("|", " ").strip(" -\n") for pagina, renglones in trozos.items()}
+    if not all(re.search(r"\w", trozo) for trozo in juntos.values()):
+        return None
+    return juntos
+
+
+def _hasta_la_etiqueta(trozo: str, tanda: Sequence[int], pagina: int) -> str:
+    """El trozo sin lo que va desde la etiqueta de otra franja: eso ya es de la siguiente."""
+    otras = {int(otra) for otra in tanda if int(otra) != int(pagina)}
+    for hallado in _ETIQUETA.finditer(trozo):
+        if int(hallado.group(1)) in otras:
+            return trozo[: hallado.start()]
+    return trozo
+
+
 def _repartir_cedulas(texto: str, tanda: Sequence[int]) -> dict[int, str]:
     """Cada cédula de vuelta a su página: por etiqueta, o por el rótulo en orden."""
     trozos = _por_etiqueta(texto, tanda)
@@ -549,23 +591,41 @@ class MosaicoDeCampo(MosaicoDeNombres):
         return super()._altura_de_la_leyenda(source, pagina)
 
     def _repartir_texto(self, texto: str, tanda: Sequence[int]) -> dict[int, str]:
+        """Cada franja con todos sus renglones: por su etiqueta si es de fiar y, si no, por el rótulo impreso.
+
+        La franja de una ficha abarca varios renglones -- «Bajo el folio»,
+        «Cédula o tarjeta», «Nombre del acudiente» --, y el reparto de los
+        diplomas, una fila por franja, se quedaba con la celda de al lado de
+        «[n]»: la cédula, un renglón más abajo, se perdía cada vez que el
+        proveedor contestaba en tabla (CAMPO TORREGROZA, UPD3859718, pág. 23,
+        2026-11-17: 49.731.465 leída y nunca votada). Ahora es de la franja todo
+        lo que sigue a su etiqueta hasta la siguiente (``_por_etiqueta_en_bloques``),
+        siempre que las etiquetas vengan en el orden en que se apilaron y cada
+        trozo traiga su rótulo una vez: el proveedor cambia a veces la
+        etiqueta, y así un cambio no reparte nada. Si no, por el orden de los
+        rótulos, que no se equivocó nunca, cada trozo hasta la etiqueta siguiente.
+        """
         if len(tanda) == 1:
             # Un solo renglón en la imagen: todo lo leído es suyo.
             return {tanda[0]: texto}
-        if self._por_etiqueta and (por_etiqueta := _por_etiqueta(texto, tanda)) is not None:
+        if (
+            self._por_etiqueta
+            and (por_etiqueta := _por_etiqueta_en_bloques(texto, tanda)) is not None
+            and all(len(self._rotulo.findall(trozo)) == 1 for trozo in por_etiqueta.values())
+        ):
             return por_etiqueta
         inicios = [hallado.start() for hallado in self._rotulo.finditer(texto)]
-        if len(inicios) != len(tanda):
-            # Sin saber qué renglón es de quién, nada: un dato devuelto a otro
-            # estudiante es peor que una segunda lectura que falta. Se releen
-            # en mosaicos más pequeños (``leer_franjas``).
-            logger.info("el mosaico de %s volvió con %d rótulos para %d franjas", self.CAMPO, len(inicios), len(tanda))
-            self._sin_repartir.extend(tanda)
-            return {}
-        return {
-            pagina: texto[desde:hasta]
-            for pagina, desde, hasta in zip(tanda, inicios, [*inicios[1:], len(texto)], strict=True)
-        }
+        if len(inicios) == len(tanda):
+            return {
+                pagina: _hasta_la_etiqueta(texto[desde:hasta], tanda, pagina)
+                for pagina, desde, hasta in zip(tanda, inicios, [*inicios[1:], len(texto)], strict=True)
+            }
+        # Sin saber qué renglón es de quién, nada: un dato devuelto a otro
+        # estudiante es peor que una segunda lectura que falta. Se releen en
+        # mosaicos más pequeños (``leer_franjas``).
+        logger.info("el mosaico de %s volvió con %d rótulos para %d franjas", self.CAMPO, len(inicios), len(tanda))
+        self._sin_repartir.extend(tanda)
+        return {}
 
 
 def ubicar_con_tesseract(source, pagina: int, leyendas, dpi: int = 150) -> float | None:
@@ -580,6 +640,43 @@ def ubicar_con_tesseract(source, pagina: int, leyendas, dpi: int = 150) -> float
         if any(palabra in texto for palabra in palabras):
             return arriba
     return None
+
+
+#: Cuánto puede separarse el rótulo del renglón impreso que va justo debajo:
+#: un renglón de la ficha son unas dos centésimas de la hoja.
+CERCA_DEL_DE_DEBAJO = 0.06
+
+
+def ubicar_encima_de(debajo: Sequence[str], dpi: int = 150) -> Callable:
+    """Quien ubica el rótulo más cercano por encima del primer ``debajo``, según Tesseract.
+
+    El «Nombre del estudiante» de la ficha va justo encima de «Dirección
+    actual», pero la letra a mano lo tapa a veces y Tesseract lee «MBRE» o sólo
+    «ESTUDIANTE»; el primer «NOMBRE» de la hoja era entonces el de «Nombre de
+    los padres», y el renglón ampliado no traía el nombre (ALVAREZ LONDOÑO,
+    UPD3859718, pág. 3, 2026-11-17). Sin ``debajo`` en la hoja, como
+    ``ubicar_con_tesseract``; con él pero sin rótulo cerca, ``None``: la
+    franja hereda la altura de las demás fichas.
+    """
+    debajo_planos = [_plano(palabra) for palabra in debajo]
+
+    def localizar(source, pagina: int, leyendas) -> float | None:
+        palabras = _palabras_de(source, pagina, dpi)
+        tope = min(
+            (arriba for texto, arriba in palabras if any(palabra in texto for palabra in debajo_planos)),
+            default=None,
+        )
+        if tope is None:
+            return ubicar_con_tesseract(source, pagina, leyendas, dpi)
+        buscadas = [_plano(palabra) for palabra in leyendas]
+        encima = [
+            arriba
+            for texto, arriba in palabras
+            if tope - CERCA_DEL_DE_DEBAJO <= arriba < tope and any(palabra in texto for palabra in buscadas)
+        ]
+        return max(encima, default=None)
+
+    return localizar
 
 
 #: Lo que Tesseract leyó de cada página, para ubicar todas sus zonas con una

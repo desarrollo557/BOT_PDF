@@ -107,3 +107,71 @@ def test_con_la_ia_cada_dato_se_cruza_y_lo_que_discrepa_va_a_revision():
     # Dos lecturas gratuitas que coinciden pesan más que la IA, pero también a revisión.
     valor, nota = decidir_con_la_ia("el número del acta", "016", "018", 2)
     assert valor == "016" and "018" in nota
+
+
+# -- 2026-11-17: la ficha de Enfermería, con todos sus renglones ------------------------
+
+#: Lo que contestó la IA al mosaico de las cédulas de ALVAREZ (pág. 1 del banco) y
+#: CAMPO TORREGROZA (pág. 3), UPD3859718: una tabla con la etiqueta en la primera
+#: columna y la cédula un renglón más abajo.
+_MOSAICO_EN_TABLA = (
+    "|  [1] | Bajo el folio del libro  |\n| --- | --- |\n"
+    "|   |  Cédula o tarjeta No. Libreta Militar No.  |\n|   |  Nombre del acudiente (s)  |\n"
+    "|   |  Dirección: Tel.  |\n|  [3] | Bajo el folio 119 del libro 24.  |\n"
+    "|   |  Cédula o tarjeta No. C.C # 49.731.465 de Libreta Militar No.  |\n"
+    "|   |  Nombre del acudiente (s) Ana Rolón calle 50 # 13-03 Torico Cortezema  |\n"
+    "|   |  Dirección: la misma Tel.  |"
+)
+
+
+def test_el_mosaico_en_tabla_da_a_cada_franja_todos_sus_renglones():
+    """Repartido por la celda de al lado de «[3]», la cédula 49.731.465 no llegaba nunca a votar."""
+    mosaico = MosaicoDeCampo(FRANJA_DE_LA_CEDULA, leer=lambda imagen: "")
+    trozos = mosaico._repartir_texto(_MOSAICO_EN_TABLA, [1, 3])
+    assert leer_ficha(trozos[3]).cedula == "49731465"
+    assert leer_ficha(trozos[1]).cedula is None
+    # Lo de la franja de abajo no se cuela en la de arriba.
+    assert "119" not in trozos[1]
+
+
+def test_una_etiqueta_fuera_de_su_sitio_reparte_por_el_rotulo():
+    """El proveedor cambia a veces la etiqueta (INTERNADOS ROTATORIO, 2026-11-03): manda el orden de los rótulos."""
+    mosaico = MosaicoDeCampo(FRANJA_DE_LA_CEDULA, leer=lambda imagen: "")
+    cambiado = _MOSAICO_EN_TABLA.replace("[1]", "[9]").replace("[3]", "[1]").replace("[9]", "[3]")
+    trozos = mosaico._repartir_texto(cambiado, [1, 3])
+    assert leer_ficha(trozos[3]).cedula == "49731465"
+    assert leer_ficha(trozos[1]).cedula is None
+
+
+def test_la_cedula_en_disputa_la_decide_una_tercera_mirada():
+    """CAMPO TORREGROZA: la página leyó 49751465 y el renglón ampliado 49731465, que es lo que dice el papel."""
+    from resolutions.domain.doble_lectura import desempatar_numero
+
+    assert desempatar_numero("49751465", "49751465", None, "la cédula") == ("49751465", None, None)
+    # Otra mirada del renglón dice lo mismo que el renglón: dos de tres.
+    cedula, duda, nota = desempatar_numero("49751465", "49731465", "49731465", "la cédula")
+    assert (cedula, duda) == ("49731465", None) and "49751465" in nota
+    # Dice lo mismo que la página: vale la página.
+    assert desempatar_numero("39011905", "39011903", "39011905", "la cédula") == ("39011905", None, None)
+    # Tres lecturas distintas: la de la página, a revisión con las tres.
+    cedula, duda, nota = desempatar_numero("49751465", "49731465", "49731965", "la cédula")
+    assert cedula == "49751465" and nota is None and "49731965" in duda
+
+
+def test_el_renglon_del_nombre_es_el_de_encima_de_la_direccion(monkeypatch):
+    """ALVAREZ LONDOÑO (UPD3859718, pág. 3): Tesseract leyó «MBRE» y el primer «NOMBRE» era el de los padres."""
+    from resolutions.adapters import mosaico_de_nombres
+    from resolutions.domain.historia_academica import FRANJA_DEL_NOMBRE
+
+    palabras = [
+        ("ENFERMERIA", 0.063), ("MBRE", 0.105), ("ESTUDIANTE", 0.105), ("DIRECCION", 0.124),
+        ("NOMBRE", 0.217), ("PADRES", 0.218), ("DIRECCION:", 0.241),
+    ]
+    monkeypatch.setattr(mosaico_de_nombres, "_palabras_de", lambda source, pagina, dpi: palabras)
+    localizar = mosaico_de_nombres.ubicar_encima_de(FRANJA_DEL_NOMBRE.encima_de)
+    assert localizar(None, 3, FRANJA_DEL_NOMBRE.leyendas) == 0.105
+    # Antes: la primera «NOMBRE» de la hoja.
+    assert mosaico_de_nombres.ubicar_con_tesseract(None, 3, ("NOMBRE",)) == 0.217
+    # Sin rótulo cerca de la dirección, ninguno: hereda la altura de las demás fichas.
+    monkeypatch.setattr(mosaico_de_nombres, "_palabras_de", lambda source, pagina, dpi: palabras[3:])
+    assert localizar(None, 3, FRANJA_DEL_NOMBRE.leyendas) is None

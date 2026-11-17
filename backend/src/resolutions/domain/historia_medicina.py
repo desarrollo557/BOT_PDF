@@ -451,7 +451,10 @@ def nombre_por_consenso(lecturas: Sequence[str | None], conocidas: Collection[st
         # pie y «NIMMLER» en la ficha, dos y dos (internados, págs. 1 y 2).
         empatadas = [p for p in votos if votos[p] == votos[ganadora]]
         empate = len(empatadas) > 1 and sum(1 for p in empatadas if p in conocidas) != 1
-        if (votos[ganadora] < 2 or empate) and ganadora not in conocidas:
+        # Tampoco el que la lista no puede decidir porque las dos están en ella:
+        # «OLEA» en la página y OLGA en el renglón, las dos nombres reales
+        # (ALVAREZ LONDOÑO, UPD3859718, pág. 3, 2026-11-17). Se vuelve a mirar.
+        if empate or (votos[ganadora] < 2 and ganadora not in conocidas):
             sin_confirmar.append(ganadora)
         votado.append(ganadora)
     return NombreVotado(" ".join(votado), " ".join(base), tuple(sin_confirmar))
@@ -543,6 +546,85 @@ def corregir_con_la_ia(votado: NombreVotado, respuesta: str, lecturas: Sequence[
         resultado.append(palabra)
     corregido = " ".join(resultado)
     return corregido if corregido != votado.nombre else None
+
+
+# -- la IA mira el renglón -------------------------------------------------------
+#
+# El operador (2026-11-17, Enfermería): «que esté la IA para saber aproximar el
+# nombre y acertar con el nombre comparando». Las lecturas del OCR se equivocan
+# juntas -- IANACHO en la página y en el renglón ampliado, CORTEZ en las dos --
+# porque son el mismo lector sobre la misma letra, y compararlas en texto no lo
+# arregla: la IA de texto contestó «TORREGROZA LEONOR» a CAMPO TERNEGROZA ETDRIA
+# LEONOR. Mirando la imagen del renglón con las lecturas al lado, el modelo de
+# visión leyó CAMPO TORREGROZA ETILVIA LEONOR, que es lo que dice el papel.
+
+#: Lo que se le pide a la IA que mira el renglón: la imagen con el renglón del
+#: nombre de la ficha y, debajo, donde se repite; y las lecturas del OCR.
+INSTRUCCIONES_PARA_MIRAR_EL_NOMBRE = (
+    "Eres archivista de la Universidad de Cartagena (Colombia). La imagen trae el nombre de UNA estudiante, "
+    "escrito a mano o a máquina: arriba, el renglón «Nombre del estudiante» de su ficha; debajo, si las hay, "
+    "otras partes de su expediente donde se repite (Observaciones de la ficha, el pie de su hoja de notas). "
+    "También recibes lo que un OCR leyó de esos renglones; el OCR confunde letras.\n\n"
+    "Mira la imagen, compárala con las lecturas y devuelve el nombre completo tal como está escrito, en "
+    "mayúsculas y sin tildes, con los apellidos primero y luego los nombres.\n"
+    "- Cada palabra tiene que ser la que se ve escrita: usa las lecturas para entender la letra y corrige las "
+    "letras que el OCR leyó mal.\n"
+    "- No cambies un nombre o apellido por otro distinto ni por uno más común, no agregues palabras que no "
+    "estén escritas y no quites las que sí.\n"
+    "- Devuelve solo el nombre, en una línea."
+)
+
+
+def nombre_mirado(nombre: str | None, respuesta: str, lecturas: Sequence[str | None]) -> str | None:
+    """El nombre con lo que la IA vio en el renglón; ``None`` si no cambia nada o no es de fiar.
+
+    * Toda palabra de la respuesta tiene que estar cerca de una leída
+      (``DISTANCIA_DE_LA_IA``): la IA corrige letras, no pone a otra persona.
+    * Cada palabra del nombre se cambia por la de la respuesta que es esa
+      misma bien escrita (``_corrige_a``), de ella o de una lectura suya:
+      ETDRIA por ETILVIA, que es ETILIA con una letra más.
+    * Las palabras que el nombre no traía y la respuesta pone al final se
+      añaden: el nombre que la página dejó sin CONCEPCION, sin SOFIA. Las del
+      medio no («CASTILLO DE BLANCO» es el apellido de casada, no otro nombre).
+    """
+    propuestas = [p for p in re.findall(r"[A-Z]+", plano(respuesta)) if len(p) > 1 and p != "NINGUNO"]
+    leidas = [p for lectura in lecturas if lectura for p in lectura.split()]
+    if not nombre or not propuestas or not leidas:
+        return None
+
+    def cerca(una: str, otra: str) -> bool:
+        return damerau_levenshtein(una, otra) <= max(1, round(DISTANCIA_DE_LA_IA * len(otra)))
+
+    if not all(p in _CONECTORES or any(cerca(p, leida) for leida in leidas) for p in propuestas):
+        return None
+    if len([p for p in propuestas if p not in _CONECTORES]) > max(
+        len([p for p in lectura.split() if p not in _CONECTORES]) for lectura in lecturas if lectura
+    ):
+        return None
+    usadas: set[int] = set()
+    resultado: list[str] = []
+    for palabra in nombre.split():
+        # Las grafías de esta palabra en las lecturas: ella y las que se le parecen.
+        suyas = {palabra, *(leida for leida in leidas if _parecidas(palabra, leida) or _a_medias(palabra, leida))}
+        opciones = [
+            (damerau_levenshtein(propuesta, palabra), i)
+            for i, propuesta in enumerate(propuestas)
+            if i not in usadas and any(propuesta == suya or _corrige_a(propuesta, suya) for suya in suyas)
+        ]
+        if opciones:
+            _, elegida = min(opciones)
+            usadas.add(elegida)
+            resultado.append(propuestas[elegida])
+        else:
+            resultado.append(palabra)
+    sobrantes = [i for i in range(len(propuestas)) if i not in usadas]
+    if sobrantes and min(sobrantes) > max(usadas, default=-1):
+        al_final = [propuestas[i] for i in sobrantes]
+        while al_final and al_final[-1] in _CONECTORES:
+            al_final.pop()
+        resultado.extend(al_final)
+    mirado = " ".join(resultado)
+    return mirado if mirado != nombre else None
 
 
 # -- las hojas sueltas ---------------------------------------------------------------

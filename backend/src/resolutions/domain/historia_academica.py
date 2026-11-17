@@ -410,9 +410,10 @@ def _sin_puntuacion(p: str) -> str:
 #: El código del estudiante tras su rótulo. También con el programa separado
 #: por un guion -- «Código. 54-9010033», como se escribe a mano en las fichas de
 #: Enfermería de 1990: COTA ZAMBRANO salía sin código (2026-11-06) -- y con el
-#: rótulo de la ficha de 2003, «Carné Estudiantil N°: 5420030020».
+#: rótulo de la ficha de 2003, «Carné Estudiantil N°: 5420030020». La IA lee a
+#: veces «códico = 820414» (CAMPO TORREGROZA, UPD3859718, pág. 23, 2026-11-17).
 _CODIGO = re.compile(
-    r"(?:\bCODIGO\b|\bCOD\b|\bCARNET?\s+(?:ESTUDIANTIL\s+)?N\b)\W{0,4}(?:ESTUDIANTE\W{0,3})?"
+    r"(?:\bCODI[GC]O\b|\bCOD\b|\bCARNET?\s+(?:ESTUDIANTIL\s+)?N\b)\W{0,4}(?:ESTUDIANTE\W{0,3})?"
     r"(\d{2}[\s\-.]?\d{4,10})(?![\d\-])|#\s*(\d{8,12})\b"
 )
 _FECHA_DE_GRADO = re.compile(r"FECHA DE GRADO\W{0,4}.{0,30}?\b(19[2-9]\d|20[0-3]\d)\b")
@@ -724,7 +725,7 @@ _ROTULOS_DE = {
     "cedula": re.compile(r"CEDULA|\bC\s?\.?\s?C\b|IDENTIFICACION|DOCUMENTO"),
     "tarjeta": re.compile(r"\bT\s?\.?\s?I\b|TARJETA|IDENTIFICACION|DOCUMENTO"),
     "libreta": re.compile(r"LIBRETA|MILITAR"),
-    "codigo": re.compile(r"CODIGO|\bCOD\b|CARNE|#"),
+    "codigo": re.compile(r"CODI[GC]O|\bCOD\b|CARNE|#"),
 }
 #: Lo que, entre el rótulo y el número, dice que el número es de otra casilla.
 _OTRA_CASILLA = re.compile(r"TELEFONO|\bTEL\b|CELULAR|PUESTO|EDAD|FECHA")
@@ -1016,6 +1017,24 @@ _ANIO_DEL_NOMBRE = re.compile(r"(?<!\d)(19\d{2}|20[0-3]\d)(?!\d)")
 ANTES_DEL_NOMBRE = 8
 
 
+def _sin_lo_imposible(de_la_ficha: Sequence[int | None], de_las_notas: Sequence[int]) -> tuple[int | None, ...]:
+    """El ingreso y el grado de la ficha, sin el que contradice a las notas: un grado antes de la
+    primera nota, o un ingreso después de la última, es una cifra mal leída.
+
+    La IA leyó «Dic 18/81» en el recuadro del grado de CAMPO TORREGROZA, que dice
+    18/87, y con las notas de 1982 a 1987 salía del 01/01/1981 (UPD3859718,
+    pág. 23, 2026-11-17).
+    """
+    if not de_las_notas or not de_la_ficha:
+        return tuple(de_la_ficha)
+    ingreso, grado = (list(de_la_ficha) + [None, None])[:2]
+    if grado and grado < min(de_las_notas):
+        grado = None
+    if ingreso and ingreso > max(de_las_notas):
+        ingreso = None
+    return (ingreso, grado)
+
+
 def anios(
     textos: Sequence[str],
     *,
@@ -1035,6 +1054,7 @@ def anios(
     un expediente de 1990.
     """
     bajo, alto = ventana or (DESDE, hasta)
+    de_la_ficha = _sin_lo_imposible(de_la_ficha, [anio for anio, _ in _candidatos(textos, ventana) if bajo <= anio <= alto])
     leidos = [anio for anio in de_la_ficha if anio]
     vistos = sorted(
         (anio, largo)
@@ -1206,17 +1226,24 @@ def expedientes(
 #: resultados».
 FRANJA_DEL_NOMBRE = Franja(
     campo="el nombre",
-    # La primera «NOMBRE» de la ficha, de arriba abajo, es la del estudiante.
-    leyendas=("NOMBRE",),
+    # La leyenda más cercana por encima de «Dirección actual», que va justo
+    # debajo: la letra a mano tapa a veces el «NO» de «Nombre» y Tesseract lee
+    # «MBRE» o sólo «ESTUDIANTE», y la primera «NOMBRE» de la hoja era la de
+    # los padres (ALVAREZ LONDOÑO, UPD3859718, pág. 3, 2026-11-17).
+    leyendas=("MBRE", "ESTUDIANTE"),
     rotulo=r"N\w{1,4}BRE\W+DEL\W+ESTU\S*",
     alto=0.055,
     margen=0.03,
+    encima_de=("DIRECCION",),
 )
 FRANJA_DE_OBSERVACIONES = Franja(
     campo="el nombre en Observaciones",
-    leyendas=("OBSERVACIONES",),
+    # «OBS … IONES»: Tesseract parte a veces la palabra.
+    leyendas=("OBSERVACIONES", "OBS"),
     rotulo=r"OBSERVACI\S*",
-    alto=0.08,
+    # En la tarjeta de 1968 el nombre en mayúsculas va cuatro renglones por
+    # debajo del rótulo: con 0,08 se quedaba fuera (ALVAREZ LONDOÑO OLGA, pág. 3).
+    alto=0.11,
     margen=0.005,
 )
 
@@ -1233,6 +1260,34 @@ def nombre_de_observaciones(texto: str, conocidas: Collection[str] = ()) -> str 
     """
     if hallado := _DE_OBSERVACIONES.search(_sin_puntuacion(plano(texto))):
         return _limpio(hallado.group(1), conocidas)
+    return None
+
+
+#: Lo que la hoja de notas escribe bajo «Observaciones» y no es el nombre: el
+#: promedio de la carrera («X General de la Carrera: 3.57»).
+_NO_ES_EL_PIE = re.compile(r"\d|\bPROMEDIO\b|\bGENERAL\b|\bCARRERA\b|\bOBSERVACI")
+
+
+def nombre_al_pie_de_las_notas(texto: str, conocidas: Collection[str] = ()) -> str | None:
+    """El nombre que la hoja de notas de Enfermería escribe a mano al pie, bajo «Observaciones».
+
+    «Campo Torregroza Silvia.» y debajo sus años, «1.982-85.»: es otra vez el
+    nombre, con los apellidos primero y con otra letra, y vota con la ficha
+    (CAMPO TORREGROZA, UPD3859718, pág. 24, 2026-11-17: la ficha se leía
+    TERNEGROZA y TERESGOZA; el pie, TORREGROZA). Es el primer renglón con forma
+    de nombre tras el último «Observaciones», y con ``conocidas`` dos de sus
+    palabras en la lista, como el de Observaciones de la ficha.
+    """
+    sin_tildes = unicodedata.normalize("NFD", texto or "").encode("ascii", "ignore").decode().upper()
+    corte = sin_tildes.rfind("OBSERVACI")
+    if corte < 0:
+        return None
+    for renglon in sin_tildes[corte:].splitlines()[1:]:
+        if _NO_ES_EL_PIE.search(renglon):
+            continue
+        limpio = " ".join(_sin_puntuacion(re.sub(r"[|*#_]", " ", renglon)).split())
+        if limpio and (nombre := _limpio(limpio, conocidas)):
+            return nombre
     return None
 
 

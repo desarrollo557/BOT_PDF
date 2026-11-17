@@ -565,3 +565,43 @@ def test_la_cedula_se_busca_en_todo_el_expediente():
     assert cedula_del_expediente([FICHA_ROTA, "REGISTRO DE ESTUDIOS C.C. 45.474.260 Cartagena"]) == "45474260"
     # Un número suelto no es una cédula.
     assert cedula_del_expediente([NOTAS_1960, "Matrícula No. 271 Tel. 31-21"]) is None
+
+
+def test_el_empate_entre_dos_nombres_de_la_lista_no_confirma():
+    """ALVAREZ LONDOÑO (UPD3859718, pág. 3): «OLEA» en la página, OLGA en el renglón; las dos son nombres reales."""
+    votado = nombre_por_consenso(["ALVAREZ LONDONO OLEA", "OLGA ALVAREZ LONDONO"], {"ALVAREZ", "OLEA", "OLGA"})
+    assert votado.sin_confirmar == ("OLEA",)
+    # Con la zona de Observaciones leída, dos contra una.
+    votado = nombre_por_consenso(
+        ["ALVAREZ LONDONO OLEA", "OLGA ALVAREZ LONDONO", "ALVAREZ LONDONO OLGA"], {"ALVAREZ", "OLEA", "OLGA"}
+    )
+    assert (votado.nombre, votado.sin_confirmar) == ("ALVAREZ LONDONO OLGA", ())
+
+
+def test_la_ia_que_mira_el_renglon_corrige_letras_y_no_personas():
+    """El operador (2026-11-17): «que esté la IA para saber aproximar el nombre y acertar comparando».
+
+    Respuestas reales del modelo de visión sobre UPD3859718, con las lecturas del OCR.
+    """
+    from resolutions.domain.historia_medicina import nombre_mirado
+
+    campo = ["CAMPO TERNEGROZA ETDRIA LEONOR", "CAMPO TORREGROZA SILVIA", "SAMPO TORREGROZA ETDIVIA LEONOR"]
+    assert nombre_mirado(campo[0], "CAMPO TORREGROZA ETILVIA LEONOR", campo) == "CAMPO TORREGROZA ETILVIA LEONOR"
+    # Lo que el OCR leyó igual dos veces también: CORTEZ en la página y en el renglón.
+    cortes = ["CORTEZ RIVERA ESPERANZA", "ESPERANZA CORTEZ RIVERA"]
+    assert nombre_mirado(cortes[0], "CORTES RIVERA ESPERANZA", cortes) == "CORTES RIVERA ESPERANZA"
+    # La palabra que la página dejó fuera, al final: CONCEPCION.
+    ariza = ["ARIZA NAVARRO MARIA", "ARIO NAVARRO MARIA CONCEPCION"]
+    assert nombre_mirado(ariza[0], "ARIZA NAVARRO MARIA CONCEPCION", ariza) == "ARIZA NAVARRO MARIA CONCEPCION"
+    # El apellido de casada en medio no se añade.
+    castillo = ["CASTILLO ESPINOSA JUDITH", "JUDITH CASTILLO DE BLANCO"]
+    assert nombre_mirado(castillo[0], "CASTILLO DE BLANCO JUDITH", castillo) is None
+    # Ni una persona distinta: LOPEZ no es una lectura de PEREZ.
+    assert nombre_mirado("PEREZ GOMEZ ANA", "LOPEZ GOMEZ ANA", ["PEREZ GOMEZ ANA"]) is None
+    assert nombre_mirado("PEREZ GOMEZ ANA", "ANA MARIA RODRIGUEZ", ["PEREZ GOMEZ ANA"]) is None
+    # Ni quitar dos letras: CIFUENTES no es FUENTES.
+    lectura = ["BARCENAS CIFUENTES ARGELINA"]
+    assert nombre_mirado(lectura[0], "BARCENAS FUENTES ARGELINA", lectura) is None
+    # «DEL S.» al final, sin la palabra entera: nada que cambiar.
+    stella = ["ARRIETA NARVAEZ STELLA"]
+    assert nombre_mirado(stella[0], "ARRIETA NARVAEZ STELLA DEL S", stella) is None

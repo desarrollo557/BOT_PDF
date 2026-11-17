@@ -217,6 +217,8 @@ def historias_academicas_job(payload: dict) -> dict:
         # leer sus años en la capa de texto, y nada más.
         textos_de_la_ficha: dict[int, str] = {}
         notas_de_la_ia: dict[int, str] = {}
+        #: Cómo se decidió un número que la página y el renglón leyeron distinto.
+        notas_de_lo_releido: dict[int, list[str]] = {}
         if de_pago is not None and not de_hojas:
             _leer_las_fichas_con_la_ia(
                 payload, taller, source, de_pago, unidades, textos_de_la_ficha, notas_de_la_ia, nombre,
@@ -224,11 +226,13 @@ def historias_academicas_job(payload: dict) -> dict:
                 leer_las_notas=lambda unidad: not de_medicina
                 or anios(sin_la_ficha(unidad.paginas), ventana=ventana) == (None, None),
             )
-            # Y la segunda lectura de la cédula, de otra imagen: su renglón
-            # ampliado. Lo que no coincide va a revisión. Sus franjas son las
-            # de la ficha de Enfermería.
+            # Y la segunda lectura del nombre, la cédula y el código, de otra
+            # imagen: cada renglón ampliado. Sus franjas son las de la ficha de
+            # Enfermería; el nombre se vota abajo, con las de Medicina.
             if not de_medicina:
-                _segunda_lectura(payload, taller, source, unidades, conocidas)
+                lecturas, renglones = _segunda_lectura(
+                    payload, taller, source, unidades, conocidas, notas_de_la_ia, notas_de_lo_releido
+                )
 
         # La cédula de Medicina, buscada en todo el expediente, con IA o sin
         # ella: «siempre que un documento tenga cédula y nombre de una persona,
@@ -236,10 +240,13 @@ def historias_academicas_job(payload: dict) -> dict:
         if de_medicina:
             _buscar_las_cedulas(payload, taller, unidades, textos, textos_de_la_ficha, source)
 
-        # El nombre de Medicina, votado entre sus lecturas y corregido a lo más
-        # cercano de lo que dice el renglón (el operador, 2026-11-03).
+        # El nombre, votado entre sus lecturas y corregido a lo más cercano de
+        # lo que dice el renglón: Medicina y las hojas sueltas (el operador,
+        # 2026-11-03) y, con la IA, la ficha de Enfermería (2026-11-17: «que
+        # esté la IA para saber aproximar el nombre y acertar comparando»).
         notas_del_nombre: dict[int, str] = {}
-        if de_medicina or de_hojas:
+        de_enfermeria = not de_medicina and not de_hojas and bool(lecturas)
+        if de_medicina or de_hojas or de_enfermeria:
             if de_medicina:
                 for unidad in unidades:
                     # La ficha que leyó entera la IA dice el nombre otra vez.
@@ -249,6 +256,9 @@ def historias_academicas_job(payload: dict) -> dict:
             _corregir_los_nombres(
                 payload, taller, source, de_pago, unidades, lecturas, renglones, hojas, conocidas, nombre,
                 notas_del_nombre,
+                releer=_releer_en_la_ficha(taller, source, conocidas) if de_enfermeria else None,
+                a_revision=de_enfermeria,
+                mirar=(lambda unidad: _imagen_del_nombre(source, unidad)) if de_enfermeria else None,
             )
 
         # El agente se asegura (2026-11-06): ningún estudiante con el número de
@@ -492,6 +502,7 @@ def historias_academicas_job(payload: dict) -> dict:
                                     else []
                                 ),
                                 *([nota] if (nota := notas_del_nombre.get(unidad.paginas[0])) else []),
+                                *notas_de_lo_releido.get(unidad.paginas[0], []),
                                 *asegurador.notas.get(unidad.paginas[0], []),
                                 *([de_la_ia] if de_la_ia else []),
                                 *(f"{duda}: revísela" for duda in unidad.dudas),
@@ -767,35 +778,141 @@ RENGLONES_AL_RELEER = 3
 CABECERA_DE_LA_HOJA = (0.0, 0.05, 1.0, 0.6)
 
 
+def _releer_en_medicina(taller, source):
+    """Quien vuelve a mirar el pie o la ficha de Medicina con otro recorte y más zoom, y saca su nombre."""
+    from ...domain.historia_medicina import DESDE_LA_ALTURA, nombre_del_renglon
+
+    def releer(franja, paginas: list[int]) -> dict[int, str]:
+        mosaico = taller.mosaico_de_campo(
+            franja, localizar=_ubicar_en_la_capa(DESDE_LA_ALTURA[franja.campo]),
+            tamano=RENGLONES_AL_RELEER, dpi=DPI_DEL_RENGLON, por_etiqueta=False,
+        )
+        if mosaico is None:
+            return {}
+        leidos = mosaico.otra_mirada().leer_franjas(source, paginas)
+        return {pagina: leido for pagina, texto in leidos.items() if (leido := nombre_del_renglon(texto))}
+
+    return releer
+
+
+def _imagen_del_nombre(source, unidad) -> bytes | None:
+    """El renglón del nombre de la ficha y, debajo, Observaciones y el pie de la hoja de notas, en un JPEG.
+
+    Es lo que mira el juez del nombre (``taller.juez_del_nombre``): el renglón
+    donde Tesseract ubica «Nombre del estudiante» justo encima de «Dirección»
+    (si no, la quinta parte de arriba de la ficha, donde va en todas sus
+    plantillas), la zona de Observaciones, que en la tarjeta de 1968 repite el
+    nombre en mayúsculas, y el pie de la hoja que sigue, donde la hoja de
+    notas lo escribe otra vez. A 200 ppp: se lee la letra sin pasar de dos mil
+    puntos de ancho.
+    """
+    import io
+
+    from PIL import Image
+
+    from ...adapters.mosaico_de_nombres import ubicar_con_tesseract, ubicar_encima_de
+    from ...application.ports import Band
+    from ...domain.historia_academica import FRANJA_DE_OBSERVACIONES, FRANJA_DEL_NOMBRE
+
+    ficha = unidad.pagina_de_la_ficha
+    if not ficha:
+        return None
+    try:
+        arriba = ubicar_encima_de(FRANJA_DEL_NOMBRE.encima_de)(source, ficha, FRANJA_DEL_NOMBRE.leyendas)
+        bandas = [
+            (ficha, Band(0.0, max(0.0, arriba - 0.03), 1.0, min(1.0, arriba + 0.035)))
+            if arriba is not None
+            else (ficha, Band(0.0, 0.05, 1.0, 0.2))
+        ]
+        if (observaciones := ubicar_con_tesseract(source, ficha, FRANJA_DE_OBSERVACIONES.leyendas)) is not None:
+            bandas.append((ficha, Band(0.0, max(0.0, observaciones - 0.005), 1.0, min(1.0, observaciones + 0.11))))
+        if siguiente := next((numero for numero in unidad.paginas if numero > ficha), None):
+            bandas.append((siguiente, Band(0.0, 0.9, 1.0, 1.0)))
+        recortes = [Image.open(io.BytesIO(source.render(pagina, banda, 200))).convert("RGB") for pagina, banda in bandas]
+    except Exception:  # noqa: BLE001 - sin imagen, el nombre queda votado
+        logger.debug("no se pudo recortar el nombre de la página %s", ficha, exc_info=True)
+        return None
+    ancho = max(recorte.width for recorte in recortes)
+    lienzo = Image.new("RGB", (ancho, sum(recorte.height + 10 for recorte in recortes)), "white")
+    y = 0
+    for recorte in recortes:
+        lienzo.paste(recorte, (0, y))
+        y += recorte.height + 10
+    lienzo.thumbnail((2000, 2000))
+    salida = io.BytesIO()
+    lienzo.save(salida, "JPEG", quality=85)
+    return salida.getvalue()
+
+
+def _mirar_los_nombres(taller, mirar, por_unidad, votados, lecturas, nombre) -> dict[int, str]:
+    """Lo que contesta el juez del nombre de cada estudiante, mirando su renglón con sus lecturas al lado.
+
+    Las imágenes se recortan de a una -- el documento no se lee desde dos
+    hilos -- y se preguntan de a ``LECTORES_DE_IA``. El que falla queda con su
+    nombre votado.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    juez = taller.juez_del_nombre()
+    if juez is None:
+        return {}
+    imagenes: dict[int, bytes] = {}
+    for clave, votado in votados.items():
+        if votado.nombre:
+            taller.control.check()
+            if imagen := mirar(por_unidad[clave]):
+                imagenes[clave] = imagen
+
+    def preguntar(clave: int) -> tuple[int, str | None]:
+        suyas = list(dict.fromkeys(lectura for lectura in [votados[clave].nombre, *lecturas.get(clave, [])] if lectura))
+        try:
+            return clave, juez.resumir("\n".join(f"- {lectura}" for lectura in suyas), imagen=imagenes[clave])
+        except Exception:  # noqa: BLE001 - sin el juez queda lo votado
+            logger.warning("la IA no miró el nombre de la página %s de %s", clave, nombre, exc_info=True)
+            return clave, None
+
+    with ThreadPoolExecutor(max_workers=LECTORES_DE_IA) as pool:
+        respuestas = dict(pool.map(preguntar, list(imagenes)))
+    return {clave: respuesta for clave, respuesta in respuestas.items() if respuesta}
+
+
 def _corregir_los_nombres(
-    payload, taller, source, de_pago, unidades, lecturas, renglones, hojas, conocidas, nombre, notas_del_nombre
+    payload, taller, source, de_pago, unidades, lecturas, renglones, hojas, conocidas, nombre, notas_del_nombre,
+    *, releer=None, a_revision=False, mirar=None,
 ) -> None:
     """El nombre de cada estudiante, lo más parecido a lo que dice el renglón de su página.
 
     Lo pidió el operador el 2026-11-03: «que si el nombre está mal escrito, la
     IA tenga la habilidad de colocarle una aproximación correcta y muy
-    cercana… lo más parecido a lo que se pueda leer en el renglón».
+    cercana… lo más parecido a lo que se pueda leer en el renglón». Y el
+    2026-11-17, para Enfermería: «que esté la IA para saber aproximar el nombre
+    y acertar con el nombre comparando».
 
     1. Las lecturas del estudiante votan cada palabra, y la lista de nombres
        conocidos corrige la que nada confirma y está a una letra
        (``nombre_por_consenso``). Gratis.
     2. Si aún queda una palabra sin confirmar y se pidió la IA, se vuelve a
-       mirar el renglón del PDF: con otro recorte y más zoom (``otra_mirada``)
-       en Medicina, la cabecera de la hoja a más resolución en las hojas
-       sueltas. Esa lectura vota también.
-    3. Lo que siga sin confirmar lo corrige la IA con todas las lecturas, y
-       sólo se acepta una aproximación de lo leído (``aproximacion_de_la_ia``).
+       mirar el renglón del PDF con otro recorte y más zoom (``otra_mirada``,
+       con ``releer``: el pie y la ficha en Medicina, el renglón del nombre y
+       Observaciones en la ficha de Enfermería), o la cabecera de la hoja a
+       más resolución en las hojas sueltas. Esa lectura vota también.
+    3. Con ``mirar`` (la ficha de Enfermería), la IA mira la imagen del
+       renglón de cada estudiante con todas sus lecturas al lado y dice lo que
+       está escrito (``_mirar_los_nombres``, ``nombre_mirado``). Si no, lo que
+       siga sin confirmar lo corrige la IA comparando las lecturas en texto.
+       En los dos casos sólo se acepta una aproximación de lo leído.
 
-    Si el nombre cambia, la fila dice qué se leyó.
+    Si el nombre cambia, la fila dice qué se leyó. Con ``a_revision``, lo que ni
+    así se confirma y las lecturas no dicen igual va a revisión con ellas.
     """
     from dataclasses import replace
 
     from ...application.ports import Band
+    from ...domain.historia_academica import plano
     from ...domain.historia_medicina import (
-        DESDE_LA_ALTURA,
         corregir_con_la_ia,
         leer_hoja,
-        nombre_del_renglon,
+        nombre_mirado,
         nombre_por_consenso,
     )
 
@@ -808,21 +925,17 @@ def _corregir_los_nombres(
     if dudosos and de_pago is not None:
         _anunciar(payload, Stage.IDENTIFYING, detail="volviendo a mirar el renglón de los nombres dudosos")
         if renglones:
-            # Medicina: el pie y la ficha de cada uno, con otra mirada.
+            # El renglón de cada uno, con otra mirada.
+            releer = releer or _releer_en_medicina(taller, source)
             por_franja: dict[object, list[tuple[int, int]]] = {}
             for clave in dudosos:
                 for franja, pagina in renglones.get(clave, []):
                     por_franja.setdefault(franja, []).append((clave, pagina))
             for franja, pares in por_franja.items():
-                mosaico = taller.mosaico_de_campo(
-                    franja, localizar=_ubicar_en_la_capa(DESDE_LA_ALTURA[franja.campo]),
-                    tamano=RENGLONES_AL_RELEER, dpi=DPI_DEL_RENGLON, por_etiqueta=False,
-                )
-                if mosaico is None:
-                    continue
-                leidos = mosaico.otra_mirada().leer_franjas(source, [pagina for _, pagina in pares])
+                taller.control.check()
+                leidos = releer(franja, [pagina for _, pagina in pares])
                 for clave, pagina in pares:
-                    if leido := nombre_del_renglon(leidos.get(pagina, "")):
+                    if leido := leidos.get(pagina):
                         lecturas.setdefault(clave, []).append(leido)
         else:
             # Hojas sueltas: su cabecera, a más resolución.
@@ -836,17 +949,30 @@ def _corregir_los_nombres(
         for clave in dudosos:
             votados[clave] = nombre_por_consenso(lecturas.get(clave, []), conocidas)
 
+    # Con ``mirar``, la IA mira el renglón de cada estudiante, con sus lecturas
+    # al lado: también el de los confirmados, porque el OCR se equivoca igual
+    # en la página y en el renglón ampliado (CORTEZ por CORTES, en las dos).
+    miradas = _mirar_los_nombres(taller, mirar, por_unidad, votados, lecturas, nombre) if mirar and de_pago else {}
     corrector = taller.corrector_de_nombres() if de_pago is not None else None
     for clave, votado in votados.items():
         final = votado.nombre
-        if final and votado.sin_confirmar and corrector is not None:
+        corregido_por_la_ia = None
+        if final and clave in miradas:
+            todas = [votado.nombre, *[lectura for lectura in lecturas.get(clave, []) if lectura != votado.nombre]]
+            corregido_por_la_ia = nombre_mirado(final, miradas[clave], todas)
+            if corregido_por_la_ia is None and " ".join(re.findall(r"[A-Z]+", plano(miradas[clave]))) == final:
+                # La IA lee lo mismo: eso lo confirma.
+                corregido_por_la_ia = final
+            final = corregido_por_la_ia or final
+        elif final and votado.sin_confirmar and corrector is not None:
             todas = [votado.nombre, *[lectura for lectura in lecturas.get(clave, []) if lectura != votado.nombre]]
             try:
                 respuesta = corrector.resumir("\n".join(f"- {lectura}" for lectura in todas if lectura))
             except Exception:  # noqa: BLE001 - sin la IA queda lo votado
                 logger.warning("la IA no corrigió un nombre de %s", nombre, exc_info=True)
             else:
-                final = corregir_con_la_ia(votado, respuesta, todas) or final
+                corregido_por_la_ia = corregir_con_la_ia(votado, respuesta, todas)
+                final = corregido_por_la_ia or final
         if not final:
             continue
         unidad = por_unidad[clave]
@@ -854,6 +980,12 @@ def _corregir_los_nombres(
         if votado.leido and final != votado.leido:
             notas_del_nombre[clave] = f"nombre corregido; se leyó «{votado.leido}»"
             logger.info("%s: «%s» → «%s» (lecturas: %s)", nombre, votado.leido, final, lecturas.get(clave))
+        distintas = list(dict.fromkeys(lectura for lectura in lecturas.get(clave, []) if lectura))
+        if a_revision and votado.sin_confirmar and not corregido_por_la_ia and len(distintas) > 1:
+            # Ni otra mirada ni la IA lo confirman, y las lecturas no dicen
+            # igual: a revisión con todas, como antes con dos.
+            leidas = " / ".join(f"«{lectura}»" for lectura in distintas)
+            unidad.dudas.append(f"el nombre se leyó distinto en cada zona: {leidas}")
     logger.info(
         "%s: %d nombres, %d con palabras dudosas, %d corregidos", nombre, len(votados), len(dudosos),
         len(notas_del_nombre),
@@ -1297,30 +1429,44 @@ def _sin_numeros_ajenos(unidades, asegurador: _Asegurador) -> None:
                 logger.info("%s %s quitada de %s: es de %s", etiqueta, numero, unidad.ficha.nombre, dueno)
 
 
-def _segunda_lectura(payload, taller, source, unidades, conocidas=()) -> None:
-    """El nombre y la cédula de cada ficha releídos con zoom en sus zonas, y votados con la página.
+def _segunda_lectura(payload, taller, source, unidades, conocidas=(), notas_de_la_ia=None, notas=None):
+    """El nombre, la cédula y el código de cada ficha releídos con zoom en sus zonas.
 
     Tesseract ubica en la imagen el rótulo de cada zona -- «Nombre del
     estudiante», «Observaciones», «Cédula o tarjeta» -- y su renglón se lee
-    ampliado, tres por página facturada (``domain/doble_lectura.py``). El
-    nombre se vota entre la página y las dos zonas donde la ficha lo escribe,
-    como pidió el operador (2026-10-30); la cédula, si discrepa, queda la de
-    la página y va a revisión. Lo que no se resuelve va a la cola de revisión.
+    ampliado, tres por página facturada (``domain/doble_lectura.py``).
+
+    * **La cédula y la tarjeta**: si la página y el renglón discrepan, el
+      renglón se mira otra vez con otro recorte y más zoom (``otra_mirada``),
+      y vale lo que digan dos de las tres (``desempatar_numero``); si no, la
+      de la página, a revisión.
+    * **El código** que la página no leyó, de la zona de Observaciones:
+      «código = 820414».
+    * **El nombre** no se decide aquí: se devuelven sus lecturas -- la de la
+      página, la del pie de la hoja de notas, la del renglón y la de
+      Observaciones -- y los renglones de donde salieron, para votarlas,
+      volver a mirar con zoom lo que no se confirme y que la IA lo aproxime,
+      como en Medicina (``_corregir_los_nombres``; el operador, 2026-11-17).
+
+    Las notas de cómo se decidió un número van a ``notas``, por estudiante.
     """
     from dataclasses import replace
 
-    from ...domain.doble_lectura import conciliar_numero, votar_nombre
+    from ...domain.doble_lectura import desempatar_numero
     from ...domain.historia_academica import (
         FRANJA_DE_LA_CEDULA,
         FRANJA_DE_OBSERVACIONES,
         FRANJA_DEL_NOMBRE,
         leer_ficha,
+        nombre_al_pie_de_las_notas,
         nombre_de_observaciones,
     )
 
+    lecturas: dict[int, list[str | None]] = {}
+    renglones: dict[int, list[tuple[object, int]]] = {}
     con_ficha = [unidad for unidad in unidades if unidad.ficha is not None and unidad.pagina_de_la_ficha]
     if not con_ficha:
-        return
+        return lecturas, renglones
     paginas = [unidad.pagina_de_la_ficha for unidad in con_ficha]
     leidos = {}
     for franja in (FRANJA_DE_LA_CEDULA, FRANJA_DEL_NOMBRE, FRANJA_DE_OBSERVACIONES):
@@ -1328,22 +1474,73 @@ def _segunda_lectura(payload, taller, source, unidades, conocidas=()) -> None:
         _anunciar(payload, Stage.IDENTIFYING, detail=f"releyendo {franja.campo} con zoom")
         mosaico = taller.mosaico_de_campo(franja)
         leidos[franja.campo] = mosaico.leer_franjas(source, paginas) if mosaico is not None else {}
+
+    def discrepa(principal, segunda) -> bool:
+        return bool(principal and segunda and principal != segunda)
+
+    segundas = {pagina: leer_ficha(leidos[FRANJA_DE_LA_CEDULA.campo].get(pagina, "")) for pagina in paginas}
+    en_disputa = [
+        unidad.pagina_de_la_ficha
+        for unidad in con_ficha
+        if discrepa(unidad.ficha.cedula, segundas[unidad.pagina_de_la_ficha].cedula)
+        or discrepa(unidad.ficha.tarjeta, segundas[unidad.pagina_de_la_ficha].tarjeta)
+    ]
+    terceras = {}
+    if en_disputa and (mosaico := taller.mosaico_de_campo(FRANJA_DE_LA_CEDULA)) is not None:
+        taller.control.check()
+        _anunciar(payload, Stage.IDENTIFYING, detail=f"mirando otra vez {len(en_disputa)} cédulas que no coinciden")
+        terceras = {
+            pagina: leer_ficha(texto) for pagina, texto in mosaico.otra_mirada().leer_franjas(source, en_disputa).items()
+        }
+
     for unidad in con_ficha:
         pagina = unidad.pagina_de_la_ficha
-        de_la_cedula = leer_ficha(leidos[FRANJA_DE_LA_CEDULA.campo].get(pagina, ""))
-        cedula, duda_de_la_cedula = conciliar_numero(unidad.ficha.cedula, de_la_cedula.cedula, "la cédula")
-        tarjeta, duda_de_la_tarjeta = conciliar_numero(
-            unidad.ficha.tarjeta, de_la_cedula.tarjeta, "la tarjeta de identidad"
+        segunda, tercera = segundas[pagina], terceras.get(pagina)
+        cedula, duda_de_la_cedula, nota_de_la_cedula = desempatar_numero(
+            unidad.ficha.cedula, segunda.cedula, tercera.cedula if tercera else None, "la cédula"
         )
-        del_renglon = leer_ficha(leidos[FRANJA_DEL_NOMBRE.campo].get(pagina, "")).nombre
-        de_observaciones = nombre_de_observaciones(
-            leidos[FRANJA_DE_OBSERVACIONES.campo].get(pagina, ""), conocidas
+        tarjeta, duda_de_la_tarjeta, nota_de_la_tarjeta = desempatar_numero(
+            unidad.ficha.tarjeta, segunda.tarjeta, tercera.tarjeta if tercera else None, "la tarjeta de identidad"
         )
-        nombre, duda_del_nombre = votar_nombre(unidad.ficha.nombre, [del_renglon, de_observaciones], conocidas)
-        unidad.ficha = replace(unidad.ficha, nombre=nombre, cedula=cedula, tarjeta=tarjeta)
-        unidad.dudas.extend(
-            duda for duda in (duda_del_nombre, duda_de_la_cedula, duda_de_la_tarjeta) if duda
-        )
+        observaciones = leidos[FRANJA_DE_OBSERVACIONES.campo].get(pagina, "")
+        # El código que la página no leyó, con su rótulo en Observaciones.
+        codigo = unidad.ficha.codigo or leer_ficha(observaciones).codigo
+        unidad.ficha = replace(unidad.ficha, cedula=cedula, tarjeta=tarjeta, codigo=codigo)
+        unidad.dudas.extend(duda for duda in (duda_de_la_cedula, duda_de_la_tarjeta) if duda)
+        if notas is not None:
+            notas.setdefault(unidad.paginas[0], []).extend(
+                nota for nota in (nota_de_la_cedula, nota_de_la_tarjeta) if nota
+            )
+        lecturas[unidad.paginas[0]] = [
+            unidad.ficha.nombre,
+            nombre_al_pie_de_las_notas((notas_de_la_ia or {}).get(pagina, ""), conocidas),
+            leer_ficha(leidos[FRANJA_DEL_NOMBRE.campo].get(pagina, "")).nombre,
+            nombre_de_observaciones(observaciones, conocidas),
+        ]
+        renglones[unidad.paginas[0]] = [(FRANJA_DEL_NOMBRE, pagina), (FRANJA_DE_OBSERVACIONES, pagina)]
+    return lecturas, renglones
+
+
+def _releer_en_la_ficha(taller, source, conocidas):
+    """Quien vuelve a mirar un renglón de la ficha de Enfermería con otro recorte y más zoom, y saca su nombre."""
+    from ...domain.historia_academica import (
+        FRANJA_DE_OBSERVACIONES,
+        leer_ficha,
+        nombre_de_observaciones,
+    )
+
+    def releer(franja, paginas: list[int]) -> dict[int, str]:
+        mosaico = taller.mosaico_de_campo(franja, tamano=RENGLONES_AL_RELEER)
+        if mosaico is None:
+            return {}
+        leidos = mosaico.otra_mirada().leer_franjas(source, paginas)
+        if franja is FRANJA_DE_OBSERVACIONES:
+            nombres = {pagina: nombre_de_observaciones(texto, conocidas) for pagina, texto in leidos.items()}
+        else:
+            nombres = {pagina: leer_ficha(texto).nombre for pagina, texto in leidos.items()}
+        return {pagina: nombre for pagina, nombre in nombres.items() if nombre}
+
+    return releer
 
 
 def _con_los_extremos_de_la_ficha(de_las_notas, de_la_ficha):

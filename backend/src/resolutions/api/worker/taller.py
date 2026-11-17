@@ -299,14 +299,21 @@ class Taller:
         ``localizar`` dice a qué altura está el rótulo; sin él lo busca Tesseract.
         Sin ``por_etiqueta`` se reparte sólo por el orden de los rótulos.
         """
-        from ...adapters.mosaico_de_nombres import MosaicoDeCampo, ubicar_con_tesseract
+        from ...adapters.mosaico_de_nombres import (
+            MosaicoDeCampo,
+            ubicar_con_tesseract,
+            ubicar_encima_de,
+        )
 
+        if localizar is None:
+            # El campo justo encima de su vecino de abajo, si la franja lo dice.
+            localizar = ubicar_encima_de(franja.encima_de) if franja.encima_de else ubicar_con_tesseract
         # Tres renglones por imagen y a 450 ppp: con diez, el proveedor reducía
         # la imagen y la letra a mano dejaba de leerse (UPD3859718, 2026-10-30).
         # Lo escrito a máquina admite más: el nombre de Medicina, ocho a 300.
         return self._mosaico(
             lambda **opciones: MosaicoDeCampo(
-                franja, localizar=localizar or ubicar_con_tesseract, tamano=tamano, dpi=dpi,
+                franja, localizar=localizar, tamano=tamano, dpi=dpi,
                 por_etiqueta=por_etiqueta, **opciones,
             )
         )
@@ -444,6 +451,37 @@ class Taller:
             turnos=self.turnos_de_ia,
             instrucciones=INSTRUCCIONES_PARA_CORREGIR_EL_NOMBRE,
             encabezado="Lecturas del nombre",
+        )
+
+    def juez_del_nombre(self):
+        """Quien mira el renglón del nombre con las lecturas del OCR al lado y dice lo que está escrito, si se pidió la IA.
+
+        Lo pidió el operador el 2026-11-17 para Enfermería: «que esté la IA
+        para saber aproximar el nombre y acertar con el nombre comparando». Las
+        lecturas del OCR se equivocan juntas en la misma letra; un modelo que
+        ve la imagen las desempata. El mediano, con visión: el pequeño leyó
+        SILVIA, ZANACHO y DOENAS donde el mediano leyó ETILVIA, CORTES y DUEÑAS
+        (UPD3859718). Cobra por token, unas 1.600 por estudiante. Lo que
+        contesta sólo vale si es una aproximación de lo leído
+        (``domain/historia_medicina.py``, ``nombre_mirado``).
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_resumen import MistralResumenConfig, MistralResumidor
+        from ...domain.historia_medicina import INSTRUCCIONES_PARA_MIRAR_EL_NOMBRE
+
+        return MistralResumidor(
+            api_key=llave,
+            config=MistralResumenConfig(model="mistral-medium-latest", max_tokens=60, temperatura=0.0),
+            consumo=self.consumo,
+            turnos=self.turnos_de_ia,
+            instrucciones=INSTRUCCIONES_PARA_MIRAR_EL_NOMBRE,
+            encabezado="Lecturas del OCR",
+            antes_de_pedir=self.control.check,
         )
 
     def lector_del_acta_de_grado(self):

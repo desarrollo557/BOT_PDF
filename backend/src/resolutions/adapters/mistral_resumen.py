@@ -116,18 +116,31 @@ class MistralResumidor:
         #: rechazada o una cuenta sin saldo no se arreglan reintentando.
         self._cerrado: str | None = None
 
-    def resumir(self, texto: str) -> str:
+    def resumir(self, texto: str, imagen: bytes | None = None) -> str:
+        """Lo que contesta el chat al texto y, si se da, a la imagen (JPEG) que lo acompaña.
+
+        Con imagen el modelo tiene que ver: el juez del nombre de la ficha mira
+        el renglón con las lecturas del OCR al lado (2026-11-17).
+        """
         if self._cerrado:
             raise ResumenNoDisponible(self._cerrado)
         if not texto.strip():
             raise ResumenNoDisponible("el acta no trae texto legible que resumir")
 
+        pedido: str | list[dict] = f"{self._encabezado}:\n\n{texto}"
+        if imagen:
+            import base64
+
+            pedido = [
+                {"type": "text", "text": pedido},
+                {"type": "image_url", "image_url": "data:image/jpeg;base64," + base64.b64encode(imagen).decode()},
+            ]
         cuerpo = json.dumps(
             {
                 "model": self._config.model,
                 "messages": [
                     {"role": "system", "content": self._instrucciones},
-                    {"role": "user", "content": f"{self._encabezado}:\n\n{texto}"},
+                    {"role": "user", "content": pedido},
                 ],
                 "max_tokens": self._config.max_tokens,
                 "temperature": self._config.temperatura,
