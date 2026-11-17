@@ -40,6 +40,8 @@ from .nominas import (
     _letras,
     _reparto,
     asegurar_las_fechas,
+    asegurar_los_nombres_de,
+    con_lo_revisado,
     escribir_paginas,
     nombre_del_pdf,
     tomada_del_libro,
@@ -184,6 +186,23 @@ def certificados_job(payload: dict) -> dict:
         carpeta_de_salida = taller.destination / document_folder(nombre)
         if pidio_dividir:
             carpeta_de_salida.mkdir(parents=True, exist_ok=True)
+        # El revisor de nombres (2026-11-17), antes de nombrar los PDF: el nombre
+        # de cada certificado votado entre sus versiones y mirado por la IA en la
+        # hoja, con la pieza común a todas las habilidades.
+        from .nombres_asegurados import recorte_de_las_zonas, regla_del_nombre
+
+        regla = regla_del_nombre("certificados")
+        _anunciar(payload, Stage.IDENTIFYING, detail="asegurando el nombre de cada certificado")
+        nombres_revisados = asegurar_los_nombres_de(
+            documentos, taller=taller, de_pago=de_pago, nombre=nombre,
+            recorte=lambda documento: recorte_de_las_zonas(
+                source,
+                next((p for p in documento.paginas if hojas[p - 1].plantilla == n.CERTIFICADO), documento.paginas[0]),
+                regla,
+            )
+            if regla is not None
+            else None,
+        )
         _anunciar(payload, Stage.ASSEMBLING, detail=f"escribiendo {len(documentos)} PDF", done=0, total=len(documentos))
         with pymupdf.open(taller.source) as original:
             for orden, documento in enumerate(documentos, start=1):
@@ -284,6 +303,8 @@ def certificados_job(payload: dict) -> dict:
         report, filas, textos_de_las_filas, habilidad="certificados", taller=taller,
         ventana=ventana, derivadas=derivadas, de_su_lector=de_su_lector,
     )
+    # Y lo que dijo el revisor de nombres, en cada fila y en el informe.
+    con_lo_revisado(report, filas, nombres_revisados, nombre)
     integridad = revisar_los_datos(filas, del_revisor.datos, aceptable=del_revisor.margen) if del_revisor.datos else None
     if revision is not None or aviso_del_revisor or comprobacion or integridad is not None:
         anotar_en_el_informe(

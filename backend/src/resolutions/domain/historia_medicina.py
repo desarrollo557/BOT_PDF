@@ -603,6 +603,8 @@ def nombre_mirado(nombre: str | None, respuesta: str, lecturas: Sequence[str | N
         return None
     usadas: set[int] = set()
     resultado: list[str] = []
+    #: Por cada palabra del nombre, el índice de la respuesta con que casó (``None`` si ninguno).
+    pareja: list[int | None] = []
     for palabra in nombre.split():
         # Las grafías de esta palabra en las lecturas: ella y las que se le parecen.
         suyas = {palabra, *(leida for leida in leidas if _parecidas(palabra, leida) or _a_medias(palabra, leida))}
@@ -615,11 +617,28 @@ def nombre_mirado(nombre: str | None, respuesta: str, lecturas: Sequence[str | N
             _, elegida = min(opciones)
             usadas.add(elegida)
             resultado.append(propuestas[elegida])
+            pareja.append(elegida)
         else:
             resultado.append(palabra)
+            pareja.append(None)
     if len(usadas) < 2:
         # Ni dos palabras del nombre en la respuesta: es otra persona.
         return None
+    # La IA también elige entre las lecturas: la palabra que el nombre no casó
+    # se cambia por la de la respuesta que ocupa su hueco -- entre las que sí
+    # casaron --, si es la única y otra lectura la trae tal cual. Una hoja de
+    # la nómina de 1975 se leyó «CASTELLAR AGUA» y la otra «CASTELLAR MEZA
+    # TULIO»: la IA, mirando la cabecera, dijo MEZA (2026-11-17).
+    exactas = set(leidas)
+    for indice, elegida in enumerate(pareja):
+        if elegida is not None:
+            continue
+        antes = max((j for j in pareja[:indice] if j is not None), default=-1)
+        despues = min((j for j in pareja[indice + 1 :] if j is not None), default=len(propuestas))
+        hueco = [j for j in range(antes + 1, despues) if j not in usadas]
+        if len(hueco) == 1 and propuestas[hueco[0]] in exactas and propuestas[hueco[0]] not in _CONECTORES:
+            resultado[indice] = propuestas[hueco[0]]
+            usadas.add(hueco[0])
     sobrantes = [i for i in range(len(propuestas)) if i not in usadas]
     if sobrantes and min(sobrantes) > max(usadas):
         al_final = [propuestas[i] for i in sobrantes]

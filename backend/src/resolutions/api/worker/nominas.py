@@ -644,6 +644,14 @@ def nominas_job(payload: dict) -> dict:
         #: inicial que se leyó. Las
         #: filas primero; los PDF, con la fecha ya asegurada (2026-11-10).
         por_escribir: list[tuple[int, object, str, str | None]] = []
+        # El revisor de nombres (2026-11-17), antes de nombrar los PDF: el
+        # nombre de cada persona votado entre sus hojas y mirado por la IA en su
+        # cabecera, con la pieza común a todas las habilidades.
+        _anunciar(payload, Stage.IDENTIFYING, detail="asegurando el nombre de cada persona")
+        nombres_revisados = asegurar_los_nombres_de(
+            documentos, taller=taller, de_pago=de_pago, nombre=nombre,
+            recorte=lambda documento: _recorte_de_las_cabeceras(source, documento, hojas),
+        )
         for orden, documento in enumerate(documentos, start=1):
             taller.control.check()
             archivo = nombre_del_pdf(orden, documento, carpeta=carpeta_de_salida)
@@ -773,6 +781,8 @@ def nominas_job(payload: dict) -> dict:
     from .fechas_aseguradas import pasar_al_informe
 
     pasar_al_informe(report, fechas_revisadas)
+    # Y lo que dijo el revisor de nombres, en cada fila y en el informe.
+    con_lo_revisado(report, filas, nombres_revisados, nombre)
     integridad = revisar_los_datos(filas, del_revisor.datos, aceptable=del_revisor.margen) if del_revisor.datos else None
     if revision is not None or aviso_del_revisor or comprobacion or integridad is not None:
         anotar_en_el_informe(
@@ -1189,6 +1199,94 @@ def _juntar_los_paquetes_iguales(documentos, notas):
             continue
         juntos.append(documento)
     return juntos, notas
+
+
+def asegurar_los_nombres_de(documentos, *, taller, de_pago, nombre: str, recorte) -> dict:
+    """El nombre de cada persona del libro, con el revisor de nombres común a todas las habilidades.
+
+    El operador, 2026-11-17: «centralizarlas y conectarlas a todas las
+    habilidades». Cada hoja de la persona -- sus tarjetas, su hoja manuscrita,
+    las versiones de su certificado -- es una lectura de su nombre, y votan
+    (``application/revisor_de_nombres.py``). Con la IA, ésta mira la imagen de
+    donde está escrito (``recorte(documento)``) con las lecturas y los
+    candidatos del padrón al lado: a todas las personas, siempre. Lo que queda
+    va al documento (``nombre_asegurado``), y de ahí a su PDF y a su fila.
+
+    Devuelve lo revisado por el índice de cada documento: ``con_lo_revisado``
+    lo lleva a las filas y el informe.
+    """
+    from ...application.acta_consejo import nombres_conocidos
+    from ...application.revisor_de_nombres import PorRevisar
+    from .nombres_asegurados import asegurar_los_nombres, padron_del_trabajo
+
+    personas = [
+        PorRevisar(
+            indice,
+            [lectura.nombre for lectura in documento.lecturas if lectura.nombre],
+            cedula=documento.cedula,
+            imagen=(lambda documento=documento: recorte(documento)),
+            pagina=documento.paginas[0],
+        )
+        for indice, documento in enumerate(documentos)
+        if any(lectura.nombre for lectura in documento.lecturas)
+    ]
+    if not personas:
+        return {}
+    padron = padron_del_trabajo(taller)
+    revisados = asegurar_los_nombres(
+        None, personas, taller=taller, documento=nombre, conocidas=set(nombres_conocidos()) | padron.palabras,
+        padron=padron, de_pago=de_pago is not None, mirar=True,
+    )
+    for indice, revisado in revisados.items():
+        if revisado.nombre:
+            documentos[indice].nombre_asegurado = revisado.nombre
+    return revisados
+
+
+def con_lo_revisado(report: dict, filas: list[dict], revisados: dict, nombre: str) -> None:
+    """Lo que el revisor de nombres decidió, en cada fila -- su detalle y su nota -- y en el informe.
+
+    Una fila por documento, en su orden: el índice de lo revisado es el de la fila.
+    """
+    from ...application.revisor_de_nombres import (
+        anotar_en_el_informe as anotar_los_nombres,
+    )
+
+    for indice, revisado in revisados.items():
+        if not 0 <= indice < len(filas):
+            continue
+        fila = filas[indice]
+        fila["revision_del_nombre"] = revisado.detalle
+        if revisado.cambio:
+            nota = f"nombre corregido; se leyó «{revisado.leido}»"
+            fila["observaciones"] = "; ".join(parte for parte in (fila.get("observaciones"), nota) if parte)
+    if revisados:
+        anotar_los_nombres(report, revisados, nombre)
+
+
+def _recorte_de_las_cabeceras(source, documento, hojas) -> bytes | None:
+    """La cabecera de sus primeras tarjetas u hojas manuscritas, donde va escrito el nombre: lo que mira la IA."""
+    import io
+
+    from PIL import Image
+
+    from ...domain import nomina as n
+    from .nombres_asegurados import apilar
+
+    recortes = []
+    for pagina in documento.paginas[:3]:
+        plantilla = hojas[pagina - 1].plantilla if 0 < pagina <= len(hojas) else None
+        if plantilla == n.TARJETA:
+            banda, dpi = BANDA_DE_LA_TARJETA, CABECERAS_DE_TARJETA[1]
+        elif plantilla == n.HOJA:
+            banda, dpi = BANDA_DE_LA_HOJA, CABECERAS_DE_HOJA[1]
+        else:
+            continue
+        try:
+            recortes.append(Image.open(io.BytesIO(source.render(pagina, banda, dpi))).convert("RGB"))
+        except Exception:  # noqa: BLE001 - sin esa cabecera, las demás
+            logger.debug("no se pudo recortar la cabecera de la página %s", pagina, exc_info=True)
+    return apilar(recortes) if recortes else None
 
 
 def _con_el_nombre_asegurado(por_escribir, filas: list[dict], cola: list[dict], aparte: dict, carpeta: Path):

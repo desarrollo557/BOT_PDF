@@ -37,7 +37,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from ..domain.auditoria import MARGEN_ACEPTABLE
-from ..domain.revision_de_nombres import A_MANO, APELLIDOS_PRIMERO, ReglaDelNombre
+from ..domain.revision_de_nombres import (
+    A_MANO,
+    A_MAQUINA,
+    APELLIDOS_PRIMERO,
+    NOMBRES_PRIMERO,
+    ReglaDelNombre,
+)
 from .integridad_de_los_datos import DE_UNA_HISTORIA, DE_UNA_NOMINA, DatosEsperados
 from .revisor_de_cortes import REGLAS_DE_LA_CORRESPONDENCIA, Patrones
 
@@ -214,6 +220,9 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
         # Un listado trae cientos de empleados con su cédula: no es una persona por PDF.
         alias=("nominas", "nomina", "libros de nomina", "libro de nomina"),
         datos=DE_UNA_NOMINA,
+        # Escrito a mano en la cabecera de cada tarjeta u hoja de la persona
+        # (``BANDA_DE_LA_TARJETA``, ``BANDA_DE_LA_HOJA`` de ``api/worker/nominas.py``).
+        regla_del_nombre=ReglaDelNombre(orden=APELLIDOS_PRIMERO, escritura=A_MANO, zonas=((0.0, 0.17),)),
     ),
     PerfilDeRevision(
         clave="certificados",
@@ -229,6 +238,8 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
         # del escáner es basura: la persona la vigila el agente de los datos.
         alias=("certificados de tiempo de servicio", "certificado de tiempo de servicio", "certificado-tiempo"),
         datos=DE_UNA_NOMINA,
+        # A máquina, en el cuerpo del certificado: «certifica que el señor…».
+        regla_del_nombre=ReglaDelNombre(orden=NOMBRES_PRIMERO, escritura=A_MAQUINA, zonas=((0.05, 0.6),)),
     ),
     PerfilDeRevision(
         clave="matriculas",

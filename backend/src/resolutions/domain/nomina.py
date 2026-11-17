@@ -822,10 +822,14 @@ class Documento:
     #: El número del certificado.
     numero: int | None = None
     dudas: list[str] = field(default_factory=list)
+    #: El nombre que dejó el revisor de nombres (2026-11-17): manda sobre el votado.
+    nombre_asegurado: str | None = None
 
     @property
     def nombre(self) -> str | None:
-        """El nombre más leído entre sus hojas; a igual número de lecturas, el más largo."""
+        """El nombre asegurado, si lo hay; si no, el más leído entre sus hojas y, a igual número, el más largo."""
+        if self.nombre_asegurado:
+            return self.nombre_asegurado
         nombres = [lectura.nombre for lectura in self.lecturas if lectura.nombre]
         if not nombres:
             return None

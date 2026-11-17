@@ -189,3 +189,53 @@ def test_cada_habilidad_declara_su_nombre_en_su_perfil():
     assert historias.as_dict()["nombre_de_persona"] == A_MANO
     # Una habilidad sin persona por documento no lo declara.
     assert perfil_de("correspondencia").regla_del_nombre is None
+
+
+# -- fase 2: nóminas y certificados --------------------------------------------------
+
+
+def test_las_nominas_y_los_certificados_usan_el_revisor_comun(tmp_path):
+    """Cada hoja de la persona es una lectura; la IA mira su cabecera, y el nombre llega al PDF y a la fila."""
+    from resolutions.api.worker.nominas import (
+        asegurar_los_nombres_de,
+        con_lo_revisado,
+        nombre_del_pdf,
+    )
+    from resolutions.domain import nomina as n
+
+    tulio = n.Documento(
+        clase=n.PERSONA, plantilla=n.TARJETA, paginas=[3, 4],
+        lecturas=[n.DatosDeLaHoja(nombre="CASTELLAR AGUA TULIO", cedula="9064111"), n.DatosDeLaHoja(nombre="CASTELLAR MEZA TULIO")],
+    )
+    listado = n.Documento(clase=n.PAQUETE, plantilla=None, paginas=[5])
+    recortadas = []
+
+    def recorte(documento):
+        recortadas.append(documento.paginas[0])
+        return b"cabecera"
+
+    juez = Juez({"CASTELLAR": "CASTELLAR MEZA TULIO"})
+    taller = SimpleNamespace(
+        juez_del_nombre=lambda: juez, corrector_de_nombres=lambda: None, control=None, settings={}
+    )
+    documentos = [tulio, listado]
+    revisados = asegurar_los_nombres_de(documentos, taller=taller, de_pago=object(), nombre="NOMINA 1975.pdf", recorte=recorte)
+    # Sólo la persona: el listado no tiene nombre que asegurar.
+    assert list(revisados) == [0] and recortadas == [3]
+    assert tulio.nombre == "CASTELLAR MEZA TULIO" and revisados[0].estado == CORREGIDO
+    assert nombre_del_pdf(1, tulio, carpeta=tmp_path).startswith("01_CASTELLAR-MEZA-TULIO")
+
+    filas = [{"nombre": tulio.nombre, "observaciones": ""}, {"nombre": None, "observaciones": ""}]
+    informe: dict = {}
+    con_lo_revisado(informe, filas, revisados, "NOMINA 1975.pdf")
+    assert filas[0]["revision_del_nombre"]["estado"] == "corregido"
+    assert "se leyó «CASTELLAR AGUA TULIO»" in filas[0]["observaciones"]
+    assert informe[CLAVE_DEL_INFORME]["revisados"] == 1
+
+
+def test_nominas_y_certificados_declaran_su_nombre():
+    from resolutions.application.perfiles_de_revision import perfil_de
+    from resolutions.domain.revision_de_nombres import A_MANO, A_MAQUINA
+
+    assert perfil_de("nominas").regla_del_nombre.escritura == A_MANO
+    assert perfil_de("certificados").regla_del_nombre.escritura == A_MAQUINA
