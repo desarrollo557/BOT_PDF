@@ -89,6 +89,28 @@ async def _indice_del_lote(ctx: Contexto, batch_id: str) -> None:
 _CUPOS: dict[str, tuple[int, asyncio.Semaphore]] = {}
 
 
+def _anotar_en_el_padron(ctx: Contexto, job: Job, report: object) -> None:
+    """Las personas con nombre y cédula de lo que se lee a máquina, al padrón de la Universidad.
+
+    Actas de grado, diplomas y certificados (``domain/padron.py``): el mismo
+    estudiante que una historia escrita a mano trae mal leído suele estar en
+    ellos con su nombre bien escrito (2026-11-17). Que falle no toca el trabajo.
+    """
+    padron = getattr(ctx, "padron", None)
+    if padron is None or not isinstance(report, dict):
+        return
+    try:
+        from datetime import date
+
+        from ..domain.padron import personas_del_informe
+
+        personas = personas_del_informe(report, documento=job.filename, fecha=date.today().isoformat())
+        if personas and (anotadas := padron.anotar(personas)):
+            logger.info("padrón: %d personas nuevas de %s", anotadas, job.filename)
+    except Exception:  # noqa: BLE001 - el trabajo ya terminó bien
+        logger.warning("no se pudo anotar en el padrón lo de %s", job.filename, exc_info=True)
+
+
 def _cupo(job: Job):
     """El semáforo del lote del trabajo, o nada si se dejó en automático."""
     if not job.paralelo:
@@ -256,6 +278,7 @@ async def _correr(ctx: Contexto, job: Job, hilos: int | None) -> None:
             ctx.ledger.record(job.id, report, operator=job.operator, source_bytes=job.bytes)
         except Exception:  # noqa: BLE001 - the split succeeded either way
             logger.warning("could not record %s in the inventory", job.filename, exc_info=True)
+        _anotar_en_el_padron(ctx, job, report)
     except Cancelled:
         # No es un fallo: es lo que el operador pidió. Se distingue de un error
         # porque un lote con documentos cancelados no está roto.

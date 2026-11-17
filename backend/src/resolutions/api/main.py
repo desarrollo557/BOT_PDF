@@ -32,6 +32,7 @@ from ..adapters.mysql_inventory import (
     MySQLInventory,
     settings_from_env,
 )
+from ..adapters.padron_jsonl import PadronEnArchivo
 from ..adapters.user_store import FileUserStore
 from ..application.usuarios import Usuarios
 from .contexto import Contexto
@@ -49,6 +50,7 @@ from .routers import (
     fuid,
     lotes,
     mantenimiento,
+    nombres,
     reconocer,
     red,
     rendimiento,
@@ -116,6 +118,7 @@ def _arrancar() -> Contexto:
         janitor=IdleJanitor(registry, settings, referenced=lambda: ledger.job_ids()),
         usuarios=Usuarios(FileUserStore(settings.users_path)),
         procesar=process_document_job,
+        padron=PadronEnArchivo(settings.padron_path),
     )
 
 
@@ -364,6 +367,7 @@ for router in (
     archivo.router,
     fuid.router,
     mantenimiento.router,
+    nombres.router,
     eventos.router,
     usuarios.router,
     reconocer.router,

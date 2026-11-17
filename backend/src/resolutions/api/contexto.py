@@ -21,6 +21,7 @@ from typing import Annotated, Any
 from fastapi import Depends, Request
 
 from ..adapters.ledger import InventoryLedger
+from ..adapters.padron_jsonl import PadronEnArchivo
 from ..application.usuarios import Usuarios
 from .folders import FolderRunner
 from .janitor import IdleJanitor
@@ -67,6 +68,10 @@ class Contexto:
     #: Qué documentos están levantando su FUID, y con qué error terminó cada
     #: uno: `None` mientras trabaja, la frase cuando falló.
     fuid_jobs: dict[str, str | None] = field(default_factory=dict)
+    #: El padrón de personas de la Universidad (2026-11-17): lo alimenta cada
+    #: trabajo terminado y cada nombre que el operador corrige. Sin él -- en
+    #: las pruebas que no lo ponen --, no se anota nada.
+    padron: PadronEnArchivo | None = None
 
 
 def contexto_de(request: Request) -> Contexto:

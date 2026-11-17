@@ -193,6 +193,12 @@ class Settings:
     #: pantalla, a reiniciar el servicio y a borrar las salidas.
     users_path: Path = DEFAULT_ROOT / "usuarios.jsonl"
 
+    #: El padrón de personas de la Universidad: nombre y cédula de lo que se lee
+    #: a máquina y de lo que el operador corrige (2026-11-17). Junto a los
+    #: usuarios y por lo mismo: tiene que sobrevivir a reiniciar y a borrar las
+    #: salidas. Lo escribe el servicio y lo leen los trabajos.
+    padron_path: Path = DEFAULT_ROOT / "padron.jsonl"
+
     #: La plantilla oficial del FUID. Vacío significa la que viaja con el
     #: programa; se pone una ruta cuando la Universidad publique otra versión
     #: del formato y no se quiera esperar a un despliegue.
@@ -259,6 +265,7 @@ class Settings:
             users_path=Path(
                 os.environ.get("RESOLUTIONS_USERS", DEFAULT_ROOT / "usuarios.jsonl")
             ),
+            padron_path=Path(os.environ.get("RESOLUTIONS_PADRON", DEFAULT_ROOT / "padron.jsonl")),
             sweep_seconds=_float("RESOLUTIONS_SWEEP_SECONDS", 30.0),
             fuid_template=os.environ.get("RESOLUTIONS_FUID_TEMPLATE") or None,
             fuid_caja=os.environ.get("RESOLUTIONS_FUID_CAJA", ""),
@@ -272,6 +279,7 @@ class Settings:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
         self.users_path.parent.mkdir(parents=True, exist_ok=True)
+        self.padron_path.parent.mkdir(parents=True, exist_ok=True)
 
     def as_worker_payload(self) -> dict[str, object]:
         """Only what a worker process needs, and nothing that cannot be pickled."""
@@ -291,4 +299,5 @@ class Settings:
             "fuid_otro": self.fuid_otro,
             "fuid_codigo_trd": self.fuid_codigo_trd,
             "fuid_oficina": self.fuid_oficina,
+            "padron_path": str(self.padron_path),
         }

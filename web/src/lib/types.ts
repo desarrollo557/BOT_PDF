@@ -384,6 +384,33 @@ export interface FilaDeActa {
   /** Las piezas de la sesión con sus páginas, en una línea. */
   piezas?: string;
   numero?: string;
+  /** El tipo de la fila: «ACTA DE GRADO», «HISTORIA ACADEMICA»… */
+  tipo?: string;
+  /** La persona de la fila, en las habilidades que la traen (historias, actas de grado). */
+  nombre?: string | null;
+  cedula?: string | null;
+  /** El PDF que se escribió para esta fila, si se dividió. */
+  archivo_generado?: string | null;
+  /** Cómo quedó el nombre de un estudiante y qué se leyó (2026-11-17). */
+  revision_del_nombre?: RevisionDelNombre;
+}
+
+/**
+ * Cómo quedó el nombre de un estudiante de historias académicas: lo que enseña
+ * la Revisión de nombres para que una persona lo confirme o lo corrija.
+ */
+export interface RevisionDelNombre {
+  /** «duda», «corregido» (por la IA), «confirmado», «padron», o lo que hizo el operador. */
+  estado: string;
+  pagina_de_la_ficha?: number;
+  /** Lo que se leyó antes de votar y corregir. */
+  leido?: string | null;
+  /** Cada lectura del nombre: la página, el pie de las notas, el renglón, Observaciones. */
+  lecturas?: string[];
+  /** Lo que contestó la IA mirando el renglón. */
+  de_la_ia?: string;
+  /** Las personas parecidas del padrón de la Universidad. */
+  padron?: string[];
 }
 
 /** Lo que devuelve un trabajo de inventario, que no escribe ningún PDF. */

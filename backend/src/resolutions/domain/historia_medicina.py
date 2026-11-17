@@ -617,8 +617,11 @@ def nombre_mirado(nombre: str | None, respuesta: str, lecturas: Sequence[str | N
             resultado.append(propuestas[elegida])
         else:
             resultado.append(palabra)
+    if len(usadas) < 2:
+        # Ni dos palabras del nombre en la respuesta: es otra persona.
+        return None
     sobrantes = [i for i in range(len(propuestas)) if i not in usadas]
-    if sobrantes and min(sobrantes) > max(usadas, default=-1):
+    if sobrantes and min(sobrantes) > max(usadas):
         al_final = [propuestas[i] for i in sobrantes]
         while al_final and al_final[-1] in _CONECTORES:
             al_final.pop()

@@ -3,7 +3,8 @@
   import EncabezadoDePagina from '$lib/components/EncabezadoDePagina.svelte';
   import Icono from '$lib/components/Icono.svelte';
   import { jobStore } from '$lib/jobs.svelte';
-  import { whereItLanded } from '$lib/revision';
+  import NombreAMirar from '$lib/components/NombreAMirar.svelte';
+  import { nombresPorMirar, whereItLanded } from '$lib/revision';
   import { enlaceAlDocumento } from '$lib/navegacion.svelte';
   import type { Job } from '$lib/types';
 
@@ -102,6 +103,16 @@
 
   const failedDocuments = $derived(jobStore.reviewable.filter((job) => job.state === 'failed'));
 
+  /**
+   * Los nombres de historias académicas que la máquina no aseguró (2026-11-17):
+   * se confirman o se corrigen aquí, viendo el renglón. Los de la cola de
+   * siempre se quedan abajo, con su motivo.
+   */
+  const nombres = $derived(nombresPorMirar(jobStore.reviewable));
+  /** Cuántos se enseñan a la vez: cada uno trae su imagen. */
+  const NOMBRES_A_LA_VEZ = 24;
+  let nombresVisibles = $state(NOMBRES_A_LA_VEZ);
+
 </script>
 
 <EncabezadoDePagina
@@ -125,7 +136,33 @@
   </section>
 {/if}
 
-{#if !items.length}
+{#if nombres.length}
+  <section class="nombres-por-mirar">
+    <h2 class="caps band">
+      Nombres por confirmar (<span class="tabular">{nombres.length}</span>)
+    </h2>
+    <p class="advice">
+      Historias académicas cuyo nombre la máquina no pudo asegurar: las lecturas no coincidieron o la IA lo
+      cambió. Mire el renglón y pulse «Está bien», o escríbalo bien y pulse «Corregir». Al corregir cambian a la
+      vez el nombre del PDF, el FUID y la entrega, y el nombre queda en el padrón de la Universidad para la
+      próxima vez que aparezca esa cédula.
+    </p>
+    <div class="grid-de-nombres">
+      {#each nombres.slice(0, nombresVisibles) as { job, fila } (`${job.id}-${fila.pagina_inicial}`)}
+        <NombreAMirar {job} {fila} />
+      {/each}
+    </div>
+    {#if nombres.length > nombresVisibles}
+      <button class="btn btn-tonal btn-sm mas" onclick={() => (nombresVisibles += NOMBRES_A_LA_VEZ)}>
+        Ver {Math.min(NOMBRES_A_LA_VEZ, nombres.length - nombresVisibles)} más
+      </button>
+    {/if}
+  </section>
+{/if}
+
+{#if !items.length && nombres.length}
+  <!-- Sólo hay nombres por confirmar: la cola de siempre está vacía. -->
+{:else if !items.length}
   <div class="empty-state">
     <strong>No hay nada pendiente de revisión.</strong>
     {jobStore.reviewable.length
@@ -226,6 +263,18 @@
 
   .failed {
     margin-bottom: 1.5rem;
+  }
+
+  .nombres-por-mirar {
+    margin-bottom: 1.5rem;
+  }
+  .grid-de-nombres {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 26rem), 1fr));
+    gap: 0.8rem;
+  }
+  .mas {
+    margin-top: 0.8rem;
   }
   .failed ul {
     display: flex;

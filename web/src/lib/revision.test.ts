@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { QUARANTINE_FILE, whereItLanded } from './revision';
+import { nombresPorMirar, QUARANTINE_FILE, whereItLanded } from './revision';
 import type { Job, Report } from './types';
 
 /**
@@ -94,5 +94,52 @@ describe('whereItLanded', () => {
 
   it('un trabajo sin informe no rompe la pantalla', () => {
     expect(whereItLanded(job(null), 1)).toEqual({ file: null, code: null });
+  });
+});
+
+describe('las historias académicas (2026-11-17)', () => {
+  const historias = {
+    groups: [{ code: '01_CAMPO-TORREGROZA-ETILVIA-LEONOR-49731465.pdf' }],
+    outputs: ['UPD1/01_CAMPO-TORREGROZA-ETILVIA-LEONOR-49731465.pdf', 'UPD1/02_CANTILLO-TORRES-IVONNE.pdf'],
+    inventario_actas: [
+      {
+        tipo: 'HISTORIA ACADEMICA',
+        nombre: 'CAMPO TORREGROZA ETILVIA LEONOR',
+        pagina_inicial: 23,
+        pagina_final: 24,
+        archivo_generado: '01_CAMPO-TORREGROZA-ETILVIA-LEONOR-49731465.pdf',
+        revision_del_nombre: { estado: 'corregido', lecturas: ['CAMPO TERNEGROZA ETDRIA LEONOR'] }
+      },
+      {
+        tipo: 'HISTORIA ACADEMICA',
+        nombre: 'CANTILLO TORRES IVONNE',
+        pagina_inicial: 25,
+        pagina_final: 26,
+        archivo_generado: '02_CANTILLO-TORRES-IVONNE.pdf',
+        revision_del_nombre: { estado: 'duda', lecturas: ['CANTILLO TORRES IRONNE'] }
+      },
+      {
+        tipo: 'HISTORIA ACADEMICA',
+        nombre: 'ACUNA MEZA PEDRO',
+        pagina_inicial: 1,
+        pagina_final: 2,
+        revision_del_nombre: { estado: 'confirmado' }
+      }
+    ]
+  } as unknown as Partial<Report>;
+
+  it('la página lleva al PDF del estudiante, aunque sus grupos no digan páginas', () => {
+    expect(whereItLanded(job(historias), 24)).toEqual({
+      file: 'UPD1/01_CAMPO-TORREGROZA-ETILVIA-LEONOR-49731465.pdf',
+      code: '01_CAMPO-TORREGROZA-ETILVIA-LEONOR-49731465.pdf'
+    });
+    // Una página de nadie no rompe la pantalla.
+    expect(whereItLanded(job(historias), 99)).toEqual({ file: null, code: null });
+  });
+
+  it('los nombres por mirar: los dudosos primero, y nunca los confirmados', () => {
+    const nombres = nombresPorMirar([job(historias)]);
+    expect(nombres.map(({ fila }) => fila.nombre)).toEqual(['CANTILLO TORRES IVONNE', 'CAMPO TORREGROZA ETILVIA LEONOR']);
+    expect(nombresPorMirar([job(null)])).toEqual([]);
   });
 });
