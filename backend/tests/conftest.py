@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# Sin la caché de lecturas de pago: una prueba no puede contestarle a otra
+# con lo que leyó (2026-11-18). La suya la enciende.
+os.environ.setdefault("BOTPDF_CACHE_DE_LECTURAS", "0")
 
 
 @pytest.fixture(autouse=True)

@@ -164,6 +164,13 @@ class MistralOcr:
         if self._sin_cupo():
             return OcrResult(text="", mean_confidence=0.0)
 
+        # La misma imagen, la misma respuesta: no se vuelve a pagar (2026-11-18).
+        from . import cache_de_lecturas
+
+        llave = cache_de_lecturas.clave("ocr", self._config.model, image_png)
+        if (guardado := cache_de_lecturas.leer(llave)) is not None:
+            return OcrResult(text=guardado, mean_confidence=0.0)
+
         imagen = _aligerada(image_png)
         cuerpo = json.dumps(
             {
@@ -183,7 +190,9 @@ class MistralOcr:
         # imagen es una página, pero es él quien lleva la cuenta.
         facturadas = (respuesta.get("usage_info") or {}).get("pages_processed") or 1
         self._anotar(facturadas)
-        return OcrResult(text=_texto_de(respuesta), mean_confidence=0.0)
+        texto = _texto_de(respuesta)
+        cache_de_lecturas.guardar(llave, texto)
+        return OcrResult(text=texto, mean_confidence=0.0)
 
 
     def read_many(self, imagenes: list[bytes]) -> list[str]:

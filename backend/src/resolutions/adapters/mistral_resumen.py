@@ -127,6 +127,19 @@ class MistralResumidor:
         if not texto.strip():
             raise ResumenNoDisponible("el acta no trae texto legible que resumir")
 
+        # La misma pregunta, la misma respuesta: no se vuelve a pagar (2026-11-18).
+        from . import cache_de_lecturas
+
+        llave = cache_de_lecturas.clave(
+            "chat", self._config.model, self._instrucciones, self._encabezado, texto, imagen
+        )
+        if (guardado := cache_de_lecturas.leer(llave)) is not None:
+            return guardado
+        respuesta = self._resumir_sin_cache(texto, imagen)
+        cache_de_lecturas.guardar(llave, respuesta)
+        return respuesta
+
+    def _resumir_sin_cache(self, texto: str, imagen: bytes | None) -> str:
         pedido: str | list[dict] = f"{self._encabezado}:\n\n{texto}"
         if imagen:
             import base64
