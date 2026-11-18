@@ -102,6 +102,14 @@ class Constancia:
     #: auditoría de cierre como razonó el revisor al procesar (2026-11-12).
     folios: dict = field(default_factory=dict)
     marcas: dict = field(default_factory=dict)
+    #: La evidencia de cada parámetro de cada documento -- el RE, la fecha --,
+    #: con su estado, su lectura, su página y sus candidatos
+    #: (``domain.evidencia``, 2026-11-18): sobrevive a la corrida y la leen las
+    #: métricas, la Revisión y la auditoría.
+    evidencia: dict = field(default_factory=dict)
+    #: La cola de Revisión del trabajo, con sus motivos: sin ella, tras la
+    #: corrida no quedaba por qué un documento estaba en Revisión.
+    revision: list[dict] = field(default_factory=list)
     #: El principio y el final del PDF de origen (``firma_del_origen``): dice si
     #: es el mismo aunque se haya copiado y tenga otra fecha.
     firma: str | None = None
@@ -157,6 +165,8 @@ def leer(ruta: Path) -> Constancia | None:
         or not isinstance(constancia.varios_sellos, list)
         or not isinstance(constancia.folios, dict)
         or not isinstance(constancia.marcas, dict)
+        or not isinstance(constancia.evidencia, dict)
+        or not isinstance(constancia.revision, list)
         or (constancia.firma is not None and not isinstance(constancia.firma, str))
         or type(constancia.version) is not int
     ):

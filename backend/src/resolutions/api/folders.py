@@ -4187,6 +4187,10 @@ class FolderRunner:
             # El folio a mano y las marcas de cada hoja: la auditoría razona con ellos.
             folios=dict(informe.get("folios_de_la_esquina") or {}),
             marcas=dict(informe.get("marcas") or {}),
+            # La evidencia de cada parámetro y la Revisión con sus motivos
+            # (2026-11-18): las métricas y la Revisión las leen después.
+            evidencia=dict(informe.get("evidencia") or {}),
+            revision=[r for r in informe.get("review_queue") or [] if isinstance(r, dict)],
             # De la copia que se procesó, que es la del origen: sin otra lectura
             # de la red.
             firma=self._firma_de(job, origin),

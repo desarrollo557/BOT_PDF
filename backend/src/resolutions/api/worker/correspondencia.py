@@ -63,6 +63,9 @@ RE_AL_PIE_SIN_VALIDAR = (
     "trae sello de radicación al pie con el RE escrito a mano y la IA no lo leyó: "
     "el nombre va sin RE; escríbalo a mano"
 )
+#: El documento cuyo RE no se cree: sus candidatos, con su motivo, para que
+#: los confirme el operador (2026-11-18).
+RE_POR_CONFIRMAR = "RE por confirmar, el nombre va sin él hasta que se confirme en la Revisión"
 RE_DEL_SELLO_SIN_LEER = (
     "trae sello de radicación con el RE escrito a mano y no se pudo leer con certeza: "
     "el nombre va sin RE; escríbalo a mano"
@@ -639,184 +642,180 @@ def _poner_el_re_en_el_nombre(
     oficinas: frozenset[str] | set[str] = frozenset(),
     rechazados: list | None = None,
     sellos_sin_re: set[int] | frozenset[int] = frozenset(),
+    releidas_del_pqr: dict[int, tuple[str, str]] | None = None,
+    evidencias: dict[str, dict] | None = None,
 ):
-    """El RE del reclamo, de la constancia de su contenido, de la contestación y de todo documento con su sello, para su nombre.
+    """El RE de cada documento para su nombre, sólo con la evidencia de sus propias hojas.
 
-    ``sellos_sin_re``: las hojas cuyo sello leyó entera la IA y no trae RE. El
-    documento que abre con una de ellas se radicó sin RE y no lleva el de su
-    trámite (UPD2460819 pág. 12, 2026-11-13: «20216003 6696», y el nombre
-    salía con el RE de otra reclamación del trámite).
+    Lo decidió el operador el 2026-11-18 («NUNCA INVENTAR INFORMACIÓN»), y lo
+    decide ``domain.evidencia.decidir_el_re``:
 
-    Lo dictó el operador el 2026-11-04: «que los reclamos o constancias de
-    reclamación lleven su RE», como los dejaba ``scripts/renombrar_reclamaciones.py``
-    en las cajas ya entregadas: «03_RECLAMO-RE2310202405234.pdf». Sólo esos dos
-    tipos; los demás siguen número-título.
+    - **Lo impreso** -- la etiqueta de radicación, el sello impreso, el PQR de
+      la constancia, el RE que cita la notificación o la contestación -- se
+      cree si una lectura lo trae tal cual.
+    - **La letra a mano** del sello de tinta, si dos lectores distintos la leen
+      igual: el OCR de pago y el modelo con visión.
+    - **Lo demás es un candidato**: lo que las reglas corrigieron -- la oficina
+      a una cifra, una cifra de más, el impreso de la caja --, lo que leyó un
+      solo lector y el RE de su trámite que ninguna hoja suya trae. El nombre
+      va sin RE y el documento a Revisión con sus candidatos.
 
-    De lo más cierto a lo menos, y sin volver a leer nada ni gastar IA:
+    Qué documentos lo llevan no cambia: el reclamo, la constancia, la
+    contestación y la notificación (``CON_RE_EN_EL_NOMBRE``) siempre que se
+    pruebe; los demás si su sello o su etiqueta lo trae (2026-11-11). Nunca el
+    de una copia aportada como prueba ni el de un anexo (``sin_re`` y los
+    anexos que no abren), ni el RE que el reclamo sólo cita (2026-11-18).
 
-    1. **El RE de su trámite**, que ya está en el código: el de su sello, el
-       que cita su texto o el que le cita después la respuesta de la empresa.
-    2. **El de sus hojas**, como lo reconoce el trámite: el de su sello si la
-       hoja lo trae -- el que cita el texto de una hoja con sello es el de otro
-       trámite (UPD2326324 p8) --, si no el que cita su texto. Sin las hojas de
-       ``sin_re`` -- las copias aportadas como prueba, el acuerdo de pago -- ni
-       los anexos que no abren documento.
+    ``sellos_sin_re``: las hojas cuyo sello leyó entera la IA y no trae RE; el
+    documento que abre con una de ellas no recibe el de su trámite (UPD2460819
+    pág. 12, 2026-11-13). ``releidas_del_pqr``: por hoja, la capa original y la
+    relectura del «N° PQR» roto, que son su evidencia. ``evidencias`` recibe el
+    hallazgo de cada documento, por su primera hoja.
 
-    Lo que nada de eso da se queda sin RE en el nombre: no se adivina. Devuelve
-    los grupos, los anexos con sus códigos nuevos y, por su primera hoja, de
-    dónde salió cada RE.
+    Devuelve los grupos, los anexos con sus códigos nuevos y, por su primera
+    hoja, de dónde salió cada RE.
     """
     from dataclasses import replace
 
+    from ...domain.evidencia import (
+        FUENTES_IMPRESAS,
+        Estado,
+        EvidenciaDeRE,
+        candidatos_legibles,
+        decidir_el_re,
+    )
     from ...domain.nombre_oficial import es_re, lleva_re_en_el_nombre
     from ...domain.sello import (
-        el_de_su_tramite,
+        OFICINAS_QUE_RADICAN,
         leer_sello,
         radicados_impresos,
-        re_del_sello,
+        validar_el_re_a_mano,
     )
     from ...domain.tramites import radicado_de
 
     impresos_de_la_caja = set().union(*(radicados_impresos(t or "") for t in textos.values())) if textos else set()
-    de_anexo ={p for paginas in anexos.values() for p in paginas if p not in abren}
+    de_anexo = {p for paginas in anexos.values() for p in paginas if p not in abren}
+    releidas_del_pqr = releidas_del_pqr or {}
+    validas = OFICINAS_QUE_RADICAN | set(oficinas)
     salida = []
     renombrados: dict[str, str] = {}
     hallados: dict[str, str] = {}
 
-    ya_rechazadas: set[int] = set()
+    def de_la_capa(pagina: int) -> tuple[tuple[str, str], ...]:
+        """Lo que la capa dice de la hoja; con la relectura del PQR roto, la capa original y la relectura."""
+        if pagina in releidas_del_pqr:
+            original, relectura = releidas_del_pqr[pagina]
+            return (("capa", original), ("tesseract", relectura))
+        return (("capa", textos.get(pagina, "") or ""),)
 
-    def del_sello(pagina: int, del_tramite: str | None = None) -> tuple[str | None, str]:
-        """El RE del sello de la hoja, validado si va a mano (sello de tinta), y la nota del agente.
-
-        El leído a mano a una sola cifra del RE de su trámite es el de su
-        trámite (``el_de_su_tramite``; UPD3126960 pág. 9, 2026-11-13).
-        """
-        sello = sellos[pagina]
-        valido, motivo = re_del_sello(sello, oficinas)
-        if sello.clase == "tinta" and (corregido := el_de_su_tramite(valido or sello.radicado, del_tramite)):
-            return corregido, f"el sello se leyó {sello.radicado}, a una cifra del RE de su trámite"
-        if valido is None and sello.radicado and sello.radicado.upper() in impresos_de_la_caja:
-            # El RE que la caja trae impreso se cree aunque el funcionario
-            # errara el año de la fecha del sello (hoja 52: «20-05-2020» en un
-            # recurso de 2021 con su RE2310202103442 impreso en sus hojas).
-            return sello.radicado.upper(), f"{motivo}; la caja lo trae impreso"
-        if valido is None and motivo and rechazados is not None and pagina not in ya_rechazadas:
-            ya_rechazadas.add(pagina)
-            rechazados.append(
-                {
-                    "page": pagina,
-                    "reason": f"el RE leído a mano en el sello ({sello.radicado}) no se cree: {motivo}; "
-                    "el nombre va sin RE, escríbalo a mano",
-                }
-            )
-        return valido, motivo
+    def valido(valor: str, evidencia: EvidenciaDeRE) -> str | None:
+        """Por qué el valor no puede ser un RE de verdad, o ``None``: la oficina y, en la letra a mano, el año."""
+        if evidencia.fuente in FUENTES_IMPRESAS:
+            return None if valor[2:6] in validas else f"la oficina {valor[2:6]} no es ninguna que radique"
+        sello = sellos.get(evidencia.pagina)
+        creido, motivo = validar_el_re_a_mano(valor, sello.fecha if sello else None, oficinas)
+        if creido == valor:
+            return None
+        if creido is not None:
+            # La oficina a una cifra de una que radica: se propone la corregida.
+            return f"{motivo}: sería {creido}"
+        if valor in impresos_de_la_caja and valor[2:6] in validas:
+            # El funcionario erró el año de la fecha del sello y el RE es el
+            # que el escrito trae impreso (hoja 52 de UPD2460819): no cambia
+            # nada del valor, lo confirma.
+            return None
+        return motivo or "no se cree"
 
     for grupo in grupos.groups:
         numero, _, resto = grupo.code.value.partition(" ")
-        primera = str(grupo.page_numbers[0])
+        primera = grupo.page_numbers[0]
         del_tramite = next((pieza.upper() for pieza in resto.split() if es_re(pieza)), None)
-        if not lleva_re_en_el_nombre(grupo.kind):
-            # El documento que trae su sello con su RE lo lleva en el nombre,
-            # sea del tipo que sea (el operador, 2026-11-11). Sólo el sello de
-            # sus hojas -- arriba o al pie (``sellos_al_pie``) --, nunca el de
-            # una copia aportada como prueba ni el de un anexo. El de tinta,
-            # validado por el agente (año y oficina).
-            encontrado = None
-            for pagina in grupo.page_numbers if numero.isdigit() else ():
-                if pagina in sin_re or pagina in de_anexo or pagina not in sellos:
-                    continue
-                valido, nota = del_sello(pagina, del_tramite)
-                if valido:
-                    encontrado = (pagina, valido, nota)
-                    break
-            # O la etiqueta de radicación impresa en el texto de sus hojas, que
-            # es su RE aunque la lectura del sello no la viera (el operador,
-            # 2026-11-18: «cuando haya RE, ya sea en el sello o en la página,
-            # lo coloques, siempre y cuando no sea un anexo»). Nunca el RE que
-            # el cuerpo sólo cita: ése es el de otro trámite.
-            for pagina in grupo.page_numbers if numero.isdigit() and encontrado is None else ():
-                if pagina in sin_re or pagina in de_anexo:
-                    continue
-                etiqueta = leer_sello(textos.get(pagina, "") or "")
-                if etiqueta is not None and etiqueta.clase == "impreso" and es_re(etiqueta.radicado):
-                    encontrado = (pagina, etiqueta.radicado.upper(), "de la etiqueta en su texto")
-                    break
-            if encontrado is None:
-                salida.append(grupo)
-                continue
-            pagina, radicado, nota = encontrado
-            nuevo = f"{numero} {radicado}"
-            renombrados[grupo.code.value] = nuevo
-            hallados[primera] = f"{radicado}: del sello de la pág. {pagina}" + (f" ({nota})" if nota else "")
-            salida.append(
-                replace(grupo, code=type(grupo.code)(value=nuevo, raw=radicado), re_en_el_nombre=True)
-            )
-            continue
-        # El RE de su propio sello manda sobre el del trámite: el trámite puede
-        # haberse armado con el RE que una hoja cita de otro -- «RE8310…» en la
-        # 249 de 7975593 -- o con el de la ventana de fechas (2026-11-12).
-        propio = None
-        for pagina in grupo.page_numbers if numero.isdigit() else ():
-            if pagina in sin_re or pagina in de_anexo or pagina not in sellos:
-                continue
-            valido, nota = del_sello(pagina, del_tramite)
-            if valido:
-                propio = (pagina, valido, nota)
-                break
-        if propio is not None:
-            pagina, radicado, nota = propio
-            nuevo = f"{numero} {radicado}"
+        con_re = lleva_re_en_el_nombre(grupo.kind)
+        es_reclamo = _plano_del_sello(grupo.kind or "") == "RECLAMO"
+        es_constancia = "CONSTANCIA" in _plano_del_sello(grupo.kind or "")
+        propias = [
+            p for p in (grupo.page_numbers if numero.isdigit() else ()) if p not in sin_re and p not in de_anexo
+        ]
+        evidencias_del_documento: list[EvidenciaDeRE] = []
+        for pagina in propias:
+            texto = textos.get(pagina, "") or ""
+            if pagina in sellos:
+                sello = sellos[pagina]
+                evidencias_del_documento.append(
+                    EvidenciaDeRE(
+                        pagina,
+                        "sello impreso" if sello.clase == "impreso" else "sello de tinta",
+                        sello.radicado,
+                        sello.lecturas,
+                        sello.correccion,
+                    )
+                )
+            # La etiqueta de radicación impresa en el texto de la hoja, aunque
+            # la lectura del sello no la viera (el operador, 2026-11-18: «ya
+            # sea en el sello o en la página»).
+            etiqueta = leer_sello(texto)
+            if etiqueta is not None and etiqueta.clase == "impreso" and es_re(etiqueta.radicado):
+                evidencias_del_documento.append(
+                    EvidenciaDeRE(pagina, "etiqueta impresa", etiqueta.radicado, de_la_capa(pagina))
+                )
+            # El que su texto trae impreso: el PQR de la constancia, el que cita
+            # la notificación o la contestación. Nunca el que el reclamo cita:
+            # es el de otra reclamación (2026-11-18).
+            if con_re and not es_reclamo and pagina not in sellos and es_re(citado := radicado_de(texto)):
+                evidencias_del_documento.append(
+                    EvidenciaDeRE(
+                        pagina,
+                        "PQR de la constancia" if es_constancia else "citado en su texto",
+                        citado,
+                        de_la_capa(pagina),
+                    )
+                )
+        buscado = (
+            f"sello y etiqueta de radicación{', PQR o RE citado' if con_re and not es_reclamo else ''}"
+            f" en las hojas {', '.join(map(str, propias)) or 'ninguna propia'}"
+        )
+        hallazgo = decidir_el_re(
+            evidencias_del_documento,
+            # El del trámite se propone sólo a quien lo lleva por su tipo, y no
+            # al documento cuyo sello se leyó entero sin RE.
+            del_tramite=del_tramite if con_re and primera not in sellos_sin_re else None,
+            valido=valido,
+            buscado=buscado,
+        )
+        if evidencias is not None:
+            evidencias[str(primera)] = hallazgo.as_dict()
+        if hallazgo.se_cree:
+            nuevo = f"{numero} {hallazgo.valor}"
             if nuevo != grupo.code.value:
                 renombrados[grupo.code.value] = nuevo
-            hallados[primera] = f"{radicado}: del sello de la pág. {pagina}" + (f" ({nota})" if nota else "")
-            # Es el de su propio sello: lo lleva aunque después se le dé otro
-            # nombre que no lo pide por su tipo -- el recurso que aquí aún se
-            # llamaba como su trámite y luego «RECURSO DE REPOSICION…» --
-            # (1005117, UPD2437857 p5, 2026-11-18).
+            hallados[str(primera)] = (
+                f"{hallazgo.valor}: {hallazgo.metodo} de la pág. {hallazgo.pagina}"
+                f" ({hallazgo.estado}: {', '.join(hallazgo.lectores)})"
+            )
             salida.append(
-                replace(grupo, code=type(grupo.code)(value=nuevo, raw=radicado), re_en_el_nombre=True)
+                replace(grupo, code=type(grupo.code)(value=nuevo, raw=hallazgo.valor), re_en_el_nombre=True)
             )
             continue
-        if grupo.page_numbers[0] in sellos_sin_re:
-            # Su sello se leyó entero y no trae RE: no se le pone el del trámite.
+        if primera in sellos_sin_re:
+            hallados[str(primera)] = "sin RE: su sello trae la fecha y el radicado, y ningún RE"
+        elif hallazgo.estado is Estado.REQUIERE_VALIDACION:
+            hallados[str(primera)] = f"sin RE en el nombre, por confirmar: {candidatos_legibles(hallazgo)}"
+            if rechazados is not None:
+                rechazados.append(
+                    {
+                        "page": primera,
+                        "reason": f"{RE_POR_CONFIRMAR}: {candidatos_legibles(hallazgo)}",
+                        "candidatos": [c.as_dict() for c in hallazgo.candidatos],
+                    }
+                )
+        if con_re:
+            # Sin un RE que se crea, el nombre va sin él: el del trámite que
+            # traía su código no se pone (2026-11-18).
             sin_el_re = " ".join([numero, *(p for p in resto.split() if not es_re(p))])
             if sin_el_re != grupo.code.value:
                 renombrados[grupo.code.value] = sin_el_re
-            hallados[primera] = "sin RE: su sello trae la fecha y el radicado, y ningún RE"
-            salida.append(replace(grupo, code=type(grupo.code)(value=sin_el_re, raw=numero)))
-            continue
-        if del_tramite:
-            hallados[primera] = f"{del_tramite}: el de su trámite"
-            salida.append(grupo)
-            continue
-        radicado = como = None
-        for pagina in grupo.page_numbers if numero.isdigit() else ():
-            if pagina in sin_re or pagina in de_anexo:
-                continue
-            if pagina in sellos:
-                leido, nota = del_sello(pagina)
-                de_donde = f"del sello de la pág. {pagina}" + (f" ({nota})" if nota else "")
-            elif _plano_del_sello(grupo.kind or "") == "RECLAMO":
-                # El reclamo es el escrito del usuario: su RE es el de su
-                # radicación, no el que cita su cuerpo -- el de una reclamación
-                # anterior (el operador, 2026-11-18: «si el RE se encuentra
-                # dentro de un anexo, no debes utilizarlo») --. Del texto, sólo
-                # el de una etiqueta de radicación que la capa trae entera.
-                etiqueta = leer_sello(textos.get(pagina, "") or "")
-                leido = etiqueta.radicado if etiqueta is not None and etiqueta.clase == "impreso" else None
-                de_donde = f"de la etiqueta en el texto de la pág. {pagina}"
-            else:
-                leido, de_donde = radicado_de(textos.get(pagina, "") or ""), f"del texto de la pág. {pagina}"
-            if es_re(leido):
-                radicado, como = leido.upper(), de_donde
-                break
-        if radicado is None:
-            salida.append(grupo)
-            continue
-        nuevo = f"{numero} {radicado}"
-        renombrados[grupo.code.value] = nuevo
-        hallados[primera] = f"{radicado}: {como}"
-        salida.append(replace(grupo, code=type(grupo.code)(value=nuevo, raw=radicado)))
+                grupo = replace(grupo, code=type(grupo.code)(value=sin_el_re, raw=numero))
+        salida.append(grupo)
     anexos = {renombrados.get(codigo, codigo): paginas for codigo, paginas in anexos.items()}
     return replace(grupos, groups=salida), anexos, hallados
 
@@ -826,11 +825,13 @@ def _poner_el_re_en_el_nombre(
 PPP_DEL_PQR = 300
 
 
-def _con_el_pqr_releido(source, textos: dict) -> dict:
+def _con_el_pqr_releido(source, textos: dict, releidas: dict[int, tuple[str, str]] | None = None) -> dict:
     """Los textos con el RE del campo «N° PQR:» que la capa rompió, releído por Tesseract si coincide en lo que sí leyó.
 
     Sólo las hojas con el campo roto: una relectura de la hoja entera por
-    cada una. Lo que no se repara se queda como estaba, sin RE.
+    cada una. Lo que no se repara se queda como estaba, sin RE. En
+    ``releidas`` quedan, por hoja reparada, la capa original y la relectura:
+    la evidencia del RE (2026-11-18), que el texto reparado ya no muestra.
     """
     from ...adapters.tesseract_ocr import TesseractConfig, TesseractOcr
     from ...domain.tramites import pqr_reparado, pqr_roto
@@ -848,6 +849,8 @@ def _con_el_pqr_releido(source, textos: dict) -> dict:
             continue
         reparado = pqr_reparado(roto, releido)
         if reparado:
+            if releidas is not None:
+                releidas[pagina] = (salida[pagina] or "", releido)
             salida[pagina] = (salida[pagina] or "").replace(roto, reparado[2:], 1)
     return salida
 
@@ -886,12 +889,14 @@ def _con_lo_impreso(sellos: dict, al_pie: dict, textos: dict) -> tuple[dict, dic
             impreso = el_impreso_a_una_cifra(sello.radicado, impresos)
             if impreso:
                 corregidos[pagina] = f"el sello se leyó {sello.radicado}; la caja trae impreso {impreso}"
-                salida[pagina] = replace(sello, radicado=impreso)
+                salida[pagina] = replace(
+                    sello, radicado=impreso, correccion=f"a una cifra del RE {impreso} impreso en la caja"
+                )
             elif sello.radicado.upper()[2:6] not in OFICINAS_QUE_RADICAN | oficinas_de_la_caja:
                 valido, motivo = validar_el_re_a_mano(sello.radicado, sello.fecha, oficinas_de_la_caja)
                 if valido and valido != sello.radicado.upper():
                     corregidos[pagina] = f"el sello se leyó {sello.radicado}; {motivo}"
-                    salida[pagina] = replace(sello, radicado=valido)
+                    salida[pagina] = replace(sello, radicado=valido, correccion=motivo)
                 elif valido is None:
                     # Lo que el agente no cree no arma el trámite: con la lectura
                     # cruda el reclamo de 1005117 salía «RE2022202203579», de una
@@ -917,9 +922,9 @@ BANDA_DE_LA_CABECERA = (0.25, 0.0, 1.0, 0.22)
 #: (1005117, UPD2973878 pág. 6, 2026-11-18).
 BANDA_DEL_SELLO_A_LA_VISTA = (0.4, 0.0, 1.0, 0.4)
 #: Lo que acompaña a la imagen del sello: el pedido entero va en las instrucciones.
-PEDIDO_DEL_SELLO = "El sello de radicación de esta carta."
+PEDIDO_DEL_SELLO = "El sello de radicación de esta carta, con su RE."
 #: Y a la imagen girada: el RE escrito de lado, en el borde del sello.
-PEDIDO_DEL_SELLO_GIRADO = "El sello de radicación de esta carta, girado: el RE puede ir escrito de lado."
+PEDIDO_DEL_SELLO_GIRADO = "El sello de radicación de esta carta, girado: su RE puede ir escrito de lado."
 
 
 def _girada(imagen: bytes) -> bytes | None:
@@ -993,6 +998,8 @@ def _sellos_de_las_cartas(
         return {}, set(), set()
     transcriptor = taller.transcriptor_de_sellos()
     mirados: set[int] = set()
+    #: Lo que vio el modelo con visión en cada hoja: el segundo lector del RE a mano.
+    vistas: dict[int, str] = {}
 
     def a_la_vista(pagina: int) -> str:
         """Lo que el modelo con visión lee del sello de la hoja: derecho y, si no da un RE, girado.
@@ -1009,10 +1016,12 @@ def _sellos_de_las_cartas(
             # cabecera delante, el modelo contestaba «sin sello».
             visto = transcriptor.resumir(PEDIDO_DEL_SELLO, imagen=imagen) or ""
             if radicado_del_texto(visto) or radicado_escrito(visto) or "SIN SELLO" in visto.upper():
+                vistas[pagina] = visto
                 return visto
             girada = _girada(imagen)
             if girada is not None:
                 visto = f"{visto}\n{transcriptor.resumir(PEDIDO_DEL_SELLO_GIRADO, imagen=girada) or ''}"
+            vistas[pagina] = visto
             return visto
         except Exception:  # noqa: BLE001 - sin él, el sello queda como lo dejó el OCR
             logger.warning("no se pudo transcribir el sello de la pág. %s", pagina, exc_info=True)
@@ -1062,11 +1071,20 @@ def _sellos_de_las_cartas(
         if (sello is None or (sello.clase != "tinta" and folios is None and fecha is None)) and ya_visto is None:
             continue
         fecha = fecha or (sello.fecha if sello else None) or (ya_visto.fecha if ya_visto else None)
-        radicado = (
-            radicado_del_texto(leido)
-            or radicado_con_una_cifra_de_mas(leido, conocidos, fecha.year if fecha else None)
-            or radicado_escrito(leido, fecha.year if fecha else None)
-        )
+        #: Lo que leyó el OCR de pago, tal cual: la evidencia del RE.
+        del_ocr = leido
+        correccion = None
+        radicado = radicado_del_texto(leido)
+        if radicado is None:
+            radicado = radicado_con_una_cifra_de_mas(
+                leido, conocidos, fecha.year if fecha else None
+            ) or radicado_escrito(leido, fecha.year if fecha else None)
+            if radicado:
+                correccion = "la letra a mano rehecha: una cifra de más o de menos, o letras por cifras"
+        if radicado is not None and pagina not in vistas:
+            # El segundo lector de la letra a mano: el RE se cree sólo si el
+            # modelo con visión lee el mismo (el operador, 2026-11-18).
+            a_la_vista(pagina)
         if radicado is None and (visto := a_la_vista(pagina)):
             # El sello está pero su RE no se leyó: el modelo con visión lo mira,
             # derecho y girado -- el RE escrito de lado en el borde del sello,
@@ -1074,18 +1092,23 @@ def _sellos_de_las_cartas(
             leido = f"{leido}\n{visto}"
             fecha = fecha or fecha_del_sello_de_tinta(visto)
             folios = folios or folios_del_sello_de_tinta(visto)
-            radicado = (
-                radicado_del_texto(visto)
-                or radicado_con_una_cifra_de_mas(visto, conocidos, fecha.year if fecha else None)
-                or radicado_escrito(visto, fecha.year if fecha else None)
-            )
+            radicado = radicado_del_texto(visto)
+            if radicado is None:
+                radicado = radicado_con_una_cifra_de_mas(
+                    visto, conocidos, fecha.year if fecha else None
+                ) or radicado_escrito(visto, fecha.year if fecha else None)
+                if radicado:
+                    correccion = "la letra a mano rehecha: una cifra de más o de menos, o letras por cifras"
         if radicado is None:
             # La letra a mano ilegible -- «REB3102021034V2» --, casada con el RE
             # que el escrito imprime en las hojas que cubren los folios de su
-            # sello (UPD2460819 págs. 52 y 95, 2026-11-13).
+            # sello (UPD2460819 págs. 52 y 95, 2026-11-13). Desde el 2026-11-18
+            # es sólo un candidato: lo confirma el operador.
             hojas = min(folios or (ya_visto.folios if ya_visto else None) or HOJAS_SIN_FOLIOS, FOLIOS_DE_UN_ESCRITO)
             suyos = set().union(*(radicados_impresos(textos.get(q, "") or "") for q in range(pagina, pagina + hojas)))
             radicado = el_conocido_por_la_lectura(leido, suyos)
+            if radicado:
+                correccion = "la letra ilegible casada con un RE impreso en sus hojas"
         if (
             radicado is None
             and (fecha or ya_visto)
@@ -1100,15 +1123,27 @@ def _sellos_de_las_cartas(
             sin_re_en_el_sello.add(pagina)
         if radicado is None and leidos is not None and (crudo := lo_que_se_leyo_del_re(leido)):
             leidos[pagina] = crudo
+        lecturas = tuple(
+            (lector, texto)
+            for lector, texto in (("ocr de pago", del_ocr), ("visión", vistas.get(pagina, "")))
+            if texto
+        )
         if ya_visto is not None:
             # El sello que ya vio Tesseract se queda con lo suyo; la IA le pone
             # el RE a mano que él no leyó, y lo que le faltara.
             if radicado:
                 hallados[pagina] = Sello(
-                    ya_visto.clase, radicado, ya_visto.fecha or fecha, ya_visto.folios or folios
+                    ya_visto.clase,
+                    radicado,
+                    ya_visto.fecha or fecha,
+                    ya_visto.folios or folios,
+                    lecturas=(*ya_visto.lecturas, *lecturas),
+                    correccion=correccion,
                 )
             continue
-        hallados[pagina] = Sello("tinta", radicado, fecha, folios or sello.folios)
+        hallados[pagina] = Sello(
+            "tinta", radicado, fecha, folios or sello.folios, lecturas=lecturas, correccion=correccion
+        )
     return hallados, sin_re_en_el_sello, vistos_sin_su_re - sin_re_en_el_sello
 
 
@@ -1707,7 +1742,17 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # L1c. El campo «N° PQR:» de la constancia que la capa rompió, releído
         # con el OCR de casa (gratis): sin él la constancia tomaba por su fecha
         # el RE de la de al lado (1005652, «RE86732022b3446», 2026-11-18).
-        textos = _con_el_pqr_releido(source, textos)
+        releidas_del_pqr: dict[int, tuple[str, str]] = {}
+        textos = _con_el_pqr_releido(source, textos, releidas_del_pqr)
+        # El segundo lector de la letra a mano de los sellos: el modelo con
+        # visión sobre el mismo recorte (el operador, 2026-11-18: «dos
+        # lectores coinciden»). Sólo con «OCR + IA».
+        _transcriptor = taller.transcriptor_de_sellos()
+        vision_del_sello = (
+            (lambda imagen: _transcriptor.resumir(PEDIDO_DEL_SELLO, imagen=imagen) or "")
+            if _transcriptor is not None
+            else None
+        )
         # L2. El sello de radicación de cada hoja que puede llevarlo, leído
         # aparte con el OCR de casa. Los radicados bien escritos en la caja
         # corrigen la cifra que la OCR del sello leyó mal.
@@ -1743,6 +1788,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 done=hechas,
                 total=total,
             ),
+            vision=vision_del_sello,
         )
         # L2c. El sello tenue de la carta que abre y en el que Tesseract no vio
         # nada (7975593, UPD3126960 págs. 9 y 44, 2026-11-12): con la IA, su
@@ -1775,6 +1821,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             # Los RE que la caja ya trae: los de su texto y los de sus sellos,
             # validados -- nunca la lectura cruda de una letra a mano --.
             conocidos=conocidos | {r for s in sellos.values() if (r := _re_del_sello(s)[0])},
+            vision=vision_del_sello,
         )
         # El RE a mano del sello de tinta a una sola cifra de uno que la caja
         # trae impreso es el impreso (7975593, UPD3126960 págs. 9 y 33,
@@ -2616,6 +2663,8 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # un documento.
     re_en_el_nombre: dict[str, str] = {}
     re_rechazados: list[dict] = []
+    #: El hallazgo del RE de cada documento, con su evidencia (2026-11-18).
+    evidencia_del_re: dict[str, dict] = {}
     # El sello al pie de una copia aportada como prueba no es del documento que
     # la trae: su RE no se pide (7975593, UPD3126960 p43).
     re_al_pie_que_importa = [p for p in re_al_pie_sin_validar if p not in cartas.copias and p not in de_prueba]
@@ -2634,8 +2683,11 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             # de su texto y las de sus etiquetas impresas: en 1005117 el RE de
             # la etiqueta va pegado a «NUMERO» en la capa y el texto no lo da
             # (2026-11-18).
-            oficinas={r[2:6] for r in conocidos if len(r) == 15}
-            | {s.radicado[2:6] for s in sellos.values() if s.clase == "impreso" and s.radicado},
+            # Sólo de lo impreso -- las etiquetas y los sellos impresos --,
+            # nunca del RE que cita una carta (2026-11-18).
+            oficinas={s.radicado[2:6] for s in sellos.values() if s.clase == "impreso" and s.radicado},
+            releidas_del_pqr=releidas_del_pqr,
+            evidencias=evidencia_del_re,
             rechazados=re_rechazados,
             # Ni la copia «Recibido» que el escrito trae dentro de sus folios:
             # su sello es el del radicado de otro papel (2026-11-18; ya la
@@ -2947,6 +2999,8 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # Y el RE de cada reclamo y constancia, por su primera hoja, con de
         # dónde salió: «RE2310…: del sello de la pág. 8».
         "re_en_el_nombre": re_en_el_nombre,
+        # La evidencia de cada parámetro, por la primera hoja de su documento.
+        "evidencia": {"re": evidencia_del_re},
         # El RE a mano de cada sello que se corrigió por el que la caja trae
         # impreso, con lo que se leyó: la auditoría lo puede cruzar.
         "re_corregidos_por_lo_impreso": {str(p): nota for p, nota in corregidos_por_lo_impreso.items()},

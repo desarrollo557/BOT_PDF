@@ -31,7 +31,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 #: La etiqueta impresa: «AL CONTESTAR CITE ESTE NUMERO», o «Caribemar de la
@@ -90,6 +90,13 @@ class Sello:
     fecha: date | None = None
     #: Cuántas hojas dice que trae el escrito.
     folios: int | None = None
+    #: Lo que leyó cada lector, tal cual: (lector, texto). Es la evidencia del
+    #: RE (``domain.evidencia``): un RE que ninguna lectura trae literal sólo
+    #: es un candidato (el operador, 2026-11-18).
+    lecturas: tuple[tuple[str, str], ...] = field(default=(), compare=False)
+    #: Si el RE se corrigió -- la oficina a una cifra, el impreso de la caja --,
+    #: cómo; ``None`` si es lo leído.
+    correccion: str | None = field(default=None, compare=False)
 
     @property
     def legible(self) -> bool:
@@ -774,15 +781,21 @@ FOLIOS_DE_UN_ESCRITO = 60
 #: Lo que se le pide al modelo con visión cuando el OCR devolvió el sello de
 #: tinta como imagen (2026-11-18). Sus rótulos son los del sello, para que lo
 #: que conteste se lea con las mismas piezas que lo transcrito por el OCR.
+#: Lo que se le pide al modelo con visión del sello. Cada casilla tal como está
+#: escrita, y el RE aparte: en Magangué el funcionario escribe el RE encima del
+#: sello o en otra casilla, y en «No. DE RADICACIÓN» el número interno -- «2024600
+#: 38949» --; pedido el RE en esa casilla, el modelo le anteponía «RE» al número
+#: interno (1005122, 1001389; 2026-11-18).
 INSTRUCCIONES_PARA_TRANSCRIBIR_EL_SELLO = (
-    "En la imagen está la cabecera de una carta con un sello de radicación de la empresa "
-    "(un recuadro con «RECIBIDO NO IMPLICA ACEPTACIÓN», «FECHA DE RECIBIDO», «No. DE RADICACIÓN», "
-    "«No. DE FOLIOS»), escrito a mano, a veces tenue o con poca tinta. Transcribe sólo lo que dice "
-    "el sello, una línea por casilla, "
-    "así: «FECHA DE RECIBIDO: …», «No. DE RADICACION: …» (el RE y sus trece cifras, también si va "
-    "escrito de lado o fuera de su casilla), «No. DE FOLIOS: …». Copia las cifras como las ves; lo "
-    "que no se lea con certeza, escríbelo «ilegible». No inventes ni completes nada. Si no hay "
-    "sello, contesta «sin sello»."
+    "En la imagen está un sello de radicación de la empresa (un recuadro con «RECIBIDO NO IMPLICA "
+    "ACEPTACIÓN», «FECHA DE RECIBIDO», «No. DE RADICACIÓN», «No. DE FOLIOS»), escrito a mano, a veces "
+    "tenue o con poca tinta. Transcribe cada casilla tal como está escrita, una línea por casilla: "
+    "«FECHA DE RECIBIDO: …», «No. DE RADICACION: …» (lo que diga esa casilla, sea un RE o un número), "
+    "«No. DE FOLIOS: …». Después, en su propia línea, «RE: …» con el número que empieza por las letras "
+    "RE escrito en cualquier parte del sello o junto a él -- encima, al lado, de lado o en otra casilla "
+    "--, con todas sus cifras; si no hay ninguno, «RE: no hay». No le pongas «RE» delante a un número "
+    "que no lo lleva escrito. Copia las cifras como las ves; lo que no se lea con certeza, escríbelo "
+    "«ilegible». No inventes ni completes nada. Si no hay sello, contesta «sin sello»."
 )
 def sello_sin_transcribir(leido: str) -> bool:
     """Si la lectura del OCR de pago de la cabecera no trae ningún sello reconocible: ni etiqueta, ni fecha ni folios de tinta.

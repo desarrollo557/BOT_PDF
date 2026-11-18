@@ -335,6 +335,7 @@ def leer_sellos(
     avance: Callable[[int, int], None] | None = None,
     lectores_del_renglon: Sequence[OcrEngine] = (),
     avance_del_numero: Callable[[int, int], None] | None = None,
+    vision: Callable[[bytes], str] | None = None,
 ) -> dict[int, Sello]:
     """El sello de cada hoja que lo trae, en dos pasos.
 
@@ -352,6 +353,11 @@ def leer_sellos(
 
     ``conocidos`` son esos radicados bien escritos: la cifra que el de casa
     leyó mal se corrige contra ellos.
+
+    ``vision`` es el segundo lector del sello de tinta: el modelo con visión,
+    sobre el mismo recorte que lee el de pago. La letra a mano se cree sólo si
+    los dos leen el mismo RE (el operador, 2026-11-18; ``domain.evidencia``).
+    Cada sello guarda lo que leyó cada lector en ``Sello.lecturas``.
 
     ``avance_del_numero`` cuenta las etiquetas leídas con el de pago, una a
     una. Sin él, catorce sellos de Magangué fueron casi nueve minutos sin una
@@ -420,6 +426,7 @@ def leer_sellos(
             imagenes = [source.render(p, detectados[p][3], DPI_DE_LA_RELECTURA) for p in lote]
             relecturas.update(zip(lote, leer_tanda(imagenes), strict=True))
     pagados: dict[int, str] = {}
+    vistos: dict[int, str] = {}
     if de_pago is not None and detectados:
         import threading
 
@@ -445,9 +452,36 @@ def leer_sellos(
         with hilos(max(1, workers)) as pool:
             for pagina, texto in zip(orden, mapear(pool, leer_de_pago, imagenes, control), strict=True):
                 pagados[pagina] = texto
+        if vision is not None:
+            # El segundo lector de la letra a mano, sobre el mismo recorte.
+            de_tinta = [i for i, p in enumerate(orden) if detectados[p][0].clase == "tinta"]
+
+            def ver(imagen: bytes) -> str:
+                try:
+                    return vision(imagen) or ""
+                except Exception:  # noqa: BLE001 - sin el segundo lector, el RE a mano va a Revisión
+                    return ""
+
+            with hilos(max(1, workers)) as pool:
+                for i, texto in zip(
+                    de_tinta, mapear(pool, ver, [imagenes[i] for i in de_tinta], control), strict=True
+                ):
+                    vistos[orden[i]] = texto
 
     sellos: dict[int, Sello] = {}
     for pagina, (sello, texto, de_la_capa, _) in detectados.items():
+        lecturas = tuple(
+            (lector, leido)
+            for lector, leido in (
+                ("tesseract", texto),
+                ("capa", de_la_capa),
+                ("relectura", relecturas.get(pagina, "")),
+                ("ocr de pago", pagados.get(pagina, "")),
+                ("visión", vistos.get(pagina, "")),
+            )
+            if leido
+        )
+        correccion = None
         del_pago = leer_sello(pagados[pagina]) if pagados.get(pagina) else None
         # La fecha a mano del sello de tinta, sólo de la lectura de la IA: la
         # de casa la deja en basura, y el sello manda sobre cualquier otra
@@ -474,11 +508,14 @@ def leer_sellos(
                 del_pago.radicado,
                 a_mano or del_pago.fecha or sello.fecha,
                 folios_a_mano or del_pago.folios or sello.folios,
+                lecturas=lecturas,
             )
             continue
         radicado = None
         if sello.clase == "impreso":
             radicado = _votar([relecturas.get(pagina, ""), texto, de_la_capa], conocidos)
+            if radicado:
+                correccion = "votado entre las lecturas de casa, a una cifra de un RE de la caja si hacía falta"
         if radicado is None and pagados.get(pagina):
             # El sello de tinta lleva el número a mano: el de casa no lo lee;
             # el de pago sí, con lo que la letra a mano le hace a cada cifra
@@ -488,11 +525,13 @@ def leer_sellos(
             # más contra los RE de la caja: «RE 23102021094662» es el
             # RE2310202104662 que la caja trae impreso, no el …09462 que dejaba
             # ``radicado_escrito`` (7975593, 2026-11-12).
-            radicado = (
-                radicado_del_texto(pagados[pagina])
-                or radicado_con_una_cifra_de_mas(pagados[pagina], conocidos, a_mano.year if a_mano else None)
-                or radicado_escrito(pagados[pagina])
-            )
+            radicado = radicado_del_texto(pagados[pagina])
+            if radicado is None:
+                radicado = radicado_con_una_cifra_de_mas(
+                    pagados[pagina], conocidos, a_mano.year if a_mano else None
+                ) or radicado_escrito(pagados[pagina])
+                if radicado:
+                    correccion = "la letra a mano rehecha: una cifra de más o de menos, o letras por cifras"
         de_la_capa_leido = leer_sello(de_la_capa) if de_la_capa else None
         releido = leer_sello(relecturas[pagina]) if relecturas.get(pagina) else None
         fecha = (
@@ -511,16 +550,21 @@ def leer_sellos(
                 aproximado = radicado_aproximado(lectura, fecha)
                 if aproximado:
                     radicado = con_los_conocidos(aproximado, conocidos)
+                    correccion = "letras leídas por cifras, a una cifra de un RE de la caja si hacía falta"
                     break
             if radicado is None:
                 for lectura in (relecturas.get(pagina, ""), texto, de_la_capa):
                     if radicado := radicado_por_la_cola(lectura, conocidos):
+                        correccion = "casado por sus últimas cifras con un RE de la caja"
                         break
             if radicado is None and lectores_del_renglon:
                 releido_el_renglon = releer_el_renglon(source, pagina, lectores_del_renglon)
                 # Y su año tiene que ser el de la fecha del sello, si se leyó.
                 if releido_el_renglon and (fecha is None or releido_el_renglon[6:10] == str(fecha.year)):
                     radicado = con_los_conocidos(releido_el_renglon, conocidos)
+                    lecturas = (*lecturas, ("renglon", releido_el_renglon))
+                    if radicado != releido_el_renglon:
+                        correccion = "a una cifra de un RE de la caja"
         sellos[pagina] = Sello(
             sello.clase,
             radicado,
@@ -530,6 +574,8 @@ def leer_sellos(
             or (releido.folios if releido else None)
             or (del_pago.folios if del_pago else None)
             or (de_la_capa_leido.folios if de_la_capa_leido else None),
+            lecturas=lecturas,
+            correccion=correccion,
         )
     return sellos
 
@@ -604,8 +650,14 @@ def sellos_al_pie(
     de_pago: OcrEngine | None = None,
     control: RunControl | None = None,
     conocidos: Iterable[str] = (),
+    vision: Callable[[bytes], str] | None = None,
 ) -> dict[int, Sello]:
     """El sello de tinta clara junto a la firma, que la capa del escáner no dejó ver.
+
+    ``vision`` es el segundo lector, sobre el mismo recorte: la letra a mano se
+    cree sólo si los dos leen el mismo RE (2026-11-18). Lo que corrigen las
+    reglas -- la cifra de más, la oficina confirmada por la caja -- queda como
+    candidato, con su corrección en ``Sello.correccion``.
 
     ``conocidos`` son los RE que la caja ya trae, impresos o validados en otro
     sello: confirman la lectura a mano con una cifra de más y la oficina mal
@@ -646,24 +698,44 @@ def sellos_al_pie(
             # Sólo el sello, recortado alrededor de sus señales: la zona entera
             # la IA la toma por una imagen y no la transcribe.
             recorte = _recorte_del_sello(imagen, palabras) or BANDA_DE_LA_FIRMA
+            imagen_del_sello = None
             try:
-                del_pago = de_pago.read(source.render(pagina, recorte, DPI_DEL_PAGO, "jpeg")).text
+                imagen_del_sello = source.render(pagina, recorte, DPI_DEL_PAGO, "jpeg")
+                del_pago = de_pago.read(imagen_del_sello).text
             except Exception:  # noqa: BLE001 - sin la IA, el sello sin su número
                 del_pago = ""
+            visto = ""
+            if del_pago and vision is not None and imagen_del_sello is not None:
+                try:
+                    visto = vision(imagen_del_sello) or ""
+                except Exception:  # noqa: BLE001 - sin el segundo lector, a Revisión
+                    visto = ""
+            lecturas = tuple((lector, leido) for lector, leido in (("ocr de pago", del_pago), ("visión", visto)) if leido)
             if del_pago:
                 fecha = fecha_del_sello_de_tinta(del_pago) or getattr(leer_sello(del_pago), "fecha", None)
                 # Lo leído, tal cual: la validación del agente (año y oficina)
                 # la hace quien lo pone en el nombre, y la anota.
                 # Como el de arriba: la cifra de más contra los RE de la caja, y
                 # la letra a mano (2026-11-18: también las oficinas 9233 y 9234).
-                radicado = (
-                    radicado_del_texto(del_pago)
-                    or radicado_con_una_cifra_de_mas(
+                radicado = radicado_del_texto(del_pago)
+                correccion = None
+                if radicado is None:
+                    radicado = radicado_con_una_cifra_de_mas(
                         del_pago, conocidos, fecha.year if fecha else None, en_cualquier_casilla=True
-                    )
-                    or radicado_escrito(del_pago, fecha.year if fecha else None)
+                    ) or radicado_escrito(del_pago, fecha.year if fecha else None)
+                    if radicado:
+                        correccion = (
+                            "la letra a mano rehecha: una cifra de más o de menos, letras por cifras "
+                            "o la oficina a una cifra de un RE de la caja"
+                        )
+                sello = Sello(
+                    "tinta",
+                    radicado,
+                    fecha,
+                    folios_del_sello_de_tinta(del_pago),
+                    lecturas=lecturas,
+                    correccion=correccion,
                 )
-                sello = Sello("tinta", radicado, fecha, folios_del_sello_de_tinta(del_pago))
         hallados[pagina] = sello
     return hallados
 

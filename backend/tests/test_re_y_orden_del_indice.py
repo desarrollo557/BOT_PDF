@@ -167,21 +167,26 @@ class TestElReDelWorker:
             rechazados=rechazados,
         )
 
-    def test_el_de_su_tramite_se_queda(self):
-        grupos, _, hallados = self._poner(self._grupos((f"01 {RE}", [1], "RECLAMO")), textos={1: f"cita {OTRO}"})
-        assert grupos.groups[0].code.value == f"01 {RE}"
-        assert hallados == {"1": f"{RE}: el de su trámite"}
+    def test_el_de_su_tramite_es_solo_un_candidato(self):
+        """Desde el 2026-11-18 el RE del trámite que ninguna hoja suya trae no va al nombre: se propone."""
+        rechazados: list = []
+        grupos, _, hallados = self._poner(
+            self._grupos((f"01 {RE}", [1], "RECLAMO")), textos={1: f"cita {OTRO}"}, rechazados=rechazados
+        )
+        assert grupos.groups[0].code.value == "01"
+        assert hallados == {"1": f"sin RE en el nombre, por confirmar: {RE} (el de su trámite: ninguna hoja suya lo trae)"}
+        assert rechazados[0]["candidatos"][0]["valor"] == RE
 
     def test_sin_tramite_toma_el_de_su_sello(self):
         grupos, anexos, hallados = self._poner(
             self._grupos(("01", [1, 2], "RECLAMO")),
             {"01": [2]},
-            sellos={1: Sello(clase="impreso", radicado=RE)},
+            sellos={1: Sello(clase="impreso", radicado=RE, lecturas=(("ocr de pago", f"CITE ESTE NUMERO {RE}"),))},
         )
         assert grupos.groups[0].code.value == f"01 {RE}"
         # Sus anexos siguen siendo suyos con el código nuevo.
         assert anexos == {f"01 {RE}": [2]}
-        assert hallados == {"1": f"{RE}: del sello de la pág. 1"}
+        assert hallados == {"1": f"{RE}: sello impreso de la pág. 1 (encontrado: ocr de pago)"}
 
     def test_la_constancia_toma_el_que_imprime_su_texto(self):
         grupos, _, _ = self._poner(
@@ -211,10 +216,11 @@ class TestElReDelWorker:
     def test_cualquier_documento_con_su_sello_lleva_su_re(self):
         """El operador, 2026-11-11: «cuando un documento tenga su sello… agarra el RE para el nombre»."""
         grupos, _, hallados = self._poner(
-            self._grupos(("01", [1], "DERECHO DE PETICION")), sellos={1: Sello(clase="impreso", radicado=RE)}
+            self._grupos(("01", [1], "DERECHO DE PETICION")),
+            sellos={1: Sello(clase="impreso", radicado=RE, lecturas=(("capa", f"NUMERO {RE}"),))},
         )
         assert grupos.groups[0].code.value == f"01 {RE}" and grupos.groups[0].re_en_el_nombre
-        assert hallados == {"1": f"{RE}: del sello de la pág. 1"}
+        assert hallados == {"1": f"{RE}: sello impreso de la pág. 1 (encontrado: capa)"}
         # Sin sello, el RE que cita su texto no basta: es el de otro papel.
         grupos, _, hallados = self._poner(self._grupos(("01", [1], "DERECHO DE PETICION")), textos={1: f"cita {OTRO}"})
         assert grupos.groups[0].code.value == "01" and hallados == {}
@@ -227,7 +233,17 @@ class TestElReDelWorker:
         assert grupos.groups[0].code.value == "01"
 
     def test_el_re_a_mano_lo_valida_el_agente(self):
-        """1005965 p1: la IA leyó «RE2371202302499» en el sello que dice «RE2311202302499»."""
+        """La letra a mano con dos lectores, y lo que el agente no cree, a Revisión (2026-11-18).
+
+        1005965 p1: la IA leyó «RE2371202302499» en el sello que dice
+        «RE2311202302499»: la oficina a una cifra ya no se corrige sola, se
+        propone. Dos años antes que su sello no se cree. El año anterior sí: el
+        recurso se radica con el RE de la reclamación que recurre.
+        """
+
+        def dos(valor: str) -> tuple[tuple[str, str], ...]:
+            return (("ocr de pago", f"No DE RADICACION: {valor}"), ("visión", f"RE: {valor}"))
+
         rechazados: list = []
         grupos, _, hallados = self._poner(
             self._grupos(
@@ -236,18 +252,26 @@ class TestElReDelWorker:
                 ("03", [3], "RECURSO DE REPOSICION"),
             ),
             sellos={
-                1: Sello(clase="tinta", radicado="RE2371202302499", fecha=date(2023, 7, 19)),
-                # Dos años antes que su sello: no se cree.
-                2: Sello(clase="tinta", radicado="RE2311202102952", fecha=date(2023, 8, 28)),
-                # El año anterior sí (el operador, 2026-11-18): el recurso se
-                # radica con el RE de la reclamación que recurre.
-                3: Sello(clase="tinta", radicado="RE9233202203621", fecha=date(2023, 1, 25)),
+                1: Sello("tinta", "RE2371202302499", date(2023, 7, 19), lecturas=dos("RE2371202302499")),
+                2: Sello("tinta", "RE2311202102952", date(2023, 8, 28), lecturas=dos("RE2311202102952")),
+                3: Sello("tinta", "RE9233202203621", date(2023, 1, 25), lecturas=dos("RE9233202203621")),
             },
             rechazados=rechazados,
         )
-        assert [g.code.value for g in grupos.groups] == ["01 RE2311202302499", "02", "03 RE9233202203621"]
+        assert [g.code.value for g in grupos.groups] == ["01", "02", "03 RE9233202203621"]
         assert "oficina 2371 leída por 2311" in hallados["1"]
-        assert [r["page"] for r in rechazados] == [2] and "no se cree" in rechazados[0]["reason"]
+        assert [r["page"] for r in rechazados] == [1, 2]
+        assert "verificado" in hallados["3"]
+
+    def test_la_letra_a_mano_de_un_solo_lector_es_un_candidato(self):
+        rechazados: list = []
+        grupos, _, hallados = self._poner(
+            self._grupos(("01", [1], "DERECHO DE PETICION")),
+            sellos={1: Sello("tinta", RE, date(2022, 1, 5), lecturas=(("ocr de pago", f"RE {RE[2:]}"), ("visión", "RE: no hay")))},
+            rechazados=rechazados,
+        )
+        assert grupos.groups[0].code.value == "01"
+        assert "un solo lector" in hallados["1"] and rechazados[0]["candidatos"][0]["valor"] == RE
 
 
 #: La respuesta de la empresa de 1016215 (UPD2437946 p7), tal como la deja la capa.

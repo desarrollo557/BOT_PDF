@@ -196,6 +196,11 @@ class TestElREIlegibleCasadoConLoImpreso:
         assert el_conocido_por_la_lectura("RE 2 3 1 0 2 0 2 1 0 3", DE_LA_CAJA) is None
 
 
+#: Lo que leen los dos lectores del sello de la hoja 52: desde el 2026-11-18
+#: la letra a mano se cree sólo con dos lectores.
+LECTURAS_52 = (("ocr de pago", "No DE RADICACION: RE2310202103442"), ("visión", "RE: RE2310202103442"))
+
+
 class TestElNombreConLoQueDiceElSello:
     def test_el_sello_sin_re_no_toma_el_del_tramite(self):
         """Hoja 12: el sello trae fecha, folios y el radicado «20216003 6696», y ningún RE."""
@@ -217,12 +222,12 @@ class TestElNombreConLoQueDiceElSello:
             _grupos(("05", [52, 61], "RECURSO DE REPOSICION")),
             {},
             textos={52: "", 61: "SE RADICO CON RE2310202103442"},
-            sellos={52: Sello("tinta", "RE2310202103442", date(2020, 5, 20), 44)},
+            sellos={52: Sello("tinta", "RE2310202103442", date(2020, 5, 20), 44, lecturas=LECTURAS_52)},
             sin_re=set(),
             abren={52},
         )
         assert grupos.groups[0].code.value == "05 RE2310202103442"
-        assert "impreso" in hallados["52"]
+        assert "verificado" in hallados["52"]
 
     def test_sin_imprimirlo_la_fecha_errada_si_lo_tumba(self):
         rechazados: list = []
@@ -230,7 +235,7 @@ class TestElNombreConLoQueDiceElSello:
             _grupos(("05", [52], "RECURSO DE REPOSICION")),
             {},
             textos={52: ""},
-            sellos={52: Sello("tinta", "RE2310202103442", date(2020, 5, 20), 44)},
+            sellos={52: Sello("tinta", "RE2310202103442", date(2020, 5, 20), 44, lecturas=LECTURAS_52)},
             sin_re=set(),
             abren={52},
             rechazados=rechazados,
