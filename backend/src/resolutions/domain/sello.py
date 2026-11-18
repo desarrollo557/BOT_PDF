@@ -235,10 +235,19 @@ def validar_el_re_a_mano(
 #: «No DE RADICACION: RE 23102021094662», «No DE RADIACION LE 23102021041663»:
 #: el número a mano del sello de tinta como lo transcribe la IA.
 _NUMERO_DE_RADICACION = re.compile(r"RADI\w{0,5}N\W{0,3}\s*(?:[RL]\s?[EF]\W?\s*)?((?:\d\s?){13,15})")
+#: El RE a mano en otra casilla del sello -- «DIR. NOTIFICACIÓN: RE28102024102908»
+#: en el reclamo de 1005122 (UPD3102765 pág. 1, 2026-11-18) --. Sólo en la
+#: lectura del sello recortado, nunca en la de una carta, que cita RE ajenos.
+_RE_EN_OTRA_CASILLA = re.compile(r"(?<![A-Z0-9])[RL]\s?[EF]\W?\s*((?:\d\s?){13,15})")
 
 
 def radicado_con_una_cifra_de_mas(
-    texto: str, conocidos: Iterable[str] = (), anio: int | None = None, oficinas: Iterable[str] = ()
+    texto: str,
+    conocidos: Iterable[str] = (),
+    anio: int | None = None,
+    oficinas: Iterable[str] = (),
+    *,
+    en_cualquier_casilla: bool = False,
 ) -> str | None:
     """El RE a mano del sello de tinta cuando la IA lo leyó con una cifra de más.
 
@@ -247,10 +256,17 @@ def radicado_con_una_cifra_de_mas(
     quitar cada una; vale la que deja un RE de una oficina que radica, del año
     del sello. Si quedan varias, la que ya está escrita en la caja; si no, no se
     adivina.
+
+    Con ``en_cualquier_casilla`` -- la lectura del sello recortado, sin la
+    carta -- también el RE escrito fuera de su casilla.
     """
     validas = OFICINAS_QUE_RADICAN | frozenset(oficinas)
     conocidos = {c.upper() for c in conocidos}
-    for hallado in _NUMERO_DE_RADICACION.finditer(_plano(texto or "")):
+    plano = _plano(texto or "")
+    hallados = list(_NUMERO_DE_RADICACION.finditer(plano))
+    if en_cualquier_casilla:
+        hallados += list(_RE_EN_OTRA_CASILLA.finditer(plano))
+    for hallado in hallados:
         cifras = re.sub(r"\D", "", hallado.group(1))
         if len(cifras) == 13:
             candidatas = {cifras}
@@ -268,6 +284,22 @@ def radicado_con_una_cifra_de_mas(
             return f"RE{en_la_caja[0]}"
         if len(posibles) == 1:
             return f"RE{posibles[0]}"
+        # Y con la oficina mal leída a una cifra, sólo si da exactamente un RE
+        # que la caja ya trae: «RE28102024102908» en el sello al pie del
+        # reclamo de 1005122 (UPD3102765 pág. 1, 2026-11-18) -- un 3 a mano
+        # leído 8 y un 1 de más -- es el RE2310202402908 del sello de su
+        # recurso, que se radica con el RE del reclamo. Sin la caja no se
+        # corrige: dos arreglos sin nada que los confirme serían adivinar.
+        corregidas = {
+            f"{oficina}{c[4:]}"
+            for c in candidatas
+            if c[:4] not in validas and c[4:6] == "20" and (anio is None or c[4:8] in (str(anio), str(anio - 1)))
+            for oficina in validas
+            if len(oficina) == 4 and sum(a != b for a, b in zip(oficina, c[:4], strict=True)) == 1
+        }
+        confirmadas = sorted(c for c in corregidas if f"RE{c}" in conocidos)
+        if len(confirmadas) == 1:
+            return f"RE{confirmadas[0]}"
     return None
 
 
@@ -339,6 +371,20 @@ def _lecturas_de_un_re(texto: str) -> list[str]:
         for hallado in _RE_DIFUSO.finditer((texto or "").upper())
         if sum(c.isdigit() for c in hallado.group(1)) >= CIFRAS_DE_UN_RE_A_MANO
     ]
+
+
+def lo_que_se_leyo_del_re(texto: str) -> str | None:
+    """Las lecturas de un RE a mano que no se creyó, tal cual y sin repetir: «RE86732021033A / RE867320210339».
+
+    Para el aviso de Revisión: el operador completa el RE sin ir al papel
+    (1001051, UPD2437825 pág. 1, 2026-11-18: el «1» pegado al «9» que ninguna
+    lectura distingue).
+    """
+    vistas: list[str] = []
+    for lectura in _lecturas_de_un_re(texto):
+        if f"RE{lectura}" not in vistas:
+            vistas.append(f"RE{lectura}")
+    return " / ".join(vistas) or None
 
 
 def trae_un_re_a_mano(texto: str) -> bool:

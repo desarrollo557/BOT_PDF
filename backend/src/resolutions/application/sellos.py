@@ -24,7 +24,7 @@ nada de un sello se salta: no lo lleva.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 
 from ..domain.anexos_declarados import HOJA_MUDA, clase_de_la_hoja
@@ -603,8 +603,13 @@ def sellos_al_pie(
     lector_realzado: OcrEngine,
     de_pago: OcrEngine | None = None,
     control: RunControl | None = None,
+    conocidos: Iterable[str] = (),
 ) -> dict[int, Sello]:
     """El sello de tinta clara junto a la firma, que la capa del escáner no dejó ver.
+
+    ``conocidos`` son los RE que la caja ya trae, impresos o validados en otro
+    sello: confirman la lectura a mano con una cifra de más y la oficina mal
+    leída (``radicado_con_una_cifra_de_mas``; 1005122, 2026-11-18).
 
     Lo pidió el operador el 2026-11-11 ante 1005965 (UPD3102771 p2): el sello
     de la oficina de Santa Rosa del Sur, con su RE escrito a mano, en tinta tan
@@ -653,7 +658,9 @@ def sellos_al_pie(
                 # la letra a mano (2026-11-18: también las oficinas 9233 y 9234).
                 radicado = (
                     radicado_del_texto(del_pago)
-                    or radicado_con_una_cifra_de_mas(del_pago, (), fecha.year if fecha else None)
+                    or radicado_con_una_cifra_de_mas(
+                        del_pago, conocidos, fecha.year if fecha else None, en_cualquier_casilla=True
+                    )
                     or radicado_escrito(del_pago, fecha.year if fecha else None)
                 )
                 sello = Sello("tinta", radicado, fecha, folios_del_sello_de_tinta(del_pago))

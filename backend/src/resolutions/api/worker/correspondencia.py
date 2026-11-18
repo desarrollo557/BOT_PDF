@@ -729,6 +729,18 @@ def _poner_el_re_en_el_nombre(
                 if valido:
                     encontrado = (pagina, valido, nota)
                     break
+            # O la etiqueta de radicación impresa en el texto de sus hojas, que
+            # es su RE aunque la lectura del sello no la viera (el operador,
+            # 2026-11-18: «cuando haya RE, ya sea en el sello o en la página,
+            # lo coloques, siempre y cuando no sea un anexo»). Nunca el RE que
+            # el cuerpo sólo cita: ése es el de otro trámite.
+            for pagina in grupo.page_numbers if numero.isdigit() and encontrado is None else ():
+                if pagina in sin_re or pagina in de_anexo:
+                    continue
+                etiqueta = leer_sello(textos.get(pagina, "") or "")
+                if etiqueta is not None and etiqueta.clase == "impreso" and es_re(etiqueta.radicado):
+                    encontrado = (pagina, etiqueta.radicado.upper(), "de la etiqueta en su texto")
+                    break
             if encontrado is None:
                 salida.append(grupo)
                 continue
@@ -946,13 +958,16 @@ HOJAS_SIN_FOLIOS = 3
 _RADICACION_SIN_RE = re.compile(r"RADI\w{0,6}N\W{0,4}((?:\d[ \t]?){12})(?![\d])")
 
 
-def _sellos_de_las_cartas(taller, source, textos: dict, sellos: dict, conocidos: set) -> tuple[dict, set[int]]:
+def _sellos_de_las_cartas(
+    taller, source, textos: dict, sellos: dict, conocidos: set, leidos: dict[int, str] | None = None
+) -> tuple[dict, set[int]]:
     """L2c: el sello de tinta de cada carta que abre y no lo mostró a Tesseract, o sin el RE a mano, leído por la IA.
 
     Sólo con «OCR + IA» (con «Solo OCR», nada). De lo que transcribe la IA de
     la cabecera: si es un sello de tinta, su fecha, su RE a mano -- con una
     cifra de más si hace falta -- y sus folios. Devuelve también las hojas
-    cuyo sello se leyó entero y no trae RE: se radicaron sin él.
+    cuyo sello se leyó entero y no trae RE: se radicaron sin él. En ``leidos``
+    deja, por hoja, lo que se leyó del RE que no se creyó, para el aviso.
     """
     from ...application.ports import Band
     from ...domain.carta import abre_carta
@@ -963,6 +978,7 @@ def _sellos_de_las_cartas(taller, source, textos: dict, sellos: dict, conocidos:
         fecha_del_sello_de_tinta,
         folios_del_sello_de_tinta,
         leer_sello,
+        lo_que_se_leyo_del_re,
         radicado_con_una_cifra_de_mas,
         radicado_del_texto,
         radicado_escrito,
@@ -1082,6 +1098,8 @@ def _sellos_de_las_cartas(taller, source, textos: dict, sellos: dict, conocidos:
             # sin RE: el escrito se radicó sin él (UPD2460819 pág. 12, «20216003
             # 6696»), y no se le pone el de su trámite.
             sin_re_en_el_sello.add(pagina)
+        if radicado is None and leidos is not None and (crudo := lo_que_se_leyo_del_re(leido)):
+            leidos[pagina] = crudo
         if ya_visto is not None:
             # El sello que ya vio Tesseract se queda con lo suyo; la IA le pone
             # el RE a mano que él no leyó, y lo que le faltara.
@@ -1573,6 +1591,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         lleva_etiqueta_de_envio,
         numero_del_acta_de_suspension,
     )
+    from ...domain.sello import re_del_sello as _re_del_sello
     from ...domain.territorial import nombre_del_expediente
     from ...domain.tramites import radicado_de
 
@@ -1728,8 +1747,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # L2c. El sello tenue de la carta que abre y en el que Tesseract no vio
         # nada (7975593, UPD3126960 págs. 9 y 44, 2026-11-12): con la IA, su
         # cabecera, una página por carta.
+        re_leidos_sin_creer: dict[int, str] = {}
         de_las_cartas, sellos_sin_re, sellos_que_no_se_leyeron = _sellos_de_las_cartas(
-            taller, source, textos, sellos, conocidos
+            taller, source, textos, sellos, conocidos, leidos=re_leidos_sin_creer
         )
         sellos.update(de_las_cartas)
         # L2b. El sello de tinta clara junto a la firma, que la capa no dejó
@@ -1752,6 +1772,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             ),
             de_pago=taller.lector_de_pago(),
             control=taller.control,
+            # Los RE que la caja ya trae: los de su texto y los de sus sellos,
+            # validados -- nunca la lectura cruda de una letra a mano --.
+            conocidos=conocidos | {r for s in sellos.values() if (r := _re_del_sello(s)[0])},
         )
         # El RE a mano del sello de tinta a una sola cifra de uno que la caja
         # trae impreso es el impreso (7975593, UPD3126960 págs. 9 y 33,
@@ -2833,7 +2856,14 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         + [{"page": pagina, "reason": RE_AL_PIE_SIN_VALIDAR} for pagina in re_al_pie_que_importa]
         # Y el sello de arriba con su RE a mano que ni Tesseract ni la IA
         # leyeron con certeza (UPD2460819 pág. 176, 2026-11-13).
-        + [{"page": pagina, "reason": RE_DEL_SELLO_SIN_LEER} for pagina in re_del_sello_sin_leer]
+        + [
+            {
+                "page": pagina,
+                "reason": RE_DEL_SELLO_SIN_LEER
+                + (f" (se leyó «{re_leidos_sin_creer[pagina]}»)" if pagina in re_leidos_sin_creer else ""),
+            }
+            for pagina in re_del_sello_sin_leer
+        ]
         # Y el RE a mano que la IA leyó y el agente no cree: otro año que el del
         # sello, o una oficina que no radica.
         + re_rechazados

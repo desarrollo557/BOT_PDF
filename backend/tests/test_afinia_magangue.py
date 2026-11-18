@@ -400,3 +400,53 @@ class TestLaPruebaDelOperador:
         assert validar_el_re_a_mano("RE8673202103319", date(2021, 10, 27)) == ("RE8673202103319", "")
         # Una errata de la letra sigue sin creerse.
         assert validar_el_re_a_mano("RE2022202203579", date(2022, 10, 14))[0] is None
+
+
+class TestElReDeTodoDocumento:
+    """«Cuando haya RE, ya sea en el sello o en la página, lo coloques, siempre y cuando no sea un anexo» (2026-11-18)."""
+
+    #: Lo que el OCR de pago leyó del sello al pie del reclamo de 1005122
+    #: (UPD3102765 pág. 1): el RE en la casilla de la notificación, con un 3 leído
+    #: 8 y un 1 de más.
+    SELLO_AL_PIE = (
+        "OFICINA\nBOLIVAR SUR\nRECIBIDO NO IMPLICA ACEPTACIÓN\nFECHA DE RECIBIDO: 12-02-2024\n"
+        "No DE RADICACIÓN: 2024600 38949\nNo DE FOLIOS: (04).\nDIR. NOTIFICACIÓN: RE28102024102908\n"
+    )
+
+    def test_el_re_fuera_de_su_casilla_se_casa_solo_con_el_que_la_caja_ya_trae(self):
+        from resolutions.domain.sello import radicado_con_una_cifra_de_mas
+
+        caja = {"RE2310202402908", "RE2310202409991"}
+        assert (
+            radicado_con_una_cifra_de_mas(self.SELLO_AL_PIE, caja, 2024, en_cualquier_casilla=True)
+            == "RE2310202402908"
+        )
+        # Sin la caja que lo confirme, dos arreglos serían adivinar.
+        assert radicado_con_una_cifra_de_mas(self.SELLO_AL_PIE, (), 2024, en_cualquier_casilla=True) is None
+        assert (
+            radicado_con_una_cifra_de_mas(self.SELLO_AL_PIE, {"RE2310202409991"}, 2024, en_cualquier_casilla=True)
+            is None
+        )
+        # Y fuera del sello recortado -- en la lectura de una carta -- no se mira otra casilla.
+        assert radicado_con_una_cifra_de_mas(self.SELLO_AL_PIE, caja, 2024) is None
+
+    def test_lo_que_se_leyo_del_re_que_no_se_creyo_va_al_aviso(self):
+        from resolutions.domain.sello import lo_que_se_leyo_del_re
+
+        # 1001051: el «1» pegado al «9», que ninguna lectura distingue.
+        leido = "No DE RADICACIÓN: RE 86732021033A\nNo. DE RADICACION: RE867320210339\nRE867320210339"
+        assert lo_que_se_leyo_del_re(leido) == "RE86732021033A / RE867320210339"
+        assert lo_que_se_leyo_del_re("RECIBIDO NO IMPLICA ACEPTACION") is None
+
+    def test_el_derecho_de_peticion_toma_la_etiqueta_de_su_pagina(self):
+        poner = TestElReAjeno._poner
+        grupos, _, hallados = poner(_grupos(("01", [1], "DERECHO DE PETICION")), {1: ETIQUETA})
+        assert grupos.groups[0].code.value == "01 RE9233202202774"
+        assert grupos.groups[0].re_en_el_nombre
+        # El RE que su cuerpo sólo cita no es el suyo.
+        carta = "Señores AFINIA\nREF. DERECHO DE PETICION\nsobre la reclamación RE9233202202774 que no me responden"
+        grupos, _, _ = poner(_grupos(("01", [1], "DERECHO DE PETICION")), {1: carta})
+        assert grupos.groups[0].code.value == "01"
+        # Ni la etiqueta de un anexo.
+        grupos, _, _ = poner(_grupos(("01", [1, 2], "DERECHO DE PETICION")), {1: carta, 2: ETIQUETA}, sin_re={2})
+        assert grupos.groups[0].code.value == "01"
