@@ -68,7 +68,8 @@ def _plano(texto: str) -> str:
 #: El campo «N° PQR:» de la constancia con un RE que la capa rompió: «RE» y
 #: trece caracteres, alguno que no es cifra -- «RE86732022b3446» por
 #: RE8673202203446 (1005652, UPD2437864 pág. 1, 2026-11-18) --.
-_PQR_ROTO = re.compile(r"PQR\W{0,3}\s*R\s?E\s?([0-9A-Za-z]{13})(?![0-9A-Za-z])")
+# Con lo que deja el OCR de pago alrededor: «N° PQR: **RE8673202203446**».
+_PQR_ROTO = re.compile(r"PQR\W{0,6}\s*R\s?E\s?([0-9A-Za-z]{13})(?![0-9A-Za-z])")
 
 
 def pqr_roto(texto: str) -> str | None:

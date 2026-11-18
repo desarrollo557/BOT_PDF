@@ -683,6 +683,7 @@ def _poner_el_re_en_el_nombre(
         EvidenciaDeRE,
         candidatos_legibles,
         decidir_el_re,
+        oficina_confirmada,
     )
     from ...domain.nombre_oficial import es_re, lleva_re_en_el_nombre
     from ...domain.sello import (
@@ -713,7 +714,14 @@ def _poner_el_re_en_el_nombre(
         if evidencia.fuente in FUENTES_IMPRESAS:
             return None if valor[2:6] in validas else f"la oficina {valor[2:6]} no es ninguna que radique"
         sello = sellos.get(evidencia.pagina)
-        creido, motivo = validar_el_re_a_mano(valor, sello.fecha if sello else None, oficinas)
+        # La oficina fuera de la lista, si dos lectores la leen igual, va tal
+        # cual (1005122, 2026-11-18).
+        creido, motivo = validar_el_re_a_mano(
+            valor,
+            sello.fecha if sello else None,
+            oficinas,
+            oficina_confirmada=oficina_confirmada(valor, evidencia.lecturas),
+        )
         if creido == valor:
             return None
         if creido is not None:
@@ -954,13 +962,19 @@ class _PersonasDeLasHojas:
 PPP_DEL_PQR = 300
 
 
-def _con_el_pqr_releido(source, textos: dict, releidas: dict[int, tuple[str, str]] | None = None) -> dict:
+def _con_el_pqr_releido(
+    source, textos: dict, releidas: dict[int, tuple[str, str]] | None = None, de_pago=None
+) -> dict:
     """Los textos con el RE del campo «N° PQR:» que la capa rompió, releído por Tesseract si coincide en lo que sí leyó.
 
     Sólo las hojas con el campo roto: una relectura de la hoja entera por
     cada una. Lo que no se repara se queda como estaba, sin RE. En
     ``releidas`` quedan, por hoja reparada, la capa original y la relectura:
     la evidencia del RE (2026-11-18), que el texto reparado ya no muestra.
+
+    Si Tesseract no lo repara y se eligió «OCR + IA», lo intenta el OCR de pago
+    (``de_pago``): en el Docker del operador la constancia de 1005652 salió sin
+    su RE aunque aquí Tesseract lo leía (2026-11-18).
     """
     from ...adapters.tesseract_ocr import TesseractConfig, TesseractOcr
     from ...domain.tramites import pqr_reparado, pqr_roto
@@ -977,6 +991,12 @@ def _con_el_pqr_releido(source, textos: dict, releidas: dict[int, tuple[str, str
             logger.warning("no se pudo releer el campo PQR de la pág. %s", pagina, exc_info=True)
             continue
         reparado = pqr_reparado(roto, releido)
+        if reparado is None and de_pago is not None:
+            try:
+                releido = de_pago.read(source.render(pagina, None, 200, "jpeg")).text
+                reparado = pqr_reparado(roto, releido)
+            except Exception:  # noqa: BLE001 - sin la IA, la hoja se queda sin su RE
+                logger.warning("la IA no releyó el campo PQR de la pág. %s", pagina, exc_info=True)
         if reparado:
             if releidas is not None:
                 releidas[pagina] = (salida[pagina] or "", releido)
@@ -1268,10 +1288,26 @@ def _sellos_de_las_cartas(
                     ya_visto.folios or folios,
                     lecturas=(*ya_visto.lecturas, *lecturas),
                     correccion=correccion,
+                    zona=ya_visto.zona or BANDA_DE_LA_CABECERA,
                 )
+            elif lecturas:
+                # Sin RE, lo que se leyó también es evidencia: de ahí salen sus
+                # candidatos (4100974: la visión leyó «RE2020…», a una cifra de
+                # la oficina 2320, y sin esto no se proponía nada).
+                from dataclasses import replace as _con
+
+                hallados[pagina] = _con(ya_visto, lecturas=(*ya_visto.lecturas, *lecturas))
             continue
         hallados[pagina] = Sello(
-            "tinta", radicado, fecha, folios or sello.folios, lecturas=lecturas, correccion=correccion
+            "tinta",
+            radicado,
+            fecha,
+            folios or sello.folios,
+            lecturas=lecturas,
+            correccion=correccion,
+            # Donde lo leyó la IA: la cabecera. Ahí se relee, abierta, si su RE
+            # no se cree (L2d).
+            zona=BANDA_DE_LA_CABECERA,
         )
     return hallados, sin_re_en_el_sello, vistos_sin_su_re - sin_re_en_el_sello
 
@@ -1737,6 +1773,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         hojas_que_pueden_llevar_sello,
         la_ultima_hoja_sola,
         leer_sellos,
+        releer_la_zona_del_sello,
         retener_los_folios,
         sellos_al_pie,
         separar_las_actas,
@@ -1872,7 +1909,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # con el OCR de casa (gratis): sin él la constancia tomaba por su fecha
         # el RE de la de al lado (1005652, «RE86732022b3446», 2026-11-18).
         releidas_del_pqr: dict[int, tuple[str, str]] = {}
-        textos = _con_el_pqr_releido(source, textos, releidas_del_pqr)
+        textos = _con_el_pqr_releido(source, textos, releidas_del_pqr, taller.lector_de_pago())
         # El segundo lector de la letra a mano de los sellos: el modelo con
         # visión sobre el mismo recorte (el operador, 2026-11-18: «dos
         # lectores coinciden»). Sólo con «OCR + IA».
@@ -1957,6 +1994,22 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # 2026-11-13): antes de agrupar por trámite, que parte el trámite por
         # una cifra mal leída.
         sellos, al_pie, corregidos_por_lo_impreso = _con_lo_impreso(sellos, al_pie, textos)
+        # L2d. El sello de tinta cuyo RE a mano ninguna lectura dejó creer,
+        # releído en toda su zona, abierta alrededor y más fina (el operador,
+        # 2026-11-18, ante 4100974: «que busque afuera, alrededor, en toda el
+        # área del sello»). Sólo con «OCR + IA».
+        for de_donde in (sellos, al_pie):
+            de_donde.update(
+                releer_la_zona_del_sello(
+                    source,
+                    de_donde,
+                    de_pago=taller.lector_de_pago(),
+                    vision=vision_del_sello,
+                    control=taller.control,
+                    oficinas={s.radicado[2:6] for s in sellos.values() if s.clase == "impreso" and s.radicado},
+                    workers=workers,
+                )
+            )
         # El agente no cree el RE que no cuadra: con la IA, el sello al pie sin
         # RE válido va a Revisión.
         re_al_pie_sin_validar = sorted(p for p, s in al_pie.items() if not s.radicado) if taller.con_ia() else []

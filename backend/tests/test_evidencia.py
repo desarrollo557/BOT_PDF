@@ -36,6 +36,15 @@ class TestLoLiteral:
         # El número interno de doce cifras no es un RE.
         assert res_en_la_lectura("No. DE RADICACION: RE202460129497") == []
 
+    def test_la_e_del_prefijo_en_un_signo_no_cambia_ninguna_cifra(self):
+        """4100974 (2026-11-18): la E a mano leída «$»; las trece cifras, tal cual."""
+        assert res_en_la_lectura("FUNCIONARIO RECEPTOR R$2320202301449.") == ["RE2320202301449"]
+        # Y sin trazar (1005122).
+        assert res_en_la_lectura("RE: R2810202402908") == ["RE2810202402908"]
+        # Pero ni una letra por la R ni una cifra de más.
+        assert res_en_la_lectura("K623202023014419") == []
+        assert res_en_la_lectura("R$23202023014419") == []
+
 
 def _tinta(*lecturas: tuple[str, str], propuesto: str | None = RE, correccion: str | None = None) -> EvidenciaDeRE:
     return EvidenciaDeRE(4, "sello de tinta", propuesto, tuple(lecturas), correccion)
@@ -56,10 +65,15 @@ class TestLaRegla:
 
     def test_dos_lecturas_del_mismo_motor_no_son_dos_lectores(self):
         hallazgo = decidir_el_re([_tinta(("tesseract", RE), ("relectura", RE))])
-        assert hallazgo.estado is Estado.REQUIERE_VALIDACION
+        # Se cree por una lectura que nadie contradice, pero no queda verificado.
+        assert (hallazgo.estado, hallazgo.lectores) == (Estado.ENCONTRADO, ("tesseract",))
 
-    def test_la_letra_a_mano_de_un_solo_lector_es_un_candidato(self):
-        # 1001051: la visión leyó RE8673202103319, el OCR «RE86732021033A».
+    def test_la_letra_a_mano_de_un_solo_lector_que_nadie_contradice_se_cree(self):
+        """El operador lo ajustó el 2026-11-18: un lector que la lee válida y otro que no lee ningún RE distinto.
+
+        1001051: la visión leyó RE8673202103319; el OCR, «RE86732021033A», que
+        no es un RE y no la contradice.
+        """
         hallazgo = decidir_el_re(
             [
                 _tinta(
@@ -69,18 +83,88 @@ class TestLaRegla:
                 )
             ]
         )
-        assert hallazgo.estado is Estado.REQUIERE_VALIDACION and hallazgo.valor is None
-        assert [(c.valor, c.motivo) for c in hallazgo.candidatos] == [
-            ("RE8673202103319", "letra a mano leída por un solo lector (visión)")
-        ]
+        assert (hallazgo.estado, hallazgo.valor, hallazgo.lectores) == (
+            Estado.ENCONTRADO,
+            "RE8673202103319",
+            ("visión",),
+        )
+        assert hallazgo.confianza == "media"
+
+    def test_dos_lectores_que_leen_re_distintos_van_a_revision(self):
+        # 1005117 p5 sin el agente: el OCR «RE9238…», la visión «RE9233…».
+        hallazgo = decidir_el_re(
+            [_tinta(("ocr de pago", "RE 9238202203577"), ("visión", "RE: RE9233202203577"), propuesto=None)]
+        )
+        assert hallazgo.estado is Estado.REQUIERE_VALIDACION
+        assert {c.valor for c in hallazgo.candidatos} == {"RE9238202203577", "RE9233202203577"}
+        assert "leen RE distintos" in hallazgo.candidatos[0].motivo
+
+    def test_la_oficina_a_una_cifra_se_propone_corregida(self):
+        # 4100974: la visión leyó «RE2020202301449»; el papel dice RE2320202301449.
+        def valido(valor, _evidencia):
+            if valor[2:6] == "2320":
+                return None
+            return f"oficina {valor[2:6]} leída por 2320: sería RE2320{valor[6:]}"
+
+        hallazgo = decidir_el_re(
+            [_tinta(("ocr de pago", "K223202023D1449"), ("visión", "RE: RE2020202301449"), propuesto=None)],
+            valido=valido,
+        )
+        assert hallazgo.estado is Estado.REQUIERE_VALIDACION
+        # Lo leído tal cual primero, la corregida detrás (1005122: «tal cual»).
+        assert [c.valor for c in hallazgo.candidatos] == ["RE2020202301449", "RE2320202301449"]
+        assert hallazgo.candidatos[0].motivo.startswith("leído tal cual")
+
+    @staticmethod
+    def _valido_con_la_lista(valor, evidencia):
+        from datetime import date
+
+        from resolutions.domain.evidencia import oficina_confirmada
+        from resolutions.domain.sello import validar_el_re_a_mano
+
+        creido, motivo = validar_el_re_a_mano(
+            valor, date(2024, 2, 12), oficina_confirmada=oficina_confirmada(valor, evidencia.lecturas)
+        )
+        return None if creido == valor else (f"{motivo}: sería {creido}" if creido else motivo)
+
+    def test_la_oficina_fuera_de_la_lista_que_leen_dos_lectores_va_tal_cual(self):
+        """1005122, UPD3102765 pág. 1 (2026-11-18): el papel dice RE2810202402908.
+
+        El operador: «si es el que está allí, es el que debes colocar tal cual».
+        """
+        hallazgo = decidir_el_re(
+            [
+                _tinta(
+                    ("ocr de pago", "DIR. NOTIFICACIÓN: RE28102024102908"),
+                    ("visión", "RE: R2810202402908"),
+                    propuesto="RE2310202402908",
+                    correccion="la oficina a una cifra de un RE de la caja",
+                )
+            ],
+            valido=self._valido_con_la_lista,
+        )
+        assert (hallazgo.estado, hallazgo.valor, hallazgo.lectores) == (
+            Estado.ENCONTRADO,
+            "RE2810202402908",
+            ("visión",),
+        )
+
+    def test_la_oficina_fuera_de_la_lista_de_un_solo_lector_es_un_candidato_tal_cual(self):
+        hallazgo = decidir_el_re(
+            [_tinta(("ocr de pago", "ilegible"), ("visión", "RE: R2810202402908"), propuesto=None)],
+            valido=self._valido_con_la_lista,
+        )
+        assert hallazgo.estado is Estado.REQUIERE_VALIDACION
+        assert [c.valor for c in hallazgo.candidatos] == ["RE2810202402908", "RE2310202402908"]
 
     def test_lo_corregido_es_un_candidato_con_su_correccion(self):
-        # 1005122: «RE28102024102908» casado con el RE del recurso.
+        # 1005122 sin la lectura de la visión: «RE28102024102908» casado con el
+        # RE del recurso. Con ella, va tal cual (ver más abajo).
         hallazgo = decidir_el_re(
             [
                 _tinta(
                     ("ocr de pago", "DIR. NOTIFICACION: RE28102024102908"),
-                    ("visión", "RE: R2810202402908"),
+                    ("visión", "RE: no hay"),
                     correccion="la oficina a una cifra de un RE de la caja",
                 )
             ]

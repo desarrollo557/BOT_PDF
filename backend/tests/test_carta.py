@@ -77,6 +77,18 @@ class TestLaHojaQueSigue:
         )
         assert continua_la_carta("2) porque al respecto le comunico a la prestadora que soy muy cuidadoso\n")
 
+    def test_el_membrete_repetido_arriba_de_la_hoja_no_la_corta(self):
+        """4100974, UPD2985240 pág. 2 (2026-11-18): el abogado repite su membrete en cada hoja.
+
+        Su sello al pie abría otro documento y el reclamo de la pág. 1 se quedaba sin RE.
+        """
+        assert continua_la_carta(
+            "ASMAIRO DE JESUS CONDE TORRES\nABOGADO T.P 319.157 DEL C. S. J.\n"
+            "2. FUNDAMENTOS DE DERECHO\nArtículo 154 de la Ley 142 de 1994.\n"
+        )
+        # Sólo el membrete, sin nada detrás que siga la carta, no basta.
+        assert not continua_la_carta("ASMAIRO DE JESUS CONDE TORRES\nABOGADO T.P 319.157 DEL C. S. J.\n")
+
     def test_el_logo_de_la_factura_no_es_prosa(self):
         assert not continua_la_carta(FACTURA)
 

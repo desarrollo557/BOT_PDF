@@ -28,6 +28,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 
 from ..domain.anexos_declarados import HOJA_MUDA, clase_de_la_hoja
+from ..domain.evidencia import oficina_confirmada, res_en_la_lectura
 from ..domain.grouping import GroupingResult, PageGroup
 from ..domain.sello import (
     Sello,
@@ -40,6 +41,8 @@ from ..domain.sello import (
     radicado_del_texto,
     radicado_escrito,
     radicado_por_la_cola,
+    renglones_del_sello,
+    validar_el_re_a_mano,
 )
 from .anexos_declarados import SOPORTES
 from .control import NullRunControl, RunControl, hilos, mapear
@@ -469,7 +472,8 @@ def leer_sellos(
                     vistos[orden[i]] = texto
 
     sellos: dict[int, Sello] = {}
-    for pagina, (sello, texto, de_la_capa, _) in detectados.items():
+    for pagina, (sello, texto, de_la_capa, banda) in detectados.items():
+        zona = (banda.x0, banda.y0, banda.x1, banda.y1)
         lecturas = tuple(
             (lector, leido)
             for lector, leido in (
@@ -509,6 +513,7 @@ def leer_sellos(
                 a_mano or del_pago.fecha or sello.fecha,
                 folios_a_mano or del_pago.folios or sello.folios,
                 lecturas=lecturas,
+                zona=zona,
             )
             continue
         radicado = None
@@ -576,6 +581,7 @@ def leer_sellos(
             or (de_la_capa_leido.folios if de_la_capa_leido else None),
             lecturas=lecturas,
             correccion=correccion,
+            zona=zona,
         )
     return sellos
 
@@ -735,9 +741,147 @@ def sellos_al_pie(
                     folios_del_sello_de_tinta(del_pago),
                     lecturas=lecturas,
                     correccion=correccion,
+                    zona=(recorte.x0, recorte.y0, recorte.x1, recorte.y1),
                 )
         hallados[pagina] = sello
     return hallados
+
+
+#: Cuánto se abre la zona del sello al releerla, en fracciones de la hoja: a
+#: cada lado y por arriba y por abajo. El funcionario escribe el RE donde cabe:
+#: encima, al lado o en otra casilla, saliéndose del recuadro (4100974).
+MARGEN_DE_LA_ZONA = (0.12, 0.06)
+#: Y hacia la derecha y abajo, por donde se sale el renglón del funcionario.
+ABAJO_DE_LA_ZONA = 0.07
+#: A cuánto lee cada lector la zona. El OCR de pago, a 400: a 300 leía
+#: «K223202023D1449». La visión, a 200: ahí leyó RE2320202301449 donde a 300
+#: leía «RE2020202301449» (4100974, UPD2985240 pág. 2, 2026-11-18).
+DPI_DE_LA_ZONA = 400
+DPI_DE_LA_VISION = 200
+#: Cuántos intentos que lean el mismo RE válido bastan para dejar de releer.
+INTENTOS_QUE_COINCIDEN = 2
+#: Cuántos sellos se releen por caja, como mucho: hasta tres páginas pagadas y
+#: tres consultas de visión cada uno.
+ZONAS_POR_CAJA = 60
+
+
+def _validos(lecturas: Iterable[tuple[str, str]], fecha, oficinas: Iterable[str]) -> list[str]:
+    """Los RE válidos -- su año y su oficina -- que trae tal cual cada lectura, uno por lectura y valor.
+
+    La oficina fuera de la lista vale si dos lectores la leen igual (``oficina_confirmada``).
+    """
+    lecturas = list(lecturas)
+    validos: list[str] = []
+    for _, leido in lecturas:
+        for valor in dict.fromkeys(res_en_la_lectura(leido)):
+            confirmada = oficina_confirmada(valor, lecturas)
+            if validar_el_re_a_mano(valor, fecha, oficinas, oficina_confirmada=confirmada)[0] == valor:
+                validos.append(valor)
+    return validos
+
+
+def re_que_se_cree(sello: Sello, oficinas: Iterable[str] = ()) -> str | None:
+    """El único RE válido que las lecturas del sello traen tal cual, o ``None``: ninguno, o dos que se contradicen."""
+    distintos = set(_validos(sello.lecturas, sello.fecha, oficinas))
+    return distintos.pop() if len(distintos) == 1 else None
+
+
+def zonas_del_sello(zona: tuple[float, float, float, float]) -> list[Band]:
+    """Las zonas en que se relee un sello, de la más ceñida a la más abierta.
+
+    Ceñida primero: con el cuerpo de la carta alrededor, el OCR de pago toma el
+    sello por una imagen y no lo transcribe -- «![img-0.jpeg]» --, y ceñido lo
+    lee (4100974, 2026-11-18). Después abierta hacia la derecha y abajo, por
+    donde se sale el renglón del funcionario, y al final abierta alrededor.
+    """
+    x0, y0, x1, y1 = zona
+    ancho, alto = MARGEN_DE_LA_ZONA
+    candidatas = [
+        (x0, y0, x1, y1),
+        (max(0.0, x0 - 0.02), max(0.0, y0 - 0.02), 1.0, min(1.0, y1 + ABAJO_DE_LA_ZONA)),
+        (max(0.0, x0 - ancho), max(0.0, y0 - alto), min(1.0, x1 + ancho), min(1.0, y1 + alto)),
+    ]
+    return [Band(*c) for c in dict.fromkeys(candidatas)]
+
+
+def releer_la_zona_del_sello(
+    source,
+    sellos: Mapping[int, Sello],
+    *,
+    de_pago: OcrEngine | None,
+    vision: Callable[[bytes], str] | None = None,
+    control: RunControl | None = None,
+    oficinas: Iterable[str] = (),
+    workers: int = 4,
+) -> dict[int, Sello]:
+    """L2d: el sello de tinta cuyo RE a mano ninguna lectura dejó creer, releído en toda su zona.
+
+    Lo pidió el operador el 2026-11-18 ante 4100974: «necesito poder obtener el
+    RE aun así esté en manuscritos… que busque afuera, alrededor, en toda el
+    área del sello». El RE del funcionario iba en el renglón de «FUNCIONARIO
+    RECEPTOR», saliéndose del recuadro, y ni el OCR de pago ni la visión lo
+    leían bien a 300 ppp.
+
+    Con la letra a mano ningún lector es estable: según el recorte, el OCR de
+    pago leyó «R$2320202301449», «K623202023014419» o «RE2320202301449», y la
+    visión «RE2020202301449» o RE2320202301449. Por eso se lee varias veces:
+    en cada zona del sello (``zonas_del_sello``), de la más ceñida a la más
+    abierta, el OCR de pago a ``DPI_DE_LA_ZONA`` y la visión a
+    ``DPI_DE_LA_VISION``, hasta que ``INTENTOS_QUE_COINCIDEN`` intentos lean el
+    mismo RE válido. De lo que lee el OCR sólo cuentan los renglones del sello
+    (``renglones_del_sello``): la zona abierta alcanza la carta, que cita el RE
+    de otras reclamaciones.
+
+    Todo lo leído se suma a sus lecturas, tal cual, y lo decide
+    ``domain.evidencia``: una lectura válida que ningún otro lector contradiga
+    se cree; dos RE válidos distintos van a Revisión. Devuelve sólo los sellos
+    releídos y, si sus lecturas dejan un único RE válido, ése por su radicado.
+    Sin el OCR de pago (``Solo OCR``), nada.
+    """
+    if de_pago is None:
+        return {}
+    control = control or NullRunControl()
+    oficinas = frozenset(oficinas)
+    por_releer = [
+        p
+        for p, s in sorted(sellos.items())
+        if s.clase == "tinta" and s.zona is not None and not _validos(s.lecturas, s.fecha, oficinas)
+    ][:ZONAS_POR_CAJA]
+
+    def releer(pagina: int) -> tuple[tuple[str, str], ...]:
+        sello = sellos[pagina]
+        nuevas: list[tuple[str, str]] = []
+        lectores: list[tuple[str, int, Callable[[bytes], str]]] = [
+            ("ocr de pago", DPI_DE_LA_ZONA, lambda imagen: renglones_del_sello(de_pago.read(imagen).text or ""))
+        ]
+        if vision is not None:
+            lectores.append(("visión", DPI_DE_LA_VISION, lambda imagen: vision(imagen) or ""))
+        for zona in zonas_del_sello(sello.zona):
+            for lector, dpi, leer in lectores:
+                try:
+                    leido = leer(source.render(pagina, zona, dpi, "jpeg"))
+                except Exception:  # noqa: BLE001 - sin este intento, el siguiente
+                    continue
+                if not leido:
+                    continue
+                nuevas.append((lector, leido))
+                validos = _validos(nuevas, sello.fecha, oficinas)
+                if any(validos.count(v) >= INTENTOS_QUE_COINCIDEN for v in validos):
+                    return tuple(nuevas)
+        return tuple(nuevas)
+
+    releidos: dict[int, Sello] = {}
+    with hilos(max(1, workers)) as pool:
+        for pagina, nuevas in zip(por_releer, mapear(pool, releer, por_releer, control), strict=True):
+            if not nuevas:
+                continue
+            sello = sellos[pagina]
+            con_lo_nuevo = replace(sello, lecturas=(*sello.lecturas, *nuevas))
+            creido = re_que_se_cree(con_lo_nuevo, oficinas)
+            if creido is not None:
+                con_lo_nuevo = replace(con_lo_nuevo, radicado=creido, correccion=None)
+            releidos[pagina] = con_lo_nuevo
+    return releidos
 
 
 def cortar_por_sellos(

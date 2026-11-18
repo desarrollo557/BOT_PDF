@@ -252,7 +252,14 @@ class TestElReDelWorker:
                 ("03", [3], "RECURSO DE REPOSICION"),
             ),
             sellos={
-                1: Sello("tinta", "RE2371202302499", date(2023, 7, 19), lecturas=dos("RE2371202302499")),
+                # Sólo la IA leyó la oficina 2371: con dos lectores iría tal cual
+                # (1005122, 2026-11-18).
+                1: Sello(
+                    "tinta",
+                    "RE2371202302499",
+                    date(2023, 7, 19),
+                    lecturas=(("ocr de pago", "No DE RADICACION: ilegible"), ("visión", "RE: RE2371202302499")),
+                ),
                 2: Sello("tinta", "RE2311202102952", date(2023, 8, 28), lecturas=dos("RE2311202102952")),
                 3: Sello("tinta", "RE9233202203621", date(2023, 1, 25), lecturas=dos("RE9233202203621")),
             },
@@ -260,18 +267,30 @@ class TestElReDelWorker:
         )
         assert [g.code.value for g in grupos.groups] == ["01", "02", "03 RE9233202203621"]
         assert "oficina 2371 leída por 2311" in hallados["1"]
+        # Lo leído, tal cual, primero; la oficina corregida, detrás.
+        assert [c["valor"] for c in rechazados[0]["candidatos"]] == ["RE2371202302499", "RE2311202302499"]
         assert [r["page"] for r in rechazados] == [1, 2]
         assert "verificado" in hallados["3"]
 
-    def test_la_letra_a_mano_de_un_solo_lector_es_un_candidato(self):
+    def test_la_letra_a_mano_de_un_solo_lector_que_nadie_contradice_se_cree(self):
+        """El operador, 2026-11-18: un lector la lee y el otro no lee nada distinto."""
         rechazados: list = []
         grupos, _, hallados = self._poner(
             self._grupos(("01", [1], "DERECHO DE PETICION")),
-            sellos={1: Sello("tinta", RE, date(2022, 1, 5), lecturas=(("ocr de pago", f"RE {RE[2:]}"), ("visión", "RE: no hay")))},
+            sellos={1: Sello("tinta", RE, date(2020, 5, 1), lecturas=(("ocr de pago", f"RE {RE[2:]}"), ("visión", "RE: no hay")))},
             rechazados=rechazados,
         )
-        assert grupos.groups[0].code.value == "01"
-        assert "un solo lector" in hallados["1"] and rechazados[0]["candidatos"][0]["valor"] == RE
+        assert grupos.groups[0].code.value == f"01 {RE}" and "encontrado" in hallados["1"]
+        assert rechazados == []
+
+    def test_dos_lectores_que_leen_re_distintos_van_a_revision(self):
+        rechazados: list = []
+        grupos, _, _ = self._poner(
+            self._grupos(("01", [1], "DERECHO DE PETICION")),
+            sellos={1: Sello("tinta", RE, date(2020, 5, 1), lecturas=(("ocr de pago", f"RE {RE[2:]}"), ("visión", "RE: RE2310202007999")))},
+            rechazados=rechazados,
+        )
+        assert grupos.groups[0].code.value == "01" and "leen RE distintos" in rechazados[0]["reason"]
 
 
 #: La respuesta de la empresa de 1016215 (UPD2437946 p7), tal como la deja la capa.
@@ -467,6 +486,148 @@ class TestElSelloAlPie:
         assert una_sola == {}
         sin_ia = sellos_al_pie(self._Fuente(), {2: self.FIRMA}, set(), lector_realzado=self._Realzado(self.SELLO))
         assert sin_ia[2].radicado is None
+
+    def test_guarda_la_zona_donde_lo_leyo(self):
+        from resolutions.application.sellos import sellos_al_pie
+
+        hallados = sellos_al_pie(
+            self._Fuente(), {2: self.FIRMA}, set(), lector_realzado=self._Realzado(self.SELLO),
+            de_pago=self._Pago("FECHA DE RECIBIDO 28-08-23\nRE2311202302952"),
+        )
+        assert hallados[2].zona is not None
+
+
+class TestLaZonaDelSello:
+    """4100974, UPD2985240 pág. 2 (2026-11-18): el RE a mano fuera del recuadro, releído en toda la zona del sello.
+
+    El operador: «necesito poder obtener el RE aun así esté en manuscritos…
+    que busque afuera, alrededor, en toda el área del sello».
+    """
+
+    class _Fuente:
+        def __init__(self):
+            self.bandas = []
+
+        def render(self, pagina, banda, dpi, formato="png"):
+            self.bandas.append((banda, dpi))
+            return b"imagen"
+
+    class _Lector:
+        """Lee ``texto`` en cada recorte; o, si es una lista, uno por recorte, en orden."""
+
+        def __init__(self, texto):
+            self.texto = texto
+            self.leidas = 0
+
+        def read(self, imagen):
+            self.leidas += 1
+            texto = self.texto if isinstance(self.texto, str) else self.texto[self.leidas - 1]
+            return type("Lectura", (), {"text": texto})()
+
+    ZONA = (0.55, 0.70, 0.90, 0.85)
+    #: Lo que leyeron a 300 ppp el OCR de pago y la visión: ninguno, el RE.
+    PRIMERAS = (("ocr de pago", "FUNCIONARIO RECEPTOR K223202023D1449"), ("visión", "RE: RE2020202301449"))
+    #: Y el OCR de pago, en toda la zona a 400 ppp, con el cuerpo de la carta encima.
+    ZONA_LEIDA = (
+        "notificado mediante el número RE2310202400111 de la reclamación anterior\n"
+        "FECHA DE RECIBIDO 13-02-2023\nNo DE RADICACION 202360021520\n"
+        "FUNCIONARIO RECEPTOR RE2320202301449.\nHr. 9:21 am."
+    )
+
+    def _sello(self, lecturas=PRIMERAS, zona=ZONA):
+        return Sello("tinta", None, date(2023, 2, 13), 3, lecturas=lecturas, zona=zona)
+
+    def test_las_zonas_van_de_la_mas_cenida_a_la_mas_abierta(self):
+        from resolutions.application.sellos import zonas_del_sello
+
+        cenida, a_la_derecha, abierta = zonas_del_sello(self.ZONA)
+        assert (cenida.x0, cenida.y0, cenida.x1, cenida.y1) == self.ZONA
+        assert a_la_derecha.x1 == 1.0 and a_la_derecha.y1 > self.ZONA[3]
+        assert abierta.x0 < a_la_derecha.x0 < self.ZONA[0] and abierta.y0 < a_la_derecha.y0
+
+    def test_lee_ocr_y_vision_zona_por_zona_hasta_que_dos_coinciden(self):
+        from resolutions.application.sellos import (
+            DPI_DE_LA_VISION,
+            DPI_DE_LA_ZONA,
+            releer_la_zona_del_sello,
+        )
+
+        fuente, pago = self._Fuente(), self._Lector(self.ZONA_LEIDA)
+        releidos = releer_la_zona_del_sello(
+            fuente, {2: self._sello()}, de_pago=pago, vision=lambda imagen: "RE: RE2320202301449"
+        )
+        assert releidos[2].radicado == "RE2320202301449" and releidos[2].correccion is None
+        # La ceñida, el OCR y la visión: coinciden y no se abre más.
+        assert [dpi for _, dpi in fuente.bandas] == [DPI_DE_LA_ZONA, DPI_DE_LA_VISION] and pago.leidas == 1
+        # Lo leído va tal cual, sin el renglón de la carta que cita otro RE.
+        del_ocr = releidos[2].lecturas[-2]
+        assert del_ocr[0] == "ocr de pago" and "RE2320202301449" in del_ocr[1] and "RE2310202400111" not in del_ocr[1]
+
+    def test_un_solo_intento_valido_que_nadie_contradice_se_cree(self):
+        """4100974: ceñida, «![img-0.jpeg]»; a la derecha, «R$2320202301449.» -- las trece cifras tal cual --."""
+        from resolutions.application.sellos import releer_la_zona_del_sello
+
+        pago = self._Lector(
+            ["Occidental, De Cicuco\n![img-0.jpeg](img-0.jpeg)", "No DE FOLIOS: (3) tres\nR$2320202301449.", "ilegible"]
+        )
+        releidos = releer_la_zona_del_sello(self._Fuente(), {2: self._sello()}, de_pago=pago)
+        assert releidos[2].radicado == "RE2320202301449" and pago.leidas == 3
+
+    def test_ninguna_zona_lo_lee_y_queda_lo_leido_para_la_revision(self):
+        from resolutions.application.sellos import releer_la_zona_del_sello
+
+        fuente = self._Fuente()
+        releidos = releer_la_zona_del_sello(
+            fuente, {2: self._sello()}, de_pago=self._Lector("K623202023014419"),
+            vision=lambda imagen: "RE: RE2020202301449",
+        )
+        # Tres zonas, cada una con los dos lectores; ni así se cree.
+        assert len(fuente.bandas) == 6
+        assert releidos[2].radicado is None and releidos[2].lecturas[-1] == ("visión", "RE: RE2020202301449")
+
+    def test_dos_intentos_que_leen_re_validos_distintos_no_dan_radicado(self):
+        from resolutions.application.sellos import releer_la_zona_del_sello
+
+        releidos = releer_la_zona_del_sello(
+            self._Fuente(), {2: self._sello()}, de_pago=self._Lector("RECEPTOR RE2320202301449"),
+            vision=lambda imagen: "RE: RE2320202301499",
+        )
+        assert releidos[2].radicado is None
+
+    def test_el_re_que_la_carta_cita_alrededor_no_es_el_del_sello(self):
+        from resolutions.application.sellos import releer_la_zona_del_sello
+
+        cita = self._Lector("En respuesta a su reclamo RE2310202400111 le informamos\nFECHA DE RECIBIDO 13-02-2023")
+        releidos = releer_la_zona_del_sello(self._Fuente(), {2: self._sello()}, de_pago=cita)
+        assert releidos[2].radicado is None
+
+    def test_si_el_ocr_no_lo_lee_mira_la_vision(self):
+        from resolutions.application.sellos import releer_la_zona_del_sello
+
+        releidos = releer_la_zona_del_sello(
+            self._Fuente(), {2: self._sello()}, de_pago=self._Lector("FUNCIONARIO RECEPTOR ilegible"),
+            vision=lambda imagen: "RE: RE2320202301449",
+        )
+        assert releidos[2].radicado == "RE2320202301449" and releidos[2].lecturas[-1][0] == "visión"
+
+    def test_no_relee_el_que_ya_se_cree_ni_sin_zona_ni_sin_ia(self):
+        from resolutions.application.sellos import releer_la_zona_del_sello
+
+        pago = self._Lector(self.ZONA_LEIDA)
+        ya = self._sello(lecturas=(("visión", "RE: RE2320202301449"),))
+        assert releer_la_zona_del_sello(self._Fuente(), {1: ya, 2: self._sello(zona=None)}, de_pago=pago) == {}
+        assert pago.leidas == 0
+        assert releer_la_zona_del_sello(self._Fuente(), {2: self._sello()}, de_pago=None) == {}
+
+    def test_de_punta_a_punta_el_reclamo_lleva_el_re_releido(self):
+        """Con el RE releído, el nombre lo lleva: una lectura válida que nadie contradice."""
+        from resolutions.application.sellos import releer_la_zona_del_sello
+
+        releido = releer_la_zona_del_sello(self._Fuente(), {2: self._sello()}, de_pago=self._Lector(self.ZONA_LEIDA))[2]
+        grupos, _, hallados = TestElReDelWorker()._poner(
+            TestElReDelWorker._grupos(("01", [1, 2, 3], "RECLAMO")), sellos={2: releido}
+        )
+        assert grupos.groups[0].code.value == "01 RE2320202301449", hallados
 
 
 def test_la_fila_del_indice_lleva_el_re_de_su_archivo():

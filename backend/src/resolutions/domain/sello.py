@@ -97,6 +97,9 @@ class Sello:
     #: Si el RE se corrigió -- la oficina a una cifra, el impreso de la caja --,
     #: cómo; ``None`` si es lo leído.
     correccion: str | None = field(default=None, compare=False)
+    #: Dónde se leyó el sello en la hoja, en fracciones (x0, y0, x1, y1): ahí se
+    #: relee, abierta alrededor, si su RE no se pudo creer (2026-11-18).
+    zona: tuple[float, float, float, float] | None = field(default=None, compare=False)
 
     @property
     def legible(self) -> bool:
@@ -202,7 +205,11 @@ _RE_ENTERO = re.compile(r"RE\d{13}")
 
 
 def validar_el_re_a_mano(
-    radicado: str | None, fecha: date | None, oficinas_de_la_caja: Iterable[str] = ()
+    radicado: str | None,
+    fecha: date | None,
+    oficinas_de_la_caja: Iterable[str] = (),
+    *,
+    oficina_confirmada: bool = False,
 ) -> tuple[str | None, str]:
     """El RE escrito a mano de un sello, si se cree, y por qué; ``(None, motivo)`` si no.
 
@@ -229,6 +236,10 @@ def validar_el_re_a_mano(
     oficina = radicado[2:6]
     if oficina in validas:
         return radicado, ""
+    if oficina_confirmada:
+        # Fuera de la lista pero leída igual por dos lectores: es la que está
+        # escrita, y va tal cual (1005122, RE2810202402908, 2026-11-18).
+        return radicado, f"oficina {oficina} fuera de la lista, leída igual por dos lectores"
     cercanas = sorted(o for o in validas if len(o) == 4 and sum(a != b for a, b in zip(o, oficina, strict=True)) == 1)
     if len(cercanas) > 1:
         de_la_caja = [o for o in cercanas if o in set(oficinas_de_la_caja)]
@@ -807,6 +818,41 @@ def sello_sin_transcribir(leido: str) -> bool:
     su cuerpo («notificado mediante el número RE…»), y ése no es el de su sello.
     """
     return leer_sello(leido) is None and not (fecha_del_sello_de_tinta(leido) or folios_del_sello_de_tinta(leido))
+
+
+#: Los rótulos de las casillas del sello de tinta: no son prosa.
+_ROTULO_DEL_SELLO = re.compile(
+    r"^(?:FUNCIONARI\w*|RECEPT\w*|RADICA\w*|FOLIOS?|FECHA|RECIBID\w*|NOTIFICA\w*|DIR\w*|OFICINA|"
+    r"BOLIVAR|SUR|IMPLICA|ACEPTACI\w*|CARIBEMAR|COSTA|AFINIA|GRUPO\w*|EPM)$"
+)
+#: Lo que delata que el renglón cita un RE en vez de traerlo: el asunto, la
+#: referencia, «mediante el número…», «al contestar cite…».
+_CITA_DEL_RE = re.compile(r"\b(?:ASUNTO|REF|REFERENCIA|MEDIANTE|CITE|CITA|NUMERO|RESPUESTA|RECURSO|RECLAMO)\b")
+#: Cuántas palabras de verdad -- tres letras o más, que no son rótulos del
+#: sello -- hacen de un renglón prosa del escrito.
+PALABRAS_DE_LA_PROSA_DEL_SELLO = 3
+
+
+def renglones_del_sello(leido: str) -> str:
+    """De lo leído en la zona del sello, abierta alrededor, sólo los renglones del sello: tal cual, sin la prosa.
+
+    La zona se abre para alcanzar el RE que el funcionario escribe fuera del
+    recuadro -- en el renglón de «FUNCIONARIO RECEPTOR», saliéndose por la
+    derecha: 4100974, UPD2985240 pág. 2, 2026-11-18 --, y abierta alcanza
+    también el cuerpo de la carta, que cita el RE de otra reclamación. Se
+    quedan los renglones cortos, de casillas, y nunca el que cita.
+    """
+    suyos = []
+    for renglon in (leido or "").splitlines():
+        plano = _plano(renglon)
+        if not plano.strip() or _CITA_DEL_RE.search(plano):
+            continue
+        palabras = [p for p in re.findall(r"[A-Z]{3,}", plano) if not _ROTULO_DEL_SELLO.match(p)]
+        if len(palabras) < PALABRAS_DE_LA_PROSA_DEL_SELLO:
+            suyos.append(renglon)
+    return "\n".join(suyos)
+
+
 #: Cuántas hojas por folio declarado se aceptan sin avisar: un folio son las
 #: dos caras de la hoja, y las facturas se escanean por las dos -- «10 folios»
 #: con 13 páginas era correcto (nota «El folio de la esquina manda») --.

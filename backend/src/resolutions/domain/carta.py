@@ -47,6 +47,10 @@ PALABRAS_DE_LA_PROSA = 5
 #: es larga y sigue en minúsculas. Con menos palabras, o con la mayoría en
 #: mayúscula, es una cabecera: «Operador de Red: Caribemar de la Costa…».
 PALABRAS_DE_LA_FRASE = 8
+#: Cuántos renglones de arriba se miran para saber si la hoja continúa la carta,
+#: y cuántos de ellos pueden ser el membrete repetido, en mayúsculas.
+RENGLONES_PARA_CONTINUAR = 7
+RENGLONES_DEL_MEMBRETE = 3
 PROPORCION_EN_MINUSCULA = 0.7
 
 #: El renglón del asunto de la carta: «ASUNTO:», «Asunto;», «REF:», «Ref.».
@@ -161,13 +165,21 @@ def continua_la_carta(texto: str) -> bool:
     """
     if abre_carta(texto):
         return False
-    for renglon in _renglones(texto)[:4]:
+    membrete = 0
+    for renglon in _renglones(texto)[:RENGLONES_PARA_CONTINUAR]:
         if _letras(renglon) < 4:
             # El ruido de arriba: ««», «*», un trozo del sello.
             continue
         primero = renglon.lstrip(" \"'«“¿¡-–—•·*")
         if _SECCION.match(_plano(primero)) or _NUMERAL.match(primero):
             return True
+        if primero == primero.upper() and membrete < RENGLONES_DEL_MEMBRETE:
+            # El membrete que la carta repite arriba de cada hoja, todo en
+            # mayúsculas -- «ASMAIRO DE JESUS CONDE TORRES / ABOGADO T.P…» --:
+            # se mira lo que viene detrás, «2. FUNDAMENTOS DE DERECHO» (4100974,
+            # UPD2985240 pág. 2, 2026-11-18: su sello al pie abría otro documento).
+            membrete += 1
+            continue
         # La frase en minúscula tiene que ser prosa: el «afmia» del logo que la
         # OCR deja arriba de una factura también empieza en minúscula.
         palabras = re.findall(r"[^\W\d_]{2,}", primero)

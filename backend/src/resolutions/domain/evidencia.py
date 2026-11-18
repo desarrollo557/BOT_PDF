@@ -10,15 +10,27 @@ Y decidió dos reglas:
   existe porque se corrigió una lectura -- la oficina a una cifra, una cifra de
   más, el RE impreso en otra hoja de la caja, el de su trámite -- es un
   *candidato*: va a la Revisión con su motivo, nunca al nombre.
-* **La letra a mano se cree con dos lectores.** Un RE escrito a mano en un
-  sello entra al nombre sólo si dos lectores distintos -- el OCR de pago y el
-  modelo con visión, por ejemplo -- lo leen igual, cifra por cifra. Lo impreso
+* **La letra a mano, con un lector que nadie contradiga.** Un RE escrito a
+  mano en un sello entra al nombre si un lector -- el OCR de pago o el modelo
+  con visión -- lo lee tal cual y válido, y el otro no lee un RE distinto
+  (el operador lo ajustó el mismo día: con dos lectores obligatorios, siete
+  RE buenos iban a Revisión porque el otro lector no leía nada). Si los dos
+  lo leen igual, queda verificado; si leen RE distintos, va a Revisión. Lo impreso
   -- la etiqueta, el PQR de la constancia, el radicado que cita una
   notificación -- basta con que una lectura lo traiga literal.
 
 «Literal» es la única transformación permitida: las trece cifras seguidas en
 la lectura, con a lo sumo un blanco, un punto o un guion entre ellas, como los
 mete el escáner. Ni una letra leída por cifra, ni una cifra de más o de menos.
+El prefijo «RE», que es el mismo en todos, se reconoce aunque la letra a mano
+deje su E en un signo o sin trazar -- «R$2320202301449», 4100974;
+«R2810202402908», 1005122; 2026-11-18 --: no cambia ninguna cifra.
+
+Y lo leído va tal cual, también la oficina que no está en la lista de las que
+radican, si dos lectores distintos la leen igual con su año (el operador ante
+1005122: «si es el que está allí, es el que debes colocar tal cual»). Lo
+corregido -- la oficina a una cifra de una que radica -- es sólo un candidato,
+detrás de lo leído.
 
 Aquí no se lee papel: entran las lecturas tal como las dejó cada lector.
 """
@@ -136,8 +148,14 @@ FAMILIA_DEL_LECTOR = {
 FUENTES_IMPRESAS = frozenset(
     {"etiqueta impresa", "sello impreso", "PQR de la constancia", "citado en su texto"}
 )
-#: Cuántos lectores distintos hacen falta para creer la letra a mano.
+#: Cuántos lectores distintos hacen falta para dar la letra a mano por verificada.
+#: Con uno solo se cree si ningún otro lector la contradice (2026-11-18).
 LECTORES_PARA_LA_LETRA_A_MANO = 2
+#: El RE que el agente propone para una oficina leída a una cifra: «…: sería RE2320202301449».
+#: El año de un RE que puede serlo: el número interno con «RE» delante,
+#: «RE2024600387419», trae «6003».
+_ANO_POSIBLE = re.compile(r"(?:199\d|20\d\d)")
+_SERIA = re.compile(r"sería (RE\d{13})")
 
 
 def es_re_entero(valor: str | None) -> bool:
@@ -171,8 +189,32 @@ def familia(lector: str) -> str:
 
 
 #: Un RE en una lectura, tal cual: «RE», a lo sumo dos signos, y trece cifras
-#: con sus separadores; ni una cifra más ni una menos.
-_RE_EN_LA_LECTURA = re.compile(r"(?<![A-Z0-9])R\W?E\W{0,2}((?:\d" + _SEPARADOR + r"){12}\d)(?!" + _SEPARADOR + r"\d)")
+#: con sus separadores; ni una cifra más ni una menos. La E del prefijo, que
+#: la letra a mano deja a veces en un signo -- «R$2320202301449» (4100974,
+#: UPD2985240 pág. 2, 2026-11-18) --: el prefijo es el mismo en todo RE y las
+#: cifras siguen siendo las leídas.
+#: Y la E sin trazar: «R2810202402908» (1005122).
+_PREFIJO_DEL_RE = r"R(?:\W?E|[$€£&§])?"
+_RE_EN_LA_LECTURA = re.compile(
+    r"(?<![A-Z0-9])" + _PREFIJO_DEL_RE + r"\W{0,2}((?:\d" + _SEPARADOR + r"){12}\d)(?!" + _SEPARADOR + r"\d)"
+)
+
+
+def oficina_confirmada(valor: str, lecturas: Iterable[tuple[str, str]]) -> bool:
+    """Si dos lectores distintos leen tal cual la oficina y el año del RE, justo detrás de su «RE».
+
+    Para la oficina que no está en la lista de las que radican: no se corrige,
+    se cree si la leen igual dos lectores (1005122, UPD3102765 pág. 1,
+    2026-11-18: la visión leyó «R2810202402908» y el OCR de pago
+    «RE28102024102908»; el papel dice RE2810202402908). Una oficina que lee un
+    solo lector -- la visión, «RE2020202301449» en 4100974, donde el papel dice
+    2320 -- es sólo un candidato.
+    """
+    if not es_re_entero(valor):
+        return False
+    cabeza = re.compile(r"(?<![A-Z0-9])" + _PREFIJO_DEL_RE + r"\W{0,2}" + _SEPARADOR.join(valor.upper()[2:10]))
+    familias = {familia(lector) for lector, texto in lecturas if cabeza.search((texto or "").upper())}
+    return len(familias) >= LECTORES_PARA_LA_LETRA_A_MANO
 
 
 def res_en_la_lectura(texto: str | None) -> list[str]:
@@ -247,35 +289,58 @@ def decidir_el_re(
 
     for evidencia in evidencias:
         impresa = evidencia.fuente in FUENTES_IMPRESAS
-        valores = [(evidencia.propuesto or "").upper()]
+        propio = (evidencia.propuesto or "").upper()
+        valores = [propio]
         if not impresa:
             # Del recorte de un sello, también lo que cada lector leyó tal cual,
             # aunque quien lo leyó lo corrigiera o lo rechazara. De la lectura
-            # de una carta nunca: cita los RE de otros trámites.
-            valores += [v for _, texto in evidencia.lecturas for v in res_en_la_lectura(texto)]
-        for propuesto in dict.fromkeys(v for v in valores if es_re_entero(v)):
+            # de una carta nunca: cita los RE de otros trámites. Lo leído antes
+            # que lo corregido (1005122: «tal cual»).
+            leidos = [v for _, texto in evidencia.lecturas for v in res_en_la_lectura(texto)]
+            valores = [*leidos, propio] if evidencia.correccion else [propio, *leidos]
+        valores = list(dict.fromkeys(v for v in valores if es_re_entero(v)))
+        por_que_no = {v: (valido(v, evidencia) if valido is not None else None) for v in valores}
+        # Lo que cada lector leyó tal cual y puede ser un RE: si dos lectores leen
+        # RE distintos, se contradicen.
+        leidos_validos = {
+            v for v in valores if not por_que_no[v] and _lectores_literales(v, evidencia.lecturas)[0]
+        }
+        for propuesto in valores:
             lectores, fragmento, original = _lectores_literales(propuesto, evidencia.lecturas)
-            basta = 1 if impresa else LECTORES_PARA_LA_LETRA_A_MANO
-            por_que_no = valido(propuesto, evidencia) if valido is not None else None
-            if por_que_no and propuesto != (evidencia.propuesto or "").upper():
+            if por_que_no[propuesto] and propuesto != propio:
                 # Lo que un lector leyó suelto y no puede ser un RE -- el número
-                # interno con «RE» delante, «RE2024600387419» -- no es evidencia
-                # de nada: ni candidato.
+                # interno con «RE» delante, «RE2024600387419», un año imposible --
+                # no es evidencia de nada. Si lo único extraño es la oficina, lo
+                # leído se propone tal cual (1005122) y, detrás, la oficina a una
+                # cifra de una que radica, si la hay (4100974, «RE2020202301449»
+                # por RE2320202301449, 2026-11-18).
+                motivo = str(por_que_no[propuesto])
+                if "oficina" in motivo and lectores and _ANO_POSIBLE.fullmatch(propuesto[6:10]):
+                    proponer(propuesto, f"leído tal cual: {motivo}", evidencia.pagina)
+                if corregido := _SERIA.search(motivo):
+                    proponer(corregido.group(1), f"leído {propuesto}: {motivo}", evidencia.pagina)
                 continue
-            if len(lectores) < basta:
-                if not lectores:
-                    motivo = (
-                        f"corregido: {evidencia.correccion}"
-                        if evidencia.correccion
-                        else "ninguna lectura lo trae tal cual"
-                    )
-                else:
-                    motivo = f"letra a mano leída por un solo lector ({lectores[0]})"
+            if not lectores:
+                motivo = f"corregido: {evidencia.correccion}" if evidencia.correccion else "ninguna lectura lo trae tal cual"
                 proponer(propuesto, motivo, evidencia.pagina)
                 continue
-            if por_que_no:
-                proponer(propuesto, por_que_no, evidencia.pagina)
+            if por_que_no[propuesto]:
+                proponer(propuesto, str(por_que_no[propuesto]), evidencia.pagina)
+                if corregido := _SERIA.search(str(por_que_no[propuesto])):
+                    proponer(corregido.group(1), f"leído {propuesto}: {por_que_no[propuesto]}", evidencia.pagina)
                 continue
+            if not impresa and len(lectores) < LECTORES_PARA_LA_LETRA_A_MANO:
+                # La letra a mano con un solo lector se cree si ningún otro lector
+                # la contradice con otro RE (el operador, 2026-11-18: en siete
+                # casos un lector leía el RE bueno y el otro no leía nada).
+                contradicen = sorted(leidos_validos - {propuesto})
+                if contradicen:
+                    proponer(
+                        propuesto,
+                        f"los lectores leen RE distintos: {', '.join([propuesto, *contradicen])}",
+                        evidencia.pagina,
+                    )
+                    continue
             creidos.append(_Visto(propuesto, evidencia, lectores, fragmento, original))
 
     if del_tramite and es_re_entero(del_tramite) and not any(v.valor == del_tramite.upper() for v in creidos):
@@ -316,7 +381,7 @@ def _lo_leido(texto: str | None, valor: str) -> str | None:
     if not texto:
         return None
     cifras = valor.upper()[2:]
-    hallado = re.search(r"(?:R\W?E\W{0,2})?" + _SEPARADOR.join(cifras), texto, re.IGNORECASE)
+    hallado = re.search(r"(?:" + _PREFIJO_DEL_RE + r"\W{0,2})?" + _SEPARADOR.join(cifras), texto, re.IGNORECASE)
     return hallado.group(0) if hallado else None
 
 
