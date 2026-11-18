@@ -42,6 +42,12 @@ PARECIDO_DE_LA_COPIA = 0.9
 LARGO_DEL_ASUNTO = 90
 #: Cuántas palabras lleva el renglón en minúscula para ser la frase que sigue.
 PALABRAS_DE_LA_PROSA = 5
+#: La frase que empieza en mayúscula -- un párrafo nuevo: «Ahora bien, para
+#: hacer efectivo el derecho…», «En esa medida, se concreta…» -- es prosa si
+#: es larga y sigue en minúsculas. Con menos palabras, o con la mayoría en
+#: mayúscula, es una cabecera: «Operador de Red: Caribemar de la Costa…».
+PALABRAS_DE_LA_FRASE = 8
+PROPORCION_EN_MINUSCULA = 0.7
 
 #: El renglón del asunto de la carta: «ASUNTO:», «Asunto;», «REF:», «Ref.».
 _ASUNTO = re.compile(r"^\W{0,3}(?:REF(?:ERENCIA)?|ASUNTO)\s*[.:;!]{1,3}\s*(?P<resto>.*)$", re.IGNORECASE)
@@ -136,6 +142,16 @@ def abre_carta(texto: str) -> bool:
     return fecha_de_la_pagina("\n".join(antes)) is not None
 
 
+def _frase_en_mayuscula(palabras: list[str]) -> bool:
+    """Si las palabras del renglón son una frase de prosa que empieza en mayúscula."""
+    if len(palabras) < PALABRAS_DE_LA_FRASE:
+        return False
+    primera, resto = palabras[0], palabras[1:]
+    if not (primera[0].isupper() and primera[1:].islower()):
+        return False
+    return sum(1 for p in resto if p[0].islower()) >= PROPORCION_EN_MINUSCULA * len(resto)
+
+
 def continua_la_carta(texto: str) -> bool:
     """Si la hoja empieza a mitad de una carta: es la segunda hoja de un escrito.
 
@@ -154,7 +170,13 @@ def continua_la_carta(texto: str) -> bool:
             return True
         # La frase en minúscula tiene que ser prosa: el «afmia» del logo que la
         # OCR deja arriba de una factura también empieza en minúscula.
-        return primero[:1].islower() and len(re.findall(r"[^\W\d_]{2,}", primero)) >= PALABRAS_DE_LA_PROSA
+        palabras = re.findall(r"[^\W\d_]{2,}", primero)
+        if primero[:1].islower():
+            return len(palabras) >= PALABRAS_DE_LA_PROSA
+        # Y el párrafo nuevo, en mayúscula: las hojas 3 y 4 del reclamo de
+        # 1001389 (UPD3102735, 2026-11-18) no seguían a la carta, y el sello al
+        # pie de la 4 abría otro documento con la mitad del escrito.
+        return _frase_en_mayuscula(palabras)
     return False
 
 

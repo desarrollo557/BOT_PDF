@@ -37,7 +37,7 @@ from ..domain.anexos_declarados import (
 )
 from ..domain.grouping import GroupingResult, PageGroup
 from ..domain.resolution_code import ResolutionCode
-from ..domain.tramites import radicado_de
+from ..domain.tramites import es_cedula, radicado_de
 
 #: Lo que en la cabecera de una hoja dice que abre un escrito propio: a quién
 #: va, bajo qué referencia, con qué radicado o consecutivo. Un documento que
@@ -939,7 +939,16 @@ def partes_del_acuerdo(paginas: Sequence[int], textos: Mapping[int, str]) -> lis
             parte = PAGARES
         elif titulo == LEY_HABEAS_DATA:
             parte = HABEAS
-        elif titulo or clase_de_la_hoja(texto) in SOPORTES or not partes:
+        elif (
+            titulo
+            or clase_de_la_hoja(texto) in SOPORTES
+            or es_cedula(texto)
+            or not partes
+            # El reconocimiento y la Habeas Data son de una hoja: la foto de
+            # la cédula que la capa no deja leer, detrás, es un anexo y va al
+            # final, no pegada a él (1005114, UPD2973876 pág. 6, 2026-11-18).
+            or (partes[-1][0] in (RECONOCIMIENTO, HABEAS) and clase_de_la_hoja(texto) == HOJA_MUDA)
+        ):
             parte = ANEXOS_DEL_ACUERDO
         else:
             # Sin título: sigue a la de delante.

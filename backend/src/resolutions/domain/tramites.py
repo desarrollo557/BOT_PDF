@@ -65,6 +65,34 @@ def _plano(texto: str) -> str:
     return re.sub(r"\s+", " ", sin_tildes.upper())
 
 
+#: El campo «N° PQR:» de la constancia con un RE que la capa rompió: «RE» y
+#: trece caracteres, alguno que no es cifra -- «RE86732022b3446» por
+#: RE8673202203446 (1005652, UPD2437864 pág. 1, 2026-11-18) --.
+_PQR_ROTO = re.compile(r"PQR\W{0,3}\s*R\s?E\s?([0-9A-Za-z]{13})(?![0-9A-Za-z])")
+
+
+def pqr_roto(texto: str) -> str | None:
+    """Lo que trae el campo «N° PQR:» si la capa lo rompió -- trece caracteres, no todos cifras --; ``None`` si se lee o no está."""
+    hallado = _PQR_ROTO.search(" ".join((texto or "").split()))
+    if hallado is None or hallado.group(1).isdigit():
+        return None
+    return hallado.group(1)
+
+
+def pqr_reparado(roto: str, releido: str) -> str | None:
+    """El RE del campo «N° PQR:» que una relectura de la hoja da para el ``roto``, o ``None``.
+
+    Vale sólo si la relectura trae en su campo un RE entero que coincide con
+    el roto en cada cifra que la capa sí leyó: sólo cambia lo que no era cifra.
+    Nada se adivina.
+    """
+    for hallado in _PQR_ROTO.finditer(" ".join((releido or "").split())):
+        cifras = hallado.group(1)
+        if cifras.isdigit() and all(a == b for a, b in zip(roto, cifras, strict=True) if a.isdigit()):
+            return f"RE{cifras}"
+    return None
+
+
 def radicados_de(texto: str) -> list[str]:
     """Los radicados de una página, en orden y sin repetir: «RE4310202207352», «P4310…»."""
     plano = _plano(texto)

@@ -300,3 +300,103 @@ class TestLaAuditoriaDeLosRadicados:
         tres_folios = ETIQUETA.replace("Folios: 1", "Folios: 3")
         corta = auditar_los_radicados([ArchivoEntregado("01_RECLAMO-RE9233202202774.pdf", (1,))], {1: tres_folios})
         assert "faltarle" in corta.dudas[0]
+
+
+class TestLaPruebaDelOperador:
+    """Lo que el operador encontró al probar la versión del 2026-11-18 en su equipo."""
+
+    #: La cabeza del reconocimiento de 1005114 (UPD2973876 pág. 5) como la leyó la IA.
+    RECONOCIMIENTO_A_MANO = (
+        "Sente fr , 27 de Nov de 2021\n\nafinia\nGrupo·epm\n\nSeñores:\n\nCARIBEMAR DE LA COSTA S.A.S E.S.P.\n\n"
+        "La Ciudad\n\n# Ref.: Reconocimiento de deuda y propuesta de acuerdo de pago\n\nYo, Denilo Jimenez"
+    )
+    #: La Habeas Data de esa misma caja (pág. 1), con el asunto que el escáner rompió.
+    HABEAS_ROTA = (
+        "aPinia\nDía M Mes\nll\nAño\nGrupo-epr9\nSeñores\nCARIBEMAR DE LA COSTA S.A.S E.S.P\nLa Ciudad\n"
+        "ASUNTO: Ley Rabeas Data - NIC\nYo,\nidentificado con. Ja cédula de\n. autorizo a\nexpedida en\n"
+        "CARIBEMAR DE LA COSTA S.A.S E.S.P. para enviar de manera física y/oíigital la factura de energía\n"
+    )
+
+    def test_el_mes_abreviado_con_su_de_fecha_el_reconocimiento(self):
+        from resolutions.domain.fecha_por_estructura import fecha_de_la_hoja
+        from resolutions.domain.fechas import _normalizar, fechas_de
+
+        assert fecha_de_la_hoja(self.RECONOCIMIENTO_A_MANO) == date(2021, 11, 27)
+        assert fechas_de(_normalizar("Santa Fe, 27 de Nov. de 2021")) == [date(2021, 11, 27)]
+        # «mar» no es marzo sin su día y su año.
+        assert fechas_de(_normalizar("Caribe mar de la costa 2021")) == []
+
+    def test_la_habeas_data_se_reconoce_con_la_h_rota_y_por_su_cuerpo(self):
+        from resolutions.domain.asunto_del_documento import (
+            LEY_HABEAS_DATA,
+            titulo_del_documento,
+        )
+
+        assert titulo_del_documento(self.HABEAS_ROTA) == LEY_HABEAS_DATA
+        sin_asunto = self.HABEAS_ROTA.replace("ASUNTO: Ley Rabeas Data - NIC\n", "")
+        assert titulo_del_documento(sin_asunto) == LEY_HABEAS_DATA
+
+    def test_la_cedula_detras_del_reconocimiento_va_con_los_anexos(self):
+        from test_orden_del_acuerdo import CARTA, PAGARE
+
+        from resolutions.application.anexos_declarados import (
+            orden_del_acuerdo,
+            partes_del_acuerdo,
+        )
+
+        muda = ".-írí-'-'.. ;•.:■* -\n',r'.'^'^-’:v/-:r\ní-\nt r\n*\ns?\n"
+        cedula = "FECHA DE NACIMIENTO 21-MAY-1963\nMAGANGUE (BOLIVAR)\nLUGAR DE NACIMIENTO\nESTATURA 1.70 G.S. RH O+\n"
+        textos = {1: self.HABEAS_ROTA, 2: PAGARE, 3: CARTA, 4: self.RECONOCIMIENTO_A_MANO, 5: muda, 6: cedula}
+        assert partes_del_acuerdo(range(1, 7), textos) == [
+            ("habeas", [1]), ("pagares", [2]), ("pagares", [3]), ("reconocimiento", [4]),
+            ("anexos", [5]), ("anexos", [6]),
+        ]
+        assert orden_del_acuerdo(range(1, 7), textos, reconocimiento_fechado=True) == (4, 2, 3, 1, 5, 6)
+        assert orden_del_acuerdo(range(1, 7), textos, reconocimiento_fechado=False) == (2, 3, 1, 5, 6, 4)
+
+    def test_el_parrafo_en_mayuscula_sigue_a_la_carta_y_su_sello_al_pie_no_abre(self):
+        from resolutions.domain.carta import continua_la_carta
+
+        # 1001389 (UPD3102735 págs. 3 y 4): el reclamo seguía, y el sello al pie
+        # de la 4 abría otro documento con la mitad del escrito.
+        assert continua_la_carta(
+            "Ahora bien, para hacer efectivo el derecho constitucional al debido proceso es necesario que en los\n"
+        )
+        assert continua_la_carta("En esa medida, se concreta por parte del prestador la garantía del debido proceso en\n")
+        # Una cabecera no es prosa: casi todo en mayúscula, o corta.
+        assert not continua_la_carta("Operador de Red: Caribemar de la Costa S.A.S E.S.P\nNIU:21381594\n")
+        assert not continua_la_carta("Censo de Amplificadores Jigaltel Santa Ana\n")
+
+    def test_el_pqr_roto_de_la_constancia_se_repara_solo_en_lo_que_no_era_cifra(self):
+        from resolutions.domain.tramites import pqr_reparado, pqr_roto
+
+        # 1005652 (UPD2437864 pág. 1): sin esto la constancia tomaba por su
+        # fecha el RE de la de al lado, RE8673202203514.
+        roto = pqr_roto("Recibí constancia del contenido N° PQR: RE86732022b3446 FECHA: 22/08/2022")
+        assert roto == "86732022b3446"
+        assert pqr_reparado(roto, "N° PQR: RE8673202203446 MESES POR LO") == "RE8673202203446"
+        # La relectura que cambia una cifra que la capa sí leyó no vale.
+        assert pqr_reparado(roto, "N° PQR: RE8673202203447") is None
+        assert pqr_roto("N° PQR: RE8673202203514 FECHA") is None
+
+    def test_el_re_a_mano_de_una_oficina_que_no_existe_no_arma_el_tramite(self):
+        from resolutions.api.worker.correspondencia import _con_lo_impreso
+
+        # 1005117: la IA leyó «RE2022202203579» en el reclamo, y su trámite lo
+        # ponía en el nombre aunque el agente lo rechazara.
+        sellos = {2: Sello("tinta", "RE2022202203579", date(2022, 10, 14), 2)}
+        nuevos, _, corregidos = _con_lo_impreso(sellos, {}, {1: ETIQUETA})
+        assert nuevos[2].radicado is None
+        assert "no se cree" in corregidos[2]
+        # El de la oficina a una cifra de la de la caja se sigue corrigiendo.
+        cerca = {2: Sello("tinta", "RE9238202203577", date(2023, 1, 25), 1)}
+        assert _con_lo_impreso(cerca, {}, {1: ETIQUETA})[0][2].radicado == "RE9233202203577"
+
+    def test_las_oficinas_que_radican_en_bolivar_sur_se_creen_tal_cual(self):
+        # Contadas en las entregas de Magangué: la 2320 (1.347 PDF) y la 8673
+        # de Santa Ana (2.604) no estaban, y el agente rechazaba su RE o lo
+        # «corregía» a otra oficina (1001389: «RE2320…» a mano salía RE2310…).
+        assert validar_el_re_a_mano("RE2320202403286", date(2024, 4, 1)) == ("RE2320202403286", "")
+        assert validar_el_re_a_mano("RE8673202103319", date(2021, 10, 27)) == ("RE8673202103319", "")
+        # Una errata de la letra sigue sin creerse.
+        assert validar_el_re_a_mano("RE2022202203579", date(2022, 10, 14))[0] is None

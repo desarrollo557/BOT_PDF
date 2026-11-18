@@ -210,14 +210,17 @@ _FORMULARIO_EN_COLUMNAS = re.compile(
 
 #: «26 Nov de 2022», «03-dic-2021», «5 Sept. 2020»: el mes abreviado, como se
 #: escribe a mano en el renglón de la fecha de un acta (ACTA DE VERIFICACIÓN DE
-#: PREDIO DESOCUPADO, 2026-10-20). Sin él, la fecha salía «S.F.».
+#: PREDIO DESOCUPADO, 2026-10-20). Sin él, la fecha salía «S.F.». Y con el «de»
+#: entre el día y el mes: «Santa Fe, 27 de Nov de 2021», a mano en la cabeza
+#: del reconocimiento de deuda (1005114, UPD2973876 pág. 5, 2026-11-18); la IA
+#: la leía y el acuerdo salía sin fecha, con el reconocimiento al final.
 _ABREVIADOS = {
     "ene": "enero", "feb": "febrero", "mar": "marzo", "abr": "abril", "may": "mayo",
     "jun": "junio", "jul": "julio", "ago": "agosto", "sep": "septiembre", "sept": "septiembre",
     "set": "septiembre", "oct": "octubre", "nov": "noviembre", "dic": "diciembre",
 }
 _MES_ABREVIADO = re.compile(
-    r"\b(\d{1,2})\s*[,./-]?\s*(ene|feb|mar|abr|may|jun|jul|ago|sept|sep|set|oct|nov|dic)\.?"
+    r"\b(\d{1,2})\s*[,./-]?\s*(?:de\s+)?(ene|feb|mar|abr|may|jun|jul|ago|sept|sep|set|oct|nov|dic)\.?"
     r"(?![a-záéíóúñ])\s*[,./-]?\s*(?:del?\s+)?(\d{4})\b",
     re.IGNORECASE,
 )

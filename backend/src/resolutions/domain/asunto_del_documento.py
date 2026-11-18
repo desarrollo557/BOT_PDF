@@ -393,7 +393,14 @@ _FORMATOS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # su texto.
     # La autorización de tratamiento de datos: «ASUNTO: / Ley Habeas Data -
     # NIC» (UPD2326311 p1).
-    ("LEY HABEAS DATA", re.compile(r"HABEAS\s+DATA")),
+    # Con lo que el escáner hace de la H: «Ley Rabeas Data» (1005114,
+    # UPD2973876 pág. 1, 2026-11-18): sin esto salía «DOCUMENTO», suelta, fuera
+    # de su acuerdo de pago.
+    # Y por su cuerpo, cuando el escáner rompe el asunto: «autorizo a CARIBEMAR…
+    # para enviar de manera física y/o digital la factura». Lo dictó el
+    # operador ese mismo día: «LEY HABEAS DATA NUNCA PUEDE IR FUERA DE
+    # RECONOCIMIENTO DE DEUDA Y ACUERDO DE PAGO, NUNCA».
+    ("LEY HABEAS DATA", re.compile(r"\b[HR]A[B8]EA[S5]\s+DA[T7]A|ENVIAR\s+DE\s+MANERA\s+F[IL1]SICA")),
     (
         "AUTORIZACION DE NOTIFICACION ELECTRONICA",
         re.compile(r"AUTORIZACI[O0]N\s+PARA\s+\w{1,2}\s+NOTIFICACI[O0]N\s+ELECTR"),

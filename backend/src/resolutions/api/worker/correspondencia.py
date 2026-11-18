@@ -809,6 +809,37 @@ def _poner_el_re_en_el_nombre(
     return replace(grupos, groups=salida), anexos, hallados
 
 
+#: A cuánto se relee la hoja cuyo campo «N° PQR:» rompió la capa: a 200 y 300
+#: Tesseract leyó entero el de 1005652; a 400 lo perdió.
+PPP_DEL_PQR = 300
+
+
+def _con_el_pqr_releido(source, textos: dict) -> dict:
+    """Los textos con el RE del campo «N° PQR:» que la capa rompió, releído por Tesseract si coincide en lo que sí leyó.
+
+    Sólo las hojas con el campo roto: una relectura de la hoja entera por
+    cada una. Lo que no se repara se queda como estaba, sin RE.
+    """
+    from ...adapters.tesseract_ocr import TesseractConfig, TesseractOcr
+    from ...domain.tramites import pqr_reparado, pqr_roto
+
+    rotas = {p: roto for p, t in textos.items() if (roto := pqr_roto(t or ""))}
+    if not rotas:
+        return textos
+    salida = dict(textos)
+    local = TesseractOcr(TesseractConfig(min_word_confidence=0))
+    for pagina, roto in rotas.items():
+        try:
+            releido = local.read(source.render(pagina, None, PPP_DEL_PQR)).text
+        except Exception:  # noqa: BLE001 - sin relectura, la hoja se queda sin su RE
+            logger.warning("no se pudo releer el campo PQR de la pág. %s", pagina, exc_info=True)
+            continue
+        reparado = pqr_reparado(roto, releido)
+        if reparado:
+            salida[pagina] = (salida[pagina] or "").replace(roto, reparado[2:], 1)
+    return salida
+
+
 def _con_lo_impreso(sellos: dict, al_pie: dict, textos: dict) -> tuple[dict, dict, dict[int, str]]:
     """Los sellos de tinta con su RE a mano corregido por el que la caja trae impreso, y qué se corrigió en cada hoja.
 
@@ -849,6 +880,14 @@ def _con_lo_impreso(sellos: dict, al_pie: dict, textos: dict) -> tuple[dict, dic
                 if valido and valido != sello.radicado.upper():
                     corregidos[pagina] = f"el sello se leyó {sello.radicado}; {motivo}"
                     salida[pagina] = replace(sello, radicado=valido)
+                elif valido is None:
+                    # Lo que el agente no cree no arma el trámite: con la lectura
+                    # cruda el reclamo de 1005117 salía «RE2022202203579», de una
+                    # oficina «2022» que no existe, puesto por su trámite aunque
+                    # el nombre lo hubiera rechazado (2026-11-18). Va sin RE y a
+                    # Revisión, como el sello que no se leyó.
+                    corregidos[pagina] = f"el sello se leyó {sello.radicado}; no se cree: {motivo}"
+                    salida[pagina] = replace(sello, radicado=None)
         return salida
 
     return corregir(sellos), corregir(al_pie), corregidos
@@ -1646,6 +1685,10 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # ellas va a la constancia si fecha un documento (``lo_leido``).
         sin_capa = {p for p, t in textos.items() if len((t or "").strip()) < MINIMO_DE_CAPA}
         textos.update({p: t for p, t in leidas.textos.items() if t})
+        # L1c. El campo «N° PQR:» de la constancia que la capa rompió, releído
+        # con el OCR de casa (gratis): sin él la constancia tomaba por su fecha
+        # el RE de la de al lado (1005652, «RE86732022b3446», 2026-11-18).
+        textos = _con_el_pqr_releido(source, textos)
         # L2. El sello de radicación de cada hoja que puede llevarlo, leído
         # aparte con el OCR de casa. Los radicados bien escritos en la caja
         # corrigen la cifra que la OCR del sello leyó mal.
@@ -2017,14 +2060,16 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 # sigue la que dice qué es y de cuándo.
                 titulares = [p for p in paginas if p not in guias] or paginas
                 acuerdo = paginas[0] in del_acuerdo
+                del_reconocimiento: list[int] = []
                 if acuerdo:
                     # El acuerdo se titula y se fecha por su reconocimiento
                     # de deuda, que es lo que el usuario firmó y fechó.
-                    titulares = [
+                    del_reconocimiento = [
                         p
                         for p in paginas
                         if titulo_del_documento(textos.get(p, "") or "") == ACUERDO_DE_PAGO
-                    ] or titulares
+                    ]
+                    titulares = del_reconocimiento or titulares
                 # La fecha del documento, donde su estructura la pone (lo
                 # dictó el operador el 2026-11-10: «del documento principal…
                 # cuando exista un sello, la fecha que esté dentro del sello»):
@@ -2036,8 +2081,13 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 # --: es la del sello. Sin fecha no cuentan, y «Solo OCR» queda
                 # como estaba.
                 con_pie = {**{p: s for p, s in al_pie.items() if s.fecha}, **sellos}
+                # El acuerdo, sólo en las hojas de su reconocimiento: en todas,
+                # la hoja principal salía el reverso de la cédula -- «FECHA DE
+                # NACIMIENTO 21-MAY-1963» -- y la carta de instrucciones, y el
+                # reconocimiento fechado a mano «27 de Nov de 2021» quedaba sin
+                # fecha y al final (1005114, UPD2973876, 2026-11-18).
                 estructura = fecha_por_estructura(
-                    paginas,
+                    del_reconocimiento or paginas,
                     textos,
                     sellos={
                         p: con_pie[p].fecha

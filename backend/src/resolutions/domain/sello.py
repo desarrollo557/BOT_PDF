@@ -136,14 +136,14 @@ _CIFRAS_PARECIDAS: dict[str, str] = {
 _NUMERO = re.compile(r"NU\W?[MVW]|MER[O0]|C\W?ITE\W+ESTE")
 #: Las oficinas que radican: «3110» (Valledupar), «3120», «4310»… -- empiezan
 #: por 3 o 4 --, el año y el consecutivo.
-#: Y las de Magangué, que empiezan por 9 (2026-11-18).
-_FORMA_DEL_RADICADO = re.compile(r"(?:[234]\d{3}|923[34])20(1[89]|2\d)\d{5}")
+#: Y las de Magangué, que empiezan por 9, y las de Santa Ana, por 8 (2026-11-18).
+_FORMA_DEL_RADICADO = re.compile(r"(?:[234]\d{3}|923[1-4]|867[1-5])20(1[89]|2\d)\d{5}")
 #: La forma del RE escrito a mano, como lo deja la letra: cualquier oficina que
 #: empiece como las que radican. La oficina la decide después el agente
 #: (``validar_el_re_a_mano``): la IA leyó «RE92382022035-77» -- un 3 a mano
 #: leído como 8 -- en el sello del recurso de 1005117 (UPD2437857 p5,
 #: 2026-11-18), y con la forma de lo impreso se descartaba antes de validarlo.
-_FORMA_A_MANO = re.compile(r"[2349]\d{3}20(1[89]|2\d)\d{5}")
+_FORMA_A_MANO = re.compile(r"[23489]\d{3}20(1[89]|2\d)\d{5}")
 
 
 #: El número interno que la etiqueta imprime encima del radicado empieza por el
@@ -172,7 +172,19 @@ _OFICINAS = {"110": "3110", "120": "3120", "310": "4310"}
 #: «AL CONTESTAR CITE ESTE NUMERO RE9233202202774» (1005117, UPD2437857 p1).
 #: Fuera de las conocidas, la etiqueta se leía entera y salía sin RE: el
 #: operador veía los reclamos de Magangué sin su radicado (2026-11-18).
-OFICINAS_CONOCIDAS = frozenset({"3110", "3120", "4310", "2310", "9233", "9234"})
+#: Y las demás que radican en Bolívar Sur, contadas el mismo día en los 35.000
+#: PDF con RE de `W:\FOLIA-BOT\MAGANGUE PROCESADO`: 2311 (235), 2320 (1.347),
+#: 8671-8675 (Santa Ana: la 8673 en 2.604) y 9231-9232 (47 y 267). Por debajo
+#: de 47 son erratas de la letra -- 2210, 4431, 9212 --. Sin la 8673, el RE
+#: de un sello de Santa Ana leído entero se rechazaba (1001051, UPD2437825).
+OFICINAS_CONOCIDAS = frozenset(
+    {
+        "3110", "3120", "4310",
+        "2310", "2311", "2320",
+        "8671", "8672", "8673", "8674", "8675",
+        "9231", "9232", "9233", "9234",
+    }
+)  # fmt: skip
 #: Las oficinas que radican, para validar el RE escrito a mano en un sello de
 #: tinta: las conocidas, la 2311 de Santa Rosa del Sur (los sellos de 1005965,
 #: «RE2311202302499» y «RE2311202302952») y las que se repiten impresas en el
