@@ -2747,6 +2747,18 @@ class FolderRunner:
             except asyncio.CancelledError:
                 pass
         await asyncio.to_thread(self._escribir_todo_lo_general, run)
+        if run.task == "segment":
+            # Las métricas y la evidencia de la extracción (2026-11-18), una
+            # vez, de las constancias: un fallo aquí no tumba la corrida.
+            await asyncio.to_thread(self._escribir_las_metricas, run)
+
+    def _escribir_las_metricas(self, run: FolderRun) -> None:
+        from .metricas import escribir_las_metricas
+
+        try:
+            escribir_las_metricas(run.destination)
+        except Exception:  # noqa: BLE001 - la entrega ya está; las métricas se rehacen con su script
+            logger.warning("no se pudieron escribir las métricas de la extracción", exc_info=True)
 
     def _escribir_todo_lo_general(self, run: FolderRun) -> None:
         with run.cerrojo_generales:
