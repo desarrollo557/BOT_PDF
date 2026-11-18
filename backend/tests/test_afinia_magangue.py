@@ -450,3 +450,79 @@ class TestElReDeTodoDocumento:
         # Ni la etiqueta de un anexo.
         grupos, _, _ = poner(_grupos(("01", [1, 2], "DERECHO DE PETICION")), {1: carta, 2: ETIQUETA}, sin_re={2})
         assert grupos.groups[0].code.value == "01"
+
+
+class TestLaHabeasDeSuPersona:
+    """4100921 (UPD2985187, 2026-11-18): dos Habeas Data delante de dos acuerdos; cada una con el de su persona."""
+
+    HABEAS_CORRALES = (
+        "ASUNTO: Ley Habeas Data - NIC 4100921\nDía 10 Mes 05 Año 2022\nYo, Alfonso Velilla Corrales, identificado con "
+        "la cédula de ciudadanía No. 9265245 expedida en Magangue. autorizo a CARIBEMAR"
+    )
+    HABEAS_ARIAS = (
+        "ASUNTO: Ley Habeas Data - NIC 4100921\nDía 03 Mes 02 Año 2022\nYo, Luis Alfonso Velilla Arias, identificado "
+        "con la cédula de ciudadanía No. 1051655090 expedida en Magangue. autorizo a CARIBEMAR"
+    )
+    PAGARE = "CARIBEMAR DE LA COSTA S.A.S. ESP\nPAGARE No. 4100921 -1\n"
+    RECONOCIMIENTO_ARIAS = (
+        "Magangue, 03 de febrero de 2022\nSeñores:\nCARIBEMAR\nRef.: Reconocimiento de deuda y propuesta de acuerdo de "
+        "pago\nYo, Luis A. Velilla A. identificado como aparece al pie de mi firma\nC.C. 1051655 de Magangue"
+    )
+    RECONOCIMIENTO_CORRALES = (
+        "Magangue, 10 de mayo de 2022\nSeñores:\nCARIBEMAR\nRef.: Reconocimiento de deuda y propuesta de acuerdo de "
+        "pago\nYo, Alfonso Velilla Cordes identificado como aparece al pie de mi firma\nC.C. 9265245 de Magangue"
+    )
+
+    def _unir(self, textos, *, persona=True, fecha=True):
+        from resolutions.application.anexos_declarados import unir_el_acuerdo_de_pago
+        from resolutions.domain.fecha_por_estructura import fecha_de_la_hoja
+        from resolutions.domain.persona_de_la_hoja import persona_de_la_hoja
+
+        grupos = _grupos(
+            ("01", [1], None), ("02", [2], None), ("03", [3], None), ("04", [4], None),
+            ("05", [5], None), ("06", [6], None), ("07", [7], None),
+        )  # fmt: skip
+        unidos, _, _ = unir_el_acuerdo_de_pago(
+            grupos,
+            textos,
+            persona_de=(lambda p: persona_de_la_hoja(textos[p])) if persona else None,
+            fecha_de=(lambda p: fecha_de_la_hoja(textos[p])) if fecha else None,
+        )
+        return sorted(sorted(g.page_numbers) for g in unidos.groups)
+
+    def _textos(self, habeas_1: str, habeas_2: str) -> dict[int, str]:
+        # 1-2 las Habeas; 3-4 el acuerdo de Arias; 5 una hoja suelta que corta; 6-7 el de Corrales.
+        return {
+            1: habeas_1, 2: habeas_2, 3: self.PAGARE, 4: self.RECONOCIMIENTO_ARIAS,
+            5: "CEDULA DE CIUDADANIA\nFECHA DE NACIMIENTO 21-MAY-1963", 6: self.PAGARE, 7: self.RECONOCIMIENTO_CORRALES,
+        }  # fmt: skip
+
+    def test_cada_habeas_con_el_acuerdo_de_su_persona(self):
+        grupos = self._unir(self._textos(self.HABEAS_CORRALES, self.HABEAS_ARIAS))
+        assert [2, 3, 4] in grupos and [1, 6, 7] in grupos
+
+    def test_sin_nombre_ni_cedula_legibles_decide_la_fecha(self):
+        def sin_persona(texto: str) -> str:
+            return texto.split("Yo,")[0] + "Yo, ________ identificado con la cédula de ciudadanía No. ____"
+
+        # La referencia queda antes del «Yo,»: lo que sí se lee, el título y la fecha.
+        textos = self._textos(sin_persona(self.HABEAS_CORRALES), sin_persona(self.HABEAS_ARIAS))
+        textos[4] = sin_persona(self.RECONOCIMIENTO_ARIAS)
+        textos[7] = sin_persona(self.RECONOCIMIENTO_CORRALES)
+        grupos = self._unir(textos)
+        assert [2, 3, 4] in grupos and [1, 6, 7] in grupos
+
+    def test_la_persona_valida_la_fecha_y_manda_si_la_contradice(self):
+        # La Habeas de Corrales con la fecha del acuerdo de Arias: manda su cédula.
+        cambiada = self.HABEAS_CORRALES.replace("Día 10 Mes 05", "Día 03 Mes 02")
+        grupos = self._unir(self._textos(cambiada, self.HABEAS_ARIAS))
+        assert [1, 6, 7] in grupos
+
+    def test_la_autorizacion_con_las_erratas_del_escaner(self):
+        from resolutions.domain.asunto_del_documento import (
+            AUTORIZACION_DE_NOTIFICACION,
+            titulo_del_documento,
+        )
+
+        # 1004833 (UPD3102764 pág. 17): salía «RECLAMO» aparte en vez de ir con su escrito.
+        assert titulo_del_documento("Autorización para ia notificación eiectrónica\nYo,\n") == AUTORIZACION_DE_NOTIFICACION

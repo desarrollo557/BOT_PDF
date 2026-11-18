@@ -403,7 +403,10 @@ _FORMATOS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("LEY HABEAS DATA", re.compile(r"\b[HR]A[B8]EA[S5]\s+DA[T7]A|ENVIAR\s+DE\s+MANERA\s+F[IL1]SICA")),
     (
         "AUTORIZACION DE NOTIFICACION ELECTRONICA",
-        re.compile(r"AUTORIZACI[O0]N\s+PARA\s+\w{1,2}\s+NOTIFICACI[O0]N\s+ELECTR"),
+        # Con lo que el escáner hace: «Autorización para ia notificación
+        # eiectrónica» (1004833, UPD3102764 pág. 17, 2026-11-18), que salía
+        # «RECLAMO» aparte en vez de ir con su escrito.
+        re.compile(r"AUTORIZACI[O0]N\s+PARA\s+\w{1,2}\s+NOTIFICACI[O0]N\s+E[LI1]ECTR"),
     ),
 )
 #: Los formatos que van con el escrito que tienen delante.

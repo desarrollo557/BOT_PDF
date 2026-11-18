@@ -651,6 +651,8 @@ def unir_el_acuerdo_de_pago(
     *,
     abren: set[int] | frozenset[int] = frozenset(),
     cruzan: set[int] | frozenset[int] = frozenset(),
+    persona_de=None,
+    fecha_de=None,
 ) -> tuple[GroupingResult, dict[str, list[int]], set[int]]:
     """Junta en un documento las piezas seguidas de un acuerdo de pago.
 
@@ -684,6 +686,19 @@ def unir_el_acuerdo_de_pago(
     sí lo corta es lo demás que abre -- un sello, una etiqueta de envío, la
     carta de un cliente --: es otro escrito radicado, y el pagaré de antes no
     es de este acuerdo.
+
+    Con dos o más reconocimientos, la Habeas Data va con el acuerdo de **su
+    persona** (``persona_de(pagina)``: el nombre y la cédula de quien firma la
+    hoja), no con el que tenga al lado: en 4100921 (UPD2985187, 2026-11-18) las
+    dos Habeas iban juntas encima del acuerdo de Luis Alfonso Velilla Arias, y
+    el de Alfonso Velilla Corrales se quedaba sin la suya. Sin persona que lo
+    decida, el más cercano, como antes.
+
+    Y la fecha primero (el operador, ese mismo día: «las Habeas Data y los
+    reconocimientos que van juntos la mayoría de veces llevan las mismas
+    fechas, y cuando las fechas no cuadren, valida por el nombre»): la Habeas
+    va con el único acuerdo cuyo reconocimiento lleva su fecha (``fecha_de``);
+    la persona la valida y, si la contradice o la fecha no decide, manda ella.
 
     Devuelve los documentos, sus anexos y las hojas del acuerdo.
     """
@@ -752,6 +767,10 @@ def unir_el_acuerdo_de_pago(
             salida.append(grupo)
     cerrar()
 
+    # Con varios reconocimientos y la persona de cada hoja, la Habeas Data no
+    # se pega por estar al lado: la reparte su persona, más abajo.
+    por_su_persona = persona_de is not None and sum(1 for g in salida if tiene_reconocimiento(g)) > 1
+
     # Lo que se firmó con el acuerdo, pegado a él por arriba o por abajo.
     def fecha_del_acuerdo(grupo: PageGroup):
         for p in grupo.page_numbers:
@@ -764,7 +783,7 @@ def unir_el_acuerdo_de_pago(
         primera = grupo.page_numbers[0]
         if primera in abren or grupo.kind == ACUERDO_DE_PAGO:
             return False
-        return es_habeas(grupo)
+        return es_habeas(grupo) and not por_su_persona
 
     i = 0
     while i < len(salida):
@@ -820,7 +839,39 @@ def unir_el_acuerdo_de_pago(
                 centro = salida[k].page_numbers[0]
                 return min(con_reconocimiento, key=lambda a: min(abs(p - centro) for p in salida[a].page_numbers))
 
-            candidatos = {k: mas_cercano(k) for k in sueltas}
+            from ..domain.persona_de_la_hoja import de_quien_es, la_persona_del_grupo
+
+            def reconocimientos_de(a: int) -> list[int]:
+                return [
+                    p
+                    for p in salida[a].page_numbers
+                    if titulo_del_documento(textos.get(p, "") or "") == ACUERDO_DE_PAGO
+                ]
+
+            def de_su_persona(k: int) -> int | None:
+                """El acuerdo de la Habeas Data: el de su misma fecha, validado por la persona que la firma."""
+                if persona_de is None or not es_habeas(salida[k]):
+                    return None
+                por_la_persona = None
+                suya = la_persona_del_grupo(salida[k].page_numbers[:1], persona_de)
+                if not suya.vacia:
+                    por_la_persona = de_quien_es(
+                        suya,
+                        {a: la_persona_del_grupo(reconocimientos_de(a), persona_de) for a in con_reconocimiento},
+                    )
+                por_la_fecha = None
+                if fecha_de is not None and (fecha := fecha_de(salida[k].page_numbers[0])) is not None:
+                    iguales = [
+                        a for a in con_reconocimiento if any(fecha_de(p) == fecha for p in reconocimientos_de(a))
+                    ]
+                    por_la_fecha = iguales[0] if len(iguales) == 1 else None
+                # La persona valida la fecha: si la contradice, manda la persona.
+                return por_la_persona if por_la_persona is not None else por_la_fecha
+
+            candidatos = {}
+            for k in sueltas:
+                suyo = de_su_persona(k)
+                candidatos[k] = suyo if suyo is not None else mas_cercano(k)
             candidatos.update({k: mas_cercano(k) for k in acuerdos if k not in con_reconocimiento})
         destinos = {
             k: d for k, d in candidatos.items() if es_habeas(salida[k]) or not cortado(k, d)

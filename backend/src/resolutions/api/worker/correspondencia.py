@@ -885,6 +885,70 @@ def _evidencia_de_las_piezas(
     return {"fecha": fecha, "tipo": tipo, "corte": corte}
 
 
+#: A cuánto lee la IA la hoja de una Habeas Data o de un reconocimiento para saber de quién es.
+PPP_DE_LA_PERSONA = 200
+
+
+class _PersonasDeLasHojas:
+    """La persona que firma cada hoja -- su nombre y su cédula --, para casar la Habeas Data con su acuerdo.
+
+    De la capa; si la capa no trae la cédula -- el nombre y el número van a
+    mano --, con el OCR de pago si se eligió «OCR + IA». Una lectura por hoja,
+    y sólo de las que se preguntan: las Habeas sueltas y los reconocimientos de
+    un PDF con varios acuerdos (4100921, 2026-11-18).
+    """
+
+    def __init__(self, taller, ruta_pdf, textos: dict) -> None:
+        self._taller = taller
+        self._ruta = ruta_pdf
+        self._textos = textos
+        self._leidas: dict[int, object] = {}
+        #: Lo que la IA leyó de cada hoja, para su fecha.
+        self._de_la_ia: dict[int, str] = {}
+        self._fuente = None
+
+    def __call__(self, pagina: int):
+        from ...domain.persona_de_la_hoja import Persona, persona_de_la_hoja
+
+        if pagina in self._leidas:
+            return self._leidas[pagina]
+        persona = persona_de_la_hoja(self._textos.get(pagina, "") or "")
+        lector = self._taller.lector_de_pago() if not persona.cedulas else None
+        if lector is not None:
+            try:
+                from ...adapters.pymupdf_source import PyMuPDFPageSource
+
+                if self._fuente is None:
+                    self._fuente = PyMuPDFPageSource(self._ruta, self._taller.name)
+                self._de_la_ia[pagina] = lector.read(
+                    self._fuente.render(pagina, None, PPP_DE_LA_PERSONA, "jpeg")
+                ).text
+                leida = persona_de_la_hoja(self._de_la_ia[pagina])
+                persona = Persona(persona.nombre | leida.nombre, persona.cedulas | leida.cedulas)
+            except Exception:  # noqa: BLE001 - sin la IA, la Habeas va con el acuerdo más cercano
+                logger.warning("no se pudo leer la persona de la pág. %s", pagina, exc_info=True)
+        self._leidas[pagina] = persona
+        return persona
+
+    def fecha_de(self, pagina: int):
+        """La fecha que la hoja pone en su sitio -- las casillas de la Habeas, el encabezado del reconocimiento --.
+
+        De la capa o de lo que leyó la IA al buscar su persona.
+        """
+        from ...domain.fecha_por_estructura import fecha_de_la_hoja
+
+        self(pagina)
+        for texto in (self._textos.get(pagina, "") or "", self._de_la_ia.get(pagina, "")):
+            if texto and (fecha := fecha_de_la_hoja(texto)) is not None:
+                return fecha
+        return None
+
+    def cerrar(self) -> None:
+        if self._fuente is not None:
+            self._fuente.close()
+            self._fuente = None
+
+
 #: A cuánto se relee la hoja cuyo campo «N° PQR:» rompió la capa: a 200 y 300
 #: Tesseract leyó entero el de 1005652; a 400 lo perdió.
 PPP_DEL_PQR = 300
@@ -2113,9 +2177,21 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # reconocimiento de deuda, simulador -- es un solo documento, sin RE.
     # La constancia, la notificación y la respuesta abren su documento pero no
     # cortan el acuerdo: la Habeas Data y los pagarés las cruzan.
-    grupos, anexos, del_acuerdo = unir_el_acuerdo_de_pago(
-        grupos, textos, anexos, abren=abren, cruzan=formularios_solos
-    )
+    # Con varios acuerdos, cada Habeas Data con el de su persona: su nombre y
+    # su cédula, de la capa o, si no los trae, de la IA (4100921, 2026-11-18).
+    personas = _PersonasDeLasHojas(taller, tmp_path, textos)
+    try:
+        grupos, anexos, del_acuerdo = unir_el_acuerdo_de_pago(
+            grupos,
+            textos,
+            anexos,
+            abren=abren,
+            cruzan=formularios_solos,
+            persona_de=personas,
+            fecha_de=personas.fecha_de,
+        )
+    finally:
+        personas.cerrar()
     dudosas = [
         b
         for b in dudosas
@@ -2674,10 +2750,19 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         if not fuente_de_encabezados:
             fuente_de_encabezados.append(PyMuPDFPageSource(tmp_path, taller.name))
         # Todo el documento, no sólo su primera hoja: lo que dice ser puede
-        # estar en cualquiera.
+        # estar en cualquiera. Menos las autorizaciones que lleva como anexo:
+        # con la suya delante, la IA llamaba «AUTORIZACION PARA LA
+        # NOTIFICACION ELECTRONICA» al derecho de petición que la trae
+        # (1004833, UPD3102764 págs. 16-17, 2026-11-18).
+        propias = [p for p in g.page_numbers if p not in guias and p not in delanteras]
+        sin_anexos = [
+            p
+            for p in propias
+            if _titulo(textos.get(p, "") or "", None) not in (AUTORIZACION_DE_NOTIFICACION, "LEY HABEAS DATA")
+        ]
         de_la_ia = _nombre_con_la_ia(
             fuente_de_encabezados[0],
-            [p for p in g.page_numbers if p not in guias and p not in delanteras] or list(g.page_numbers),
+            sin_anexos or propias or list(g.page_numbers),
             textos,
             lector_de_pago_de_encabezados,
             nombrador,
