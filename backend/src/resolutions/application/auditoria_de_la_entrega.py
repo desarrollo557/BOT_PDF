@@ -267,6 +267,15 @@ def auditar_un_pdf(
         )
         dudas.extend(nombres.dudas)
 
+    # Los radicados de la caja de correspondencia (2026-11-18): el RE de cada
+    # nombre, la contestación, los folios de la etiqueta y el orden del
+    # acuerdo, con lo que ya se leyó.
+    radicados = None
+    if perfil_de(habilidad).clave == "correspondencia":
+        radicados = auditar_los_radicados(conciliacion.archivos, textos)
+        errores.extend(radicados.errores)
+        dudas.extend(radicados.dudas)
+
     # Los datos de cada PDF contra su fila del FUID entregado (2026-11-06).
     if (esperados := perfil_de(habilidad).datos) is not None:
         de_los_datos, dudas_de_los_datos = auditar_los_datos(
@@ -302,6 +311,7 @@ def auditar_un_pdf(
         extra={
             **({"fechas": dict(fechas.cuentas)} if fechas is not None else {}),
             **({"nombres": dict(nombres.cuentas)} if nombres is not None and nombres.cuentas else {}),
+            **({"radicados": dict(radicados.cuentas)} if radicados is not None and radicados.cuentas else {}),
             **({"varios_sellos": len(avisos) + len(de_los_sellos)} if avisos or de_los_sellos else {}),
         },
     )
@@ -439,6 +449,114 @@ def filas_por_archivo(
 
 def _sin_la_carpeta(nombre: str) -> str:
     return PurePath(nombre.replace("\\", "/")).name.upper()
+
+
+# -- los radicados de la caja de correspondencia (2026-11-18) ---------------------------------
+
+#: Cómo quedó el RE de cada PDF auditado, en el orden en que se dice.
+RE_CONFIRMADO = "re confirmados"
+RE_A_MANO = "re a mano"
+RE_QUE_FALTA = "sin re"
+
+
+@dataclass(slots=True)
+class RadicadosAuditados:
+    """Lo que la auditoría encontró en los radicados de los PDF entregados de una caja de correspondencia."""
+
+    errores: list[str] = field(default_factory=list)
+    dudas: list[str] = field(default_factory=list)
+    #: Cuántos PDF con su RE confirmado en sus hojas, con un RE escrito a
+    #: mano (que la capa no trae) y sin el RE que su tipo pide.
+    cuentas: Counter = field(default_factory=Counter)
+
+
+def _titulo_del_nombre(nombre: str) -> str:
+    """El tipo que dice el nombre de un PDF entregado: «04_RECLAMO-RE9233….pdf» es «RECLAMO»."""
+    stem = PurePath(str(nombre).replace("\\", "/")).stem
+    stem = re.sub(r"^(?:UPD\d+_)?\d+_", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"-RE\d{13}$", "", stem, flags=re.IGNORECASE)
+    return stem.replace("-", " ").strip()
+
+
+def _escrito_del_usuario(texto: str) -> bool:
+    """Si la hoja abre un escrito del usuario -- reclamo, recurso, petición, queja --: lo que se radica con sello."""
+    from ..domain.asunto_del_documento import es_carta_de_la_empresa
+    from ..domain.carta import abre_carta
+    from .cartas import _es_escrito_del_tramite
+
+    return abre_carta(texto) and _es_escrito_del_tramite(texto) and not es_carta_de_la_empresa(texto)
+
+
+def auditar_los_radicados(archivos: Sequence[ArchivoEntregado], textos: Mapping[int, str]) -> RadicadosAuditados:
+    """Las reglas del operador para Afinia (2026-11-18), otra vez sobre lo entregado: lo que se puede comprobar sin IA.
+
+    - **El RE del nombre**: el tipo que lo pide y no lo trae es duda; el que
+      lo trae se confirma si está en sus hojas, y si no, lo escribió la mano
+      en el sello (sólo se cuenta). Si su hoja trae la etiqueta impresa con
+      otro RE, es duda: el del nombre puede ser el de otro papel.
+    - **La contestación**: la carta de la empresa que abre el PDF y que es una
+      contestación, con otro nombre, es duda.
+    - **Los folios de la etiqueta**: menos hojas de las que declara es duda
+      (por trámite un PDF junta varios escritos: más hojas no prueba nada).
+    - **El orden del acuerdo**: el reconocimiento de deuda va primero (con
+      fecha) o al final (sin ella); en medio es un error.
+    """
+    from ..domain.asunto_del_documento import (
+        CONTESTACION_A_RECLAMACION,
+        es_contestacion_a_reclamacion,
+    )
+    from ..domain.nombre_oficial import lleva_re_en_el_nombre, re_del_archivo
+    from ..domain.sello import folios_que_no_cuadran, leer_sello, radicados_impresos
+    from ..domain.tramites import radicados_de
+    from .anexos_declarados import RECONOCIMIENTO, partes_del_acuerdo
+
+    resultado = RadicadosAuditados()
+    for archivo in archivos:
+        hojas = [p for p in archivo.paginas if p is not None]
+        if not hojas:
+            continue
+        titulo = _titulo_del_nombre(archivo.nombre)
+        radicado = re_del_archivo(archivo.nombre)
+        primera = textos.get(hojas[0], "") or ""
+        etiqueta = leer_sello(primera)
+        if radicado is None and lleva_re_en_el_nombre(titulo):
+            resultado.cuentas[RE_QUE_FALTA] += 1
+            resultado.dudas.append(f"«{archivo.nombre}»: {titulo} sin RE en el nombre")
+        elif radicado is None and _escrito_del_usuario(primera):
+            # El escrito del usuario se radica siempre con su sello: sin RE, es
+            # que no se leyó (el recurso de 1005117, UPD2437857 pág. 5).
+            resultado.cuentas[RE_QUE_FALTA] += 1
+            resultado.dudas.append(f"«{archivo.nombre}»: escrito del usuario sin RE; su sello de radicación no se leyó")
+        elif radicado is not None:
+            en_sus_hojas = set().union(
+                *(
+                    {r for r in radicados_de(textos.get(p, "") or "") if r.startswith("RE")}
+                    | radicados_impresos(textos.get(p, "") or "")
+                    for p in hojas
+                )
+            )
+            resultado.cuentas[RE_CONFIRMADO if radicado in en_sus_hojas else RE_A_MANO] += 1
+            if etiqueta is not None and etiqueta.clase == "impreso" and etiqueta.radicado and etiqueta.radicado != radicado:
+                resultado.dudas.append(
+                    f"«{archivo.nombre}»: su etiqueta de radicación dice {etiqueta.radicado} y el nombre lleva {radicado}"
+                )
+        if es_contestacion_a_reclamacion(primera) and titulo.upper() != CONTESTACION_A_RECLAMACION:
+            resultado.dudas.append(f"«{archivo.nombre}»: abre con una contestación de la empresa y se llama {titulo}")
+        motivo = folios_que_no_cuadran(len(hojas), etiqueta.folios) if etiqueta is not None else None
+        if motivo and "faltarle" in motivo:
+            resultado.dudas.append(f"«{archivo.nombre}»: {motivo}")
+        if "ACUERDO" in titulo.upper() or "RECONOCIMIENTO" in titulo.upper():
+            reconocimiento = {p for parte, suyas in partes_del_acuerdo(hojas, textos) if parte == RECONOCIMIENTO for p in suyas}
+            if reconocimiento and len(hojas) > len(reconocimiento):
+                donde = [i for i, p in enumerate(hojas) if p in reconocimiento]
+                al_principio = donde == list(range(len(donde)))
+                al_final = donde == list(range(len(hojas) - len(donde), len(hojas)))
+                if not (al_principio or al_final):
+                    resultado.errores.append(
+                        f"«{archivo.nombre}»: el reconocimiento de deuda está en medio del acuerdo (hoja "
+                        f"{donde[0] + 1} de {len(hojas)}); va primero si está fechado, si no al final"
+                    )
+    return resultado
 
 
 # -- los nombres de lo entregado (2026-11-17) -------------------------------------------------

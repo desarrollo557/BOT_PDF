@@ -159,3 +159,144 @@ class TestLoQueSeCorrigeEnLaCaja:
         (nuevo,), _ = _renumerar([grupo], {})
         assert nuevo.code.value == "1 RE9233202203577" or nuevo.code.value.endswith(" RE9233202203577")
         assert nuevo.re_en_el_nombre and nuevo.kind == grupo.kind
+
+
+# -- los huecos que quedaban (2026-11-18) ---------------------------------------------------
+
+
+class TestElReAjeno:
+    @staticmethod
+    def _poner(grupos, textos, sellos=None, sin_re=()):
+        from resolutions.api.worker.correspondencia import _poner_el_re_en_el_nombre
+
+        return _poner_el_re_en_el_nombre(grupos, {}, textos=textos, sellos=sellos or {}, sin_re=set(sin_re), abren=set())
+
+    def test_el_reclamo_no_toma_el_re_que_cita_su_carta(self):
+        carta = "Señores AFINIA\nREF. QUEJA Y RECLAMO\nya había presentado la reclamación RE9233202202774 y no me responden"
+        grupos, _, hallados = self._poner(_grupos(("01", [1], "RECLAMO")), {1: carta})
+        assert grupos.groups[0].code.value == "01" and hallados == {}
+
+    def test_si_la_etiqueta_de_su_hoja_si(self):
+        grupos, _, _ = self._poner(_grupos(("01", [1], "RECLAMO")), {1: ETIQUETA})
+        assert grupos.groups[0].code.value == "01 RE9233202202774"
+
+    def test_la_notificacion_toma_el_re_que_cita(self):
+        notificacion = "NOTIFICACION PERSONAL\nRadicado: RE9233202300708\nEn la fecha 23 de marzo de 2023 comparecio"
+        grupos, _, _ = self._poner(_grupos(("01", [1], "NOTIFICACION PERSONAL")), {1: notificacion})
+        assert grupos.groups[0].code.value == "01 RE9233202300708"
+
+    def test_la_copia_dentro_de_los_folios_no_da_su_re(self):
+        sellos = {2: Sello("impreso", "RE9233202202774", date(2022, 10, 6), 1)}
+        grupos, _, _ = self._poner(_grupos(("01", [1, 2], "RECLAMO")), {1: "", 2: ""}, sellos, sin_re={2})
+        assert grupos.groups[0].code.value == "01"
+
+
+class TestElSelloDeLado:
+    def test_la_imagen_se_gira_un_cuarto_de_vuelta(self):
+        import io
+
+        from PIL import Image
+
+        from resolutions.api.worker.correspondencia import _girada
+
+        imagen = io.BytesIO()
+        Image.new("RGB", (40, 10), "white").save(imagen, format="JPEG")
+        with Image.open(io.BytesIO(_girada(imagen.getvalue()))) as girada:
+            assert girada.size == (10, 40)
+        assert _girada(b"no es una imagen") is None
+
+
+class TestConSoloOcr:
+    def test_el_escrito_o_el_sello_de_tinta_sin_re_van_a_revision(self):
+        from resolutions.api.worker.correspondencia import documentos_con_sello_sin_re
+
+        grupos = _grupos(
+            ("01 RE9233202202774", [1], "RECLAMO"),
+            ("02", [2, 3], "RECLAMO"),
+            ("03", [4], "RECURSO DE REPOSICION"),
+            ("04", [5], "DERECHO DE PETICION"),
+            ("05", [6], "CONTESTACION A LA RECLAMACION"),
+        )
+        sellos = {1: Sello("impreso", "RE9233202202774"), 2: Sello("tinta"), 6: Sello("tinta")}
+        # 2: sello de tinta sin RE; 4: escrito del usuario; 6: la copia de una prueba no cuenta.
+        assert documentos_con_sello_sin_re(grupos, sellos, no_cuentan={6}, escritos={4}) == [2, 4]
+
+
+class TestElAcuerdoPorMes:
+    def test_en_el_mes_solo_se_ordena_el_tramo_del_acuerdo(self):
+        from test_orden_del_acuerdo import (
+            CARTA,
+            HABEAS_DATA,
+            PAGARE,
+            RECONOCIMIENTO_FECHADO,
+        )
+
+        from resolutions.api.worker.correspondencia import _ordenar_los_acuerdos
+
+        otra = "Señores AFINIA\nDERECHO DE PETICION\nSolicito la revision de mi factura."
+        textos = {1: otra, 2: PAGARE, 3: CARTA, 4: RECONOCIMIENTO_FECHADO, 5: HABEAS_DATA, 6: otra}
+        grupos = _grupos(("01", [1, 2, 3, 4, 5, 6], "MES"))
+        piezas = [{"archivo": 0, "pages": [2, 3, 4, 5], "fecha": "2021-03-08", "fecha_pagina": 4}]
+        (mes,) = _ordenar_los_acuerdos(grupos, piezas, textos, {2, 3, 4, 5}, por_mes=True).groups
+        # La petición de antes y la de después se quedan en su sitio.
+        assert mes.orden == [1, 4, 2, 3, 5, 6]
+
+
+class TestLaAuditoriaDeLosRadicados:
+    def test_la_entrega_vieja_de_1005117_y_la_nueva(self):
+        from resolutions.application.auditoria_de_la_entrega import auditar_los_radicados
+        from resolutions.domain.conciliacion import ArchivoEntregado
+
+        recurso = (
+            "Magangué Bolívar, 25 de enero de 2023\nSeñores\nCARIBEMAR DE LA COSTA S.A.S. E.S.P.\n"
+            "OFICINA DE PETICIONES, QUEJAS Y RECLAMOS\nCIUDAD.\nAsunto: Interposición de recurso(s) de Reposición\n"
+        )
+        respuesta = (
+            "Consecutivo No. 202370167866\nMAGANGUE, 14/04/2023\nSeñora:\nLUZ ESTHELLA MEDRANO RANGEL\n"
+            "En atención al recurso interpuesto el 24 de marzo de 2023"
+        )
+        textos = {1: ETIQUETA, 2: recurso, 3: respuesta}
+        vieja = auditar_los_radicados(
+            [
+                ArchivoEntregado("01_RECLAMO-RE9233202202774.pdf", (1,)),
+                ArchivoEntregado("02_RECURSO-DE-REPOSICION.pdf", (2,)),
+                ArchivoEntregado("03_RECURSO-DE-REPOSICION-EN-SUBSIDIO-DE-APELACION.pdf", (3,)),
+            ],
+            textos,
+        )
+        assert len(vieja.dudas) == 2
+        assert "escrito del usuario sin RE" in vieja.dudas[0] and "abre con una contestación" in vieja.dudas[1]
+        nueva = auditar_los_radicados(
+            [
+                ArchivoEntregado("01_RECLAMO-RE9233202202774.pdf", (1,)),
+                ArchivoEntregado("02_RECURSO-DE-REPOSICION-RE9233202203621.pdf", (2,)),
+                ArchivoEntregado("03_CONTESTACION-A-LA-RECLAMACION-RE9233202300708.pdf", (3,)),
+            ],
+            textos,
+        )
+        assert not nueva.dudas and not nueva.errores
+        assert dict(nueva.cuentas) == {"re confirmados": 1, "re a mano": 2}
+        # La etiqueta que dice un RE y el nombre que lleva otro.
+        otra = auditar_los_radicados([ArchivoEntregado("01_RECLAMO-RE9233202299999.pdf", (1,))], textos)
+        assert "su etiqueta de radicación dice RE9233202202774" in otra.dudas[0]
+
+    def test_el_reconocimiento_en_medio_del_acuerdo_es_un_error_y_los_folios_que_faltan_duda(self):
+        from test_orden_del_acuerdo import (
+            CARTA,
+            HABEAS_DATA,
+            PAGARE,
+            RECONOCIMIENTO_FECHADO,
+        )
+
+        from resolutions.application.auditoria_de_la_entrega import auditar_los_radicados
+        from resolutions.domain.conciliacion import ArchivoEntregado
+
+        textos = {1: PAGARE, 2: CARTA, 3: RECONOCIMIENTO_FECHADO, 4: HABEAS_DATA}
+        nombre = "01_RECONOCIMIENTO-DE-DEUDA-Y-PROPUESTA-DE-ACUERDO-DE-PAGO.pdf"
+        en_medio = auditar_los_radicados([ArchivoEntregado(nombre, (1, 2, 3, 4))], textos)
+        assert en_medio.errores and "en medio del acuerdo" in en_medio.errores[0]
+        assert not auditar_los_radicados([ArchivoEntregado(nombre, (3, 1, 2, 4))], textos).errores
+        assert not auditar_los_radicados([ArchivoEntregado(nombre, (1, 2, 4, 3))], textos).errores
+        tres_folios = ETIQUETA.replace("Folios: 1", "Folios: 3")
+        corta = auditar_los_radicados([ArchivoEntregado("01_RECLAMO-RE9233202202774.pdf", (1,))], {1: tres_folios})
+        assert "faltarle" in corta.dudas[0]

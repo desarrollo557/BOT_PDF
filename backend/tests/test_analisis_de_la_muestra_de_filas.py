@@ -131,6 +131,15 @@ class TestLaMuestraDeFilas:
         resumen, *_ = _leer(tmp_path / "otra", otra)
         assert "Muestra · nombres" not in resumen
 
+    def test_los_re_de_la_muestra_de_correspondencia_se_dicen(self, tmp_path):
+        # 2026-11-18: cuántos PDF tienen su RE confirmado en sus hojas, escrito a mano o les falta.
+        muestra = _muestra_de_filas(
+            [PdfAuditado(FILA, BIEN, paginas=1)],
+            radicados={"documentos": 6, "re confirmados": 3, "re a mano": 2, "sin re": 1},
+        )
+        resumen, *_ = _leer(tmp_path, muestra)
+        assert resumen["Muestra · RE de cada PDF"] == "3 confirmados en sus hojas · 2 escritos a mano · 1 sin el RE que piden"
+
     def test_la_ia_que_no_respondio_se_dice(self, tmp_path):
         """Una llave mala o una caída: el Excel no puede decir que la IA revisó (la revisión, 2026-11-09)."""
         muestra = _muestra_de_filas(

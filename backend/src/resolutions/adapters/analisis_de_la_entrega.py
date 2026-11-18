@@ -259,6 +259,15 @@ def escribir_analisis(
         ):
             if (texto := cuentas_de_la_muestra(muestra.get(clave), femenino=femenino)) is not None:
                 renglones.append([etiqueta, texto])
+        # Y los RE de la caja de correspondencia (2026-11-18).
+        if (radicados := muestra.get("radicados") or {}).get("documentos"):
+            renglones.append(
+                [
+                    "Muestra · RE de cada PDF",
+                    f"{radicados.get('re confirmados', 0)} confirmados en sus hojas · "
+                    f"{radicados.get('re a mano', 0)} escritos a mano · {radicados.get('sin re', 0)} sin el RE que piden",
+                ]
+            )
         # Cada habilidad contra el margen de su perfil (2026-11-05): el error
         # de una no se diluye en los aciertos de las demás.
         renglones += [

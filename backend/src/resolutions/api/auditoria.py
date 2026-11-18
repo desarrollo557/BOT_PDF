@@ -158,6 +158,19 @@ def resumen_de_los_nombres(resultados: list[PdfAuditado]) -> dict:
     }
 
 
+#: Los estados del RE de cada PDF auditado de correspondencia (2026-11-18).
+ESTADOS_DE_LOS_RADICADOS = ("re confirmados", "re a mano", "sin re")
+
+
+def resumen_de_los_radicados(resultados: list[PdfAuditado]) -> dict:
+    """Cuántos PDF de la muestra de correspondencia tienen el RE confirmado en sus hojas, escrito a mano o les falta."""
+    cuentas: Counter[str] = Counter()
+    for resultado in resultados:
+        for estado, cuantos in (resultado.extra.get("radicados") or {}).items():
+            cuentas[estado] += int(cuantos)
+    return {"documentos": sum(cuentas.values()), **{estado: cuentas.get(estado, 0) for estado in ESTADOS_DE_LOS_RADICADOS}}
+
+
 def margenes_por_habilidad(resultados: list[PdfAuditado], *, con_dudas: bool = False) -> list[dict]:
     """La muestra partida por habilidad, cada una juzgada contra el margen de su perfil.
 
@@ -520,6 +533,7 @@ def auditar_la_muestra(
         "por_habilidad": margenes_por_habilidad(resultados),
         "fechas": resumen_de_las_fechas(resultados),
         "nombres": resumen_de_los_nombres(resultados),
+        "radicados": resumen_de_los_radicados(resultados),
         "preguntadas_a_la_ia": sum(r.preguntadas_a_la_ia for r in resultados),
         "pdfs": [r.as_dict() for r in resultados],
     }
@@ -1114,6 +1128,7 @@ def auditar_las_filas(
         "por_habilidad": margenes_por_habilidad(resultados, con_dudas=True),
         "fechas": resumen_de_las_fechas(resultados),
         "nombres": resumen_de_los_nombres(resultados),
+        "radicados": resumen_de_los_radicados(resultados),
         "preguntadas_a_la_ia": sum(r.preguntadas_a_la_ia for r in resultados),
         "pdfs": [r.as_dict() for r in resultados],
     }

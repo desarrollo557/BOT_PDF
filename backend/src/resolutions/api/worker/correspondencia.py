@@ -67,6 +67,11 @@ RE_DEL_SELLO_SIN_LEER = (
     "trae sello de radicación con el RE escrito a mano y no se pudo leer con certeza: "
     "el nombre va sin RE; escríbalo a mano"
 )
+#: Y con «Solo OCR», donde el RE a mano no se lee nunca (2026-11-18).
+RE_DEL_SELLO_SOLO_OCR = (
+    "trae sello de radicación de tinta con el RE escrito a mano: con «Solo OCR» no se lee; "
+    "escríbalo a mano o vuelva a procesar con «OCR + IA»"
+)
 #: Por qué va a Revisión el documento que lleva su RE en el nombre por lo que es
 #: -- reclamo, constancia, contestación, notificación personal -- y no lo trae
 #: en ninguna de sus hojas legibles. El operador (2026-11-18): «Verifica que
@@ -93,6 +98,30 @@ def folios_contra_hojas(piezas, sellos) -> list[dict]:
         if motivo:
             avisos.append({"page": paginas[0], "reason": f"folios del sello: {motivo}"})
     return avisos
+
+
+def documentos_con_sello_sin_re(grupos, sellos, *, no_cuentan=frozenset(), escritos=frozenset()) -> list[int]:
+    """La primera hoja de cada documento que trae un sello de tinta sin su RE leído y salió sin RE en el nombre.
+
+    Para «Solo OCR» (2026-11-18): el RE a mano no se lee sin la IA, y el
+    documento iba sin RE y sin aviso. No cuentan las copias aportadas como
+    prueba, el acuerdo de pago ni las copias dentro de los folios. Y el que
+    abre con un escrito del usuario (``escritos``), aunque no se haya visto su
+    sello: Afinia los radica siempre con el suyo, y con poca tinta la lectura
+    no lo ve (1005117, UPD2437857 pág. 4 y UPD2973878 pág. 6).
+    """
+    from ...domain.nombre_oficial import es_re
+
+    salida = []
+    for grupo in grupos.groups:
+        if not grupo.page_numbers or any(es_re(pieza) for pieza in grupo.code.value.split()):
+            continue
+        if grupo.page_numbers[0] in escritos or any(
+            p not in no_cuentan and (s := sellos.get(p)) is not None and s.clase == "tinta" and not s.radicado
+            for p in grupo.page_numbers
+        ):
+            salida.append(grupo.page_numbers[0])
+    return salida
 
 
 def documentos_sin_su_re(grupos, ya_avisadas) -> list[dict]:
@@ -640,7 +669,12 @@ def _poner_el_re_en_el_nombre(
     from dataclasses import replace
 
     from ...domain.nombre_oficial import es_re, lleva_re_en_el_nombre
-    from ...domain.sello import el_de_su_tramite, radicados_impresos, re_del_sello
+    from ...domain.sello import (
+        el_de_su_tramite,
+        leer_sello,
+        radicados_impresos,
+        re_del_sello,
+    )
     from ...domain.tramites import radicado_de
 
     impresos_de_la_caja = set().union(*(radicados_impresos(t or "") for t in textos.values())) if textos else set()
@@ -750,6 +784,15 @@ def _poner_el_re_en_el_nombre(
             if pagina in sellos:
                 leido, nota = del_sello(pagina)
                 de_donde = f"del sello de la pág. {pagina}" + (f" ({nota})" if nota else "")
+            elif _plano_del_sello(grupo.kind or "") == "RECLAMO":
+                # El reclamo es el escrito del usuario: su RE es el de su
+                # radicación, no el que cita su cuerpo -- el de una reclamación
+                # anterior (el operador, 2026-11-18: «si el RE se encuentra
+                # dentro de un anexo, no debes utilizarlo») --. Del texto, sólo
+                # el de una etiqueta de radicación que la capa trae entera.
+                etiqueta = leer_sello(textos.get(pagina, "") or "")
+                leido = etiqueta.radicado if etiqueta is not None and etiqueta.clase == "impreso" else None
+                de_donde = f"de la etiqueta en el texto de la pág. {pagina}"
             else:
                 leido, de_donde = radicado_de(textos.get(pagina, "") or ""), f"del texto de la pág. {pagina}"
             if es_re(leido):
@@ -824,6 +867,28 @@ BANDA_DE_LA_CABECERA = (0.25, 0.0, 1.0, 0.22)
 BANDA_DEL_SELLO_A_LA_VISTA = (0.4, 0.0, 1.0, 0.4)
 #: Lo que acompaña a la imagen del sello: el pedido entero va en las instrucciones.
 PEDIDO_DEL_SELLO = "El sello de radicación de esta carta."
+#: Y a la imagen girada: el RE escrito de lado, en el borde del sello.
+PEDIDO_DEL_SELLO_GIRADO = "El sello de radicación de esta carta, girado: el RE puede ir escrito de lado."
+
+
+def _girada(imagen: bytes) -> bytes | None:
+    """La imagen girada un cuarto de vuelta a la derecha: el RE escrito de abajo arriba en el borde del sello queda derecho.
+
+    En el reclamo de 1005117 (UPD2437857 pág. 2, 2026-11-18) el RE va escrito
+    de lado, junto al recuadro, y derecho la IA sólo leía «…2203577».
+    """
+    import io
+
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(imagen)) as original:
+            salida = io.BytesIO()
+            original.rotate(-90, expand=True).convert("RGB").save(salida, format="JPEG", quality=90)
+            return salida.getvalue()
+    except Exception:  # noqa: BLE001 - sin girar, se queda con lo que vio derecho
+        logger.debug("no se pudo girar la imagen del sello", exc_info=True)
+        return None
 
 
 def _plano_del_sello(texto: str) -> str:
@@ -872,6 +937,32 @@ def _sellos_de_las_cartas(taller, source, textos: dict, sellos: dict, conocidos:
     if lector is None:
         return {}, set(), set()
     transcriptor = taller.transcriptor_de_sellos()
+    mirados: set[int] = set()
+
+    def a_la_vista(pagina: int) -> str:
+        """Lo que el modelo con visión lee del sello de la hoja: derecho y, si no da un RE, girado.
+
+        Una vez por hoja. Lo que diga se lee y se valida como cualquier RE a
+        mano; a la carta sin sello le dice «sin sello».
+        """
+        if transcriptor is None or pagina in mirados:
+            return ""
+        mirados.add(pagina)
+        try:
+            imagen = source.render(pagina, Band(*BANDA_DEL_SELLO_A_LA_VISTA), 200, "jpeg")
+            # Sólo la imagen, con una frase: con lo que el OCR leyó de la
+            # cabecera delante, el modelo contestaba «sin sello».
+            visto = transcriptor.resumir(PEDIDO_DEL_SELLO, imagen=imagen) or ""
+            if radicado_del_texto(visto) or radicado_escrito(visto) or "SIN SELLO" in visto.upper():
+                return visto
+            girada = _girada(imagen)
+            if girada is not None:
+                visto = f"{visto}\n{transcriptor.resumir(PEDIDO_DEL_SELLO_GIRADO, imagen=girada) or ''}"
+            return visto
+        except Exception:  # noqa: BLE001 - sin él, el sello queda como lo dejó el OCR
+            logger.warning("no se pudo transcribir el sello de la pág. %s", pagina, exc_info=True)
+            return ""
+
     # También la carta cuyo sello de tinta vio Tesseract sin poder leer su RE
     # a mano: en 7975593 (UPD2460819, 2026-11-13) siete escritos con su sello
     # salían sin RE -- …04663, …03442, …05402, …05408, …06812 -- y uno con el
@@ -894,18 +985,11 @@ def _sellos_de_las_cartas(taller, source, textos: dict, sellos: dict, conocidos:
         except Exception:  # noqa: BLE001 - sin la lectura, la carta abre como carta
             logger.warning("no se pudo leer la cabecera de la pág. %s", pagina, exc_info=True)
             continue
-        if transcriptor is not None and sello_sin_transcribir(leido):
+        if sello_sin_transcribir(leido):
             # El OCR no transcribió ningún sello -- lo dejó como imagen o lo
             # omitió --: el modelo con visión mira la esquina del sello (1005117,
-            # UPD2973878 pág. 6, 2026-11-18). Lo que diga se lee y se valida
-            # como cualquier RE a mano; a la carta sin sello le dice «sin sello».
-            try:
-                imagen = source.render(pagina, Band(*BANDA_DEL_SELLO_A_LA_VISTA), 200, "jpeg")
-                # Sólo la imagen, con una frase: con lo que el OCR leyó de la
-                # cabecera delante, el modelo contestaba «sin sello».
-                leido = f"{leido}\n{transcriptor.resumir(PEDIDO_DEL_SELLO, imagen=imagen)}"
-            except Exception:  # noqa: BLE001 - sin él, el sello queda como lo dejó el OCR
-                logger.warning("no se pudo transcribir el sello de la pág. %s", pagina, exc_info=True)
+            # UPD2973878 pág. 6, 2026-11-18).
+            leido = f"{leido}\n{a_la_vista(pagina)}"
         sello = leer_sello(leido)
         # Con «CARIBEMAR DE LA COSTA» y «Folios» el lector lo toma por la
         # etiqueta impresa; con su «FECHA DE RECIBIDO» o sus folios a mano es
@@ -928,6 +1012,18 @@ def _sellos_de_las_cartas(taller, source, textos: dict, sellos: dict, conocidos:
             or radicado_con_una_cifra_de_mas(leido, conocidos, fecha.year if fecha else None)
             or radicado_escrito(leido, fecha.year if fecha else None)
         )
+        if radicado is None and (visto := a_la_vista(pagina)):
+            # El sello está pero su RE no se leyó: el modelo con visión lo mira,
+            # derecho y girado -- el RE escrito de lado en el borde del sello,
+            # 1005117, UPD2437857 pág. 2, 2026-11-18 --.
+            leido = f"{leido}\n{visto}"
+            fecha = fecha or fecha_del_sello_de_tinta(visto)
+            folios = folios or folios_del_sello_de_tinta(visto)
+            radicado = (
+                radicado_del_texto(visto)
+                or radicado_con_una_cifra_de_mas(visto, conocidos, fecha.year if fecha else None)
+                or radicado_escrito(visto, fecha.year if fecha else None)
+            )
         if radicado is None:
             # La letra a mano ilegible -- «REB3102021034V2» --, casada con el RE
             # que el escrito imprime en las hojas que cubren los folios de su
@@ -1055,12 +1151,18 @@ def _leer_los_folios(payload: dict, taller, source, page_count: int) -> dict[int
     return folios
 
 
-def _ordenar_los_acuerdos(grupos, piezas: list[dict], textos: dict, del_acuerdo: set[int]):
+def _ordenar_los_acuerdos(grupos, piezas: list[dict], textos: dict, del_acuerdo: set[int], *, por_mes: bool = False):
     """El orden en el PDF de cada acuerdo de pago (``orden_del_acuerdo``), por la fecha de su reconocimiento.
 
     El reconocimiento está fechado si la pieza del acuerdo lleva fecha y salió
     de sus hojas -- no de un pagaré ni de un anexo --. ``piezas`` ya dice en qué
     archivo acabó cada una (``numerar_por_fecha``).
+
+    Con ``por_mes`` el archivo es un mes con documentos de toda clase: sólo se
+    ordena el tramo del acuerdo -- de su primera hoja a la última --, en su
+    sitio; lo demás del mes no se mueve. Antes el mes entero se ordenaba como
+    si fuera el acuerdo, y sus otros documentos acababan detrás como
+    «anexos» (2026-11-18).
     """
     from dataclasses import replace
 
@@ -1072,9 +1174,17 @@ def _ordenar_los_acuerdos(grupos, piezas: list[dict], textos: dict, del_acuerdo:
 
     salida = []
     for indice, grupo in enumerate(grupos.groups):
+        paginas = list(grupo.page_numbers)
+        antes: list[int] = []
+        despues: list[int] = []
+        if por_mes:
+            suyas = [i for i, p in enumerate(paginas) if p in del_acuerdo]
+            if suyas:
+                antes, despues = paginas[: suyas[0]], paginas[suyas[-1] + 1 :]
+                paginas = paginas[suyas[0] : suyas[-1] + 1]
         reconocimiento = (
-            {p for parte, hojas in partes_del_acuerdo(grupo.page_numbers, textos) if parte == RECONOCIMIENTO for p in hojas}
-            if set(grupo.page_numbers) & del_acuerdo
+            {p for parte, hojas in partes_del_acuerdo(paginas, textos) if parte == RECONOCIMIENTO for p in hojas}
+            if set(paginas) & del_acuerdo
             else set()
         )
         if not reconocimiento:
@@ -1087,7 +1197,7 @@ def _ordenar_los_acuerdos(grupos, piezas: list[dict], textos: dict, del_acuerdo:
             and (pieza.get("fecha_pagina") is None or pieza.get("fecha_pagina") in reconocimiento)
             for pieza in piezas
         )
-        orden = orden_del_acuerdo(grupo.page_numbers, textos, reconocimiento_fechado=fechado)
+        orden = [*antes, *orden_del_acuerdo(paginas, textos, reconocimiento_fechado=fechado), *despues]
         salida.append(replace(grupo, orden=None if list(orden) == sorted(grupo.page_numbers) else orden))
     return replace(grupos, groups=salida)
 
@@ -2437,6 +2547,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # la trae: su RE no se pide (7975593, UPD3126960 p43).
     re_al_pie_que_importa = [p for p in re_al_pie_sin_validar if p not in cartas.copias and p not in de_prueba]
     re_del_sello_sin_leer: list[int] = []
+    re_del_sello_solo_ocr: list[int] = []
     sin_su_re: list[dict] = []
     if entregado_por is not Agrupacion.MES:
         grupos, anexos, re_en_el_nombre = _poner_el_re_en_el_nombre(
@@ -2453,7 +2564,10 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             oficinas={r[2:6] for r in conocidos if len(r) == 15}
             | {s.radicado[2:6] for s in sellos.values() if s.clase == "impreso" and s.radicado},
             rechazados=re_rechazados,
-            sin_re=set(cartas.copias) | set(de_prueba) | set(del_acuerdo),
+            # Ni la copia «Recibido» que el escrito trae dentro de sus folios:
+            # su sello es el del radicado de otro papel (2026-11-18; ya la
+            # explicaba el aviso de varios sellos, pero su RE iba al nombre).
+            sin_re=set(cartas.copias) | set(de_prueba) | set(del_acuerdo) | set(foliacion.continua),
             abren=set(sellos_que_abren),
             sellos_sin_re=sellos_sin_re,
         )
@@ -2476,11 +2590,29 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 and p not in cartas.copias
                 and p not in de_prueba
             )
+        else:
+            # Con «Solo OCR» el RE a mano del sello de tinta no se lee nunca: el
+            # documento que trae uno y salió sin RE va a Revisión, sea del tipo
+            # que sea (2026-11-18).
+            re_del_sello_solo_ocr = documentos_con_sello_sin_re(
+                grupos,
+                {**al_pie, **sellos},
+                no_cuentan=set(cartas.copias) | set(de_prueba) | set(del_acuerdo) | set(foliacion.continua),
+                # El escrito del usuario -- reclamo, recurso, petición, queja --
+                # se radica siempre con su sello: sin RE, es que no se leyó,
+                # aunque la lectura no haya visto el sello de poca tinta.
+                escritos=set(cartas.de_tramite) - set(cartas.copias),
+            )
         # Y todo reclamo, constancia, contestación o notificación que salió sin
         # su RE, también con «Solo OCR» (el operador, 2026-11-18).
         sin_su_re = documentos_sin_su_re(
             grupos,
-            {*re_del_sello_sin_leer, *re_al_pie_que_importa, *(rechazado["page"] for rechazado in re_rechazados)},
+            {
+                *re_del_sello_sin_leer,
+                *re_del_sello_solo_ocr,
+                *re_al_pie_que_importa,
+                *(rechazado["page"] for rechazado in re_rechazados),
+            },
         )
     piezas = describir_piezas(grupos.groups)
     # F7. La fecha que la estructura no dio en la capa: el agente relee la hoja
@@ -2520,7 +2652,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # si está fechado, si no al final; los pagarés, la Habeas Data y los anexos
     # (lo dictó el operador el 2026-11-12). Sólo el orden del PDF escrito: el
     # inventario y las fechas siguen con el del papel.
-    grupos = _ordenar_los_acuerdos(grupos, piezas, textos, set(del_acuerdo))
+    grupos = _ordenar_los_acuerdos(
+        grupos, piezas, textos, set(del_acuerdo), por_mes=entregado_por is Agrupacion.MES
+    )
     _anunciar(
         payload,
         Stage.ASSEMBLING,
@@ -2584,6 +2718,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         + re_del_sello_sin_leer
         + [rechazado["page"] for rechazado in re_rechazados]
         + [aviso["page"] for aviso in sin_su_re]
+        + re_del_sello_solo_ocr
         + [aviso["page"] for aviso in folios_sin_cuadrar],
         estadisticas=estadisticas,
         anexos=anexos,
@@ -2655,6 +2790,8 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # Y el reclamo, la constancia, la contestación o la notificación que
         # salió sin su RE (2026-11-18).
         + sin_su_re
+        # Y, con «Solo OCR», el documento con sello de tinta que salió sin RE.
+        + [{"page": pagina, "reason": RE_DEL_SELLO_SOLO_OCR} for pagina in re_del_sello_solo_ocr]
         # Y el documento cuyas hojas no cuadran con los folios de su sello.
         + folios_sin_cuadrar
         # Y el escrito que enumera anexos que no aparecen detrás.
