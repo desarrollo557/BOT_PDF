@@ -820,6 +820,71 @@ def _poner_el_re_en_el_nombre(
     return replace(grupos, groups=salida), anexos, hallados
 
 
+#: Por qué abre un documento su primera hoja, de la señal más fuerte a la más débil.
+MOTIVOS_DEL_CORTE = (
+    ("sello", "un sello de radicación abre el documento", "alta"),
+    ("guia", "la guía de envío abre el documento", "alta"),
+    ("formulario", "un formulario que va solo: constancia, notificación o respuesta", "alta"),
+    ("folio", "el folio 1 escrito en la esquina", "alta"),
+    ("carta", "una carta que abre su trámite, con su asunto", "alta"),
+    ("acuerdo", "el acuerdo de pago con sus piezas", "alta"),
+    ("primera", "la primera hoja del PDF de origen", "alta"),
+)
+
+
+def _evidencia_de_las_piezas(
+    piezas: list[dict],
+    textos: dict,
+    releidas: dict,
+    *,
+    con_ia: bool,
+    senales: dict[str, set[int]] | None = None,
+) -> dict:
+    """La evidencia de la fecha, del tipo y del corte de cada documento, por la primera hoja de su pieza (2026-11-18).
+
+    La fecha, con su hoja, su vía -- capa, sello, OCR, IA -- y el trozo donde
+    está escrita: de la capa, o de lo que releyó el agente de fechas. El corte,
+    con la señal que abrió el documento en su primera hoja (``senales``: las
+    hojas de cada señal); sin ninguna, lo dejó así la continuidad, el trámite o
+    el revisor de cortes, con confianza media.
+    """
+    from ...domain.evidencia import (
+        Estado,
+        Hallazgo,
+        hallazgo_de_la_fecha,
+        hallazgo_del_tipo,
+    )
+
+    senales = senales or {}
+
+    def texto_de(pagina: int) -> str:
+        return "\n".join([textos.get(pagina, "") or "", *(releidas.get(pagina) or [])])
+
+    fecha: dict[str, dict] = {}
+    tipo: dict[str, dict] = {}
+    corte: dict[str, dict] = {}
+    for pieza in piezas:
+        if not pieza.get("pages"):
+            continue
+        primera = min(pieza["pages"])
+        clave = str(primera)
+        fecha[clave] = hallazgo_de_la_fecha({**pieza, "con_ia": con_ia}, texto_de).as_dict()
+        tipo[clave] = hallazgo_del_tipo(pieza, texto_de).as_dict()
+        motivo = next(
+            ((que, confianza) for senal, que, confianza in MOTIVOS_DEL_CORTE if primera in senales.get(senal, set())),
+            ("sin señal propia en su primera hoja: lo separaron la continuidad, el trámite o el revisor de cortes", "media"),
+        )
+        corte[clave] = Hallazgo(
+            parametro="corte",
+            estado=Estado.ENCONTRADO,
+            valor=f"{primera}-{max(pieza['pages'])}",
+            pagina=primera,
+            metodo=motivo[0],
+            confianza=motivo[1],
+        ).as_dict()
+    return {"fecha": fecha, "tipo": tipo, "corte": corte}
+
+
 #: A cuánto se relee la hoja cuyo campo «N° PQR:» rompió la capa: a 200 y 300
 #: Tesseract leyó entero el de 1005652; a 400 lo perdió.
 PPP_DEL_PQR = 300
@@ -3000,7 +3065,24 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # dónde salió: «RE2310…: del sello de la pág. 8».
         "re_en_el_nombre": re_en_el_nombre,
         # La evidencia de cada parámetro, por la primera hoja de su documento.
-        "evidencia": {"re": evidencia_del_re},
+        "evidencia": {
+            "re": evidencia_del_re,
+            **_evidencia_de_las_piezas(
+                piezas,
+                textos,
+                releidas,
+                con_ia=taller.con_ia(),
+                senales={
+                    "sello": set(sellos_que_abren),
+                    "guia": set(etiquetas) | {p - 1 for p in etiquetas},
+                    "formulario": set(formularios_solos),
+                    "folio": set(foliacion.abre),
+                    "carta": set(que_abren),
+                    "acuerdo": set(del_acuerdo),
+                    "primera": {1},
+                },
+            ),
+        },
         # El RE a mano de cada sello que se corrigió por el que la caja trae
         # impreso, con lo que se leyó: la auditoría lo puede cruzar.
         "re_corregidos_por_lo_impreso": {str(p): nota for p, nota in corregidos_por_lo_impreso.items()},

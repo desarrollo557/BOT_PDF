@@ -322,6 +322,102 @@ def candidatos_legibles(hallazgo: Hallazgo) -> str:
     return "; ".join(f"{c.valor} ({c.motivo})" for c in hallazgo.candidatos)
 
 
+# -- la fecha y el tipo -------------------------------------------------------------
+
+#: Cuánto texto se mira alrededor de un año para encontrar la fecha entera.
+_VENTANA_DE_LA_FECHA = 40
+#: Dónde se busca el renglón del título: la cabeza de la hoja, en renglones cortos.
+RENGLONES_DEL_TITULO = 40
+LARGO_DEL_RENGLON_DEL_TITULO = 80
+
+
+def fragmento_de_la_fecha(texto: str | None, fecha_iso: str) -> str | None:
+    """El trozo del texto donde está escrita la fecha, tal como se escribió, o ``None``."""
+    from datetime import date
+
+    from .fechas import _normalizar, fechas_de
+
+    if not texto or not fecha_iso:
+        return None
+    try:
+        buscada = date.fromisoformat(fecha_iso)
+    except ValueError:
+        return None
+    plano = " ".join(texto.split())
+    for hallado in re.finditer(str(buscada.year), plano):
+        inicio = max(0, hallado.start() - _VENTANA_DE_LA_FECHA)
+        trozo = plano[inicio : hallado.end() + 5]
+        if buscada in fechas_de(_normalizar(trozo)):
+            return trozo
+    return None
+
+
+def hallazgo_de_la_fecha(pieza: dict, texto_de: Callable[[int], str | None]) -> Hallazgo:
+    """La fecha de un documento con su evidencia, de lo que dejó su pieza (``describir_piezas``).
+
+    ``texto_de(pagina)`` da lo leído de la hoja de su fecha: la capa, o lo que
+    leyó el sello o la IA. Sin fecha, «no encontrado» con dónde se buscó.
+    """
+    paginas = [int(p) for p in pieza.get("pages") or []]
+    if not pieza.get("fecha"):
+        donde = pieza.get("donde_buscar") or paginas
+        return Hallazgo(
+            parametro="fecha",
+            estado=Estado.NO_ENCONTRADO,
+            buscado=(
+                "la estructura de la hoja (sello, encabezado, firma, casillas) y la relectura con Tesseract"
+                f"{' y con la IA' if pieza.get('con_ia') else ''} en las hojas {', '.join(map(str, donde))}"
+            ),
+        )
+    pagina = pieza.get("fecha_pagina")
+    fragmento = fragmento_de_la_fecha(texto_de(int(pagina)) if pagina else None, str(pieza["fecha"]))
+    return Hallazgo(
+        parametro="fecha",
+        estado=Estado.ENCONTRADO,
+        valor=str(pieza["fecha"]),
+        valor_original=fragmento,
+        pagina=int(pagina) if pagina else None,
+        fragmento=fragmento,
+        metodo=pieza.get("fecha_por"),
+        lectores=(str(pieza.get("fecha_via")),) if pieza.get("fecha_via") else (),
+        confianza="alta" if pieza.get("fecha_via") in ("texto", "sello", "guia") else "media",
+    )
+
+
+def hallazgo_del_tipo(pieza: dict, texto_de: Callable[[int], str | None]) -> Hallazgo:
+    """El tipo del documento -- lo que su primera hoja dice ser -- con el renglón donde lo dice."""
+    paginas = [int(p) for p in pieza.get("pages") or []]
+    tipo = str(pieza.get("titulo") or pieza.get("type") or "").strip()
+    if not tipo or tipo.upper() == "DOCUMENTO":
+        return Hallazgo(parametro="tipo", estado=Estado.NO_ENCONTRADO, buscado="el título de su primera hoja")
+    import unicodedata
+
+    def sin_tildes(texto: str) -> str:
+        return unicodedata.normalize("NFD", texto).encode("ascii", "ignore").decode().upper()
+
+    primera = paginas[0] if paginas else None
+    renglon = None
+    palabras = [p for p in re.findall(r"[A-Z]{4,}", sin_tildes(tipo))][:2]
+    # Sólo los renglones cortos de la cabeza: el título, su REF o su ASUNTO; no
+    # la prosa que nombra el tipo de pasada («…para el reclamo RE…»).
+    for linea in (texto_de(primera) or "").splitlines()[:RENGLONES_DEL_TITULO] if primera else ():
+        plano = sin_tildes(linea)
+        if len(plano.strip()) > LARGO_DEL_RENGLON_DEL_TITULO:
+            continue
+        if palabras and all(p in plano for p in palabras):
+            renglon = " ".join(linea.split())[:120]
+            break
+    return Hallazgo(
+        parametro="tipo",
+        estado=Estado.ENCONTRADO,
+        valor=tipo,
+        pagina=primera,
+        fragmento=renglon,
+        metodo="título de su primera hoja" if renglon else "su asunto, su formato o su catálogo",
+        confianza="alta" if renglon else "media",
+    )
+
+
 @dataclass(slots=True)
 class Evidencias:
     """Los hallazgos de un trabajo, por documento (su primera hoja)."""

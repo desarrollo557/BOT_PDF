@@ -113,3 +113,30 @@ class TestLaRegla:
         hallazgo = decidir_el_re([], buscado="sello y etiqueta en las hojas 1, 2")
         assert (hallazgo.estado, hallazgo.buscado) == (Estado.NO_ENCONTRADO, "sello y etiqueta en las hojas 1, 2")
         assert hallazgo.as_dict()["estado"] == "no encontrado"
+
+
+class TestLaFechaElTipoYElCorte:
+    def test_la_fecha_con_el_trozo_donde_esta_escrita(self):
+        from resolutions.domain.evidencia import hallazgo_de_la_fecha
+
+        pieza = {"pages": [4, 5], "fecha": "2023-10-27", "fecha_por": "carta de la empresa (pág. 4)", "fecha_pagina": 4, "fecha_via": "texto"}
+        hallazgo = hallazgo_de_la_fecha(pieza, lambda _p: "Consecutivo No.202370714406\nMAGANGUE, 27/10/2023\nSeñor")
+        assert (hallazgo.estado, hallazgo.valor, hallazgo.pagina) == (Estado.ENCONTRADO, "2023-10-27", 4)
+        assert "27/10/2023" in hallazgo.fragmento and hallazgo.lectores == ("texto",)
+
+    def test_sin_fecha_no_encontrada_con_donde_se_busco(self):
+        from resolutions.domain.evidencia import hallazgo_de_la_fecha
+
+        hallazgo = hallazgo_de_la_fecha({"pages": [7], "donde_buscar": [7], "con_ia": True}, lambda _p: "")
+        assert hallazgo.estado is Estado.NO_ENCONTRADO
+        assert "con la IA en las hojas 7" in hallazgo.buscado
+
+    def test_el_tipo_con_su_renglon_y_no_con_la_prosa(self):
+        from resolutions.domain.evidencia import hallazgo_del_tipo
+
+        texto = "Magangué, 1 de abril de 2024\nREF: Recurso de reposición en subsidio de Apelación\n"
+        hallazgo = hallazgo_del_tipo({"pages": [1], "titulo": "RECURSO DE REPOSICION"}, lambda _p: texto)
+        assert hallazgo.fragmento.startswith("REF: Recurso de reposición") and hallazgo.confianza == "alta"
+        prosa = "Los cuales para el reclamo RE2310202318223 corresponden a lo facturado en los meses de mayo y junio\n"
+        en_la_prosa = hallazgo_del_tipo({"pages": [6], "titulo": "RECLAMO"}, lambda _p: prosa)
+        assert en_la_prosa.fragmento is None and en_la_prosa.confianza == "media"
