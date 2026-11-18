@@ -4,7 +4,8 @@
   import Icono from '$lib/components/Icono.svelte';
   import { jobStore } from '$lib/jobs.svelte';
   import NombreAMirar from '$lib/components/NombreAMirar.svelte';
-  import { nombresPorMirar, whereItLanded } from '$lib/revision';
+  import ReAMirar from '$lib/components/ReAMirar.svelte';
+  import { nombresPorMirar, radicadosPorMirar, whereItLanded } from '$lib/revision';
   import { enlaceAlDocumento } from '$lib/navegacion.svelte';
   import type { Job, NombreGuardado } from '$lib/types';
 
@@ -39,6 +40,13 @@
       label: 'Revisor de nombres',
       advice:
         'Nombres que las lecturas no confirmaron. Se miran arriba, en «Nombres por confirmar», con la imagen del renglón: confirmar o corregir quita la página de esta lista.'
+    },
+    {
+      key: 'revisor-de-re',
+      match: /^RE por confirmar|RE escrito a mano|sin su RE|el RE leído a mano/i,
+      label: 'Revisor de RE',
+      advice:
+        'El RE del documento no se pudo asegurar con la evidencia de sus hojas: un solo lector, una corrección o el de su trámite. Se confirma arriba, en «RE por confirmar», viendo la hoja del sello.'
     },
     {
       key: 'revisor-de-fechas',
@@ -140,6 +148,9 @@
     void pedirLosGuardados();
   });
   const nombres = $derived(nombresPorMirar(jobStore.reviewable, guardados));
+  /** Los RE que la máquina sólo propone (2026-11-18): se confirman viendo la hoja del sello. */
+  const radicados = $derived(radicadosPorMirar(jobStore.reviewable));
+  let radicadosVisibles = $state(24);
   /** Cuántos se enseñan a la vez: cada uno trae su imagen. */
   const NOMBRES_A_LA_VEZ = 24;
   let nombresVisibles = $state(NOMBRES_A_LA_VEZ);
@@ -186,6 +197,30 @@
     {#if nombres.length > nombresVisibles}
       <button class="btn btn-tonal btn-sm mas" onclick={() => (nombresVisibles += NOMBRES_A_LA_VEZ)}>
         Ver {Math.min(NOMBRES_A_LA_VEZ, nombres.length - nombresVisibles)} más
+      </button>
+    {/if}
+  </section>
+{/if}
+
+{#if radicados.length}
+  <section class="nombres-por-mirar">
+    <h2 class="caps band">
+      RE por confirmar (<span class="tabular">{radicados.length}</span>)
+    </h2>
+    <p class="advice">
+      Documentos cuyo RE no se pudo asegurar con la evidencia de sus propias hojas: los dos lectores no coincidieron,
+      una regla lo corrigió o es el de su trámite. La máquina no lo pone: lo propone. Mire la hoja del sello, pulse
+      el candidato correcto o escriba el RE, y pulse «Confirmar». Cambian a la vez el nombre del PDF, el índice y la
+      entrega.
+    </p>
+    <div class="grid-de-nombres">
+      {#each radicados.slice(0, radicadosVisibles) as { jobId, documento, pagina, motivo, candidatos, archivo } (`${jobId}-${pagina}`)}
+        <ReAMirar {jobId} {documento} {pagina} {motivo} {candidatos} {archivo} />
+      {/each}
+    </div>
+    {#if radicados.length > radicadosVisibles}
+      <button class="btn btn-tonal btn-sm mas" onclick={() => (radicadosVisibles += 24)}>
+        Ver {Math.min(24, radicados.length - radicadosVisibles)} más
       </button>
     {/if}
   </section>

@@ -1,4 +1,4 @@
-import type { FilaConPersona, Job, NombreGuardado } from './types';
+import type { CandidatoDelRe, FilaConPersona, Job, NombreGuardado } from './types';
 
 /**
  * Dónde acabó archivada una página que hay que revisar.
@@ -114,4 +114,44 @@ export function nombresPorMirar(jobs: Job[], guardados: NombreGuardado[] = []): 
       a.documento.localeCompare(b.documento) ||
       (a.fila.pagina_inicial ?? 0) - (b.fila.pagina_inicial ?? 0)
   );
+}
+
+/** Un documento cuyo RE la máquina no aseguró, para confirmarlo en la Revisión (2026-11-18). */
+export interface RePorMirar {
+  jobId: string;
+  documento: string;
+  pagina: number;
+  motivo: string;
+  candidatos: CandidatoDelRe[];
+  archivo: string | null;
+}
+
+/**
+ * Lo que dice que un aviso de la Revisión es del RE de su documento: el RE por
+ * confirmar, el escrito a mano que no se leyó con certeza, el que no se cree.
+ */
+const ES_DEL_RE = /^RE por confirmar|RE escrito a mano|sin su RE|el RE leído a mano/i;
+
+/** Los RE por confirmar de los trabajos en pantalla: uno por documento, con sus candidatos. */
+export function radicadosPorMirar(jobs: Job[]): RePorMirar[] {
+  const salida: RePorMirar[] = [];
+  for (const job of jobs) {
+    const vistos = new Set<string>();
+    for (const entrada of job.report?.review_queue ?? []) {
+      if (!ES_DEL_RE.test(entrada.reason)) continue;
+      const { file } = whereItLanded(job, entrada.page);
+      const clave = file ?? String(entrada.page);
+      if (vistos.has(clave)) continue;
+      vistos.add(clave);
+      salida.push({
+        jobId: job.id,
+        documento: job.filename,
+        pagina: entrada.page,
+        motivo: entrada.reason,
+        candidatos: entrada.candidatos ?? [],
+        archivo: file
+      });
+    }
+  }
+  return salida;
 }

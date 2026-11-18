@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { nombresPorMirar, QUARANTINE_FILE, whereItLanded } from './revision';
+import { nombresPorMirar, QUARANTINE_FILE, radicadosPorMirar, whereItLanded } from './revision';
 import type { Job, Report } from './types';
 
 /**
@@ -180,5 +180,35 @@ describe('las historias académicas (2026-11-17)', () => {
     } as unknown as Partial<Report>;
     const nombres = nombresPorMirar([job(libro)]);
     expect(nombres.map(({ numero, fila }) => [numero, fila.nombre])).toEqual([[3, 'ANGELICA CUELO']]);
+  });
+});
+
+describe('los RE por confirmar (2026-11-18)', () => {
+  const candidato = { valor: 'RE8673202103319', motivo: 'letra a mano leída por un solo lector (visión)', pagina: 1 };
+
+  it('uno por documento, con sus candidatos y dónde quedó', () => {
+    const trabajo = job({
+      inventory: {
+        items: [{ file_name: 'UPD1/01_DERECHO-DE-PETICION.pdf', code: '01', page_numbers: [1, 2] }]
+      },
+      review_queue: [
+        { page: 1, reason: 'RE por confirmar, el nombre va sin él: RE8673202103319 (…)', candidatos: [candidato] },
+        { page: 2, reason: 'trae sello de radicación con el RE escrito a mano y no se pudo leer con certeza' },
+        { page: 2, reason: 'la fecha del documento no se pudo leer' }
+      ]
+    } as unknown as Partial<Report>);
+    const radicados = radicadosPorMirar([trabajo]);
+    expect(radicados).toHaveLength(1);
+    expect(radicados[0]).toMatchObject({
+      jobId: 'job-1',
+      pagina: 1,
+      candidatos: [candidato],
+      archivo: 'UPD1/01_DERECHO-DE-PETICION.pdf'
+    });
+  });
+
+  it('lo que no es del RE no se cuela', () => {
+    const trabajo = job({ review_queue: [{ page: 3, reason: 'la fecha del documento no se pudo leer' }] });
+    expect(radicadosPorMirar([trabajo])).toEqual([]);
   });
 });

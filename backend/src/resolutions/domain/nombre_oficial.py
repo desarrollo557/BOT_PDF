@@ -106,6 +106,26 @@ def re_del_archivo(nombre: str | None) -> str | None:
     return hallado.group(1).upper() if hallado else None
 
 
+def con_su_re(nombre: str, radicado: str) -> str:
+    """El nombre de un archivo -- o de su fila del índice -- con su RE al final, cambiando el que traiga.
+
+    «01_RECLAMO.pdf» → «01_RECLAMO-RE2310202405234.pdf»; «RECLAMO-RE…» →
+    «RECLAMO-RE…» con el nuevo. Para el RE que confirma el operador en la
+    Revisión (2026-11-18).
+    """
+    nombre = (nombre or "").strip()
+    pdf = nombre.lower().endswith(".pdf")
+    base = nombre[:-4] if pdf else nombre
+    base = re.sub(r"-RE\d{13}$", "", base, flags=re.IGNORECASE)
+    return f"{base}-{radicado.upper()}" + (".pdf" if pdf else "")
+
+
+def con_su_re_en_la_ruta(ruta: str, radicado: str) -> str:
+    """La ruta de un archivo con su RE en el nombre, con la misma barra que traía: «UPD1/01_RECLAMO-RE….pdf»."""
+    corte = max(ruta.rfind("/"), ruta.rfind("\\"))
+    return ruta[: corte + 1] + con_su_re(ruta[corte + 1 :], radicado)
+
+
 def nombre_del_asunto(asunto: str | None) -> str | None:
     """La clase de papel con su complemento, del renglón del asunto. ``None`` si no dice.
 

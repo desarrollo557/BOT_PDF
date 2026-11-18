@@ -4410,6 +4410,67 @@ class FolderRunner:
         self._pedir_generales(run)
         return avisos
 
+    def corregir_re(self, job: Job, posicion: int, radicado: str) -> list[str]:
+        """Lleva al destino el RE que el operador confirmó o escribió en la Revisión (2026-11-18).
+
+        Todo junto, como la Revisión de nombres: el PDF entregado en la carpeta
+        del NIC, su constancia -- la ruta del archivo y el nombre de su fila,
+        sin las cuales la corrida siguiente lo daría por faltante y lo volvería
+        a pagar --, el índice del NIC, que se rehace desde las constancias
+        (``_ordenar_la_caja``), y los generales.
+
+        ``posicion`` es el puesto del documento entre los PDF de su UPD, por su
+        número: el mismo en la constancia y en sus filas del índice. Devuelve lo
+        que no se pudo hacer. Fuera de una corrida de carpeta, nada.
+        """
+        from ..domain.nombre_oficial import con_su_re, con_su_re_en_la_ruta
+
+        avisos: list[str] = []
+        run = self._runs.get(str((job.origen or {}).get("id") or ""))
+        if run is None or job.id not in run.job_ids:
+            return avisos
+        origen = run.source / job.filename
+        carpeta = self._output_dir(run, origen, job)
+        ruta = self._ruta_de_la_constancia(run, origen, actas=False)
+        constancia = constancias.leer(ruta)
+        if constancia is None:
+            return [f"no está la constancia de «{origen.name}» en el destino: el PDF entregado no se renombró"]
+        prefijo = _prefijo_de_la_constancia(constancia)
+        pdfs = sorted(
+            (a for a in constancia.archivos if str(a.get("ruta") or "").lower().endswith(".pdf")),
+            key=lambda a: _orden_del_archivo(a, prefijo),
+        )
+        if posicion >= len(pdfs):
+            return [f"la constancia de «{origen.name}» no trae ese documento: el PDF entregado no se renombró"]
+        archivo = pdfs[posicion]
+        actual = str(archivo.get("ruta") or "")
+        renombrado = con_su_re_en_la_ruta(actual, radicado)
+        antes = constancias.ruta_de_entrega(carpeta, actual)
+        despues = constancias.ruta_de_entrega(carpeta, renombrado)
+        if antes is None or despues is None:
+            return [f"la ruta de «{Path(actual).name}» no es de la carpeta del NIC: no se renombró"]
+        try:
+            if despues.exists() and despues != antes:
+                return [f"en el destino ya hay un «{despues.name}»: no se renombró «{antes.name}»"]
+            if antes.exists():
+                os.replace(antes, despues)
+        except OSError as error:
+            return [f"no se pudo renombrar «{antes.name}» en el destino: {explicar_fallo(error)}"]
+        archivo["ruta"] = renombrado
+        filas = (constancia.indice or {}).get("filas")
+        if isinstance(filas, list) and posicion < len(filas) and isinstance(filas[posicion], dict):
+            filas[posicion]["nombre"] = con_su_re(str(filas[posicion].get("nombre") or ""), radicado)
+        else:
+            avisos.append("la fila de este documento no está en la constancia: el índice del NIC no cambió")
+        try:
+            with run.cerrojo:
+                constancias.escribir(ruta, constancia)
+        except OSError as error:
+            avisos.append(f"no se pudo actualizar la constancia de «{origen.name}»: {explicar_fallo(error)}")
+        self._ordenar_la_caja(run, carpeta)
+        self._pedir_generales(run)
+        return avisos
+
     def _ordenar_la_caja(self, run: FolderRun, carpeta: Path) -> None:
         """La carpeta de un NIC como un solo expediente: sus PDF seguidos y un índice.
 

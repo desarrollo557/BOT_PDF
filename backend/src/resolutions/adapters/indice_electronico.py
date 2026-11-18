@@ -119,6 +119,35 @@ def escribir_indice(
     return guardar_libro(libro, ruta)
 
 
+def cambiar_el_nombre(ruta: Path, viejo: str, nuevo: str, *, ocurrencia: int = 0) -> bool:
+    """El nombre de un documento en un índice ya escrito, cambiado en su celda y nada más.
+
+    Para la Revisión del RE (2026-11-18): el RE que confirma el operador llega
+    al índice que ya está entregado sin rehacerlo -- la cabecera, las demás
+    filas, quedan como estaban --, como ``fuid_inventory.cambiar_el_asunto``.
+    Si varias filas se llaman igual, la de ``ocurrencia`` (0, la primera).
+    Dice si la encontró.
+    """
+    from openpyxl import load_workbook
+
+    libro = load_workbook(ruta)
+    try:
+        hoja = libro.active
+        buscado = str(viejo or "").strip()
+        candidatas = [
+            numero
+            for numero in range(PRIMERA_FILA, (hoja.max_row or 0) + 1)
+            if str(hoja[f"{COLUMNA_DEL_NOMBRE}{numero}"].value or "").strip() == buscado
+        ]
+        if not buscado or len(candidatas) <= ocurrencia:
+            return False
+        hoja[f"{COLUMNA_DEL_NOMBRE}{candidatas[ocurrencia]}"].value = nuevo
+        guardar_libro(libro, ruta)
+        return True
+    finally:
+        libro.close()
+
+
 @dataclass(frozen=True, slots=True)
 class IndiceLeido:
     """Un índice ya entregado, leído de vuelta: su encabezado y sus filas."""

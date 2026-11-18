@@ -801,6 +801,24 @@ export function corregirNombre(
   return send(`${BASE}/jobs/${jobId}/nombres/${numero}`, 'PUT', { nombre });
 }
 
+/** La hoja donde está el sello del RE por confirmar, para leerlo sin abrir el PDF (2026-11-18). */
+export function hojaDelReUrl(jobId: string, pagina: number): string {
+  return `${BASE}/jobs/${jobId}/re/${pagina}/hoja.jpg`;
+}
+
+/**
+ * Confirma o escribe el RE del documento que contiene la hoja `pagina`
+ * (2026-11-18). El PDF, el índice y la entrega se mueven juntos; `avisos`
+ * dice lo raro -- una oficina que no radica -- y lo que no se pudo hacer.
+ */
+export function corregirRe(
+  jobId: string,
+  pagina: number,
+  re: string
+): Promise<{ re: string; archivo: string; avisos: string[] }> {
+  return send(`${BASE}/jobs/${jobId}/re/${pagina}`, 'PUT', { re });
+}
+
 /**
  * Las personas por mirar de los trabajos que ya no están en memoria, como se
  * guardaron en disco (2026-11-17): la Revisión de nombres sobrevive a un

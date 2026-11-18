@@ -32,6 +32,15 @@ export interface Repair {
 export interface ReviewItem {
   page: number;
   reason: string;
+  /** Los candidatos de un RE por confirmar (2026-11-18), con su porqué. */
+  candidatos?: CandidatoDelRe[];
+}
+
+/** Un RE que la máquina propone y no pone: lo confirma el operador. */
+export interface CandidatoDelRe {
+  valor: string;
+  motivo: string;
+  pagina: number | null;
 }
 
 export interface InventoryItem {
