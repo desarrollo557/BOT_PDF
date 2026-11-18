@@ -140,3 +140,13 @@ class TestLaFechaElTipoYElCorte:
         prosa = "Los cuales para el reclamo RE2310202318223 corresponden a lo facturado en los meses de mayo y junio\n"
         en_la_prosa = hallazgo_del_tipo({"pages": [6], "titulo": "RECLAMO"}, lambda _p: prosa)
         assert en_la_prosa.fragmento is None and en_la_prosa.confianza == "media"
+
+
+def test_el_fragmento_conserva_el_corte_de_renglon():
+    """1004833 (prueba de humo): «RE23102023 16673» y, en el renglón de abajo, «1 Folio»."""
+    from resolutions.application.verificador_de_evidencia import reparos_del_hallazgo
+
+    fragmento = aparece_literal("RE2310202316673", "13-09-2023\nRE23102023 16673\n1 Folio.")
+    assert fragmento == "13-09-2023 / RE23102023 16673 / 1 Folio."
+    hallazgo = {"parametro": "re", "estado": "verificado", "valor": "RE2310202316673", "fragmento": fragmento}
+    assert reparos_del_hallazgo(hallazgo) == []

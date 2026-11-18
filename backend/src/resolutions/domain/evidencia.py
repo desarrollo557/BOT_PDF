@@ -160,7 +160,10 @@ def aparece_literal(radicado: str, texto: str | None) -> str | None:
         return None
     inicio = max(0, hallado.start() - ALCANCE_DEL_FRAGMENTO)
     fin = min(len(texto), hallado.end() + ALCANCE_DEL_FRAGMENTO)
-    return " ".join(texto[inicio:fin].split())
+    # Cada renglón con su corte, « / »: unidos con un blanco, el «1 Folio» del
+    # renglón de abajo parecía una cifra pegada al RE y el fragmento ya no lo
+    # probaba (1004833, la prueba de humo del 2026-11-18).
+    return " / ".join(" ".join(renglon.split()) for renglon in texto[inicio:fin].splitlines() if renglon.strip())
 
 
 def familia(lector: str) -> str:
