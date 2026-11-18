@@ -61,14 +61,15 @@ class TestElNombreDelArchivo:
 
     def test_la_contestacion_a_reclamacion_lleva_su_re(self):
         assert (
-            _nombre(f"02 {RE}", "CONTESTACION A RECLAMACION")
-            == f"02_CONTESTACION-A-RECLAMACION-{RE}.pdf"
+            _nombre(f"02 {RE}", "CONTESTACION A LA RECLAMACION")
+            == f"02_CONTESTACION-A-LA-RECLAMACION-{RE}.pdf"
         )
 
     def test_los_demas_siguen_numero_titulo(self):
         # «Solo los 2 exactos» (el operador, 2026-11-04).
         assert _nombre(f"02 {RE}", "DERECHO DE PETICION") == "02_DERECHO-DE-PETICION.pdf"
-        assert _nombre(f"02 {RE}", "NOTIFICACION PERSONAL RECLAMOS") == "02_NOTIFICACION-PERSONAL-RECLAMOS.pdf"
+        # La notificación personal sí, desde el 2026-11-18.
+        assert _nombre(f"02 {RE}", "NOTIFICACION PERSONAL RECLAMOS") == f"02_NOTIFICACION-PERSONAL-RECLAMOS-{RE}.pdf"
         assert _nombre(f"02 {RE}", "RESPUESTA A RECLAMACION") == "02_RESPUESTA-A-RECLAMACION.pdf"
         assert _nombre(f"02 {RE}", "RECLAMO POR CONSUMO ESTIMADO") == "02_RECLAMO-POR-CONSUMO-ESTIMADO.pdf"
 
@@ -92,11 +93,15 @@ class TestLosTitulosConRe:
     def test_solo_los_tres_exactos(self):
         assert lleva_re_en_el_nombre("RECLAMO")
         assert lleva_re_en_el_nombre("Constancia del contenido de la reclamación")
-        # La respuesta de la empresa a una reclamación, con el nombre del operador (2026-11-11).
-        assert lleva_re_en_el_nombre("CONTESTACION A RECLAMACION")
+        # La respuesta de la empresa a una reclamación, con el nombre del operador (2026-11-11; con «LA», 2026-11-18).
+        assert lleva_re_en_el_nombre("CONTESTACION A LA RECLAMACION")
         assert not lleva_re_en_el_nombre("RESPUESTA A RECLAMACION")
         assert not lleva_re_en_el_nombre("RECLAMO POR CONSUMO ESTIMADO")
-        assert not lleva_re_en_el_nombre("NOTIFICACION PERSONAL RECLAMOS")
+        # Las notificaciones personales, también (el operador, 2026-11-18); no la citación ni la autorización.
+        assert lleva_re_en_el_nombre("NOTIFICACION PERSONAL RECLAMOS")
+        assert lleva_re_en_el_nombre("Notificación personal")
+        assert not lleva_re_en_el_nombre("CITACION PARA NOTIFICACION PERSONAL")
+        assert not lleva_re_en_el_nombre("AUTORIZACION PARA LA NOTIFICACION PERSONAL")
         assert not lleva_re_en_el_nombre(None)
 
     def test_un_re_es_re_y_trece_cifras(self):
@@ -225,15 +230,22 @@ class TestElReDelWorker:
         """1005965 p1: la IA leyó «RE2371202302499» en el sello que dice «RE2311202302499»."""
         rechazados: list = []
         grupos, _, hallados = self._poner(
-            self._grupos(("01", [1], "DERECHO DE PETICION"), ("02", [2], "DERECHO DE PETICION")),
+            self._grupos(
+                ("01", [1], "DERECHO DE PETICION"),
+                ("02", [2], "DERECHO DE PETICION"),
+                ("03", [3], "RECURSO DE REPOSICION"),
+            ),
             sellos={
                 1: Sello(clase="tinta", radicado="RE2371202302499", fecha=date(2023, 7, 19)),
-                # Otro año que el de su sello: no se cree.
-                2: Sello(clase="tinta", radicado="RE2311202202952", fecha=date(2023, 8, 28)),
+                # Dos años antes que su sello: no se cree.
+                2: Sello(clase="tinta", radicado="RE2311202102952", fecha=date(2023, 8, 28)),
+                # El año anterior sí (el operador, 2026-11-18): el recurso se
+                # radica con el RE de la reclamación que recurre.
+                3: Sello(clase="tinta", radicado="RE9233202203621", fecha=date(2023, 1, 25)),
             },
             rechazados=rechazados,
         )
-        assert [g.code.value for g in grupos.groups] == ["01 RE2311202302499", "02"]
+        assert [g.code.value for g in grupos.groups] == ["01 RE2311202302499", "02", "03 RE9233202203621"]
         assert "oficina 2371 leída por 2311" in hallados["1"]
         assert [r["page"] for r in rechazados] == [2] and "no se cree" in rechazados[0]["reason"]
 
@@ -260,10 +272,22 @@ class TestLaContestacionAReclamacion:
         from resolutions.domain.asunto_del_documento import es_contestacion_a_reclamacion
 
         assert es_contestacion_a_reclamacion(CONTESTACION)
-        # Sin consecutivo en la cabeza, o con otro asunto, no.
-        assert not es_contestacion_a_reclamacion(CONTESTACION.replace("Consecutivo No. 9234202200564\n", ""))
-        assert not es_contestacion_a_reclamacion(CONTESTACION.replace("Reclamación No.", "Recurso No."))
+        sin_consecutivo = CONTESTACION.replace("Consecutivo No. 9234202200564\n", "")
+        sin_atencion = CONTESTACION.replace("En atención a su petición", "Su petición")
+        # 2026-11-18: la carta de la empresa que abre «EN ATENCIÓN A…» lo es
+        # aunque no se lea su consecutivo -- cita la reclamación y va dirigida
+        # al usuario -- o aunque su asunto cite otra cosa (un recurso).
+        assert es_contestacion_a_reclamacion(sin_consecutivo)
+        assert es_contestacion_a_reclamacion(CONTESTACION.replace("Reclamación No.", "Recurso No."))
+        # Sin consecutivo ni «en atención a», o con otro asunto y sin él, no.
+        assert not es_contestacion_a_reclamacion(sin_atencion.replace("Consecutivo No. 9234202200564\n", ""))
+        assert not es_contestacion_a_reclamacion(sin_atencion.replace("Reclamación No.", "Recurso No."))
         assert not es_contestacion_a_reclamacion(CARTA_DEL_CLIENTE)
+        # La carta del usuario dirigida a la empresa, aunque cite la reclamación y diga «en atención a», no.
+        del_usuario = sin_consecutivo.replace("Señor(a)\nYORLENE RIAPIRA PARADA", "Señores\nCARIBEMAR DE LA COSTA S.A.S. E.S.P.")
+        assert not es_contestacion_a_reclamacion(del_usuario)
+        # Ni una notificación personal, que trae el texto de la respuesta.
+        assert not es_contestacion_a_reclamacion("NOTIFICACION PERSONAL\n" + sin_consecutivo)
 
     @staticmethod
     def _sigue(grupos, textos, sellos=None):
@@ -357,7 +381,10 @@ class TestLasDosPeticionesDe1005965:
 
         assert validar_el_re_a_mano("RE2311202302952", date(2023, 8, 28)) == ("RE2311202302952", "")
         assert validar_el_re_a_mano("RE2371202302499", date(2023, 7, 19))[0] == "RE2311202302499"
-        assert validar_el_re_a_mano("RE2311202202952", date(2023, 8, 28))[0] is None
+        # El año anterior vale -- el recurso se radica con el RE de la
+        # reclamación (el operador, 2026-11-18) --; dos antes, no.
+        assert validar_el_re_a_mano("RE2311202202952", date(2023, 8, 28))[0] == "RE2311202202952"
+        assert validar_el_re_a_mano("RE2311202102952", date(2023, 8, 28))[0] is None
         # Una oficina a una cifra de dos que radican (2310 y 2311 desde 2312): no se elige.
         assert validar_el_re_a_mano("RE2312202302952", date(2023, 8, 28))[0] is None
         # Lejos de todas: tampoco. Salvo que la caja la traiga impresa.

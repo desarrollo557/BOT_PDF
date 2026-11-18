@@ -649,8 +649,12 @@ def sellos_al_pie(
                 fecha = fecha_del_sello_de_tinta(del_pago) or getattr(leer_sello(del_pago), "fecha", None)
                 # Lo leído, tal cual: la validación del agente (año y oficina)
                 # la hace quien lo pone en el nombre, y la anota.
-                radicado = radicado_del_texto(del_pago) or radicado_escrito(
-                    del_pago, fecha.year if fecha else None
+                # Como el de arriba: la cifra de más contra los RE de la caja, y
+                # la letra a mano (2026-11-18: también las oficinas 9233 y 9234).
+                radicado = (
+                    radicado_del_texto(del_pago)
+                    or radicado_con_una_cifra_de_mas(del_pago, (), fecha.year if fecha else None)
+                    or radicado_escrito(del_pago, fecha.year if fecha else None)
                 )
                 sello = Sello("tinta", radicado, fecha, folios_del_sello_de_tinta(del_pago))
         hallados[pagina] = sello

@@ -272,6 +272,14 @@ def asunto_del_documento(paginas: Sequence[str], tipo: str | None = None) -> str
 #: corto: el recurso «en subsidio de apelación» es un título entero, no un
 #: recurso de reposición con media frase detrás.
 _TITULOS_DEL_ESCRITO: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # El formulario de recurso de Afinia: «Asunto: Interposición de recurso(s)
+    # de ☐ Reposición ☒ Reposición y subsidiariamente apelación ante la SSPD».
+    # Las dos casillas van impresas y la marcada no se lee con la OCR, que
+    # además deja «Re^sición» y «apeiación»: por su asunto, con el nombre del
+    # catálogo. Sin esto su título era «DOCUMENTO», no abría, y el recurso del
+    # 24-03-2023 con sus nueve facturas salía dentro de la contestación de
+    # delante (1005117, UPD2973878 pág. 6, 2026-11-18).
+    ("RECURSO DE REPOSICION EN SUBSIDIO DE APELACION", re.compile(r"\bINTERPOSICI\w{0,3}\s+DE\s+RECURSO")),
     (
         "RECURSO DE REPOSICION EN SUBSIDIO DE APELACION",
         # También «Reposición y Subsidio de Apelación» y «y subsidiariamente el
@@ -535,29 +543,52 @@ def escrito_que_interpone(primera_pagina: str) -> str | None:
     return None
 
 
-#: El nombre de la respuesta de la empresa a una reclamación, como lo dictó el
+#: El nombre de la respuesta de la empresa a una reclamación. Lo dictó el
 #: operador el 2026-11-11 ante 1016215 (UPD2437946 p7): «cuando un documento
 #: tenga este formato» -- «Consecutivo No. …», «CIUDAD, fecha», «ASUNTO:
 #: Reclamación No. RE…» -- «le colocarás el RE y como nombre contestación a
-#: reclamación». No es un tipo del catálogo del cliente: es su nombre.
-CONTESTACION_A_RECLAMACION = "CONTESTACION A RECLAMACION"
+#: reclamación»; y el 2026-11-18, con «LA»: «CONTESTACIÓN A LA RECLAMACIÓN», el
+#: mismo para las cartas de la empresa que abren «EN ATENCIÓN A…». No es un
+#: tipo del catálogo del cliente: es su nombre.
+CONTESTACION_A_RECLAMACION = "CONTESTACION A LA RECLAMACION"
 #: «ASUNTO: Reclamación No. RE9234202200564», con lo que la OCR le haga.
 _ASUNTO_DE_RECLAMACION = re.compile(r"\bASUNTO\W{0,3}\s*RECLAMACI\w{0,3}\s+N\W{0,2}[O0]?\W{0,3}\s*R\W?E\s?\d")
+#: «En atención a su petición…», «En atención al recurso interpuesto…»: como
+#: abre la empresa su respuesta (1005117, UPD2973878 p18; el operador,
+#: 2026-11-18). Con la «L» de «al».
+_EN_ATENCION_A = re.compile(r"\bEN\s+ATENCI\w{0,3}\s+AL?\b")
+#: La carta que va dirigida a la empresa es del usuario, no su respuesta:
+#: «Señores CARIBEMAR DE LA COSTA S.A.S. E.S.P.», «Señores AFINIA».
+_A_LA_EMPRESA = re.compile(r"\bSE\W?N?ORES\W{0,3}\s*(?:CARIBE\s?MAR|AFINIA|ELECTRICARIBE)")
 #: Hasta dónde se busca su asunto: va bajo el destinatario y su dirección.
 CABEZA_DE_LA_CONTESTACION = 900
 
 
 def es_contestacion_a_reclamacion(texto: str) -> bool:
-    """Si la hoja abre la respuesta de la empresa a una reclamación.
+    """Si la hoja abre la respuesta de la empresa a una reclamación: la CONTESTACIÓN A LA RECLAMACIÓN.
 
-    La carta de la empresa con su «Consecutivo No.» en el encabezado
-    (``formulario_que_abre``) y, en su asunto, la reclamación que contesta con
-    su RE. Sólo la primera hoja: la que sigue no trae ninguna de las dos.
+    Sólo cartas de la empresa (lo eligió el operador el 2026-11-18): nunca una
+    notificación, una constancia, una pieza del acuerdo ni la Habeas Data, que
+    también citan la respuesta. Lo es:
+
+    - la carta con su «Consecutivo No.» en el encabezado
+      (``formulario_que_abre``) que en su asunto cita la reclamación con su RE
+      (2026-11-11), o que abre «EN ATENCIÓN A…» (2026-11-18);
+    - la que no dejó leer su consecutivo pero cita la reclamación en su asunto,
+      abre «EN ATENCIÓN A…» y no va dirigida a la empresa: la carta del
+      usuario se dirige a «Señores Caribemar»; la respuesta, al usuario.
+
+    Sólo la primera hoja: la que sigue no trae ninguna de esas señales.
     """
-    if formulario_que_abre(texto or "") != RESPUESTA_DE_LA_EMPRESA:
+    formulario = formulario_que_abre(texto or "")
+    if formulario not in (RESPUESTA_DE_LA_EMPRESA, None):
         return False
     cabeza = _plano(" ".join((texto or "").split())[:CABEZA_DE_LA_CONTESTACION])
-    return _ASUNTO_DE_RECLAMACION.search(cabeza) is not None
+    cita_la_reclamacion = _ASUNTO_DE_RECLAMACION.search(cabeza) is not None
+    en_atencion = _EN_ATENCION_A.search(cabeza) is not None
+    if formulario == RESPUESTA_DE_LA_EMPRESA:
+        return cita_la_reclamacion or en_atencion
+    return cita_la_reclamacion and en_atencion and _A_LA_EMPRESA.search(cabeza) is None
 
 
 #: La carta de instrucciones escrita como título: en mayúsculas, como la

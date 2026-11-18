@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ..domain.anexos_declarados import (
     HOJA_MUDA,
@@ -408,14 +408,11 @@ def _renumerar(
         valor = f"{puesto:0{ancho}d}{resto}"
         if grupo.code.value in anexos:
             renombrados[valor] = anexos[grupo.code.value]
+        # Con todo lo demás del grupo: rehecho a mano perdía que lleva el RE de
+        # su propio sello (``re_en_el_nombre``) y el recurso de 1005117 salía
+        # sin él al numerarse por fecha (UPD2437857 p5, 2026-11-18).
         nuevos.append(
-            PageGroup(
-                code=ResolutionCode(value=valor, raw=grupo.code.raw if resto.strip() else valor),
-                page_numbers=grupo.page_numbers,
-                title=grupo.title,
-                kind=grupo.kind,
-                fecha=grupo.fecha,
-            )
+            replace(grupo, code=ResolutionCode(value=valor, raw=grupo.code.raw if resto.strip() else valor))
         )
     return nuevos, renombrados
 

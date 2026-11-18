@@ -109,7 +109,8 @@ def _radicado(plano: str) -> str | None:
         if cifras[:4] in OFICINAS_CONOCIDAS and cifras[4:6] == "20":
             return f"RE{cifras}"
     # Oficina (empieza por 2, 3 o 4: «2310», «3110», «4310»), año 20… y
-    # consecutivo. «RE7110…» son lecturas malas, no radicados.
+    # consecutivo. «RE7110…» son lecturas malas, no radicados. Las de
+    # Magangué que empiezan por 9 ya volvieron arriba, por conocidas.
     for cifras in map(_con_la_oficina, hallados):
         if cifras[4:6] == "20" and cifras[0] in "234":
             return f"RE{cifras}"
@@ -135,7 +136,14 @@ _CIFRAS_PARECIDAS: dict[str, str] = {
 _NUMERO = re.compile(r"NU\W?[MVW]|MER[O0]|C\W?ITE\W+ESTE")
 #: Las oficinas que radican: «3110» (Valledupar), «3120», «4310»… -- empiezan
 #: por 3 o 4 --, el año y el consecutivo.
-_FORMA_DEL_RADICADO = re.compile(r"[234]\d{3}20(1[89]|2\d)\d{5}")
+#: Y las de Magangué, que empiezan por 9 (2026-11-18).
+_FORMA_DEL_RADICADO = re.compile(r"(?:[234]\d{3}|923[34])20(1[89]|2\d)\d{5}")
+#: La forma del RE escrito a mano, como lo deja la letra: cualquier oficina que
+#: empiece como las que radican. La oficina la decide después el agente
+#: (``validar_el_re_a_mano``): la IA leyó «RE92382022035-77» -- un 3 a mano
+#: leído como 8 -- en el sello del recurso de 1005117 (UPD2437857 p5,
+#: 2026-11-18), y con la forma de lo impreso se descartaba antes de validarlo.
+_FORMA_A_MANO = re.compile(r"[2349]\d{3}20(1[89]|2\d)\d{5}")
 
 
 #: El número interno que la etiqueta imprime encima del radicado empieza por el
@@ -160,7 +168,11 @@ _OFICINAS = {"110": "3110", "120": "3120", "310": "4310"}
 #: Bolívar Sur (Magangué): «RE2310202321592» a mano en el sello de UPD3102756.
 #: Su «310» es también el de la 4310, y deducir la oficina por esas tres cifras
 #: convertía el RE2310… en un RE4310… que no existe.
-OFICINAS_CONOCIDAS = frozenset({"3110", "3120", "4310", "2310"})
+#: Las 9233 y 9234 son las de Magangué y Bolívar Sur en la etiqueta impresa:
+#: «AL CONTESTAR CITE ESTE NUMERO RE9233202202774» (1005117, UPD2437857 p1).
+#: Fuera de las conocidas, la etiqueta se leía entera y salía sin RE: el
+#: operador veía los reclamos de Magangué sin su radicado (2026-11-18).
+OFICINAS_CONOCIDAS = frozenset({"3110", "3120", "4310", "2310", "9233", "9234"})
 #: Las oficinas que radican, para validar el RE escrito a mano en un sello de
 #: tinta: las conocidas, la 2311 de Santa Rosa del Sur (los sellos de 1005965,
 #: «RE2311202302499» y «RE2311202302952») y las que se repiten impresas en el
@@ -178,22 +190,31 @@ def validar_el_re_a_mano(
     La validación del agente (2026-11-11), sobre lo que la IA leyó a mano:
 
     - un RE entero, «RE» y trece cifras;
-    - su año, el de la fecha del sello si se leyó: «RE2311**2023**02952» con «28-08-23»;
+    - su año, el de la fecha del sello si se leyó: «RE2311**2023**02952» con
+      «28-08-23»; o el anterior: el recurso se radica con el RE de la
+      reclamación que recurre -- RE9233**2022**03621 en el sello del 25.01.2023
+      (1005117, UPD2437857 p5) --. Lo decidió el operador el 2026-11-18;
     - su oficina, una que radica (``OFICINAS_QUE_RADICAN`` y las de la caja).
       Si no lo es pero está a una sola cifra de una única que sí, es ésa: la IA
       leyó «RE2371202302499» por «RE2311202302499» (1005965 p1). Si está a una
-      cifra de dos, o de ninguna, no se cree.
+      cifra de dos, vale la que ya trae la caja: «RE9238…» con la caja en la
+      9233 es la 9233, no la 9234 (1005117, UPD2437857 p5, 2026-11-18). Si
+      no, o si no está cerca de ninguna, no se cree.
     """
     if not radicado or not _RE_ENTERO.fullmatch(radicado.upper()):
         return None, "no es un RE entero"
     radicado = radicado.upper()
-    if fecha is not None and radicado[6:10] != str(fecha.year):
-        return None, f"su año ({radicado[6:10]}) no es el de la fecha del sello ({fecha.year})"
+    if fecha is not None and radicado[6:10] not in (str(fecha.year), str(fecha.year - 1)):
+        return None, f"su año ({radicado[6:10]}) no es el de la fecha del sello ({fecha.year}) ni el anterior"
     validas = OFICINAS_QUE_RADICAN | frozenset(oficinas_de_la_caja)
     oficina = radicado[2:6]
     if oficina in validas:
         return radicado, ""
     cercanas = sorted(o for o in validas if len(o) == 4 and sum(a != b for a, b in zip(o, oficina, strict=True)) == 1)
+    if len(cercanas) > 1:
+        de_la_caja = [o for o in cercanas if o in set(oficinas_de_la_caja)]
+        if len(de_la_caja) == 1:
+            cercanas = de_la_caja
     if len(cercanas) == 1:
         return f"RE{cercanas[0]}{radicado[6:]}", f"oficina {oficina} leída por {cercanas[0]}"
     return None, f"la oficina {oficina} no es ninguna que radique"
@@ -226,7 +247,9 @@ def radicado_con_una_cifra_de_mas(
         else:
             continue
         posibles = sorted(
-            c for c in candidatas if c[:4] in validas and c[4:6] == "20" and (anio is None or c[4:8] == str(anio))
+            c
+            for c in candidatas
+            if c[:4] in validas and c[4:6] == "20" and (anio is None or c[4:8] in (str(anio), str(anio - 1)))
         )
         en_la_caja = [c for c in posibles if f"RE{c}" in conocidos]
         if len(en_la_caja) == 1:
@@ -492,9 +515,12 @@ _FECHA_DE_RECIBIDO = re.compile(r"RECIBID[O0]\W{0,4}(\d{1,2})\s?[-/.]\s?(\d{1,2}
 
 
 def _del_anio(cifras: str, anio: int | None) -> bool:
-    if not _FORMA_DEL_RADICADO.fullmatch(cifras):
+    """Si el RE es del año que se sabe: ése, el siguiente -- la carta del 28 de
+    diciembre se radica en enero -- o el anterior -- el recurso se radica con el
+    RE de la reclamación que recurre (el operador, 2026-11-18) --."""
+    if not _FORMA_A_MANO.fullmatch(cifras):
         return False
-    return anio is None or int(cifras[4:8]) in (anio, anio + 1)
+    return anio is None or int(cifras[4:8]) in (anio - 1, anio, anio + 1)
 
 
 def _trece_comprobadas(crudo: str, anio: int | None) -> str | None:
@@ -523,10 +549,11 @@ def _trece_comprobadas(crudo: str, anio: int | None) -> str | None:
 def radicado_escrito(texto: str, anio: int | None = None) -> str | None:
     """El RE que trae escrito una lectura del sello, si cuadra; ``None`` si no.
 
-    Cuadra si tiene oficina (cuatro cifras que empiezan por 2, 3 o 4), el año
-    entre 2018 y 2029 y, si se sabe ``anio`` -- el de la carta que radica, o si
-    no el de la «FECHA DE RECIBIDO» del propio sello --, ese año o el siguiente
-    (la carta del 28 de diciembre se radica en enero). Así una lectura mala de
+    Cuadra si tiene oficina (cuatro cifras que empiezan por 2, 3 o 4, o las de
+    Magangué, 9233 y 9234), el año entre 2018 y 2029 y, si se sabe ``anio`` --
+    el de la carta que radica, o si no el de la «FECHA DE RECIBIDO» del propio
+    sello --, ese año, el siguiente (la carta del 28 de diciembre se radica en
+    enero) o el anterior (el recurso, con el RE de la reclamación que recurre). Así una lectura mala de
     la letra a mano se descarta en vez de inventar un número: el operador
     quiere el RE del sello, no uno parecido.
 
@@ -686,6 +713,51 @@ _CIFRA_Y_FOLIOS = re.compile(r"(?<![\d.,/-])(\d{1,2})\s*F[O0]L[I1L][O0]S?\b")
 _FOLIOS_Y_CIFRA = re.compile(r"D[EF]\s+F[O0]L[I1L][O0]S\W{0,3}\s*(\d{1,2})(?![\d.,/-])")
 #: Más folios que éstos no los declara un escrito de la caja: es una lectura mala.
 FOLIOS_DE_UN_ESCRITO = 60
+#: Lo que se le pide al modelo con visión cuando el OCR devolvió el sello de
+#: tinta como imagen (2026-11-18). Sus rótulos son los del sello, para que lo
+#: que conteste se lea con las mismas piezas que lo transcrito por el OCR.
+INSTRUCCIONES_PARA_TRANSCRIBIR_EL_SELLO = (
+    "En la imagen está la cabecera de una carta con un sello de radicación de la empresa "
+    "(un recuadro con «RECIBIDO NO IMPLICA ACEPTACIÓN», «FECHA DE RECIBIDO», «No. DE RADICACIÓN», "
+    "«No. DE FOLIOS»), escrito a mano, a veces tenue o con poca tinta. Transcribe sólo lo que dice "
+    "el sello, una línea por casilla, "
+    "así: «FECHA DE RECIBIDO: …», «No. DE RADICACION: …» (el RE y sus trece cifras, también si va "
+    "escrito de lado o fuera de su casilla), «No. DE FOLIOS: …». Copia las cifras como las ves; lo "
+    "que no se lea con certeza, escríbelo «ilegible». No inventes ni completes nada. Si no hay "
+    "sello, contesta «sin sello»."
+)
+def sello_sin_transcribir(leido: str) -> bool:
+    """Si la lectura del OCR de pago de la cabecera no trae ningún sello reconocible: ni etiqueta, ni fecha ni folios de tinta.
+
+    El OCR de Mistral deja a veces el sello de tinta como una imagen
+    incrustada («![img-0.jpeg]») o lo omite entero: en la cabecera del recurso
+    de 1005117 (UPD2973878 pág. 6) sólo leyó la línea de la fecha de la carta.
+    No basta con que falte un RE: la cabecera trae el que el usuario cita en
+    su cuerpo («notificado mediante el número RE…»), y ése no es el de su sello.
+    """
+    return leer_sello(leido) is None and not (fecha_del_sello_de_tinta(leido) or folios_del_sello_de_tinta(leido))
+#: Cuántas hojas por folio declarado se aceptan sin avisar: un folio son las
+#: dos caras de la hoja, y las facturas se escanean por las dos -- «10 folios»
+#: con 13 páginas era correcto (nota «El folio de la esquina manda») --.
+HOJAS_POR_FOLIO = 2
+
+
+def folios_que_no_cuadran(hojas: int, folios: int | None) -> str | None:
+    """Por qué las hojas de un documento no cuadran con los folios que declara su sello; ``None`` si cuadran.
+
+    El operador (2026-11-18): «compara ese número con la cantidad real de
+    páginas… para evitar divisiones incorrectas». Menos hojas que folios: le
+    falta alguna, o se la llevó el documento de al lado. Más del doble: lleva
+    hojas de otro. Un sello sin folios, o con más de los que declara un
+    escrito, no dice nada. Sólo avisa: no corta ni mueve nada.
+    """
+    if not folios or folios > FOLIOS_DE_UN_ESCRITO or hojas <= 0:
+        return None
+    if hojas < folios:
+        return f"su sello dice {folios} folios y el documento tiene {hojas} hojas: puede faltarle alguna"
+    if hojas > folios * HOJAS_POR_FOLIO:
+        return f"su sello dice {folios} folios y el documento tiene {hojas} hojas: puede llevar hojas de otro"
+    return None
 
 
 def _fecha(plano: str) -> date | None:

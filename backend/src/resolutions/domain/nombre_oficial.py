@@ -49,16 +49,30 @@ _MOTIVO = re.compile(
     r"\s(?:POR|EN|CONTRA|PARA|SOBRE|CON|A|AL|QUE|SEGUN|MEDIANTE|ANTE|NIC|N[O0]|RADICAD[OA])\b"
     r"|[,.;:()\[\]\-–—]"
 )
-#: Los únicos documentos que llevan su RE en el nombre del archivo y en su fila
-#: del índice: «01_RECLAMO-RE2310202405234.pdf». Lo dictó el operador el
-#: 2026-11-04: «que los reclamos o constancias de reclamación lleven su RE»,
-#: sólo estos dos y con su nombre exacto (no «RECLAMO POR CONSUMO ESTIMADO» ni
+#: Los documentos que llevan su RE en el nombre del archivo y en su fila del
+#: índice por lo que son: «01_RECLAMO-RE2310202405234.pdf». Lo dictó el
+#: operador el 2026-11-04: «que los reclamos o constancias de reclamación
+#: lleven su RE», con su nombre exacto (no «RECLAMO POR CONSUMO ESTIMADO» ni
 #: «RESPUESTA A RECLAMACION»). Los demás siguen número-título, sin el RE (lo
-#: dictó el 2026-10-21). Y desde el 2026-11-11, la respuesta de la empresa a una
-#: reclamación, con el nombre que le dio el operador: «CONTESTACION A
-#: RECLAMACION» con su RE (``asunto_del_documento.es_contestacion_a_reclamacion``).
+#: dictó el 2026-10-21), salvo que su propio sello lo traiga (2026-11-12).
+#: Desde el 2026-11-11, la respuesta de la empresa a una reclamación --
+#: «CONTESTACION A LA RECLAMACION» desde el 2026-11-18
+#: (``asunto_del_documento.es_contestacion_a_reclamacion``) --. Y desde el
+#: 2026-11-18, las notificaciones personales: «también deben llevar su
+#: respectivo RE en el nombre del archivo, siempre que se encuentre
+#: identificado en el documento» (lo citan en su texto: «Radicado RE…»). La
+#: citación para notificarse y la autorización del usuario no son la
+#: notificación.
 CON_RE_EN_EL_NOMBRE = frozenset(
-    {"RECLAMO", "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION", "CONTESTACION A RECLAMACION"}
+    {
+        "RECLAMO",
+        "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION",
+        "CONTESTACION A LA RECLAMACION",
+        "NOTIFICACION PERSONAL",
+        "NOTIFICACION PERSONAL RECLAMOS",
+        "NOTIFICACION PERSONAL ESCRITA",
+        "CONSTANCIA DE NOTIFICACION PERSONAL",
+    }
 )
 #: Un RE como va en el nombre: «RE» y trece cifras. El «P…» de una solicitud
 #: de servicio no es un RE.
@@ -77,7 +91,7 @@ def _plano(texto: str) -> str:
 
 
 def lleva_re_en_el_nombre(nombre: str | None) -> bool:
-    """Si el documento lleva su RE en el nombre: sólo el reclamo y la constancia de su contenido."""
+    """Si el documento lleva su RE en el nombre por lo que es (``CON_RE_EN_EL_NOMBRE``)."""
     return _plano(nombre or "") in CON_RE_EN_EL_NOMBRE
 
 

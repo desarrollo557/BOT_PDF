@@ -484,6 +484,36 @@ class Taller:
             antes_de_pedir=self.control.check,
         )
 
+    def transcriptor_de_sellos(self):
+        """Quien transcribe con visión el sello de tinta que el OCR de pago devolvió como imagen, si se pidió la IA.
+
+        El OCR de Mistral toma a veces el sello de tinta por una imagen y no lo
+        transcribe -- «![img-0.jpeg]» donde va el recuadro --: el recurso de
+        1005117 (UPD2973878 pág. 6, UPD2437857 pág. 4) salía sin su RE a mano
+        (2026-11-18; el operador: «no ignores los sellos por tener poca tinta…
+        capacidad de reconocimiento visual»). El modelo mediano, con visión, lo
+        lee como lo ve; lo que dice pasa por la misma validación del agente que
+        cualquier RE a mano (año y oficina).
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_resumen import MistralResumenConfig, MistralResumidor
+        from ...domain.sello import INSTRUCCIONES_PARA_TRANSCRIBIR_EL_SELLO
+
+        return MistralResumidor(
+            api_key=llave,
+            config=MistralResumenConfig(model="mistral-medium-latest", max_tokens=160, temperatura=0.0),
+            consumo=self.consumo,
+            turnos=self.turnos_de_ia,
+            instrucciones=INSTRUCCIONES_PARA_TRANSCRIBIR_EL_SELLO,
+            encabezado="Lo que el OCR leyó de la cabecera",
+            antes_de_pedir=self.control.check,
+        )
+
     def lector_del_acta_de_grado(self):
         """Quien saca con la IA, del texto de un acta de grado, sus cinco datos, si se pidió la IA.
 
