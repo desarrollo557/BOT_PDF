@@ -6,11 +6,13 @@
 #   instalar-docker            (el .cmd de la raiz: doble clic, CMD o PowerShell)
 #   .\scripts\instalar-escritorio.ps1   (desde PowerShell)
 #   instalar-docker -Puerto 8100        (otro puerto; queda guardado en .env)
+#   instalar-docker -Red 'Z=\\200.100.20.101\BOTPDF-Z|SIAR\SIAR1'
+#                                       (leer Z: por el recurso de otro equipo; queda en .env)
 #
 # Los datos (salidas, libro mayor, usuarios, registro) viven en el volumen
 # "bot_pdf_botpdf_data" y sobreviven a reconstruir la imagen o volver a clonar.
 
-param([int]$Puerto = 0, [switch]$SinNavegador)
+param([int]$Puerto = 0, [switch]$SinNavegador, [string[]]$Red = @())
 
 $ErrorActionPreference = "Stop"
 
@@ -75,6 +77,29 @@ if ($Puerto -le 0) {
 }
 $env:BOTPDF_PUERTO = "$Puerto"
 $url = "http://localhost:$Puerto"
+
+# -- 2c. Unidades que se leen por el recurso de otro equipo ---------------------------
+# El WorkDrive (Z:) es un disco virtual: Docker no lo ve, y compartirlo desde este
+# equipo pide una cuenta administradora. Si otro equipo ya comparte su WorkDrive
+# -- el de SIAR1, \\200.100.20.101\BOTPDF-Z, con las mismas carpetas --, se lee
+# por ahi: -Red 'Z=\\servidor\recurso|DOMINIO\cuenta' (la cuenta es opcional y solo
+# se propone al pedir la clave). Queda en .env como BOTPDF_RED_Z (2026-11-19).
+$lineasEnv = @(if (Test-Path $rutaEnv) { Get-Content $rutaEnv })
+$redes = @{}
+foreach ($linea in $lineasEnv) {
+    if ($linea -match '^\s*BOTPDF_RED_([A-Za-z])\s*=\s*(\S.*?)\s*$') { $redes[$Matches[1].ToUpper()] = $Matches[2] }
+}
+if ($Red.Count) {
+    foreach ($par in $Red) {
+        if ($par -notmatch '^\s*([A-Za-z]):?\s*=\s*(\\\S.*?)\s*$') {
+            throw "-Red espera LETRA=\\servidor\recurso (por ejemplo Z=\\200.100.20.101\BOTPDF-Z), no '$par'"
+        }
+        $redes[$Matches[1].ToUpper()] = $Matches[2]
+    }
+    $nuevas = @($lineasEnv | Where-Object { $_ -notmatch '^\s*BOTPDF_RED_[A-Za-z]\s*=' }) +
+        @($redes.Keys | Sort-Object | ForEach-Object { "BOTPDF_RED_$_=$($redes[$_])" })
+    [System.IO.File]::WriteAllLines($rutaEnv, [string[]]$nuevas, (New-Object System.Text.UTF8Encoding($false)))
+}
 
 # Si el puerto lo usa otro programa (no el propio Docker), se dice antes de construir.
 $escucha = Get-NetTCPConnection -LocalPort $Puerto -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -141,9 +166,11 @@ function Recurso-De($letra) {
         Paso "Compartida ${letra}:\ como \\$env:COMPUTERNAME\$nombre (solo lectura, solo $cuenta)"
         return [pscustomobject]@{ Nombre = $nombre; Cuentas = @($cuenta) }
     }
-    Write-Host "   La unidad ${letra}: no se vera desde el contenedor hasta compartirla. En un PowerShell" -ForegroundColor Yellow
+    Write-Host "   La unidad ${letra}: no se vera desde el contenedor hasta compartirla. En POWERSHELL (no en CMD)" -ForegroundColor Yellow
     Write-Host "   abierto como administrador, una sola vez, y despues vuelva a ejecutar instalar-docker:" -ForegroundColor Yellow
     Write-Host "     New-SmbShare -Name $nombre -Path ${letra}:\ -ReadAccess '$cuenta'" -ForegroundColor Yellow
+    Write-Host "   O, si otro equipo ya comparte su ${letra}: (el de SIAR1 comparte su WorkDrive), sin administrador:" -ForegroundColor Yellow
+    Write-Host "     instalar-docker -Red '${letra}=\\servidor\recurso|DOMINIO\cuenta'" -ForegroundColor Yellow
     return $null
 }
 
@@ -175,6 +202,11 @@ foreach ($u in $unidades) {
         } else {
             $deRed += [pscustomobject]@{ Letra = $letra; Ruta = $u.ProviderName }
         }
+    } elseif ((Es-Virtual $u) -and $redes.ContainsKey($letra.ToUpper())) {
+        # El recurso de otro equipo que el operador eligio con -Red.
+        $ruta, $cuenta = $redes[$letra.ToUpper()] -split '\|', 2
+        $deRed += [pscustomobject]@{ Letra = $letra; Ruta = $ruta.Trim() }
+        if ($cuenta) { $cuentasDeRed += "${letra}:=" + $cuenta.Trim() }
     } elseif (Es-Virtual $u) {
         $recurso = Recurso-De $letra
         if ($recurso) {

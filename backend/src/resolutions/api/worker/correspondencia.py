@@ -312,11 +312,19 @@ def _contrastar_las_fechas(
             # dio 2024, la visión 2014 y la cabeza ampliada 2021, lo que dicen
             # las demás de la caja. Sólo vale si la cabeza lee la de la caja:
             # nunca se copia la fecha de otro documento.
-            if vista not in (leida, candidata) and fuente is not None and de_pago is not None:
+            # Primero la cabecera ceñida, sin el texto impreso de la izquierda
+            # -- el mismo recorte que L2c, que la caché ya tiene --, y después
+            # la franja entera. En 4100975 la franja entera volvió a leer 2024
+            # y la ceñida, 2021 (2026-11-19, la corrida del operador).
+            recortes = (
+                (Band(*BANDA_DE_LA_CABECERA), PPP_PARA_LA_CABEZA, "png"),
+                (Band(*CABEZA_DE_LA_HOJA), PPP_PARA_LA_CABEZA, "jpeg"),
+            )
+            for banda, ppp, formato in recortes:
+                if vista in (leida, candidata) or fuente is None or de_pago is None:
+                    break
                 try:
-                    ampliada = de_pago.read(
-                        fuente.render(pagina, Band(*CABEZA_DE_LA_HOJA), PPP_PARA_LA_CABEZA, "jpeg")
-                    ).text or ""
+                    ampliada = de_pago.read(fuente.render(pagina, banda, ppp, formato)).text or ""
                 except Exception:  # noqa: BLE001 - sin la relectura, la dudosa va a Revisión
                     logger.warning("la IA no pudo releer la cabeza de la pág. %s", pagina, exc_info=True)
                     ampliada = ""

@@ -644,6 +644,17 @@ class TestLasFechasDeLaCajaContraSiMismas:
         assert piezas[1]["fecha"] == "2021-08-11" and revision == []
         assert "cabeza ampliada" in piezas[1]["fecha_por"]
 
+    def test_la_cabecera_cenida_va_primero(self, tmp_path):
+        """La corrida del operador (2026-11-19): la franja entera leyó 2024 y la cabecera ceñida, 2021."""
+        from resolutions.api.worker.correspondencia import _contrastar_las_fechas
+
+        lecturas = iter(["Ciudad MAGANQUE 11 de Agosto de 2021", "Ciudad MAGANGUE 11 de Agosto de 2024"])
+        taller = self._Taller("DOCUMENTO: ilegible", ampliada="")
+        taller.lector_de_pago = lambda: type("_P", (), {"read": lambda self, imagen: type("_L", (), {"text": next(lecturas)})()})()
+        piezas, revision = self._piezas(), []
+        _contrastar_las_fechas(piezas, {}, self._pdf(tmp_path), taller, {}, revision)
+        assert piezas[1]["fecha"] == "2021-08-11" and revision == []
+
     def test_la_cabeza_ampliada_que_no_lee_la_de_la_caja_no_decide(self, tmp_path):
         from resolutions.api.worker.correspondencia import _contrastar_las_fechas
 
