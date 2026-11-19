@@ -284,6 +284,12 @@ def con_lo_que_leyeron(texto: str, ventana: tuple[int, int] | None = None) -> st
     anios: list[int] = []
     try:
         leidas.extend(f for f in (fecha_de_la_pagina(texto), fecha_de_las_casillas(texto)) if f)
+        # Y lo que copió la IA con visión, campo por campo: «DOCUMENTO: Agosto
+        # 11 2021» (4100975 pág. 15, 2026-11-18) es la misma fecha del papel.
+        from ...domain.fecha_por_estructura import fecha_de_lo_visto
+
+        if vista := fecha_de_lo_visto(texto):
+            leidas.append(vista[0])
     except Exception:  # noqa: BLE001 - un texto raro deja sólo el texto
         logger.debug("no se pudieron leer las fechas de una hoja", exc_info=True)
     for anio, mes, dia in _ANIO_MES_DIA.findall(texto):

@@ -1069,3 +1069,43 @@ def fecha_de_lo_visto(
     if leido is not None and not _anio_en_lo_leido(fecha.year, leido):
         return None
     return fecha, campo
+
+
+# -- las fechas de la caja contra sí mismas ----------------------------------------
+
+#: Cuántos años pueden separar dos fechas de la caja con el mismo día y mes para
+#: que una sea la otra mal leída: el «21» a mano leído «24».
+ANIOS_DE_UNA_MALA_LECTURA = 5
+
+
+def fechas_dudosas(fechas: Sequence[date | None]) -> dict[int, date]:
+    """Las fechas de una caja que contradicen a las demás, con la que traen ellas: el mismo día y mes, otro año, en minoría.
+
+    4100975 (UPD2456241, 2026-11-18): la solicitud «11 de Agosto de 2024» --
+    el OCR leyó «24» el «21» escrito a mano -- y el expediente, la
+    declaración, el RETIE y las constancias, el 11-08-2021. Con un empate --
+    una contra una -- las dos son dudosas. La de la caja no es la fecha del
+    documento: es lo que se busca al releer su hoja.
+    """
+    from collections import Counter
+
+    dudosas: dict[int, date] = {}
+    for i, fecha in enumerate(fechas):
+        if fecha is None:
+            continue
+        otras = [
+            otra
+            for j, otra in enumerate(fechas)
+            if j != i
+            and otra is not None
+            and (otra.day, otra.month) == (fecha.day, fecha.month)
+            and otra.year != fecha.year
+            and abs(otra.year - fecha.year) <= ANIOS_DE_UNA_MALA_LECTURA
+        ]
+        if not otras:
+            continue
+        suyas = sum(1 for otra in fechas if otra == fecha)
+        anio, votos = Counter(otra.year for otra in otras).most_common(1)[0]
+        if votos >= suyas:
+            dudosas[i] = date(anio, fecha.month, fecha.day)
+    return dudosas

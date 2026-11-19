@@ -238,6 +238,96 @@ PPP_PARA_LA_FECHA_CON_IA = 200
 FECHAS_A_LA_VISTA_POR_CAJA = 40
 
 
+def _contrastar_las_fechas(
+    piezas: list[dict], textos: dict, ruta_pdf, taller, releidas: dict[int, list[str]], revision: list[dict]
+) -> list[dict]:
+    """Las fechas de la caja contra sí mismas: la dudosa se relee en su propio papel; si no se resuelve, vacía y a Revisión.
+
+    Lo pidió el operador el 2026-11-18 ante 4100975: el OCR leyó la solicitud
+    «11 de Agosto de 2024» -- el «21» escrito a mano tras el «20» impreso --,
+    y el expediente, la declaración, el RETIE y las constancias de esa caja
+    son del 11-08-2021.
+
+    La dudosa la dice ``fechas_dudosas``: el mismo día y mes que otras de la
+    caja, y un año en minoría. Las demás no le dan su fecha -- otro documento
+    no es prueba --: la IA con visión relee su hoja. Si lee el año de la caja,
+    vale esa lectura, con el año respaldado por la caja; si lee el suyo, se
+    queda. Si no, va sin fecha y a Revisión con las dos candidatas: nunca una
+    fecha equivocada en el índice.
+    """
+    from datetime import date
+
+    from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...domain.fecha_por_estructura import (
+        PEDIDO_DE_LA_FECHA_A_LA_VISTA,
+        fecha_de_lo_visto,
+        fechas_dudosas,
+    )
+
+    def iso(valor) -> date | None:
+        try:
+            return date.fromisoformat(str(valor)[:10]) if valor else None
+        except ValueError:
+            return None
+
+    fechas = [iso(pieza.get("fecha")) for pieza in piezas]
+    dudosas = fechas_dudosas(fechas)
+    if not dudosas:
+        return []
+    vision = taller.lector_de_fechas_a_la_vista()
+    halladas: list[dict] = []
+    fuente = None
+    try:
+        fuente = PyMuPDFPageSource(ruta_pdf, taller.name) if vision is not None else None
+        for i, candidata in sorted(dudosas.items()):
+            pieza, leida = piezas[i], fechas[i]
+            pagina = pieza.get("fecha_pagina") or (pieza.get("donde_buscar") or pieza["pages"])[0]
+            vista = None
+            if fuente is not None:
+                try:
+                    visto = vision.resumir(
+                        PEDIDO_DE_LA_FECHA_A_LA_VISTA, imagen=fuente.render(pagina, None, PPP_PARA_LA_FECHA_CON_IA, "jpeg")
+                    ) or ""
+                except Exception:  # noqa: BLE001 - sin la relectura, la dudosa va a Revisión
+                    logger.warning("la IA no pudo releer la fecha dudosa de la pág. %s", pagina, exc_info=True)
+                    visto = ""
+                if visto:
+                    # El año que la IA lea tiene que estar en lo que leyeron
+                    # los demás de la hoja o ser el de la caja.
+                    leido = "\n".join([textos.get(pagina, "") or "", *(releidas.get(pagina) or []), str(candidata.year)])
+                    releidas.setdefault(pagina, []).append(visto)
+                    hallada = fecha_de_lo_visto(visto, leido=leido)
+                    vista = hallada[0] if hallada else None
+            if vista == leida:
+                continue
+            if vista == candidata:
+                pieza["fecha"] = vista.isoformat()
+                pieza["fecha_por"] = (
+                    f"releída por la IA en la pág. {pagina}: se había leído {leida:%d/%m/%Y} y la caja trae "
+                    f"{candidata:%d/%m/%Y}"
+                )
+                pieza["fecha_pagina"] = pagina
+                pieza["fecha_via"] = "visión"
+                halladas.append({"pages": pieza["pages"], "fecha": pieza["fecha"], "como": pieza["fecha_por"]})
+                continue
+            for clave in ("fecha", "fecha_por", "fecha_pagina", "fecha_via"):
+                pieza[clave] = None
+            revision.append(
+                {
+                    "page": pagina,
+                    "reason": (
+                        f"la fecha leída, {leida:%d/%m/%Y}, contradice la de la caja, {candidata:%d/%m/%Y} (el mismo "
+                        "día y mes, otro año): va sin fecha hasta que se confirme"
+                    ),
+                    "candidatos": [leida.isoformat(), candidata.isoformat()],
+                }
+            )
+    finally:
+        if fuente is not None:
+            fuente.close()
+    return halladas
+
+
 def _fechas_a_la_vista(piezas: list[dict], textos: dict, fuente, taller, releidas: dict[int, list[str]]) -> list[dict]:
     """La fecha que la IA con visión copia de la hoja principal de cada documento que sigue sin ella.
 
@@ -3022,6 +3112,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     fechas_halladas = _completar_las_fechas(
         piezas, textos, tmp_path, taller, releidas=releidas, sin_leer=fechas_sin_leer
     )
+    # F7a. Las fechas de la caja contra sí mismas (2026-11-18): la que
+    # comparte día y mes con las demás y no su año se relee en su papel.
+    fechas_halladas.extend(_contrastar_las_fechas(piezas, textos, tmp_path, taller, releidas, fechas_sin_leer))
     # F7b. El revisor de fechas (2026-11-10): la de cada pieza contra lo que ya
     # se leyó de sus hojas, antes de entregar, para que el índice lleve la
     # corregida. Lo anotado pasa al informe cuando éste se arma.

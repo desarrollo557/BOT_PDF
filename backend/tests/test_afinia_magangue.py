@@ -547,3 +547,81 @@ class TestLaHabeasDeSuPersona:
 
         # 1004833 (UPD3102764 pág. 17): salía «RECLAMO» aparte en vez de ir con su escrito.
         assert titulo_del_documento("Autorización para ia notificación eiectrónica\nYo,\n") == AUTORIZACION_DE_NOTIFICACION
+
+
+class TestLasFechasDeLaCajaContraSiMismas:
+    """4100975 (UPD2456241, 2026-11-18): el OCR leyó la solicitud «11 de Agosto de 2024»; la caja es del 11-08-2021."""
+
+    class _Taller:
+        name = "prueba.pdf"
+
+        def __init__(self, visto):
+            self.visto = visto
+            self.pedidas = 0
+
+        def lector_de_fechas_a_la_vista(self):
+            taller = self
+
+            class _Vision:
+                def resumir(self, pedido, imagen=None):
+                    taller.pedidas += 1
+                    return taller.visto
+
+            return _Vision() if self.visto is not None else None
+
+    @staticmethod
+    def _piezas():
+        return [
+            {"pages": [1], "fecha": "2021-08-11", "fecha_pagina": 1},
+            {"pages": [2], "fecha": "2024-08-11", "fecha_pagina": 2, "fecha_via": "ia"},
+            {"pages": [3], "fecha": "2021-08-11", "fecha_pagina": 3},
+        ]
+
+    @staticmethod
+    def _pdf(tmp_path):
+        import pymupdf
+
+        ruta = tmp_path / "caja.pdf"
+        with pymupdf.open() as d:
+            for _ in range(3):
+                d.new_page()
+            d.save(ruta)
+        return ruta
+
+    def test_la_dudosa_se_relee_y_vale_lo_que_lee_en_su_papel(self, tmp_path):
+        from resolutions.api.worker.correspondencia import _contrastar_las_fechas
+
+        piezas, revision = self._piezas(), []
+        taller = self._Taller("SELLO: no hay\nCASILLAS: no hay\nDOCUMENTO: Magangue 11 de Agosto de 20 21")
+        halladas = _contrastar_las_fechas(piezas, {}, self._pdf(tmp_path), taller, {}, revision)
+        assert piezas[1]["fecha"] == "2021-08-11" and piezas[1]["fecha_via"] == "visión" and revision == []
+        assert taller.pedidas == 1 and len(halladas) == 1
+
+    def test_si_la_ia_confirma_la_suya_se_queda(self, tmp_path):
+        from resolutions.api.worker.correspondencia import _contrastar_las_fechas
+
+        piezas, revision = self._piezas(), []
+        taller = self._Taller("DOCUMENTO: 11 de Agosto de 2024")
+        _contrastar_las_fechas(piezas, {2: "11 de Agosto de 2024"}, self._pdf(tmp_path), taller, {}, revision)
+        assert piezas[1]["fecha"] == "2024-08-11" and revision == []
+
+    def test_sin_resolver_va_vacia_y_a_revision_con_las_dos(self, tmp_path):
+        from resolutions.api.worker.correspondencia import _contrastar_las_fechas
+
+        piezas, revision = self._piezas(), []
+        _contrastar_las_fechas(piezas, {}, self._pdf(tmp_path), self._Taller("DOCUMENTO: ilegible"), {}, revision)
+        assert piezas[1]["fecha"] is None
+        assert revision[0]["page"] == 2 and revision[0]["candidatos"] == ["2024-08-11", "2021-08-11"]
+        # Y sin la IA, lo mismo: nunca una fecha equivocada en el índice.
+        piezas, revision = self._piezas(), []
+        _contrastar_las_fechas(piezas, {}, self._pdf(tmp_path), self._Taller(None), {}, revision)
+        assert piezas[1]["fecha"] is None and len(revision) == 1
+
+    def test_las_que_no_se_contradicen_no_se_tocan(self):
+        from datetime import date
+
+        from resolutions.domain.fecha_por_estructura import fechas_dudosas
+
+        assert fechas_dudosas([date(2022, 3, 1), date(2022, 3, 2), None]) == {}
+        # Una contra una: las dos se releen.
+        assert set(fechas_dudosas([date(2022, 3, 1), date(2023, 3, 1)])) == {0, 1}
