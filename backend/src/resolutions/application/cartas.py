@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from ..domain.asunto_del_documento import (
     ESCRITOS_DEL_TRAMITE,
     PIEZAS_DEL_ACUERDO,
+    consecutivo_de,
     es_carta_de_la_empresa,
     escrito_que_interpone,
     titulo_del_documento,
@@ -109,18 +110,24 @@ class Cartas:
             and titulo_del_documento(textos.get(p) or "") not in PIEZAS_DEL_ACUERDO
         }
         copias: set[int] = set()
-        vistas: list[tuple[str, str | None]] = []
+        vistas: list[tuple[tuple[str, str | None], str | None]] = []
         ultima = orden[-1] if orden else 0
         for pagina in sorted(primeras):
             huella = huella_de_la_carta(textos.get(pagina) or "")
             if huella is None:
                 continue
-            if any(es_la_misma_carta(huella, vista) for vista in vistas) and not radicada_por_sus_folios(
-                pagina, sellos, ultima
-            ):
+            # Dos cartas de la empresa con su consecutivo, y distinto, son dos
+            # cartas aunque digan lo mismo el mismo día: las notificaciones por
+            # aviso del 21-06-2022 a dos personas (4100976, págs. 22 y 40,
+            # 2026-11-19) no son copia una de otra.
+            suyo = consecutivo_de(textos.get(pagina) or "")
+            if any(
+                es_la_misma_carta(huella, vista) and not (suyo and otro and suyo != otro)
+                for vista, otro in vistas
+            ) and not radicada_por_sus_folios(pagina, sellos, ultima):
                 copias.add(pagina)
             else:
-                vistas.append(huella)
+                vistas.append((huella, suyo))
         # Un sello con un RE ya visto NO es una copia: la ventanilla radica el
         # recurso con el RE de la reclamación que recurre (UPD2326360: la
         # reclamación de la pág. 3 y su recurso de la 10, los dos con

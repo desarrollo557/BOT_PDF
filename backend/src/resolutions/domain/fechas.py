@@ -418,11 +418,17 @@ _TRES_CIFRAS_CON_ANIO_CORTO = re.compile(r"(?<!\d)(\d{1,2})\W{1,6}(\d{1,2})\W{1,
 #: Las cifras del ID de cobros y del NIC, que en el comprobante van al lado de
 #: las casillas de la fecha y no son la fecha: «ID DE COBROS: 4 1 0 0 8 7 5 2 5
 #: 2 - 6 6 | | 2021» daba el 06-06-2021 (4100875, UPD2985229 pág. 2,
-#: 2026-11-19; el sello dice 17 JUL 2021). Una tira de seis cifras o más
-#: -- «4100877259-2310» --, o seis cifras sueltas, una por casilla: la que
-#: lleva dos cifras pegadas ya es de la fecha -- «| 17 | 07 | 2021» --.
+#: 2026-11-19; el sello dice 17 JUL 2021). Una tira de seis cifras o más, o
+#: seis cifras sueltas, una por casilla: la que lleva dos cifras pegadas ya es
+#: de la fecha -- «| 17 | 07 | 2021» --.
+#:
+#: El ID termina en su dígito de control de **dos** cifras tras la raya --
+#: «-61», «-66», «-23» en las casillas del cupón --; lo que la lectura pega
+#: detrás ya es la casilla DÍA: «4100877259-2310 | 3 | 22» es el ID «…-23» y
+#: el 10-03-2022 que dicen las casillas y el sello (4100877, UPD2985231,
+#: 2026-11-19; antes se borraba entero y la fecha salía de la visión, mal).
 _CIFRAS_DE_LA_CUENTA = re.compile(
-    r"(?:ID\s*DE\s*COBROS|\bNIC)\W{0,6}(?:\d{6,}(?:\s?-\s?\d+)?|(?:\d(?!\d)[\s|*\-]{0,3}){6,})", re.IGNORECASE
+    r"(?:ID\s*DE\s*COBROS|\bNIC)\W{0,6}(?:\d{6,}(?:\s?-\s?\d{1,2})?|(?:\d(?!\d)[\s|*\-]{0,3}){6,})", re.IGNORECASE
 )
 
 

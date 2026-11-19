@@ -232,6 +232,10 @@ def _nombre_con_la_ia(fuente, paginas: list[int], textos: dict, lector_de_pago, 
 #: lo que ya basta y viaja ligero.
 PPP_PARA_LA_FECHA_LOCAL = 300
 PPP_PARA_LA_FECHA_CON_IA = 200
+#: La cabeza de la hoja, donde va «Ciudad, fecha» de la carta y del formulario,
+#: y a cuánto se relee cuando su fecha choca con la de la caja.
+CABEZA_DE_LA_HOJA = (0.0, 0.0, 1.0, 0.3)
+PPP_PARA_LA_CABEZA = 300
 
 
 #: Cuántas hojas mira la IA con visión por caja, como mucho, buscando una fecha.
@@ -258,11 +262,13 @@ def _contrastar_las_fechas(
     from datetime import date
 
     from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...application.ports import Band
     from ...domain.fecha_por_estructura import (
         PEDIDO_DE_LA_FECHA_A_LA_VISTA,
         fecha_de_lo_visto,
         fechas_dudosas,
     )
+    from ...domain.fechas import fechas_de
 
     def iso(valor) -> date | None:
         try:
@@ -275,15 +281,17 @@ def _contrastar_las_fechas(
     if not dudosas:
         return []
     vision = taller.lector_de_fechas_a_la_vista()
+    de_pago = taller.lector_de_pago()
     halladas: list[dict] = []
     fuente = None
     try:
-        fuente = PyMuPDFPageSource(ruta_pdf, taller.name) if vision is not None else None
+        fuente = PyMuPDFPageSource(ruta_pdf, taller.name) if vision is not None or de_pago is not None else None
         for i, candidata in sorted(dudosas.items()):
             pieza, leida = piezas[i], fechas[i]
             pagina = pieza.get("fecha_pagina") or (pieza.get("donde_buscar") or pieza["pages"])[0]
             vista = None
-            if fuente is not None:
+            como = "releída por la IA"
+            if fuente is not None and vision is not None:
                 try:
                     visto = vision.resumir(
                         PEDIDO_DE_LA_FECHA_A_LA_VISTA, imagen=fuente.render(pagina, None, PPP_PARA_LA_FECHA_CON_IA, "jpeg")
@@ -298,16 +306,35 @@ def _contrastar_las_fechas(
                     releidas.setdefault(pagina, []).append(visto)
                     hallada = fecha_de_lo_visto(visto, leido=leido)
                     vista = hallada[0] if hallada else None
+            # Y si la hoja entera no lo resuelve, su cabeza ampliada: el año a
+            # mano detrás del «20» impreso -- «de 20 21» -- se lee bien de
+            # cerca. En 4100975 (UPD2456241 pág. 3, 2026-11-19) la hoja entera
+            # dio 2024, la visión 2014 y la cabeza ampliada 2021, lo que dicen
+            # las demás de la caja. Sólo vale si la cabeza lee la de la caja:
+            # nunca se copia la fecha de otro documento.
+            if vista not in (leida, candidata) and fuente is not None and de_pago is not None:
+                try:
+                    ampliada = de_pago.read(
+                        fuente.render(pagina, Band(*CABEZA_DE_LA_HOJA), PPP_PARA_LA_CABEZA, "jpeg")
+                    ).text or ""
+                except Exception:  # noqa: BLE001 - sin la relectura, la dudosa va a Revisión
+                    logger.warning("la IA no pudo releer la cabeza de la pág. %s", pagina, exc_info=True)
+                    ampliada = ""
+                if ampliada:
+                    releidas.setdefault(pagina, []).append(ampliada)
+                    if candidata in fechas_de(ampliada):
+                        vista = candidata
+                        como = "releída por la IA en la cabeza ampliada"
             if vista == leida:
                 continue
             if vista == candidata:
                 pieza["fecha"] = vista.isoformat()
                 pieza["fecha_por"] = (
-                    f"releída por la IA en la pág. {pagina}: se había leído {leida:%d/%m/%Y} y la caja trae "
+                    f"{como} de la pág. {pagina}: se había leído {leida:%d/%m/%Y} y la caja trae "
                     f"{candidata:%d/%m/%Y}"
                 )
                 pieza["fecha_pagina"] = pagina
-                pieza["fecha_via"] = "visión"
+                pieza["fecha_via"] = "visión" if como == "releída por la IA" else "ia"
                 halladas.append({"pages": pieza["pages"], "fecha": pieza["fecha"], "como": pieza["fecha_por"]})
                 continue
             for clave in ("fecha", "fecha_por", "fecha_pagina", "fecha_via"):
@@ -468,8 +495,15 @@ def _completar_las_fechas(
     # encabezado del reconocimiento -- que sólo la IA lee.
     if sin_leer is not None:
         con_ia = taller.lector_de_pago() is not None
+        # Sólo la pieza con que abre cada archivo: su fecha es la de la fila del
+        # índice. Las hojas 33-37 del acta 28737950 de 4100976 van dentro del
+        # acta fechada el 21-07-2021, y pedían a Revisión una fecha propia
+        # (2026-11-19).
+        primeras: dict = {}
         for pieza in piezas:
-            if pieza.get("fecha"):
+            primeras.setdefault(pieza.get("archivo"), pieza)
+        for pieza in piezas:
+            if pieza.get("fecha") or primeras.get(pieza.get("archivo")) is not pieza:
                 continue
             principal = (pieza.get("donde_buscar") or pieza["pages"])[0]
             sin_leer.append(
@@ -2283,17 +2317,43 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # aparte»). En lo demás sigue con su escrito, como se validó antes en las
     # cajas de referencia.
     from ...domain.asunto_del_documento import CONSTANCIA_DE_RECLAMACION as _CONSTANCIA
-    from ...domain.asunto_del_documento import NOTIFICACION_PERSONAL as _NOTIFICACION
+    from ...domain.asunto_del_documento import NOTIFICACIONES as _NOTIFICACIONES
     from ...domain.asunto_del_documento import RESPUESTA_DE_LA_EMPRESA as _RESPUESTA
+    from ...domain.asunto_del_documento import consecutivo_de as _consecutivo_de
+
+    # El folio no une dos formularios que traen cada uno su radicado, y
+    # distinto: son dos trámites, y el folio leído -- la IA sacó «1000» de las
+    # esquinas en blanco de dos constancias -- es el que se equivoca (4100976,
+    # UPD2456242 págs. 1-2, 2026-11-19: RE2320202203675 y RE2320202207081).
+    con_su_radicado = (_CONSTANCIA, *_NOTIFICACIONES)
+    radicado_de_delante = None
+    distintos = set()
+    for p in sorted(formularios):
+        tipo_f, radicado_f = formularios[p]
+        if (
+            tipo_f in con_su_radicado
+            and radicado_f
+            and radicado_de_delante
+            and radicado_f != radicado_de_delante
+            and p in foliacion.continua
+        ):
+            distintos.add(p)
+        if radicado_f:
+            radicado_de_delante = radicado_f
+    if distintos:
+        foliacion = replace(foliacion, continua=foliacion.continua - distintos)
 
     # Y desde el 2026-11-11 también cuando lo de delante no es de su trámite:
     # ni lleva su RE ni cae en su ventana de fechas. En 1016215 (UPD2437946) la
     # respuesta de 2022 a YORLENE RIAPIRA quedó detrás del contrato que anexaba
     # la carta de 2021 de otro suscriptor, y el archivo salió «CONTRATO DE
     # TRANSACCION», sin fecha.
+    # La notificación por aviso y la publicación del aviso son notificaciones
+    # como la personal: la respuesta que va detrás es otro documento
+    # (4100976, 2026-11-19).
     for p in [p for p, (tipo_f, _) in formularios.items() if tipo_f == _RESPUESTA]:
         tras_la_notificacion = any(
-            formularios.get(p - atras, ("", None))[0] == _NOTIFICACION for atras in (1, 2, 3)
+            formularios.get(p - atras, ("", None))[0] in _NOTIFICACIONES for atras in (1, 2, 3)
         )
         if not tras_la_notificacion and _sigue_con_lo_de_delante(
             p, formularios[p][1], grupos.groups, textos, sellos, abren=set(sellos_que_abren) | set(que_abren)
@@ -2325,12 +2385,21 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             return True
         return len(re.findall(r"[A-Za-zÁÉÍÓÚÑáéíóúñ]{4,}", texto)) < PALABRAS_DE_UN_DOCUMENTO
 
+    # Dos cartas de la empresa seguidas con el mismo RE son dos cartas si su
+    # consecutivo es otro: la respuesta del 07-06-2022 y la del 08-06-2022 a la
+    # petición RE8673202201958 (4100976, págs. 41 y 42, 2026-11-19). La hoja
+    # que continúa una carta no repite el consecutivo.
+    def _clave(pagina: int) -> tuple[str, str | None]:
+        tipo_f, radicado_f = formularios[pagina]
+        consecutivo = _consecutivo_de(textos.get(pagina, "") or "") if tipo_f == _RESPUESTA else None
+        return (tipo_f, f"{radicado_f or ''}#{consecutivo}") if consecutivo else (tipo_f, radicado_f)
+
     grupos, anexos, _ = separar_los_formularios(
         grupos,
-        formularios,
+        {p: _clave(p) for p in formularios},
         anexos,
         intocables=intocables,
-        solos=frozenset({_CONSTANCIA, _NOTIFICACION}),
+        solos=frozenset({_CONSTANCIA, *_NOTIFICACIONES}),
         anexo_evidente=_anexo_evidente,
     )
     # Los que van solos abren documento para todo lo que viene después: ni la
@@ -2344,7 +2413,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # Y el documento que va detrás de una constancia o una notificación sin
     # ser su anexo evidente -- lo haya separado este filtro o la continuidad
     # --: no vuelve a unírsele por no traer título (1000224 pág. 2).
-    solos_tipos = (_CONSTANCIA, _NOTIFICACION)
+    solos_tipos = (_CONSTANCIA, *_NOTIFICACIONES)
     for anterior, grupo in zip(grupos.groups, grupos.groups[1:], strict=False):
         primera = grupo.page_numbers[0]
         if (
@@ -2424,6 +2493,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         titulo_del_documento,
     )
     from ...domain.fecha_por_estructura import fecha_por_estructura
+    from ...domain.fecha_por_estructura import pieza_de as pieza_de_la_hoja
     from ...domain.tramites import radicado_del_sello
 
     # Hasta dónde se busca el título: el escrito pide en sus primeras hojas, y
@@ -2499,8 +2569,21 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 # NACIMIENTO 21-MAY-1963» -- y la carta de instrucciones, y el
                 # reconocimiento fechado a mano «27 de Nov de 2021» quedaba sin
                 # fecha y al final (1005114, UPD2973876, 2026-11-18).
+                # Con sus respaldos detrás -- la firma de la carta de
+                # instrucciones, la Habeas Data --, que la regla ya nombra y
+                # que así no se buscaban: el reconocimiento «18 de 09 de 20»
+                # deja el año a medias y la carta de instrucciones dice «a los
+                # 18 días del mes septiembre del año 2020» (4100971,
+                # UPD2985239, 2026-11-19). La cédula sigue fuera.
+                respaldos_del_acuerdo = [
+                    p
+                    for p in paginas
+                    if del_reconocimiento
+                    and p not in del_reconocimiento
+                    and pieza_de_la_hoja(textos.get(p, "") or "").respaldo
+                ]
                 estructura = fecha_por_estructura(
-                    del_reconocimiento or paginas,
+                    [*del_reconocimiento, *respaldos_del_acuerdo] or paginas,
                     textos,
                     sellos={
                         p: con_pie[p].fecha
@@ -2728,7 +2811,23 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     def _re_del(g) -> str:
         return (g.code.raw or "").split()[-1] if (g.code.raw or "").startswith(("RE", "P")) else ""
 
+    from ...domain.fecha_por_estructura import ABRE as _ABRE
+    from ...domain.fecha_por_estructura import CARTA_RADICADA_DE_LA_EMPRESA
     from ...domain.fecha_por_estructura import pieza_de as _pieza_de
+
+    _FORMULARIOS_DE_LA_EMPRESA = frozenset(
+        {
+            "publicación del aviso",
+            "notificación personal",
+            "acta de revisión",
+            "liquidación del consumo",
+            "acta de suspensión",
+            "constancia de la reclamación",
+            "constancia de contratación",
+            "constancia de visita",
+            CARTA_RADICADA_DE_LA_EMPRESA,
+        }
+    )
 
     def _es_comprobante(pagina: int) -> bool:
         return _pieza_de(textos.get(pagina, "") or "").nombre == "comprobante de pago"
@@ -2756,7 +2855,27 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         if _es_comprobante(primera) and _es_comprobante(anterior.page_numbers[0]):
             continue
         titular = next((x for x in g.page_numbers if x not in guias), primera)
-        if _titulo(textos.get(titular, "") or "", None) in (
+        # Ni el formulario de la empresa que su estructura reconoce aunque la
+        # capa no deje leer un título: la constancia de visita, el acta de
+        # revisión, la liquidación del consumo, la publicación del aviso, la
+        # carta con su «Radicación #». Son documentos con su fecha, y en
+        # 4100976 (UPD2456242, 2026-11-19) los de un acta de 2021 acababan
+        # dentro de la contestación de 2022.
+        if _pieza_de(textos.get(titular, "") or "").nombre in _FORMULARIOS_DE_LA_EMPRESA:
+            continue
+        # Y la hoja que repite el título del acta de delante -- «Acta de
+        # Irregularidad» va en la cabeza de cada hoja del formato -- sin abrir
+        # un acta nueva es su continuación: el acta 28737950 de 4100976 salía
+        # partida en 31-32 y 33-38.
+        titulo_suyo = _titulo(textos.get(titular, "") or "", None)
+        if (
+            titulo_suyo.startswith("ACTA DE ")
+            and titulo_suyo == _titulo(textos.get(anterior.page_numbers[0], "") or "", None)
+            and _pieza_de(textos.get(titular, "") or "").rango != _ABRE
+        ):
+            sin_apertura.add(primera)
+            continue
+        if titulo_suyo in (
             DOCUMENT_PREFIX,
             AUTORIZACION_DE_NOTIFICACION,
             # La de datos personales va con lo que firma: el acuerdo de pago

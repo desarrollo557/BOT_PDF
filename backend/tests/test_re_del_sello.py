@@ -63,6 +63,20 @@ class TestElSelloDeOficina:
         trozos = [_Trozo("Oficina", 60, 100, 100, 110), _Trozo("Magangué", 105, 100, 160, 110), _Trozo("Bolívar", 165, 100, 210, 110)]
         assert _sello_de_oficina(trozos, 612, 792) is None
 
+    def test_el_campo_oficina_que_recibe_de_la_solicitud_no_es_un_sello(self):
+        """4100975 (UPD2456241 pág. 3, 2026-11-19): «Oficina Comercial que recibe:» al pie del formulario."""
+        trozos = [
+            _Trozo("Oficina", 330, 740, 370, 748),
+            _Trozo("Comercial", 372, 740, 420, 748),
+            _Trozo("que", 422, 740, 440, 748),
+            _Trozo("recibe:", 442, 740, 480, 748),
+        ]
+        assert _sello_de_oficina(trozos, 612, 792) is None
+
+    def test_el_sello_con_su_recibido_si(self):
+        trozos = [_Trozo("OFICINA SANTA ANA", 420, 650, 500, 660), _Trozo("RECIBIDO NO IMPLICA", 420, 670, 520, 680)]
+        assert _sello_de_oficina(trozos, 612, 792) is not None
+
 
 class TestLaPrimeraCifraImposible:
     def test_una_x310_imposible_sigue_siendo_4310(self):

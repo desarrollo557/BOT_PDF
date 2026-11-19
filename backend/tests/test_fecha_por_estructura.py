@@ -244,9 +244,17 @@ class TestElComprobanteYLaFactura:
         )
         assert fecha_por_estructura([1], _paginas(cupon), hoy=HOY).fecha == date(2022, 8, 30)
 
-    def test_sin_el_dia_no_se_inventa(self) -> None:
-        # 4100877: la IA pegó el día al ID de cobros y dejó «3 | 22».
+    def test_el_dia_pegado_al_id_de_cobros(self) -> None:
+        # 4100877: la IA pegó el día al ID de cobros y dejó «3 | 22». El ID
+        # lleva dos casillas tras la raya («-2 3»); el «10» es la casilla DÍA,
+        # y el sello dice 10 MAR 2022 (2026-11-19: antes se dejaba sin fecha y
+        # la visión copiaba un sello borroso, «09-03-22»).
         cupon = "COMPROBANTE CUPON MANUAL FECHA DIA | MES | ANIO ID DE COBROS: *4100877259-2310* | | 3 | 22 |"
+        assert fecha_por_estructura([1], _paginas(cupon), hoy=HOY).fecha == date(2022, 3, 10)
+
+    def test_sin_el_dia_no_se_inventa(self) -> None:
+        # 4100875 pág. 2: el sello tapa el día y el mes; el «6 6» es el ID.
+        cupon = "COMPROBANTE CUPON MANUAL FECHA DIA | MES | ANIO ID DE COBROS: 4 1 0 0 8 7 5 2 5 2 - 6 6 | | 2021 |"
         assert fecha_por_estructura([1], _paginas(cupon), hoy=HOY).fecha is None
 
     def test_la_factura_anexa_no_fecha_el_escrito(self) -> None:

@@ -448,6 +448,16 @@ CONSTANCIA_DE_RECLAMACION = "CONSTANCIA DE RECLAMACION"
 #: carta de la empresa.
 RENGLONES_DEL_CONSECUTIVO = 6
 NOTIFICACION_PERSONAL = "NOTIFICACION PERSONAL"
+#: Cuando la notificación personal no se pudo hacer, la empresa notifica por
+#: aviso: la carta «Asunto: Notificación por aviso» y la publicación del aviso
+#: en su página. Son la notificación de esa respuesta, y van solas como la
+#: personal (4100976, UPD2456242, 2026-11-19: la publicación, la notificación,
+#: la contestación y las hojas de un acta de 2021 salían en un solo PDF).
+NOTIFICACION_POR_AVISO = "NOTIFICACION POR AVISO"
+PUBLICACION_DEL_AVISO = "PUBLICACION DEL AVISO"
+#: Las notificaciones de la empresa: lo que sigue a una de ellas sin ser su
+#: anexo evidente es otro documento, y la respuesta detrás de ellas también.
+NOTIFICACIONES = frozenset({NOTIFICACION_PERSONAL, NOTIFICACION_POR_AVISO, PUBLICACION_DEL_AVISO})
 RESPUESTA_DE_LA_EMPRESA = "RESPUESTA DE LA EMPRESA"
 LEY_HABEAS_DATA = "LEY HABEAS DATA"
 
@@ -538,6 +548,10 @@ def formulario_que_abre(texto: str) -> str | None:
         return CONSTANCIA_DE_RECLAMACION
     if titulo.startswith(NOTIFICACION_PERSONAL):
         return NOTIFICACION_PERSONAL
+    if titulo == PUBLICACION_DEL_AVISO:
+        return PUBLICACION_DEL_AVISO
+    if titulo.startswith(NOTIFICACION_POR_AVISO):
+        return NOTIFICACION_POR_AVISO
     if titulo == LEY_HABEAS_DATA:
         return LEY_HABEAS_DATA
     # El consecutivo en el encabezado, no citado en el cuerpo: en las
@@ -585,6 +599,23 @@ _EN_ATENCION_A = re.compile(r"\bEN\s+ATENCI\w{0,3}\s+AL?\b")
 _A_LA_EMPRESA = re.compile(r"\bSE\W?N?ORES\W{0,3}\s*(?:CARIBE\s?MAR|AFINIA|ELECTRICARIBE)")
 #: Hasta dónde se busca su asunto: va bajo el destinatario y su dirección.
 CABEZA_DE_LA_CONTESTACION = 900
+
+
+#: El número de la carta de la empresa en su encabezado: «Consecutivo
+#: No.202270208732», «Consecutivo NO.A202270231268», «Consecutivo No. PA
+#: 202270254853».
+_NUMERO_DEL_CONSECUTIVO = re.compile(r"\bCONSECUTIVO\s+N[O0°º]?\W{0,3}\s*((?:[A-Z]{1,2}\s?)?\d{9,16})")
+
+
+def consecutivo_de(texto: str) -> str | None:
+    """El consecutivo con que la empresa numera su carta, sin espacios, o ``None``.
+
+    Sólo el del encabezado: el cuerpo de un recurso del cliente también cita el
+    consecutivo que recurre.
+    """
+    renglones = [r for r in (texto or "").splitlines() if r.strip()][:RENGLONES_DEL_CONSECUTIVO]
+    hallado = _NUMERO_DEL_CONSECUTIVO.search(" ".join(_plano(r) for r in renglones))
+    return hallado.group(1).replace(" ", "") if hallado else None
 
 
 def es_contestacion_a_reclamacion(texto: str) -> bool:

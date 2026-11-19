@@ -31,6 +31,12 @@ SALTO_DE_FOLIO = 2
 #: Cuántas hojas sin folio puede haber entre dos foliadas del mismo escrito: el
 #: reverso de una factura escaneada por las dos caras no se folia.
 HOJAS_SIN_FOLIO = 2
+#: El folio más alto que se cree. Un escrito de estas cajas vuelve a 1 cada vez
+#: y no llega a mil hojas: una lectura de cuatro cifras no es un folio, es lo que
+#: la IA sacó de una esquina en blanco. En 4100976 (UPD2456242, 2026-11-19) leyó
+#: «1000» en las dos constancias de las hojas 1 y 2, y un folio igual cuenta como
+#: el mismo escrito: la constancia RE2320202207081 salía dentro de la anterior.
+FOLIO_MAXIMO = 999
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +121,7 @@ def foliacion_del_escrito(
       nada por sí mismo y se queda con su escrito (el operador, 2026-11-12).
     """
     orden = sorted(paginas)
+    folios = {p: f for p, f in folios.items() if f and f <= FOLIO_MAXIMO}
     foliadas = [p for p in orden if folios.get(p)]
     continua: set[int] = set()
     abre: set[int] = set()

@@ -144,7 +144,10 @@ CATALOGO: tuple[TipoDocumental, ...] = (
         ),
     ),
     TipoDocumental("COBROS ACUMULADOS", ("COBROS ACUMULADOS", "COBRO ACUMULADO")),
-    TipoDocumental("COMPROBANTE DE PAGO", ("COMPROBANTE DE PAGO",)),
+    #: El cupón manual es el comprobante de pago de Afinia: dos cupones de una
+    #: caja salían uno «COMPROBANTE DE PAGO» y otro «COMPROBANTE CUPON MANUAL»
+    #: según por dónde se leyera el título (4100875 y 4100877, 2026-11-19).
+    TipoDocumental("COMPROBANTE DE PAGO", ("COMPROBANTE DE PAGO", "COMPROBANTE CUPON MANUAL")),
     TipoDocumental("COMUNICACION", ("COMUNICACION",)),
     TipoDocumental(
         "CONSTANCIA DE CONTRATACION DE SERVICIO",

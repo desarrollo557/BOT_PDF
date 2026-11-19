@@ -555,8 +555,9 @@ class TestLasFechasDeLaCajaContraSiMismas:
     class _Taller:
         name = "prueba.pdf"
 
-        def __init__(self, visto):
+        def __init__(self, visto, ampliada=None):
             self.visto = visto
+            self.ampliada = ampliada
             self.pedidas = 0
 
         def lector_de_fechas_a_la_vista(self):
@@ -568,6 +569,19 @@ class TestLasFechasDeLaCajaContraSiMismas:
                     return taller.visto
 
             return _Vision() if self.visto is not None else None
+
+        def lector_de_pago(self):
+            taller = self
+
+            class _Leido:
+                def __init__(self, text):
+                    self.text = text
+
+            class _DePago:
+                def read(self, imagen):
+                    return _Leido(taller.ampliada)
+
+            return _DePago() if self.ampliada is not None else None
 
     @staticmethod
     def _piezas():
@@ -615,6 +629,27 @@ class TestLasFechasDeLaCajaContraSiMismas:
         # Y sin la IA, lo mismo: nunca una fecha equivocada en el índice.
         piezas, revision = self._piezas(), []
         _contrastar_las_fechas(piezas, {}, self._pdf(tmp_path), self._Taller(None), {}, revision)
+        assert piezas[1]["fecha"] is None and len(revision) == 1
+
+    def test_la_cabeza_ampliada_lee_el_anio_a_mano(self, tmp_path):
+        """4100975 pág. 3 (2026-11-19): la hoja entera dio 2024, la visión 2014; la cabeza de cerca, 2021."""
+        from resolutions.api.worker.correspondencia import _contrastar_las_fechas
+
+        piezas, revision = self._piezas(), []
+        taller = self._Taller(
+            "SELLO: no hay\nCASILLAS: no hay\nDOCUMENTO: Magangue 11 de Agosto de 2014",
+            ampliada="Solicitud de Servicio Eléctrico en Baja Tensión\n\nCiudad MAGANQUE 11 de Agosto de 2021",
+        )
+        _contrastar_las_fechas(piezas, {}, self._pdf(tmp_path), taller, {}, revision)
+        assert piezas[1]["fecha"] == "2021-08-11" and revision == []
+        assert "cabeza ampliada" in piezas[1]["fecha_por"]
+
+    def test_la_cabeza_ampliada_que_no_lee_la_de_la_caja_no_decide(self, tmp_path):
+        from resolutions.api.worker.correspondencia import _contrastar_las_fechas
+
+        piezas, revision = self._piezas(), []
+        taller = self._Taller("DOCUMENTO: ilegible", ampliada="Ciudad MAGANGUE 11 de Agosto de 2024")
+        _contrastar_las_fechas(piezas, {}, self._pdf(tmp_path), taller, {}, revision)
         assert piezas[1]["fecha"] is None and len(revision) == 1
 
     def test_las_que_no_se_contradicen_no_se_tocan(self):

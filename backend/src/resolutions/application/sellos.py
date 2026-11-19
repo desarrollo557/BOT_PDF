@@ -110,7 +110,12 @@ _TINTA = re.compile(r"IM[PB]LICA|RECIBIDO|[O0]\W?[FPR]\W?[IÍ1L]\W?C\W?[IÍ1L]\W
 #: carta, que no lleva ninguna de las dos.
 _OFICINA = re.compile(r"[O0]\W?[FPR]\W?[IÍ1L]\W?C\W?[IÍ1L]\W?N\W?A", re.IGNORECASE)
 _SUR = re.compile(r"^\W*SUR\b", re.IGNORECASE)
-_DEL_SELLO = re.compile(r"RECIB|IM[PB]LICA|ACEPTACI|GRUPO\W?EP", re.IGNORECASE)
+#: «RECIBIDO», no «recibe»: el pie de la solicitud de servicio trae el campo
+#: «Oficina Comercial que recibe:», y pasaba por el sello de tinta de una oficina
+#: con el RE a mano ilegible (4100975, UPD2456241 pág. 3, 2026-11-19: la OCR de
+#: pago y la visión decían «sin sello»; partía la solicitud de su expediente y
+#: pedía a Revisión escribir a mano un RE que no existe).
+_DEL_SELLO = re.compile(r"RECIB[IÍ1L]D|IM[PB]LICA|ACEPTACI|GRUPO\W?EP", re.IGNORECASE)
 #: El recorte del sello de oficina, desde su rótulo: con el RE que se escribe a
 #: mano encima (hasta tres renglones de carta) y los campos de debajo.
 SOBRE_EL_ROTULO = 0.075

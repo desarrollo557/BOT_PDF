@@ -359,6 +359,32 @@ _CABEZA_DE_LA_EMPRESA = re.compile(
 )
 
 
+#: La otra cabeza de las cartas de la empresa: su número de radicación con el
+#: código de barras, y debajo la ciudad y la fecha -- «Radicación #
+#: :287379504100976 / MAGANGUE, JUEVES, 29 DE JULIO DE 2021» -- (la carta que
+#: funda el consumo no registrado de un acta de irregularidad; 4100976,
+#: UPD2456242 pág. 28, 2026-11-19).
+_CABEZA_RADICADA = re.compile(r"^.{0,200}RADICACION\s*#\s*\W{0,2}\s*\d{12,}")
+#: Cómo se llama esa hoja entre las piezas.
+CARTA_RADICADA_DE_LA_EMPRESA = "carta radicada de la empresa"
+#: Lo que se mira detrás del número buscando la fecha de la cabeza.
+_TRAS_LA_RADICACION = 160
+
+
+def _de_la_carta_radicada(texto: str, hoy: date | None) -> date | None:
+    """La fecha de la cabeza, bajo su «Radicación #»: «MAGANGUE, JUEVES, 29 DE JULIO DE 2021»."""
+    plano = _plano(texto)
+    hallado = _CABEZA_RADICADA.search(plano)
+    if hallado is None:
+        return None
+    tramo = plano[hallado.end() : hallado.end() + _TRAS_LA_RADICACION]
+    letra = re.search(_FECHA_EN_LETRA, tramo)
+    if letra and (mes := MESES.get(letra.group(2).lower())):
+        return _valida(int(letra.group(1)), mes, int(letra.group(3)), hoy)
+    cifras = re.search(_FECHA_EN_CIFRAS, tramo)
+    return _en_cifras(cifras, hoy) if cifras else None
+
+
 def _de_la_carta_de_la_empresa(texto: str, hoy: date | None) -> date | None:
     """La línea «CIUDAD, fecha» bajo el «Consecutivo No.» de la respuesta o el aviso.
 
@@ -718,6 +744,13 @@ _PIEZAS: list[tuple[re.Pattern[str], Pieza]] = [
         re.compile(r"^.{0,300}CONSTANCIA\s+DE\s+VISITA\s+REALIZADA"),
         Pieza("constancia de visita", ABRE, _de_la_visita),
     ),
+    # Y por su título solo, como lo imprime la empresa encima de la fotocopia
+    # (4100976, UPD2456242 pág. 26, 2026-11-19); no la que una carta enumera
+    # entre sus soportes: «4. Constancia de Visita asociada al Acta…».
+    (
+        re.compile(r"^.{0,120}(?<!\d\.\s)CONSTANCIA\s+DE\s+VISITA\b(?!\s+ASOCIAD)"),
+        Pieza("constancia de visita", ABRE, _de_la_visita),
+    ),
     (
         re.compile(r"EN\s+CONSTANCIA\s+SE\s+SUSCRIBE"),
         Pieza("contrato de transacción", 12, _de_la_firma, respaldo=True),
@@ -762,6 +795,10 @@ _PIEZAS: list[tuple[re.Pattern[str], Pieza]] = [
     (
         _CABEZA_DE_LA_EMPRESA,
         Pieza("carta de la empresa", ABRE, _de_la_carta_de_la_empresa),
+    ),
+    (
+        _CABEZA_RADICADA,
+        Pieza(CARTA_RADICADA_DE_LA_EMPRESA, ABRE, _de_la_carta_radicada),
     ),
     # Lo que fecha otra cosa o nada: nunca la hoja principal si hay otra.
     (re.compile(r"CARTA\s+DE\s+INSTRUCCIONES"), Pieza("carta de instrucciones", 60)),
@@ -1008,6 +1045,12 @@ _CASILLAS_A_LA_VISTA = re.compile(r"\W*(\d{1,2})\W+(\d{1,2})\W+(\d{4}|\d{2})(?!\
 #: se radica días o semanas después de escribirse. 4100877 (2026-11-18): las
 #: casillas dicen 10-03-22 y la IA copió «09-2-2022» y un sello «09-02-23».
 DIAS_ENTRE_LO_VISTO = 62
+#: Y el sello de la caja y las casillas del cupón se ponen en el mismo pago, el
+#: mismo día: si lo que copió de uno y de otro no coincide, uno está mal leído y
+#: no se sabe cuál. 4100877 (2026-11-19): «SELLO: 09-03-22», «CASILLAS: 23 - 2 -
+#: 2022» -- el «23» es el final del ID de cobros -- y el papel dice 10-03-2022
+#: en los dos; salía el 09-03-2022.
+DIAS_ENTRE_SELLO_Y_CASILLAS = 1
 
 
 def _fecha_del_campo(campo: str, valor: str, hoy: date | None) -> date | None:
@@ -1066,6 +1109,13 @@ def fecha_de_lo_visto(
         return None
     fechas = [fecha for fecha, _ in halladas]
     if (max(fechas) - min(fechas)).days > DIAS_ENTRE_LO_VISTO:
+        return None
+    por_campo = {campo: fecha for fecha, campo in halladas}
+    if (
+        "sello" in por_campo
+        and "casillas" in por_campo
+        and abs((por_campo["sello"] - por_campo["casillas"]).days) > DIAS_ENTRE_SELLO_Y_CASILLAS
+    ):
         return None
     fecha, campo = halladas[0]
     if leido is not None and not _anio_en_lo_leido(fecha.year, leido):
