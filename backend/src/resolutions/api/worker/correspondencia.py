@@ -2728,6 +2728,11 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     def _re_del(g) -> str:
         return (g.code.raw or "").split()[-1] if (g.code.raw or "").startswith(("RE", "P")) else ""
 
+    from ...domain.fecha_por_estructura import pieza_de as _pieza_de
+
+    def _es_comprobante(pagina: int) -> bool:
+        return _pieza_de(textos.get(pagina, "") or "").nombre == "comprobante de pago"
+
     sin_apertura = set()
     for anterior, g in zip(grupos.groups, grupos.groups[1:], strict=False):
         primera = g.page_numbers[0]
@@ -2743,6 +2748,12 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         if primera in del_acuerdo or primera == ultima_sola:
             continue
         if _re_del(g) and _re_del(g) != _re_del(anterior):
+            continue
+        # Un comprobante detrás de otro comprobante es otro pago, con su fecha:
+        # va en su documento (4100875, UPD2985229, 2026-11-19: el del 08-04-2022
+        # y el del 17-07-2021 salían en un solo PDF). Detrás de un escrito sí
+        # es su prueba de pago, y va con él.
+        if _es_comprobante(primera) and _es_comprobante(anterior.page_numbers[0]):
             continue
         titular = next((x for x in g.page_numbers if x not in guias), primera)
         if _titulo(textos.get(titular, "") or "", None) in (

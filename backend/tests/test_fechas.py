@@ -137,6 +137,18 @@ class TestLaFechaDeUnFormulario:
     def test_las_casillas_de_un_formulario(self, texto, esperada):
         assert fecha_de_la_pagina(texto) == esperada
 
+    def test_las_cifras_del_id_de_cobros_no_son_las_casillas(self):
+        """4100875 (UPD2985229 pág. 2, 2026-11-19): daba el 06-06-2021 con el «6 6» del ID; el sello dice 17 JUL 2021."""
+        from resolutions.domain.fechas import fecha_de_las_casillas
+
+        comprobante = (
+            "| NIC 4 1 0 0 8 7 5 *Nelson Rojo Cano* | | FECHA | | | DIA | MES | ANIO | | | "
+            "ID DE COBROS: 4 1 0 0 8 7 5 2 5 2 - 6 6 | | 2021 | | FORMA DE PAGO: VALOR CANCELADO: 50.000"
+        )
+        assert fecha_de_las_casillas(comprobante) is None
+        # Con las casillas escritas, sí.
+        assert fecha_de_las_casillas(comprobante.replace("| | 2021 |", "| 17 | 07 | 2021 |")) == date(2021, 7, 17)
+
     def test_unas_casillas_sin_cifras_legibles_no_dan_fecha(self):
         # La capa de texto del mismo comprobante: rótulos y basura.
         assert fecha_de_la_pagina("NIC\nFECHA\nDIA\nMES *\nANIO\n¿é)2^\nID DE COBROS:") is None

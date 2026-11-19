@@ -460,7 +460,9 @@ _CASILLAS_TAPADAS = re.compile(r"(?<![\d/.\-])(\d{1,2})[\s|]+(\d{1,2})[\s|]+((?:
 
 
 def _de_las_casillas_tapadas(texto: str, hoy: date | None) -> date | None:
-    for hallado in _CASILLAS_TAPADAS.finditer(" ".join((texto or "").split())):
+    from .fechas import sin_las_cifras_de_la_cuenta
+
+    for hallado in _CASILLAS_TAPADAS.finditer(" ".join(sin_las_cifras_de_la_cuenta(texto).split())):
         if (fecha := _valida(int(hallado.group(1)), int(hallado.group(2)), int(hallado.group(3)), hoy)) is not None:
             return fecha
     return None

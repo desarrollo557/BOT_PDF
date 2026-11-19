@@ -415,6 +415,22 @@ _TRES_CIFRAS = re.compile(r"(?<!\d)(\d{1,2})\W{1,6}(\d{1,2})\W{1,6}((?:19|20)\d{
 _TRES_CIFRAS_CON_ANIO_CORTO = re.compile(r"(?<!\d)(\d{1,2})\W{1,6}(\d{1,2})\W{1,6}(\d{2})(?!\d)")
 
 
+#: Las cifras del ID de cobros y del NIC, que en el comprobante van al lado de
+#: las casillas de la fecha y no son la fecha: «ID DE COBROS: 4 1 0 0 8 7 5 2 5
+#: 2 - 6 6 | | 2021» daba el 06-06-2021 (4100875, UPD2985229 pág. 2,
+#: 2026-11-19; el sello dice 17 JUL 2021). Una tira de seis cifras o más
+#: -- «4100877259-2310» --, o seis cifras sueltas, una por casilla: la que
+#: lleva dos cifras pegadas ya es de la fecha -- «| 17 | 07 | 2021» --.
+_CIFRAS_DE_LA_CUENTA = re.compile(
+    r"(?:ID\s*DE\s*COBROS|\bNIC)\W{0,6}(?:\d{6,}(?:\s?-\s?\d+)?|(?:\d(?!\d)[\s|*\-]{0,3}){6,})", re.IGNORECASE
+)
+
+
+def sin_las_cifras_de_la_cuenta(texto: str | None) -> str:
+    """El texto sin las cifras del ID de cobros ni del NIC: las de un número de cuenta, no de una fecha."""
+    return _CIFRAS_DE_LA_CUENTA.sub(" ", texto or "")
+
+
 def fecha_de_las_casillas(texto: str, *, hoy: date | None = None) -> date | None:
     """La fecha escrita en las casillas DÍA / MES / AÑO de un formulario.
 
@@ -424,7 +440,7 @@ def fecha_de_las_casillas(texto: str, *, hoy: date | None = None) -> date | None
     final del ID de cobros delante --; se prueba desde cada posición y vale la
     primera que forma una fecha.
     """
-    plano = _O_POR_CERO.sub("0", " ".join((texto or "").split()))
+    plano = _O_POR_CERO.sub("0", " ".join(sin_las_cifras_de_la_cuenta(texto).split()))
     # Primero con el año entero; si ninguno, con el de dos cifras: «01 09 22»
     # en el comprobante cupón manual (4100929, UPD3138049, 2026-11-18). Por
     # ese orden, y no a la vez: «9 16 09 08 2022» daría el 16-09-2008.
