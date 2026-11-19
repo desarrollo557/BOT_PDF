@@ -99,14 +99,46 @@ def _tras(rotulo: str, plano: str, hoy: date | None, *, alcance: int = 40) -> da
         cifras = re.match(rf"\W*{_FECHA_EN_CIFRAS}", tramo)
         if cifras and (fecha := _en_cifras(cifras, hoy)):
             return fecha
-        letra = re.match(rf"\W*{_FECHA_EN_LETRA}", tramo)
+        # Y con el mes delante: «Fecha: Enero 5 del 2022» es el 5 de enero
+        # (4100993, UPD2456245 pág. 5, 2026-11-18).
+        letra = re.match(rf"\W*{_FECHA_EN_LETRA}", tramo) or re.match(
+            rf"\W*{_FECHA_EN_LETRA}", _normalizar(tramo).upper()
+        )
         if letra:
             mes = MESES.get(letra.group(2).lower())
             if mes and (
                 fecha := _valida(int(letra.group(1)), mes, int(letra.group(3)), hoy)
             ):
                 return fecha
+        # Y el mes en letras entre guiones o barras: «Fecha: 27-MARZO-2022»
+        # (4100924, la declaración, 2026-11-18). Sólo tras un rótulo.
+        # O con el mes delante: «Fecha: Agosto-11-2021» (4100975).
+        if con_guiones := _MES_ENTRE_GUIONES.match(tramo):
+            dia, mes, anio = con_guiones.group(1), con_guiones.group(2), con_guiones.group(3)
+        elif con_guiones := _MES_DELANTE_ENTRE_GUIONES.match(tramo):
+            mes, dia, anio = con_guiones.group(1), con_guiones.group(2), con_guiones.group(3)
+        if con_guiones and (fecha := _valida(int(dia), MESES[mes.lower()], int(anio), hoy)):
+            return fecha
+        # Y con el año en dos cifras, sólo con sus dos separadores y justo tras
+        # el rótulo: «Fecha: 09/06/21» (4100918, la declaración, 2026-11-18).
+        corta = _CIFRAS_CON_ANIO_CORTO.match(tramo)
+        if corta and (
+            fecha := _valida(int(corta.group(1)), int(corta.group(2)), 2000 + int(corta.group(3)), hoy)
+        ):
+            return fecha
     return None
+
+
+#: Entre el día, el mes en letras y el año: un guion, una barra, un punto o
+#: un blanco -- «Agosto 11-2021» (4100975 pág. 6) --.
+_ENTRE = r"(?:\s?[-/.]\s?|\s+)"
+_MES_ENTRE_GUIONES = re.compile(
+    rf"\W*(\d{{1,2}}){_ENTRE}({_MES}){_ENTRE}((?:19|20)\d{{2}})(?!\d)", re.IGNORECASE
+)
+_MES_DELANTE_ENTRE_GUIONES = re.compile(
+    rf"\W*({_MES}){_ENTRE}(\d{{1,2}}){_ENTRE}((?:19|20)\d{{2}})(?!\d)", re.IGNORECASE
+)
+_CIFRAS_CON_ANIO_CORTO = re.compile(r"\W*(\d{1,2})\s?[/\-.]\s?(\d{1,2})\s?[/\-.]\s?(\d{2})(?![\d/\-.])")
 
 
 # -- las trampas: fechas que una hoja lleva y no son la suya ---------------------
@@ -413,15 +445,92 @@ def _del_comprobante(texto: str, hoy: date | None) -> date | None:
     Nunca el «Nro. 3014202203100000…», que lleva dentro algo con forma de
     fecha (20220310) y es el número del cupón.
     """
-    return _del_sello_de_recaudo(_plano(texto), hoy) or fecha_de_las_casillas(
-        texto or "", hoy=hoy
+    return (
+        _del_sello_de_recaudo(_plano(texto), hoy)
+        or fecha_de_las_casillas(texto or "", hoy=hoy)
+        or _de_las_casillas_tapadas(texto, hoy)
     )
+
+
+#: Las cifras de las casillas DÍA / MES / AÑO sin sus rótulos, que tapa la
+#: etiqueta de la caja: «| 30 08 2022 |» (1000883, UPD3102731, 2026-11-18). Con
+#: el año entero y separadas por blancos o rayas de tabla, como se escriben en
+#: las casillas: el «Nro-3014202203100000» va pegado y no cuenta.
+_CASILLAS_TAPADAS = re.compile(r"(?<![\d/.\-])(\d{1,2})[\s|]+(\d{1,2})[\s|]+((?:19|20)\d{2})(?![\d/.\-])")
+
+
+def _de_las_casillas_tapadas(texto: str, hoy: date | None) -> date | None:
+    for hallado in _CASILLAS_TAPADAS.finditer(" ".join((texto or "").split())):
+        if (fecha := _valida(int(hallado.group(1)), int(hallado.group(2)), int(hallado.group(3)), hoy)) is not None:
+            return fecha
+    return None
 
 
 def _de_la_factura(texto: str, hoy: date | None) -> date | None:
     """Sólo el sello de la caja (pagada): el resto de sus fechas son plazos y periodos."""
     plano = _plano(texto)
     return _del_sello_de_recaudo(plano, hoy)
+
+
+#: Cuánto se mira detrás de «Ciudad» en la solicitud de servicio: el nombre de
+#: la ciudad, a mano, y la fecha.
+_ALCANCE_DE_LA_CIUDAD = 60
+
+
+def _de_la_solicitud(texto: str, hoy: date | None) -> date | None:
+    """La solicitud de servicio eléctrico: «Ciudad Cicuco 07 de Enero de 20 22», a mano, en su cabeza.
+
+    4100993 (UPD2456245 pág. 3, 2026-11-18): la IA la leyó bien y salía «S.F.»
+    porque sus consentimientos -- «el tratamiento de datos personales» -- la
+    hacían pasar por una Habeas Data, que se fecha en sus casillas.
+    """
+    cabeza = " ".join((texto or "").split())[:_CABEZA_DEL_FORMULARIO]
+    for ancla in re.finditer(r"(?i)\bciudad\b", cabeza):
+        tramo = cabeza[ancla.end() : ancla.end() + _ALCANCE_DE_LA_CIUDAD]
+        # Lo escrito sobre la raya -- «__11__» -- y el año partido entre lo
+        # impreso y lo escrito: «de 20» impreso y «21» a mano (4100975).
+        tramo = _ANIO_PARTIDO.sub(r"\1\2\3", tramo.replace("_", " "))
+        declaradas = fechas_de(_normalizar(tramo), hoy=hoy)
+        if declaradas:
+            return declaradas[0]
+    return None
+
+
+_ANIO_PARTIDO = re.compile(r"(?i)(\bde\s+)(19|20)\s+(\d{2})(?!\d)")
+
+
+def _de_la_declaracion(texto: str, hoy: date | None) -> date | None:
+    """La declaración bajo gravedad de juramento: la de su rótulo «Fecha:», a mano, en su cabeza.
+
+    «Lugar: Cicuco / Fecha: Enero 5 del 2022» (4100993, UPD2456245 pág. 5,
+    2026-11-18), que salía «S.F.»: como carta, sólo se le creía un «Fecha:» con
+    la hora del rótulo de radicación.
+    """
+    return fecha_razonada(texto, hoy)
+
+
+def _del_expediente(texto: str, hoy: date | None) -> date | None:
+    """El expediente de la solicitud de servicio: «Fecha de solicitud del Servicio: 11/08/2021» (4100975, 2026-11-18)."""
+    return _tras(r"FECHA\s+DE\s+SOLICITUD\s+DEL\s+SERVICIO\s*[:;.]?", _plano(texto), hoy)
+
+
+#: Hasta dónde se mira tras «se firma en», al pie de la declaración del RETIE:
+#: la ciudad, a mano, y la fecha.
+_ALCANCE_DE_LA_FIRMA_DEL_RETIE = 90
+
+
+def _del_retie(texto: str, hoy: date | None) -> date | None:
+    """La declaración de cumplimiento del RETIE: «En constancia se firma en la ciudad de Magangué el 11 de Agosto del 2021».
+
+    Sin el día no hay fecha: «el __ de 01 del 2022» (4100993 pág. 8) se queda sin ella.
+    """
+    plano = " ".join((texto or "").split())
+    for ancla in re.finditer(r"(?i)\bse\s+firma\s+en\b", plano):
+        tramo = plano[ancla.end() : ancla.end() + _ALCANCE_DE_LA_FIRMA_DEL_RETIE].replace("_", " ")
+        declaradas = fechas_de(_normalizar(tramo), hoy=hoy)
+        if declaradas:
+            return declaradas[0]
+    return None
 
 
 def _del_escrito(texto: str, hoy: date | None) -> date | None:
@@ -491,6 +600,9 @@ def _del_encabezado_de_la_cabeza(texto: str, hoy: date | None) -> date | None:
     MARTES, 19/07/2022…» (DOCUMENTO_35). Y un día de la semana no es una ciudad.
     """
     cabeza = " ".join((texto or "").split())[:_CABEZA_DE_LA_HOJA]
+    # El año partido entre lo impreso y lo escrito del formato: «Magangué
+    # Bolívar, 25 de enero de 20 23» (1005117, UPD2437857 pág. 4, 2026-11-18).
+    cabeza = _ANIO_PARTIDO.sub(r"\1\2\3", cabeza.replace("_", " "))
     normalizada = _normalizar(cabeza)
     for patron in (_LUGAR_Y_FECHA, _LUGAR_PUNTO_Y_FECHA, _LUGAR_ESPACIO_Y_FECHA):
         for encabezado in patron.finditer(normalizada):
@@ -613,6 +725,27 @@ _PIEZAS: list[tuple[re.Pattern[str], Pieza]] = [
             r"FIRMADO\s+EN.{0,200}DIAS\s+DEL\s+MES|DIAS\s+DEL\s+MES.{0,200}FIRMADO\s+EN"
         ),
         Pieza("firma de la carta de instrucciones", 20, _de_la_firma, respaldo=True),
+    ),
+    # Los formularios que traen la autorización de datos en su letra pequeña:
+    # antes que la Habeas Data, que si no se los lleva (4100993, 2026-11-18).
+    (
+        re.compile(r"SOLICITUD\s+DE\s+SERVICIO\s+ELECTRICO"),
+        Pieza("solicitud de servicio", ABRE, _de_la_solicitud),
+    ),
+    (
+        re.compile(r"DECLARACION\s+BAJO\s+(?:LA\s+)?GRAVEDAD\s+DEL?\s+JURAMENTO"),
+        Pieza("declaración bajo juramento", ABRE, _de_la_declaracion),
+    ),
+    # El expediente que abre la oficina con la solicitud de servicio.
+    (
+        re.compile(r"FECHA\s+DE\s+SOLICITUD\s+DEL\s+SERVICIO"),
+        Pieza("expediente de la solicitud", ABRE, _del_expediente),
+    ),
+    # La del técnico va con la solicitud o la declaración: si la principal no
+    # deja leer su fecha, la respalda la de su firma (4100975 págs. 6-10).
+    (
+        re.compile(r"DECLARACION\s+DE\s+CUMPLIMIENTO\s+DEL\s+RETIE"),
+        Pieza("declaración del RETIE", 30, _del_retie, respaldo=True),
     ),
     (
         re.compile(r"HABEAS\s+DATA|TRATAMIENTO\s+DE\s+DATOS\s+PERSONALES"),
@@ -821,13 +954,118 @@ def fecha_por_estructura(
 
 
 _ENVIADO = re.compile(
-    r"\bEnviado\s*:\s*(?:[A-Za-záéíóúñ]+,?\s+)?(\d{1,2}\s+de\s+[A-Za-záéíóúñ]+\s+del?\s+\d{4})", re.IGNORECASE
+    # «Enviado:» y «Enviado el:», como lo imprime Outlook (4100977, 2026-11-18).
+    r"\bEnviado(?:\s+el)?\s*:\s*(?:[A-Za-záéíóúñ]+,?\s+)?(\d{1,2}\s+de\s+[A-Za-záéíóúñ]+\s+del?\s+\d{4})",
+    re.IGNORECASE,
 )
 
 
 def _del_correo(texto: str, hoy: date | None) -> date | None:
-    """La fecha de envío de un correo impreso, en la cabeza de la hoja."""
-    cabeza = _normalizar(" ".join((texto or "").split())[:_CABEZA_DE_LA_HOJA])
-    hallado = _ENVIADO.search(cabeza)
-    declaradas = fechas_de(hallado.group(1), hoy=hoy) if hallado else []
-    return declaradas[0] if declaradas else None
+    """La fecha de envío de un correo impreso: en la cabeza de la hoja y, si no, la primera de la hoja.
+
+    El correo reenviado que se imprime con lo que trae delante -- la tabla del
+    banco de 4100977 (UPD2985241, 2026-11-18) -- lleva su «Enviado el:» más
+    abajo; la primera de la hoja es la del mensaje más reciente.
+    """
+    plano = " ".join((texto or "").split())
+    for tramo in (plano[:_CABEZA_DE_LA_HOJA], plano):
+        hallado = _ENVIADO.search(_normalizar(tramo))
+        declaradas = fechas_de(hallado.group(1), hoy=hoy) if hallado else []
+        if declaradas:
+            return declaradas[0]
+    return None
+
+
+# -- la fecha vista por la IA con visión ------------------------------------------
+
+#: Lo que se le pide a la IA con visión cuando ninguna lectura de texto deja la
+#: fecha del documento (el operador, 2026-11-18: «asegúrate de que todos los
+#: documentos puedan obtener la fecha de creación o de radicación»). Copia, no
+#: interpreta: lo que no se lea se queda sin fecha y va a Revisión.
+INSTRUCCIONES_PARA_LA_FECHA_A_LA_VISTA = (
+    "En la imagen está la hoja principal de un documento. Copia sus fechas tal como están escritas, "
+    "a máquina o a mano, una línea cada una:\n"
+    "SELLO: la fecha del sello de radicación o del sello de la caja que recibió el pago (el de tinta, "
+    "con «FECHA DE RECIBIDO» o «PAGADO»), si lo hay.\n"
+    "CASILLAS: lo escrito en las casillas DÍA, MES y AÑO, en ese orden, si las hay.\n"
+    "DOCUMENTO: la fecha en que se escribió o se firmó el documento: la de su campo «Fecha:», la de su "
+    "encabezado («Ciudad, fecha») o la del pie, donde se firma; en un correo, la de «Enviado el:». Nunca "
+    "una fecha que el texto cite de otro papel (la de una factura, una notificación o un pago).\n"
+    "Copia las cifras y las letras como las ves, sin cambiarlas ni completarlas. Si una no está, "
+    "escribe «no hay»; si no se lee con certeza, «ilegible». No inventes nada."
+)
+PEDIDO_DE_LA_FECHA_A_LA_VISTA = "Las fechas de esta hoja."
+#: Lo que contesta, campo por campo.
+_LO_VISTO = re.compile(r"^\W*(SELLO|CASILLAS|DOCUMENTO)\W*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+_NO_SE_VE = re.compile(r"(?i)no\s+hay|ilegible|no\s+se\s+lee|sin\s+fecha|n/a")
+_CASILLAS_A_LA_VISTA = re.compile(r"\W*(\d{1,2})\W+(\d{1,2})\W+(\d{4}|\d{2})(?!\d)")
+
+
+#: Cuánto pueden separarse las fechas que copió la IA de una misma hoja -- el
+#: sello, las casillas, la del documento -- para no contradecirse: el escrito
+#: se radica días o semanas después de escribirse. 4100877 (2026-11-18): las
+#: casillas dicen 10-03-22 y la IA copió «09-2-2022» y un sello «09-02-23».
+DIAS_ENTRE_LO_VISTO = 62
+
+
+def _fecha_del_campo(campo: str, valor: str, hoy: date | None) -> date | None:
+    if campo == "CASILLAS":
+        casillas = _CASILLAS_A_LA_VISTA.match(valor)
+        if casillas is None:
+            return None
+        anio = int(casillas.group(3))
+        return _valida(int(casillas.group(1)), int(casillas.group(2)), anio + 2000 if anio < 100 else anio, hoy)
+    # Lo escrito sobre la raya y el año partido entre lo impreso y lo escrito,
+    # como en la solicitud: «Cicuco 07 de Enero de 20 22». Y las cifras sólo
+    # con blancos, como las copia del sello: «25 01 2023» (1005117 pág. 4).
+    limpio = _ANIO_PARTIDO.sub(r"\1\2\3", valor.replace("_", " "))
+    plano = _plano(limpio)
+    if casillas := _CASILLAS_A_LA_VISTA.fullmatch(plano.strip()):
+        anio = int(casillas.group(3))
+        return _valida(int(casillas.group(1)), int(casillas.group(2)), anio + 2000 if anio < 100 else anio, hoy)
+    return (
+        _tras(r"\A", plano, hoy, alcance=60)
+        or _del_sello_de_recaudo(plano, hoy)
+        or next(iter(fechas_de(_normalizar(limpio), hoy=hoy)), None)
+    )
+
+
+def _anio_en_lo_leido(anio: int, leido: str) -> bool:
+    """Si el año está en lo que leyeron los demás lectores de la hoja: entero, partido («20 23») o en dos cifras sueltas."""
+    corto = f"{anio % 100:02d}"
+    return re.search(rf"(?<!\d){anio}(?!\d)|(?<!\d)20\s+{corto}(?!\d)|(?<![\d/.\-]){corto}(?!\d)", leido or "") is not None
+
+
+def fecha_de_lo_visto(
+    texto: str | None, hoy: date | None = None, *, leido: str | None = None
+) -> tuple[date, str] | None:
+    """La fecha que la IA con visión copió de la hoja, y de dónde: el sello, las casillas o el documento, por ese orden.
+
+    El sello manda, como en toda la caja; después las casillas -- el
+    comprobante (el operador, 2026-11-18: «principalmente la del sello, y
+    cuando no se vea, la otra») -- y al final la del documento. Lo que viene
+    «ilegible», a medias o sin el día no es una fecha: «el __ de 01 del 2022»
+    no da ninguna.
+
+    Y dos frenos, porque la visión también se equivoca: lo que copió de la
+    misma hoja no puede contradecirse -- más de ``DIAS_ENTRE_LO_VISTO`` días
+    entre dos de sus fechas --, y si se pasa ``leido`` -- lo que leyeron de la
+    hoja los demás lectores --, el año tiene que estar ahí. Si no, ninguna.
+    """
+    vistas = {m.group(1).upper(): m.group(2).strip() for m in _LO_VISTO.finditer(texto or "")}
+    halladas: list[tuple[date, str]] = []
+    for campo in ("SELLO", "CASILLAS", "DOCUMENTO"):
+        valor = vistas.get(campo, "")
+        if not valor or _NO_SE_VE.search(valor):
+            continue
+        if (fecha := _fecha_del_campo(campo, valor, hoy)) is not None:
+            halladas.append((fecha, campo.lower()))
+    if not halladas:
+        return None
+    fechas = [fecha for fecha, _ in halladas]
+    if (max(fechas) - min(fechas)).days > DIAS_ENTRE_LO_VISTO:
+        return None
+    fecha, campo = halladas[0]
+    if leido is not None and not _anio_en_lo_leido(fecha.year, leido):
+        return None
+    return fecha, campo

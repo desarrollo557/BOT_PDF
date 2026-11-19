@@ -39,6 +39,17 @@ from collections.abc import Sequence
 MAX_TITULO = 110
 #: Cuántos renglones de cabecera se miran para el REF/ASUNTO.
 RENGLONES_DE_CABECERA = 60
+#: Lo menos que trae un renglón que cuenta: tres letras o cifras seguidas. La
+#: capa rota del escáner deja decenas de renglones de una o dos -- «■I», «¡í»,
+#: «i» -- que no son nada y empujaban el título fuera de la cabecera: el
+#: reconocimiento de deuda de 4100919 (UPD2985234 pág. 5) está en el renglón 98
+#: de su capa y en el 16 de los que traen algo (2026-11-18).
+_RENGLON_QUE_CUENTA = re.compile(r"[^\W_]{3}")
+
+
+def renglones_de_la_cabecera(texto: str | None) -> list[str]:
+    """Los primeros ``RENGLONES_DE_CABECERA`` renglones que traen algo, tal cual: donde se buscan los formatos impresos."""
+    return [r for r in (texto or "").splitlines() if _RENGLON_QUE_CUENTA.search(r)][:RENGLONES_DE_CABECERA]
 
 #: El renglón del asunto, como lo escribe el papel y como lo deja la OCR:
 #: «REF:», «REF.:», «.REF!», «Ref.», «Referencia:», «ASUNTO:».
@@ -382,7 +393,9 @@ _FORMATOS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # va antes que el pagaré: su título nombra el pagaré que acompaña.
     ("CARTA DE INSTRUCCIONES", re.compile(r"CARTA\s+DE\s+INSTRUCCIONES")),
     ("PAGARE", re.compile(r"\bPAGAR[EÉ]\s+N[O0]")),
-    ("RECONOCIMIENTO DE DEUDA Y ACUERDO DE PAGO", re.compile(r"RECONOCIMIENTO\s+DE\s+DEUDA")),
+    # Con una letra del final que el escáner cambia: «Réconocimíehto»
+    # (4100919, UPD2985234 pág. 5, 2026-11-18).
+    ("RECONOCIMIENTO DE DEUDA Y ACUERDO DE PAGO", re.compile(r"RECONOCIMI\w{4}\s+DE\s+DEUDA")),
     ("SIMULADOR DE NEGOCIACION Y FINANCIACION", re.compile(r"SIMULADOR\s+DE\s+NEGOCIACI")),
     # El que pone fin al cobro de lo dejado de facturar: no es una
     # reclamación aunque el cuerpo hable de ella (UPD2326470 p10).
@@ -658,6 +671,12 @@ def titulo_del_documento(primera_pagina: str, tipo: str | None = None) -> str:
     originales = (primera_pagina or "").splitlines()[:RENGLONES_DE_CABECERA]
     renglones = [_plano(r) for r in originales]
     cabeza = " ".join(renglones)
+    # Para los formatos impresos, los renglones que traen algo: la capa rota
+    # los empuja fuera de la cabecera con renglones de ruido. Sólo para ellos:
+    # con todo lo demás, la ventana más honda alcanza la publicidad de una
+    # factura -- «Solicitud de nuevos…» -- y la titula (4100982 pág. 4).
+    utiles = renglones_de_la_cabecera(primera_pagina)
+    cabeza_util = " ".join(_plano(r) for r in utiles)
     # El REF o el ASUNTO con el renglón que lo continúa: «REF. RECURSO DE
     # REPOSICIÓN EN SUBSIDIO DE / APELACION.»
     asuntos = []
@@ -698,8 +717,9 @@ def titulo_del_documento(primera_pagina: str, tipo: str | None = None) -> str:
             if patron.search(renglon) and len(renglon) <= 60:
                 return nombre
     for nombre, patron in _FORMATOS:
-        if patron.search(cabeza[:CABEZA_DEL_FORMATO]):
-            if nombre == "CARTA DE INSTRUCCIONES" and not _carta_en_su_titulo(originales):
+        en_la_cabeza = patron.search(cabeza[:CABEZA_DEL_FORMATO])
+        if en_la_cabeza or patron.search(cabeza_util[:CABEZA_DEL_FORMATO]):
+            if nombre == "CARTA DE INSTRUCCIONES" and not _carta_en_su_titulo(originales if en_la_cabeza else utiles):
                 continue
             return nombre
     # El REF o el ASUNTO que ya es un tipo del catálogo: «REFERENCIA:

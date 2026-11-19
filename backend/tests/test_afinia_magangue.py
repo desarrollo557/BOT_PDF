@@ -336,6 +336,27 @@ class TestLaPruebaDelOperador:
         sin_asunto = self.HABEAS_ROTA.replace("ASUNTO: Ley Rabeas Data - NIC\n", "")
         assert titulo_del_documento(sin_asunto) == LEY_HABEAS_DATA
 
+    def test_el_reconocimiento_debajo_del_ruido_de_la_capa_rota(self):
+        """4100919, UPD2985234 pág. 5 (2026-11-18): el acuerdo entero acababa dentro de la DECLARACION.
+
+        La capa del escáner trae 97 renglones de ruido encima del título, y el
+        título con una letra cambiada: «Réconocimíehto».
+        """
+        from resolutions.domain.asunto_del_documento import (
+            ACUERDO_DE_PAGO,
+            titulo_del_documento,
+        )
+
+        ruido = "\n".join(["■I", "¡í", "i", "- vJ.'í'/", "SI", "ii", "í:"] * 14)
+        hoja = (
+            f"{ruido}\nSeñores:'\nCARIBEMAR DE LA COSTA S.A.S E.S.P.\nLa Ciudad\n"
+            "Ref.: Réconocimíehto de deuda y propuesta de acuerdó de pago\nYo,\n"
+        )
+        assert titulo_del_documento(hoja) == ACUERDO_DE_PAGO
+        # El ruido no hace de la publicidad de una factura un título (4100982 pág. 4).
+        factura = "\n".join(["Total a pagar", "$ 6.080", "25/11/2023", *["x"] * 60, "Solicitud de nuevos servicios"])
+        assert titulo_del_documento(factura) != "SOLICITUD"
+
     def test_la_cedula_detras_del_reconocimiento_va_con_los_anexos(self):
         from test_orden_del_acuerdo import CARTA, PAGARE
 

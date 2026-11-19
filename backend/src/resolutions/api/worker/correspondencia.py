@@ -234,6 +234,60 @@ PPP_PARA_LA_FECHA_LOCAL = 300
 PPP_PARA_LA_FECHA_CON_IA = 200
 
 
+#: Cuántas hojas mira la IA con visión por caja, como mucho, buscando una fecha.
+FECHAS_A_LA_VISTA_POR_CAJA = 40
+
+
+def _fechas_a_la_vista(piezas: list[dict], textos: dict, fuente, taller, releidas: dict[int, list[str]]) -> list[dict]:
+    """La fecha que la IA con visión copia de la hoja principal de cada documento que sigue sin ella.
+
+    Sólo la pieza con que abre cada archivo -- su fecha es la de la fila del
+    índice (``fecha_de_cada_archivo``) --, y nunca una cédula. Lo que copia
+    queda entre lo releído de la hoja: es su evidencia y lo mira el revisor de
+    fechas. Lo que no se lee se queda sin fecha (``fecha_de_lo_visto``).
+    """
+    from ...domain.fecha_por_estructura import (
+        PEDIDO_DE_LA_FECHA_A_LA_VISTA,
+        fecha_de_lo_visto,
+    )
+    from ...domain.tramites import es_cedula
+
+    vision = taller.lector_de_fechas_a_la_vista()
+    if vision is None:
+        return []
+    primeras: dict = {}
+    for pieza in piezas:
+        primeras.setdefault(pieza.get("archivo"), pieza)
+    halladas: list[dict] = []
+    for pieza in [p for p in primeras.values() if not p.get("fecha")][:FECHAS_A_LA_VISTA_POR_CAJA]:
+        principal = (pieza.get("donde_buscar") or pieza["pages"])[0]
+        if es_cedula(textos.get(principal, "") or ""):
+            continue
+        try:
+            visto = vision.resumir(
+                PEDIDO_DE_LA_FECHA_A_LA_VISTA, imagen=fuente.render(principal, None, PPP_PARA_LA_FECHA_CON_IA, "jpeg")
+            ) or ""
+        except Exception:  # noqa: BLE001 - sin la visión, el documento sigue sin fecha y va a Revisión
+            logger.warning("la IA no pudo mirar la fecha de la pág. %s", principal, exc_info=True)
+            continue
+        if not visto:
+            continue
+        # Lo que leyeron de la hoja los demás lectores: el año que la IA copió
+        # tiene que estar ahí (4100877: copió un «09-02-23» que nadie más leyó).
+        leido = "\n".join([textos.get(principal, "") or "", *(releidas.get(principal) or [])])
+        releidas.setdefault(principal, []).append(visto)
+        hallada = fecha_de_lo_visto(visto, leido=leido)
+        if hallada is None:
+            continue
+        fecha, campo = hallada
+        pieza["fecha"] = fecha.isoformat()
+        pieza["fecha_por"] = f"vista por la IA en la pág. {principal} ({campo})"
+        pieza["fecha_pagina"] = principal
+        pieza["fecha_via"] = "visión"
+        halladas.append({"pages": pieza["pages"], "fecha": pieza["fecha"], "como": pieza["fecha_por"]})
+    return halladas
+
+
 def _completar_las_fechas(
     piezas: list[dict],
     textos: dict,
@@ -305,6 +359,11 @@ def _completar_las_fechas(
                 piezas[i]["fecha_pagina"] = hallada.pagina
                 piezas[i]["fecha_via"] = hallada.via
                 halladas.append({"pages": piezas[i]["pages"], "fecha": piezas[i]["fecha"], "como": hallada.como()})
+        # El último recurso: la IA con visión copia las fechas de la hoja
+        # principal (2026-11-18: «que todos los documentos puedan obtener la
+        # fecha de creación o de radicación»). Sólo la del documento con que
+        # abre cada archivo, que es la que va al índice; no la de sus anexos.
+        halladas.extend(_fechas_a_la_vista(piezas, textos, fuente, taller, releidas))
     except Exception:  # noqa: BLE001 - buscar una fecha no tumba la caja
         logger.warning("no se pudo terminar de buscar las fechas que faltan", exc_info=True)
     finally:
@@ -2612,7 +2671,16 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     delanteras: set[int] = set()
     if len(grupos.groups) > 1:
         primero, segundo = grupos.groups[0], grupos.groups[1]
-        if primero.page_numbers[0] not in del_acuerdo and _titulo(
+        # Sólo la autorización suelta, con sus soportes: si su documento trae
+        # pagarés o un reconocimiento, es el acuerdo de pago, y pegarlo al de
+        # después lo nombraba como él (4100919, UPD2985234, 2026-11-18: el
+        # acuerdo entero, 1-7, acabó dentro de la DECLARACION de la 8).
+        from ...domain.asunto_del_documento import PIEZAS_DEL_ACUERDO
+
+        con_piezas = any(
+            _titulo(textos.get(p, "") or "", None) in PIEZAS_DEL_ACUERDO for p in primero.page_numbers
+        )
+        if not con_piezas and primero.page_numbers[0] not in del_acuerdo and _titulo(
             textos.get(primero.page_numbers[0], "") or "", None
         ) in ("LEY HABEAS DATA", AUTORIZACION_DE_NOTIFICACION):
             from ...application.anexos_declarados import _renumerar

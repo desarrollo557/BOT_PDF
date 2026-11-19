@@ -411,6 +411,8 @@ _ROTULOS_DE_CASILLAS = re.compile(r"\bD[IÍ]A\b\W{1,15}\bMES\b\W{1,15}\bA(?:[ÑN
 #: Hasta dónde se buscan, tras los rótulos, las cifras de la fecha.
 _ALCANCE_DE_LAS_CASILLAS = 260
 _TRES_CIFRAS = re.compile(r"(?<!\d)(\d{1,2})\W{1,6}(\d{1,2})\W{1,6}((?:19|20)\d{2})(?!\d)")
+#: Y con el año en dos cifras, «01 09 22»: sólo si ninguna trae el entero.
+_TRES_CIFRAS_CON_ANIO_CORTO = re.compile(r"(?<!\d)(\d{1,2})\W{1,6}(\d{1,2})\W{1,6}(\d{2})(?!\d)")
 
 
 def fecha_de_las_casillas(texto: str, *, hoy: date | None = None) -> date | None:
@@ -423,15 +425,20 @@ def fecha_de_las_casillas(texto: str, *, hoy: date | None = None) -> date | None
     primera que forma una fecha.
     """
     plano = _O_POR_CERO.sub("0", " ".join((texto or "").split()))
-    for rotulo in _ROTULOS_DE_CASILLAS.finditer(plano):
-        tramo = plano[rotulo.end() : rotulo.end() + _ALCANCE_DE_LAS_CASILLAS]
-        for inicio in range(len(tramo)):
-            hallado = _TRES_CIFRAS.match(tramo, inicio)
-            if hallado is None:
-                continue
-            fecha = _valida(int(hallado.group(1)), int(hallado.group(2)), int(hallado.group(3)), hoy)
-            if fecha is not None:
-                return fecha
+    # Primero con el año entero; si ninguno, con el de dos cifras: «01 09 22»
+    # en el comprobante cupón manual (4100929, UPD3138049, 2026-11-18). Por
+    # ese orden, y no a la vez: «9 16 09 08 2022» daría el 16-09-2008.
+    for patron, siglo in ((_TRES_CIFRAS, 0), (_TRES_CIFRAS_CON_ANIO_CORTO, 2000)):
+        for rotulo in _ROTULOS_DE_CASILLAS.finditer(plano):
+            tramo = plano[rotulo.end() : rotulo.end() + _ALCANCE_DE_LAS_CASILLAS]
+            for inicio in range(len(tramo)):
+                hallado = patron.match(tramo, inicio)
+                if hallado is None:
+                    continue
+                anio = siglo + int(hallado.group(3))
+                fecha = _valida(int(hallado.group(1)), int(hallado.group(2)), anio, hoy)
+                if fecha is not None:
+                    return fecha
     return None
 
 

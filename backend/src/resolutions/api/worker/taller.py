@@ -514,6 +514,33 @@ class Taller:
             antes_de_pedir=self.control.check,
         )
 
+    def lector_de_fechas_a_la_vista(self):
+        """Quien copia con visión las fechas de la hoja principal de un documento sin fecha, si se pidió la IA.
+
+        El último recurso del agente de fechas (2026-11-18): cuando ni la capa,
+        ni Tesseract, ni el OCR de pago dejan la fecha -- el OCR leyó
+        «16/05/10-11-2021» donde el papel dice «Agosto-11-2021» (4100975 pág.
+        15), o pegó el día del comprobante al ID de cobros (4100877) --.
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_resumen import MistralResumenConfig, MistralResumidor
+        from ...domain.fecha_por_estructura import INSTRUCCIONES_PARA_LA_FECHA_A_LA_VISTA
+
+        return MistralResumidor(
+            api_key=llave,
+            config=MistralResumenConfig(model="mistral-medium-latest", max_tokens=120, temperatura=0.0),
+            consumo=self.consumo,
+            turnos=self.turnos_de_ia,
+            instrucciones=INSTRUCCIONES_PARA_LA_FECHA_A_LA_VISTA,
+            encabezado="Pedido",
+            antes_de_pedir=self.control.check,
+        )
+
     def lector_del_acta_de_grado(self):
         """Quien saca con la IA, del texto de un acta de grado, sus cinco datos, si se pidió la IA.
 

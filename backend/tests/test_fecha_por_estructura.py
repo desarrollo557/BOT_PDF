@@ -223,6 +223,32 @@ class TestElComprobanteYLaFactura:
         cupon = "COMPROBANTE CUPON MANUAL Nro. 3014202104290000122013 FECHA DIA MES ANIO"
         assert fecha_por_estructura([1], _paginas(cupon), hoy=HOY).fecha is None
 
+    def test_las_casillas_con_el_anio_en_dos_cifras(self) -> None:
+        """4100929 (UPD3138049, 2026-11-18): «FECHA DIA MES AÑO 01 09 22», el sello de la caja sin leer."""
+        cupon = (
+            "| COMPROBANTE CUPON MANUAL N- 136329 | Nro-3014202203100000 | ID DE COBROS: | 4 | 1 | 0 | 0 | 9 | 2 |\n"
+            "| FORMA DE PAGO: | VALOR CANCELADO: | 24.570 | EFECTIVO ☑ | FECHA DIA MES AÑO 01 09 22 |"
+        )
+        assert fecha_por_estructura([1], _paginas(cupon), hoy=HOY).fecha == date(2022, 9, 1)
+
+    def test_el_sello_manda_sobre_las_casillas(self) -> None:
+        # El operador, 2026-11-18: «principalmente la del sello, y cuando no se vea, la otra».
+        cupon = "COMPROBANTE CUPON MANUAL Nro. 30142022 FECHA DIA MES AÑO 07 04 2022 CAM 08 ABR 2022 PAGADO"
+        assert fecha_por_estructura([1], _paginas(cupon), hoy=HOY).fecha == date(2022, 4, 8)
+
+    def test_las_casillas_con_los_rotulos_tapados_por_la_etiqueta(self) -> None:
+        """1000883 (UPD3102731, 2026-11-18): la etiqueta de la caja tapa «DÍA MES AÑO»."""
+        cupon = (
+            "| COMPROBANTE CUPON MANUAL N-137575 | Nro-3014202203100000 |\n"
+            "| ID DE COBROS: 1 0 0 0 8 8 3 0 2 2 - 0 7 | | | | 30 08 2022 |"
+        )
+        assert fecha_por_estructura([1], _paginas(cupon), hoy=HOY).fecha == date(2022, 8, 30)
+
+    def test_sin_el_dia_no_se_inventa(self) -> None:
+        # 4100877: la IA pegó el día al ID de cobros y dejó «3 | 22».
+        cupon = "COMPROBANTE CUPON MANUAL FECHA DIA | MES | ANIO ID DE COBROS: *4100877259-2310* | | 3 | 22 |"
+        assert fecha_por_estructura([1], _paginas(cupon), hoy=HOY).fecha is None
+
     def test_la_factura_anexa_no_fecha_el_escrito(self) -> None:
         # UPD3138018 (4100325): salía el 16/11/2023 de la factura de la pág. 2.
         escrito = "Talaigua nuevo Bolívar Señores Afinia Grupo EPM Cordial saludo La Presente es para solicitar…"
@@ -234,6 +260,132 @@ class TestElComprobanteYLaFactura:
         assert r.principal == 1
         assert r.fecha is None
         assert r.donde_buscar == (1,)
+
+
+class TestLosFormulariosDelCliente:
+    """4100993 y 4100918 (2026-11-18): la fecha a mano de la solicitud y de la declaración."""
+
+    def test_la_solicitud_de_servicio_no_es_una_habeas_data(self) -> None:
+        # Sus consentimientos nombran «el tratamiento de datos personales».
+        solicitud = (
+            "Quiero Activar mi Energía con CaribeMar Solicitud de Servicio Eléctrico en Baja Tensión\n"
+            "Señores: Ciudad CÉCULO 07 de Enero de 2022\nCaribeMar de la Costa S.A. E.S.P.\n"
+            "REFERENCIA: SOLICITUD DE SERVICIO ELÉCTRICO EN BAJA TENSIÓN\n"
+            "Consentimientos: … el consentimiento otorgado para el tratamiento de datos personales."
+        )
+        r = fecha_por_estructura([1], _paginas(solicitud), hoy=HOY)
+        assert (r.fecha, r.fuente) == (date(2022, 1, 7), "solicitud de servicio")
+
+    def test_la_declaracion_con_el_mes_delante(self) -> None:
+        declaracion = (
+            "afinia Grupo·epm Lugar: CICUCO Fecha: Enero 5 del 2022\n"
+            "# REFERENCIA: DECLARACION BAJO GRAVEDAD DE JURAMENTO NIC 4100993"
+        )
+        r = fecha_por_estructura([1], _paginas(declaracion), hoy=HOY)
+        assert (r.fecha, r.fuente) == (date(2022, 1, 5), "declaración bajo juramento")
+
+    def test_la_declaracion_con_el_anio_en_dos_cifras(self) -> None:
+        declaracion = "Lugar: Santa Rosa\nFecha: 09/06/21\nREFERENCIA: DECLARACION BAJO GRAVEDAD DE JURAMENTO\nNIC 4100918"
+        assert fecha_por_estructura([1], _paginas(declaracion), hoy=HOY).fecha == date(2021, 6, 9)
+
+    def test_la_declaracion_con_el_mes_en_letras_entre_guiones(self) -> None:
+        # 4100924 «27-MARZO-2022» y 4100975 «Agosto-11-2021».
+        for escrita, fecha in (("27-MARZO-2022", date(2022, 3, 27)), ("Agosto-11-2021", date(2021, 8, 11))):
+            declaracion = f"Lugar: MAGANGUE Fecha: {escrita} REFERENCIA: DECLARACION BAJO GRAVEDAD DE JURAMENTO"
+            assert fecha_por_estructura([1], _paginas(declaracion), hoy=HOY).fecha == fecha
+
+    def test_la_solicitud_con_el_anio_partido_entre_lo_impreso_y_lo_escrito(self) -> None:
+        # 4100975: «de 20» impreso y «21» a mano, y lo escrito sobre la raya.
+        for escrita in ("Magangue 11 de Agosto de 20 21", "Magangue __11__ de __Agosto__ de 20_21"):
+            solicitud = (
+                f"Solicitud de Servicio Eléctrico en Baja Tensión Señores: Ciudad {escrita} "
+                "REFERENCIA: SOLICITUD DE SERVICIO ELÉCTRICO EN BAJA TENSIÓN"
+            )
+            assert fecha_por_estructura([1], _paginas(solicitud), hoy=HOY).fecha == date(2021, 8, 11)
+
+    def test_el_encabezado_con_el_anio_partido(self) -> None:
+        # 1005117 pág. 4: «de 20» impreso en el formato del recurso y «23» a mano.
+        recurso = (
+            "afinia Grupo·epm Maganque Bolívar, 25 de enero de 20 23. (Municipio) (día) (mes) (año) Señores "
+            "CARIBEMAR DE LA COSTA S.A.S. E.S.P. Asunto: Interposición de recurso(s) de Reposición"
+        )
+        assert fecha_por_estructura([1], _paginas(recurso), hoy=HOY).fecha == date(2023, 1, 25)
+
+    def test_el_correo_reenviado_con_su_enviado_el_mas_abajo(self) -> None:
+        from resolutions.domain.fecha_por_estructura import _del_correo
+
+        # 4100977: la tabla del banco delante y «Enviado el:» más abajo.
+        correo = (
+            "Merly Mejia Vega Asunto: Datos adjuntos: RV: Confirmar y aplicar " + "| 23-07-2019 | 3.049.890 | " * 12
+            + "De: Jaiver Antonio Rada Suarez Enviado el: martes 30 de julio de 2019 07:49 AM Para: Nicolas"
+        )
+        assert _del_correo(correo, HOY) == date(2019, 7, 30)
+
+    def test_el_expediente_de_la_solicitud(self) -> None:
+        # 4100975 pág. 2: la oficina lo abre con la solicitud.
+        expediente = (
+            "Grupo EPM CARIBEMAR DE LA COSTA S.A.S. ESP EXPEDIENTE No. Expediente: P23202021080008 "
+            "Fecha de solicitud del Servicio: 11/08/2021 # DATOS CLIENTE"
+        )
+        r = fecha_por_estructura([1], _paginas(expediente), hoy=HOY)
+        assert (r.fecha, r.fuente) == (date(2021, 8, 11), "expediente de la solicitud")
+
+    def test_el_retie_respalda_la_declaracion_que_no_deja_leer_su_fecha(self) -> None:
+        # 4100975 págs. 6-7: la declaración sin fecha legible, el RETIE firmado ese día.
+        declaracion = "Lugar: MAGNOLIA Fecha: 16/05/10-11-2021 REFERENCIA: DECLARACION BAJO GRAVEDAD DE JURAMENTO"
+        retie = (
+            "DECLARACIÓN DE CUMPLIMIENTO DEL RETIE (REGLAMENTO TÉCNICO DE INSTALACIONES ELÉCTRICAS) … "
+            "En constancia se firma en la ciudad de MAGAUGOS el 11 de Agosto del 2021 Firma"
+        )
+        assert fecha_por_estructura([1, 2], _paginas(declaracion, retie), hoy=HOY).fecha == date(2021, 8, 11)
+        # Sin el día no hay fecha (4100993 pág. 8).
+        sin_dia = retie.replace("el 11 de Agosto del 2021", "el __ de 01 del 2022")
+        assert fecha_por_estructura([1], _paginas(sin_dia), hoy=HOY).fecha is None
+
+    def test_la_declaracion_sin_fecha_no_se_inventa(self) -> None:
+        declaracion = "Lugar: Fecha: REFERENCIA: DECLARACION BAJO GRAVEDAD DE JURAMENTO NIC 4100975"
+        assert fecha_por_estructura([1], _paginas(declaracion), hoy=HOY).fecha is None
+
+
+class TestLaFechaVistaPorLaIa:
+    """El último recurso del agente de fechas (2026-11-18): lo que la IA con visión copia de la hoja."""
+
+    def test_el_sello_manda_despues_las_casillas_y_al_final_el_documento(self) -> None:
+        from resolutions.domain.fecha_por_estructura import fecha_de_lo_visto
+
+        assert fecha_de_lo_visto("SELLO: 01 SEP 2022\nCASILLAS: 01 09 22\nDOCUMENTO: no hay") == (
+            date(2022, 9, 1),
+            "sello",
+        )
+        assert fecha_de_lo_visto("SELLO: no hay\nCASILLAS: 10 3 22\nDOCUMENTO: no hay") == (date(2022, 3, 10), "casillas")
+        assert fecha_de_lo_visto("SELLO: ilegible\nCASILLAS: no hay\nDOCUMENTO: Agosto-11-2021") == (
+            date(2021, 8, 11),
+            "documento",
+        )
+        assert fecha_de_lo_visto("DOCUMENTO: Cicuco 07 de Enero de 20 22") == (date(2022, 1, 7), "documento")
+
+    def test_el_sello_con_blancos_manda_sobre_la_fecha_que_el_recurso_cita(self) -> None:
+        """1005117 (UPD2437857 pág. 4): el sello «25 01 2023»; el «21 de Diciembre» es el del acto que recurre."""
+        from resolutions.domain.fecha_por_estructura import fecha_de_lo_visto
+
+        visto = "SELLO: 25 01 2023\nCASILLAS: 25 de junio de 20 23\nDOCUMENTO: 21 de Diciembre de 20 22"
+        assert fecha_de_lo_visto(visto, leido="Maganque Bolívar, 25 de enero de 20 23.") == (date(2023, 1, 25), "sello")
+
+    def test_lo_que_se_contradice_o_nadie_mas_leyo_no_es_una_fecha(self) -> None:
+        """4100877 (2026-11-18): las casillas dicen 10-03-22; la IA copió «09-2-2022» y un sello «09-02-23»."""
+        from resolutions.domain.fecha_por_estructura import fecha_de_lo_visto
+
+        leido = "| DIA | MES | ANIO | ID DE COBROS: *4100877259-2310* | | 3 | 22 |"
+        assert fecha_de_lo_visto("SELLO: 09-02-23\nCASILLAS: 09 - 2 - 2022\nDOCUMENTO: no hay", leido=leido) is None
+        assert fecha_de_lo_visto("SELLO: 09-02-23\nCASILLAS: no hay\nDOCUMENTO: no hay", leido=leido) is None
+
+    def test_lo_ilegible_o_a_medias_no_es_una_fecha(self) -> None:
+        from resolutions.domain.fecha_por_estructura import fecha_de_lo_visto
+
+        assert fecha_de_lo_visto("SELLO: ilegible\nCASILLAS: ilegible\nDOCUMENTO: no hay") is None
+        assert fecha_de_lo_visto("DOCUMENTO: el __ de 01 del 2022") is None
+        assert fecha_de_lo_visto("CASILLAS: 3 22") is None
+        assert fecha_de_lo_visto("sin sello") is None
 
 
 class TestElSelloManda:
