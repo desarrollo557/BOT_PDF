@@ -93,3 +93,25 @@ class TestLaNotificacionSinRadicado:
 
     def test_la_constancia_siempre(self):
         assert le_falta_su_re("CONSTANCIA DEL CONTENIDO DE LA RECLAMACION", ["sin nada"])
+
+
+class TestElDiaRotoEnElRevisor:
+    """4132553: la fila 29/10/2020 del reconocimiento «290 de Oct de 2020» frente a la carta leída «2010»."""
+
+    def test_manda_la_escrita_en_la_hoja_principal(self):
+        from resolutions.domain.fechas_extremas import (
+            ESTRUCTURA,
+            PAPEL,
+            FechasDeLaFila,
+            _escrita_a_mano,
+            contrastar_las_fechas,
+        )
+
+        assert _escrita_a_mano("Magangue, 290 de Oct de 2020", date(2020, 10, 29))
+        assert not _escrita_a_mano("Magangue, 290 de Oct de 2020", date(2020, 10, 28))
+        fila = FechasDeLaFila(inicial=date(2020, 10, 29), final=date(2020, 10, 29), origen=PAPEL)
+        textos = [
+            "Magangue, 290 de Oct de 2020\nRef.: Reconocimiento de deuda y propuesta de acuerdo de pago",
+            "Firmado en Magangue a los 29 días del mes Octubre del año 2010",
+        ]
+        assert not contrastar_las_fechas(fila, textos, regla=ESTRUCTURA).preguntas

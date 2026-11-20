@@ -462,7 +462,7 @@ def _el_reconocimiento_la_confirma(pieza: dict, textos: dict, releidas: dict) ->
     """
     from datetime import date
 
-    from ...domain.fechas import fecha_escrita_en
+    from ...domain.fechas import fecha_con_el_dia_roto, fecha_escrita_en
 
     if not pieza.get("fecha"):
         return []
@@ -472,28 +472,42 @@ def _el_reconocimiento_la_confirma(pieza: dict, textos: dict, releidas: dict) ->
     pagina_de_la_fecha = pieza.get("fecha_pagina")
     if any(pagina_de_la_fecha in hojas for hojas in reconocimientos):
         fechadas.update(hojas[0] for hojas in reconocimientos if pagina_de_la_fecha in hojas)
-    confirmadas: list[tuple[int, int, str]] = []
+    confirmadas: list[tuple[int, int, str, date]] = []
     for hojas in reconocimientos:
         if hojas[0] in fechadas:
             continue
         for pagina in hojas:
-            trozo = next(
-                (t for texto in [textos.get(pagina, ""), *(releidas.get(pagina) or [])] if (t := fecha_escrita_en(texto, fecha))),
-                None,
-            )
+            leidos = [textos.get(pagina, "") or "", *(releidas.get(pagina) or [])]
+            trozo = next((t for texto in leidos if (t := fecha_escrita_en(texto, fecha))), None)
             if trozo:
-                confirmadas.append((hojas[0], pagina, trozo))
+                confirmadas.append((hojas[0], pagina, trozo, fecha))
+                break
+            # El día roto a mano -- «290 de Oct de 2020» por el 29 -- con el
+            # día y el mes que da su respaldo: la fecha es la del
+            # reconocimiento, con su año escrito entero. El respaldo de 4132553
+            # (la carta de instrucciones, pág. 3) se leyó «del año 2010», y la
+            # fila salía en 2010 con el reconocimiento al final (2026-11-20).
+            roto = next((r for texto in leidos if (r := fecha_con_el_dia_roto(texto, fecha.day, fecha.month))), None)
+            if roto:
+                confirmadas.append((hojas[0], pagina, roto[1], roto[0]))
                 break
     if not confirmadas:
         return []
     pieza["fechas_del_reconocimiento"] = [
         *(pieza.get("fechas_del_reconocimiento") or []),
-        *([primera, fecha.isoformat()] for primera, _, _ in confirmadas),
+        *([primera, suya.isoformat()] for primera, _, _, suya in confirmadas),
     ]
     if any(pagina_de_la_fecha in hojas for hojas in reconocimientos):
         return []
-    _, pagina, trozo = confirmadas[0]
-    pieza["fecha_por"] = f"«{trozo}» en el reconocimiento (pág. {pagina}), con el año que da {pieza.get('fecha_por')}"
+    _, pagina, trozo, suya = max(confirmadas, key=lambda c: c[3])
+    if suya != fecha:
+        pieza["fecha_por"] = (
+            f"«{trozo}» en el reconocimiento (pág. {pagina}): el día y el mes los confirma "
+            f"{pieza.get('fecha_por')} ({fecha:%d/%m/%Y}); el año, el del reconocimiento"
+        )
+    else:
+        pieza["fecha_por"] = f"«{trozo}» en el reconocimiento (pág. {pagina}), con el año que da {pieza.get('fecha_por')}"
+    pieza["fecha"] = suya.isoformat()
     pieza["fecha_pagina"] = pagina
     return [{"pages": pieza["pages"], "fecha": pieza["fecha"], "como": pieza["fecha_por"]}]
 

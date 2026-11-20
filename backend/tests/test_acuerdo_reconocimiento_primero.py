@@ -247,3 +247,29 @@ class TestElAnioEnDosCifras:
         _el_reconocimiento_la_confirma(pieza, textos, {})
         assert pieza["fecha_pagina"] == 4
         assert pieza["fechas_del_reconocimiento"] == [[4, "2020-09-16"], [8, "2020-09-16"]]
+
+
+class TestElDiaRoto:
+    """4132553 (2026-11-20): el reconocimiento dice «290 de Oct de 2020» y la carta, mal leída, «29 … del año 2010»."""
+
+    def test_el_reconocimiento_da_su_anio_y_va_primero(self):
+        from resolutions.api.worker.correspondencia import _el_reconocimiento_la_confirma
+
+        pieza = {
+            "pages": [1, 2, 3, 4, 5],
+            "fecha": "2010-10-29",
+            "fecha_por": "leída por la IA en la pág. 3",
+            "fecha_pagina": 3,
+            "reconocimientos": [[4]],
+        }
+        releidas = {4: [RECONOCIMIENTO.format(fecha="Magangue, 290 de Oct de 2020")]}
+        _el_reconocimiento_la_confirma(pieza, {4: ""}, releidas)
+        assert (pieza["fecha"], pieza["fecha_pagina"]) == ("2020-10-29", 4)
+        assert "el año, el del reconocimiento" in pieza["fecha_por"]
+
+    def test_con_otro_dia_no(self):
+        from resolutions.api.worker.correspondencia import _el_reconocimiento_la_confirma
+
+        pieza = {"pages": [3, 4], "fecha": "2010-10-28", "fecha_pagina": 3, "reconocimientos": [[4]]}
+        _el_reconocimiento_la_confirma(pieza, {4: RECONOCIMIENTO.format(fecha="Magangue, 290 de Oct de 2020")}, {})
+        assert (pieza["fecha"], pieza["fecha_pagina"]) == ("2010-10-28", 3)

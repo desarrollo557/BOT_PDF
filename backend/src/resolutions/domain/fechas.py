@@ -645,3 +645,29 @@ def fecha_escrita_en(texto: str | None, fecha: date) -> str | None:
         if (int(dia), _mes_escrito(mes), int(anio)) == (fecha.day, fecha.month, fecha.year):
             return hallado.group(0)
     return None
+
+
+#: El día escrito a mano con un trazo de más que la lectura vuelve cifra:
+#: «290 de Oct de 2020» por el 29 (4132553, UPD2993001 pág. 4, 2026-11-20).
+_CON_EL_DIA_ROTO = re.compile(
+    r"\b(\d{3})\s*(?:de\s+|[/.\-]\s*)([a-z]{3,10}\.?|\d{1,2})\s*(?:del?\s+|[/.\-]\s*)(\d{4})\b",
+    re.IGNORECASE,
+)
+
+
+def fecha_con_el_dia_roto(texto: str | None, dia: int, mes: int, *, hoy: date | None = None) -> tuple[date, str] | None:
+    """La fecha que el texto escribe con el día roto -- tres cifras, las dos primeras el ``dia`` --, si otra hoja da ese día y ese mes.
+
+    No fecha nada por sí misma: el día y el mes los confirma otra hoja del
+    documento; el año es el que este texto escribe entero. Devuelve la fecha y
+    el trozo, o ``None``.
+    """
+    plano = _sin_tildes(" ".join((texto or "").split()))
+    for hallado in _CON_EL_DIA_ROTO.finditer(plano):
+        cifras, de_mes, anio = hallado.groups()
+        if int(cifras[:2]) != dia or _mes_escrito(de_mes) != mes:
+            continue
+        fecha = _valida(dia, mes, int(anio), hoy)
+        if fecha is not None:
+            return fecha, hallado.group(0)
+    return None

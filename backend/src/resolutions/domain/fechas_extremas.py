@@ -52,7 +52,7 @@ from functools import lru_cache
 #: ``_PALABRA_DE_NUMERO`` es la palabra de número con que ``fechas_del_texto``
 #: junta «dos mil doce (2012)»: la misma, para acotar sus rachas (``texto_acotado``).
 from .acta_consejo import _PALABRA_DE_NUMERO, fechas_del_texto, leer_acta
-from .fechas import fecha_escrita_en
+from .fechas import fecha_con_el_dia_roto, fecha_escrita_en
 
 #: La precisión de una fecha de la fila: un día, o sólo un año.
 DIA = "dia"
@@ -675,6 +675,17 @@ def dentro(fecha: date, ventana: tuple[int, int] | None) -> bool:
 # -- el contraste --------------------------------------------------------------------------
 
 
+def _escrita_a_mano(texto: str, fecha: date) -> bool:
+    """Si el papel escribe la fecha como la deja la mano en la correspondencia: el año en dos cifras o el día con un trazo de más.
+
+    «02 de 02 de 22» (4132537) y «290 de Oct de 2020» (4132553), 2026-11-20.
+    """
+    if fecha_escrita_en(texto, fecha) is not None:
+        return True
+    roto = fecha_con_el_dia_roto(texto, fecha.day, fecha.month)
+    return roto is not None and roto[0] == fecha
+
+
 def contrastar_las_fechas(
     fechas: FechasDeLaFila,
     textos: Sequence[str],
@@ -763,10 +774,20 @@ def contrastar_las_fechas(
             de_la_fila.year in anios
             if precision == ANIO
             else de_la_fila in escritas
-            or (regla == ESTRUCTURA and fecha_escrita_en(texto, de_la_fila) is not None)
+            or (regla == ESTRUCTURA and _escrita_a_mano(texto, de_la_fila))
         )
         if del_papel is not None:
-            if dada_por_buena or _otra_sesion_de_la_misma_acta(de_la_fila, del_papel, papel, regla):
+            # En la correspondencia, la escrita a mano en el papel -- la del
+            # reconocimiento, «290 de Oct de 2020» -- frente a la del lector que
+            # sólo cambia el año -- la carta de instrucciones leída «2010» --:
+            # manda la de su hoja principal (4132553, 2026-11-20).
+            el_anio_de_otra_hoja = (
+                regla == ESTRUCTURA
+                and precision != ANIO
+                and (del_papel.day, del_papel.month) == (de_la_fila.day, de_la_fila.month)
+                and _escrita_a_mano(texto, de_la_fila)
+            )
+            if dada_por_buena or el_anio_de_otra_hoja or _otra_sesion_de_la_misma_acta(de_la_fila, del_papel, papel, regla):
                 confirmadas.append(dicho)
                 continue
             # Dos pruebas, y fuertes: la de la fila no está escrita -- ni su mes
