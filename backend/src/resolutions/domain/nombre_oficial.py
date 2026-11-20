@@ -29,6 +29,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from .asunto_del_documento import CONTESTACION_A_RECLAMACION
 from .catalogo import CATALOGO, FRASES
 
 #: Los títulos que el bot conoce y su nombre en el catálogo del cliente.
@@ -56,7 +57,8 @@ _MOTIVO = re.compile(
 #: «RESPUESTA A RECLAMACION»). Los demás siguen número-título, sin el RE (lo
 #: dictó el 2026-10-21), salvo que su propio sello lo traiga (2026-11-12).
 #: Desde el 2026-11-11, la respuesta de la empresa a una reclamación --
-#: «CONTESTACION A LA RECLAMACION» desde el 2026-11-18
+#: «CONTESTACION A LA RECLAMACION» desde el 2026-11-18 y «RESPUESTA A LA
+#: RECLAMACION» desde el 2026-11-20
 #: (``asunto_del_documento.es_contestacion_a_reclamacion``) --. Y desde el
 #: 2026-11-18, las notificaciones personales: «también deben llevar su
 #: respectivo RE en el nombre del archivo, siempre que se encuentre
@@ -67,7 +69,7 @@ CON_RE_EN_EL_NOMBRE = frozenset(
     {
         "RECLAMO",
         "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION",
-        "CONTESTACION A LA RECLAMACION",
+        CONTESTACION_A_RECLAMACION,
         "NOTIFICACION PERSONAL",
         "NOTIFICACION PERSONAL RECLAMOS",
         "NOTIFICACION PERSONAL ESCRITA",

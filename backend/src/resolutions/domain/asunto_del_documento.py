@@ -586,8 +586,10 @@ def escrito_que_interpone(primera_pagina: str) -> str | None:
 #: Reclamación No. RE…» -- «le colocarás el RE y como nombre contestación a
 #: reclamación»; y el 2026-11-18, con «LA»: «CONTESTACIÓN A LA RECLAMACIÓN», el
 #: mismo para las cartas de la empresa que abren «EN ATENCIÓN A…». No es un
-#: tipo del catálogo del cliente: es su nombre.
-CONTESTACION_A_RECLAMACION = "CONTESTACION A LA RECLAMACION"
+#: tipo del catálogo del cliente: es su nombre. Y desde el 2026-11-20, «ya no es
+#: contestación a la reclamación: respuesta a la reclamación, se llamará así»
+#: (el operador): «RESPUESTA A LA RECLAMACION», con su RE.
+CONTESTACION_A_RECLAMACION = "RESPUESTA A LA RECLAMACION"
 #: «ASUNTO: Reclamación No. RE9234202200564», con lo que la OCR le haga.
 _ASUNTO_DE_RECLAMACION = re.compile(r"\bASUNTO\W{0,3}\s*RECLAMACI\w{0,3}\s+N\W{0,2}[O0]?\W{0,3}\s*R\W?E\s?\d")
 #: «En atención a su petición…», «En atención al recurso interpuesto…»: como

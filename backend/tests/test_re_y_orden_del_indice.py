@@ -61,8 +61,8 @@ class TestElNombreDelArchivo:
 
     def test_la_contestacion_a_reclamacion_lleva_su_re(self):
         assert (
-            _nombre(f"02 {RE}", "CONTESTACION A LA RECLAMACION")
-            == f"02_CONTESTACION-A-LA-RECLAMACION-{RE}.pdf"
+            _nombre(f"02 {RE}", "RESPUESTA A LA RECLAMACION")
+            == f"02_RESPUESTA-A-LA-RECLAMACION-{RE}.pdf"
         )
 
     def test_los_demas_siguen_numero_titulo(self):
@@ -93,8 +93,9 @@ class TestLosTitulosConRe:
     def test_solo_los_tres_exactos(self):
         assert lleva_re_en_el_nombre("RECLAMO")
         assert lleva_re_en_el_nombre("Constancia del contenido de la reclamación")
-        # La respuesta de la empresa a una reclamación, con el nombre del operador (2026-11-11; con «LA», 2026-11-18).
-        assert lleva_re_en_el_nombre("CONTESTACION A LA RECLAMACION")
+        # La respuesta de la empresa a una reclamación, con el nombre del operador (2026-11-11; con «LA», 2026-11-18;
+        # «RESPUESTA A LA RECLAMACION», 2026-11-20).
+        assert lleva_re_en_el_nombre("RESPUESTA A LA RECLAMACION")
         assert not lleva_re_en_el_nombre("RESPUESTA A RECLAMACION")
         assert not lleva_re_en_el_nombre("RECLAMO POR CONSUMO ESTIMADO")
         # Las notificaciones personales, también (el operador, 2026-11-18); no la citación ni la autorización.

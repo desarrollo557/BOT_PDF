@@ -65,15 +65,17 @@ class TestLaContestacionYLasNotificaciones:
             "LUZ ESTHELLA MEDRANO RANGEL\nASUNTO: Recurso de reposición en subsidio el de apelación No.RE9233202300708\n"
             "Estimado señor(a): En atención al recurso interpuesto el 24 de marzo de 2023, frente a la"
         )
-        assert CONTESTACION_A_RECLAMACION == "CONTESTACION A LA RECLAMACION"
+        assert CONTESTACION_A_RECLAMACION == "RESPUESTA A LA RECLAMACION"  # el operador, 2026-11-20
         assert es_contestacion_a_reclamacion(respuesta)
 
     def test_las_notificaciones_personales_llevan_su_re(self):
         from resolutions.domain.nombre_oficial import lleva_re_en_el_nombre
 
         assert lleva_re_en_el_nombre("NOTIFICACION PERSONAL")
-        assert lleva_re_en_el_nombre("CONTESTACION A LA RECLAMACION")
+        assert lleva_re_en_el_nombre("RESPUESTA A LA RECLAMACION")
         assert not lleva_re_en_el_nombre("CONTESTACION A RECLAMACION")
+        # El nombre de antes del 2026-11-20 ya no se usa.
+        assert not lleva_re_en_el_nombre("CONTESTACION A LA RECLAMACION")
 
     def test_el_formulario_de_recurso_de_afinia_abre_su_documento(self):
         from resolutions.application.cartas import _es_escrito_del_tramite
@@ -215,7 +217,7 @@ class TestConSoloOcr:
             ("02", [2, 3], "RECLAMO"),
             ("03", [4], "RECURSO DE REPOSICION"),
             ("04", [5], "DERECHO DE PETICION"),
-            ("05", [6], "CONTESTACION A LA RECLAMACION"),
+            ("05", [6], "RESPUESTA A LA RECLAMACION"),
         )
         sellos = {1: Sello("impreso", "RE9233202202774"), 2: Sello("tinta"), 6: Sello("tinta")}
         # 2: sello de tinta sin RE; 4: escrito del usuario; 6: la copia de una prueba no cuenta.
@@ -270,7 +272,7 @@ class TestLaAuditoriaDeLosRadicados:
             [
                 ArchivoEntregado("01_RECLAMO-RE9233202202774.pdf", (1,)),
                 ArchivoEntregado("02_RECURSO-DE-REPOSICION-RE9233202203621.pdf", (2,)),
-                ArchivoEntregado("03_CONTESTACION-A-LA-RECLAMACION-RE9233202300708.pdf", (3,)),
+                ArchivoEntregado("03_RESPUESTA-A-LA-RECLAMACION-RE9233202300708.pdf", (3,)),
             ],
             textos,
         )
