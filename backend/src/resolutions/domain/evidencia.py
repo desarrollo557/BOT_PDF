@@ -38,8 +38,9 @@ Aquí no se lee papel: entran las lecturas tal como las dejó cada lector.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from enum import StrEnum
 
 
@@ -239,6 +240,163 @@ class EvidenciaDeRE:
     lecturas: tuple[tuple[str, str], ...] = ()
     #: Por qué el valor propuesto se corrigió, si lo dijo quien lo corrigió.
     correccion: str | None = None
+    #: Si el RE salió de cruzar la letra a mano del sello con el RE que su
+    #: trámite trae impreso (``re_impreso_que_casa``), por qué: se cree aunque
+    #: ninguna lectura lo traiga tal cual (el operador, 2026-11-20).
+    cruce: str | None = None
+
+
+#: Lo que la letra a mano deja leer en vez de cada cifra (2026-11-20, sobre las
+#: lecturas del sello de 1000690 pág. 3 y las de 4100974 y 1005122).
+CONFUSIONES_DE_LA_MANO: dict[str, str] = {
+    "0": "ODQU",
+    "1": "IL|/T",
+    "2": "Z",
+    "5": "S",
+    "6": "G",
+    "7": "PDT",
+    "8": "B",
+}
+_LETRAS_DE_LA_MANO = "".join(sorted(set("".join(CONFUSIONES_DE_LA_MANO.values()))))
+#: Lo que cuesta, en el cruce, cada diferencia entre lo leído y lo impreso.
+COSTO_DE_UNA_CONFUSION = 0.5
+#: La «D» que es un «10» escrito junto: «RE23D2021…» por RE2310 2021….
+COSTO_DE_LA_D_POR_10 = 0.5
+COSTO_DE_OTRA_CIFRA = 1.0
+#: Hasta dónde se parece lo leído a un impreso para casarlo, y cuánto más lejos
+#: tiene que quedar el siguiente para que no haya duda.
+DISTANCIA_PARA_CASAR = 2.0
+VENTAJA_SOBRE_EL_SIGUIENTE = 1.5
+#: Cuántas lecturas tienen que casar con el mismo impreso.
+LECTURAS_QUE_CASAN = 2
+#: Cuántas cifras de verdad trae, como poco, lo leído tras su «RE».
+CIFRAS_DE_LO_LEIDO = 8
+_LO_LEIDO_TRAS_EL_RE = re.compile(
+    r"(?<![A-Z0-9])R(?:\W?E|[$€£&§3])\W{0,2}((?:[0-9" + re.escape(_LETRAS_DE_LA_MANO) + r"][ .\-]?){9,18})"
+)
+
+
+def lo_leido_tras_el_re(texto: str | None) -> list[str]:
+    """Lo que cada «RE» de una lectura trae detrás, cifras y letras que la mano confunde: «23D20210565»."""
+    leidos = []
+    for hallado in _LO_LEIDO_TRAS_EL_RE.finditer((texto or "").upper()):
+        # La barra suelta tras un blanco separa renglones («… 0565 / NIC»): no es un «1».
+        token = re.sub(r"[ .\-]", "", re.split(r"[ .\-][/|]", hallado.group(1))[0])
+        if sum(c.isdigit() for c in token) >= CIFRAS_DE_LO_LEIDO:
+            leidos.append(token)
+    return leidos
+
+
+def distancia_de_la_mano(leido: str, cifras: str) -> float:
+    """Cuánto se aparta lo leído a mano de las cifras de un RE impreso, con las confusiones de la letra a mano."""
+
+    def sustituir(a: str, b: str) -> float:
+        if a == b:
+            return 0.0
+        if not a.isdigit() and a in CONFUSIONES_DE_LA_MANO.get(b, ""):
+            return COSTO_DE_UNA_CONFUSION
+        return COSTO_DE_OTRA_CIFRA
+
+    n, m = len(leido), len(cifras)
+    d = [[0.0] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        d[i][0] = i * COSTO_DE_OTRA_CIFRA
+    for j in range(1, m + 1):
+        d[0][j] = j * COSTO_DE_OTRA_CIFRA
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            mejor = min(
+                d[i - 1][j] + COSTO_DE_OTRA_CIFRA,
+                d[i][j - 1] + COSTO_DE_OTRA_CIFRA,
+                d[i - 1][j - 1] + sustituir(leido[i - 1], cifras[j - 1]),
+            )
+            if j >= 2 and leido[i - 1] == "D" and cifras[j - 2 : j] == "10":
+                mejor = min(mejor, d[i - 1][j - 2] + COSTO_DE_LA_D_POR_10)
+            d[i][j] = mejor
+    return d[n][m]
+
+
+@dataclass(frozen=True, slots=True)
+class Cruce:
+    """El RE impreso de su trámite con el que casa la letra a mano de un sello."""
+
+    valor: str
+    #: Lo leído, dónde está impreso y por qué casa.
+    porque: str
+    #: Si se cree; si no, sólo se propone en la Revisión.
+    se_cree: bool
+
+
+def re_impreso_que_casa(
+    lecturas: Iterable[tuple[str, str]],
+    impresos: Mapping[str, Sequence[tuple[int, date | None]]],
+    *,
+    fecha_del_sello: date | None,
+    valido: Callable[[str], str | None] | None = None,
+) -> Cruce | None:
+    """El RE de su trámite que la letra a mano del sello quiso escribir, si lo impreso de la caja lo dice sin duda.
+
+    Lo dictó el operador el 2026-11-20 ante 1000690 (UPD2437824 pág. 3): doce
+    lecturas del sello -- OCR de pago y visión, en tres zonas -- leen
+    «RE23D20210565», «RE23D20210565P» o «RE23020210565», el «10» hecho una «D»
+    y el «7» perdido, y la respuesta del 18-06-2021 dice impreso «Reclamación
+    No. RE2310202105657». «Ponerlo si el agente lo cruza»:
+
+    - lo leído tras el «RE» casa con un impreso a ``DISTANCIA_PARA_CASAR`` o
+      menos, con las confusiones de la mano (``distancia_de_la_mano``), y el
+      siguiente impreso queda ``VENTAJA_SOBRE_EL_SIGUIENTE`` más lejos;
+    - lo dicen ``LECTURAS_QUE_CASAN`` lecturas, y ninguna casa con otro;
+    - ``valido`` -- la oficina y el año del sello -- lo admite;
+    - alguna hoja que lo imprime es del mismo día del sello o posterior: es su
+      trámite -- la respuesta, la notificación --, no un escrito anterior.
+
+    ``impresos`` va por RE, con las hojas que lo imprimen y su fecha. Si casa
+    pero falta algo de lo demás, el impreso se propone (``se_cree=False``).
+    """
+    if not impresos:
+        return None
+    votos: dict[str, list[str]] = {}
+    #: Los RE que alguna lectura trae enteros, trece cifras: si no es el
+    #: impreso, la lectura lo contradice -- no lo leyó mal, leyó otro --.
+    enteros: set[str] = set()
+    for _lector, texto in lecturas:
+        for leido in lo_leido_tras_el_re(texto):
+            if leido.isdigit() and len(leido) == 13:
+                enteros.add(f"RE{leido}")
+            distancias = sorted((distancia_de_la_mano(leido, impreso[2:]), impreso) for impreso in impresos)
+            mejor, impreso = distancias[0]
+            if mejor > DISTANCIA_PARA_CASAR:
+                continue
+            claro = len(distancias) == 1 or distancias[1][0] >= mejor + VENTAJA_SOBRE_EL_SIGUIENTE
+            votos.setdefault(impreso if claro else "?", []).append(leido)
+    candidatos = [impreso for impreso in votos if impreso != "?"]
+    if not candidatos:
+        return None
+    impreso = max(candidatos, key=lambda i: len(votos[i]))
+    leidos = votos[impreso]
+    hojas = impresos[impreso]
+    despues = [
+        (pagina, fecha) for pagina, fecha in hojas if fecha and fecha_del_sello and fecha >= fecha_del_sello
+    ]
+    donde = ", ".join(
+        f"pág. {pagina}" + (f" del {fecha:%d-%m-%Y}" if fecha else "") for pagina, fecha in (despues or hojas)
+    )
+    vistos = ", ".join(f"RE{v} (×{leidos.count(v)})" for v in dict.fromkeys(leidos))
+    porque = f"leído {vistos} en el sello; casa con {impreso}, impreso en la {donde}"
+    faltas = []
+    if len(leidos) < LECTURAS_QUE_CASAN:
+        faltas.append("lo lee una sola lectura")
+    if len(candidatos) > 1 or "?" in votos:
+        faltas.append("otras lecturas casan con otro impreso")
+    if enteros - {impreso}:
+        faltas.append(f"una lectura trae entero otro RE: {', '.join(sorted(enteros - {impreso}))}")
+    if not despues:
+        faltas.append("ninguna hoja que lo imprime es del día del sello o posterior")
+    if valido is not None and (motivo := valido(impreso)):
+        faltas.append(motivo)
+    if faltas:
+        return Cruce(impreso, f"{porque}; sin certeza: {'; '.join(faltas)}", se_cree=False)
+    return Cruce(impreso, porque, se_cree=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,6 +477,11 @@ def decidir_el_re(
                     proponer(propuesto, f"leído tal cual: {motivo}", evidencia.pagina)
                 if corregido := _SERIA.search(motivo):
                     proponer(corregido.group(1), f"leído {propuesto}: {motivo}", evidencia.pagina)
+                continue
+            if not lectores and evidencia.cruce and propuesto == propio and not por_que_no[propuesto]:
+                # La letra a mano que todos los lectores leen igual de mal,
+                # casada con el único RE que su trámite trae impreso.
+                creidos.append(_Visto(propuesto, evidencia, ("cruce con lo impreso",), evidencia.cruce, None))
                 continue
             if not lectores:
                 motivo = f"corregido: {evidencia.correccion}" if evidencia.correccion else "ninguna lectura lo trae tal cual"

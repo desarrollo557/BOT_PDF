@@ -103,11 +103,22 @@ class AgenteDeFechas:
         """La fecha del documento de ``paginas``, o ``None`` si el papel no trae ninguna."""
         # Las hojas que no fechan nada -- la copia de una cédula -- no se miran.
         paginas = [p for p in paginas if not self._no_fecha(textos.get(p, "") or "")]
+        if self._en_orden:
+            # La principal primero y entera -- su texto, releída, con la IA --
+            # y sólo después sus respaldos: la firma de la carta de
+            # instrucciones, que Tesseract sí lee, ganaba al reconocimiento
+            # escrito a mano antes de que la IA lo mirara, y el reconocimiento
+            # fechado acababa al final del acuerdo (1000258, 2026-11-20).
+            for indice, pagina in enumerate(paginas):
+                hallada = self._de_la_hoja(pagina, textos, ocr=indice < self._max_relecturas, ia=indice < self._max_hojas_con_ia)
+                if hallada is not None:
+                    return hallada
+            return None
         for pagina in paginas:
             fecha = self._fechar(textos.get(pagina, "") or "")
             if fecha is not None:
                 return FechaHallada(fecha, pagina, "texto")
-        orden = list(paginas) if self._en_orden else candidatas(paginas, textos)
+        orden = candidatas(paginas, textos)
         if self._releer is not None:
             for pagina in orden[: self._max_relecturas]:
                 hallada = self._con(self._releer, "ocr", pagina)
@@ -118,6 +129,27 @@ class AgenteDeFechas:
                 hallada = self._con(self._leer_con_ia, "ia", pagina)
                 if hallada is not None:
                     return hallada
+        return None
+
+    def fecha_de_la_hoja(self, pagina: int, textos: Mapping[int, str]) -> FechaHallada | None:
+        """La fecha de una sola hoja: su texto, releída en local y, si se eligió, con la IA.
+
+        Para fechar cada reconocimiento de un acuerdo que trae dos (el operador,
+        2026-11-20: «coloca el más reciente»). Lo releído se guarda: una hoja no
+        se paga dos veces.
+        """
+        if self._no_fecha(textos.get(pagina, "") or ""):
+            return None
+        return self._de_la_hoja(pagina, textos, ocr=True, ia=True)
+
+    def _de_la_hoja(self, pagina: int, textos: Mapping[int, str], *, ocr: bool, ia: bool) -> FechaHallada | None:
+        fecha = self._fechar(textos.get(pagina, "") or "")
+        if fecha is not None:
+            return FechaHallada(fecha, pagina, "texto")
+        if ocr and self._releer is not None and (hallada := self._con(self._releer, "ocr", pagina)) is not None:
+            return hallada
+        if ia and self._leer_con_ia is not None and (hallada := self._con(self._leer_con_ia, "ia", pagina)) is not None:
+            return hallada
         return None
 
     def _con(self, leer: Callable[[int], str], via: str, pagina: int) -> FechaHallada | None:

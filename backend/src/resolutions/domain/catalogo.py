@@ -156,11 +156,19 @@ CATALOGO: tuple[TipoDocumental, ...] = (
     TipoDocumental(
         "CONSTANCIA DE NOTIFICACION PERSONAL", ("CONSTANCIA DE NOTIFICACION PERSONAL",)
     ),
+    # La constancia que la oficina entrega al recibir la reclamación. Desde el
+    # 2026-11-20 se llama como su título impreso, «CONSTANCIA DE RECEPCIÓN DE
+    # PETICIONES, QUEJAS Y RECLAMOS (PQR)», acortado como lo dictó el operador:
+    # «CONSTANCIA DE RECEPCION DE PETICIONES - RE». Antes, «CONSTANCIA DEL
+    # CONTENIDO DE LA RECLAMACION», que es la frase de su pie.
     TipoDocumental(
-        "CONSTANCIA DE RECEPCION DE PETICIONES QUEJAS Y RECLAMOS",
+        "CONSTANCIA DE RECEPCION DE PETICIONES",
         (
             "CONSTANCIA DE RECEPCION DE PETICIONES QUEJAS Y RECLAMOS",
             "CONSTANCIA DE RECEPCION DE PETICIONES",
+            "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION VERBAL",
+            "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION",
+            "RECIBI CONSTANCIA DEL CONTENIDO",
         ),
     ),
     TipoDocumental(
@@ -169,14 +177,6 @@ CATALOGO: tuple[TipoDocumental, ...] = (
             "CONSTANCIA DE VISITA REALIZADA EN EL INMUEBLE",
             "CONSTANCIA DE VISITA AL INMUEBLE",
             "CONSTANCIA DE VISITA",
-        ),
-    ),
-    TipoDocumental(
-        "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION",
-        (
-            "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION VERBAL",
-            "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION",
-            "RECIBI CONSTANCIA DEL CONTENIDO",
         ),
     ),
     TipoDocumental("CONTRATO DE TRANSACCION", ("CONTRATO DE TRANSACCION",)),
@@ -312,6 +312,11 @@ CATALOGO: tuple[TipoDocumental, ...] = (
     #: contestan. Es el mismo modo de fallo que el código de caso -- nombra el
     #: asunto del que se habla, no el papel que se tiene delante.
     TipoDocumental("RECLAMO", ("RECLAMO",)),
+    # La autorización de la nota crédito que el operador de aseo da por una
+    # reclamación («AUT-5073-ASEO»), por dictado del operador (2026-11-20). Sin
+    # frases: sólo la pone su formato (``asunto_del_documento``), nunca una
+    # palabra suelta -- la reclamación del usuario es RECLAMO --.
+    TipoDocumental("RECLAMACION"),
     TipoDocumental(
         "RECLAMO POR CONSUMO ESTIMADO",
         ("RECLAMO POR CONSUMO ESTIMADO", "CONSUMO ESTIMADO"),

@@ -29,7 +29,12 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from .asunto_del_documento import CONTESTACION_A_RECLAMACION
+from .asunto_del_documento import (
+    AUTORIZACION_DEL_ASEO,
+    CONTESTACION_A_RECLAMACION,
+    NOTIFICACION_POR_AVISO,
+    PUBLICACION_DEL_AVISO,
+)
 from .catalogo import CATALOGO, FRASES
 
 #: Los títulos que el bot conoce y su nombre en el catálogo del cliente.
@@ -37,8 +42,16 @@ AL_CATALOGO: dict[str, str] = {
     "RECLAMACION": "RECLAMO",
     "AUTORIZACION DE NOTIFICACION ELECTRONICA": "AUTORIZACION PARA LA NOTIFICACION ELECTRONICA",
     "RECONOCIMIENTO DE DEUDA Y ACUERDO DE PAGO": "RECONOCIMIENTO DE DEUDA Y PROPUESTA DE ACUERDO DE PAGO",
-    "CONSTANCIA DE RECLAMACION": "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION",
+    # Como su título impreso, desde el 2026-11-20 (el operador: «deja de
+    # llamarlos CONSTANCIA-DEL-CONTENIDO-DE-LA-RECLAMACION»).
+    "CONSTANCIA DE RECLAMACION": "CONSTANCIA DE RECEPCION DE PETICIONES",
+    # La autorización de la nota crédito del aseo («AUT-5073-ASEO»): el
+    # operador, 2026-11-20, «a estos documentos colócale reclamación». Sin RE:
+    # no es el reclamo del usuario ni trae uno de Afinia.
+    AUTORIZACION_DEL_ASEO: "RECLAMACION",
 }
+#: Los tipos del catálogo que sólo pone el formato del papel, nunca la IA.
+SOLO_POR_SU_FORMATO = frozenset({"RECLAMACION"})
 #: El reclamo por consumo estimado, como lo escribe el cliente en su asunto:
 #: «RECLAMO POR COBRO DE SERVICIO ENERGIA POR ESTIMADO» (UPD3102756 pág. 8).
 _POR_ESTIMADO = re.compile(r"\bESTIMAD[OA]S?\b")
@@ -68,12 +81,20 @@ _MOTIVO = re.compile(
 CON_RE_EN_EL_NOMBRE = frozenset(
     {
         "RECLAMO",
+        "CONSTANCIA DE RECEPCION DE PETICIONES",
+        # El nombre de antes (hasta el 2026-11-20): una entrega vieja que se
+        # sigue o se repara todavía lo trae.
         "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION",
         CONTESTACION_A_RECLAMACION,
         "NOTIFICACION PERSONAL",
         "NOTIFICACION PERSONAL RECLAMOS",
         "NOTIFICACION PERSONAL ESCRITA",
         "CONSTANCIA DE NOTIFICACION PERSONAL",
+        # Y desde el 2026-11-20 la notificación por aviso y su publicación, con
+        # el RE que citan: «Radicado número: RE…», «radicada bajo el número
+        # RE…» (el operador, ante 1000690: «estos documentos tienen RE»).
+        NOTIFICACION_POR_AVISO,
+        PUBLICACION_DEL_AVISO,
     }
 )
 #: Un RE como va en el nombre: «RE» y trece cifras. El «P…» de una solicitud
@@ -163,7 +184,7 @@ def estandarizar(nombre: str | None) -> str | None:
     nombre que trae el papel con otra redacción -- «DECLARACION BAJO LA GRAVEDAD
     DE JURAMENTO», «CONSTANCIA DE RECEPCION DE PETICIONES QUEJAS Y RECLAMOS PQR»
     -- es el del catálogo: «DECLARACION BAJO GRAVEDAD DE JURAMENTO», «CONSTANCIA
-    DE RECEPCION DE PETICIONES QUEJAS Y RECLAMOS». Vale si el nombre es una de
+    DE RECEPCION DE PETICIONES». Vale si el nombre es una de
     sus formas o empieza por una de dos palabras o más; una palabra suelta dentro
     de un nombre largo no lo cambia.
     """
@@ -184,7 +205,8 @@ def instrucciones_para_nombrar() -> str:
     la idea es que no se vaya vacío». El contexto es el catálogo del cliente:
     la IA elige de ahí si el papel es uno de sus tipos.
     """
-    tipos = "\n".join(f"- {tipo.nombre}" for tipo in CATALOGO)
+    # Sin los que sólo pone su formato: la IA llamaría RECLAMACION al reclamo.
+    tipos = "\n".join(f"- {tipo.nombre}" for tipo in CATALOGO if tipo.nombre not in SOLO_POR_SU_FORMATO)
     return (
         "Eres archivista de Afinia (Caribemar de la Costa S.A.S. E.S.P.), la empresa de "
         "energía, y nombras los documentos del expediente de un suscriptor para el Índice "

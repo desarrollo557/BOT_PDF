@@ -102,7 +102,9 @@ from pathlib import Path
 #: otro equipo). En ese equipo, sin red: «C:\Users\SIAR1\Desktop\FOLIA-BOT\MAGANGUE PROCESADO».
 CARPETA_POR_OMISION = r"W:\FOLIA-BOT\MAGANGUE PROCESADO"
 #: Los únicos títulos que llevan el RE, como los deja ``_plano``.
-TITULOS_CON_RE = ("RECLAMO", "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION")
+#: La constancia se llama «CONSTANCIA DE RECEPCION DE PETICIONES» desde el
+#: 2026-11-20; el nombre de antes sigue en las entregas viejas.
+TITULOS_CON_RE = ("RECLAMO", "CONSTANCIA DE RECEPCION DE PETICIONES", "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION")
 REGISTRO = "00.RE Y ORDEN - REGISTRO.csv"
 SIMULACION = "00.RE Y ORDEN - SIMULACION.csv"
 #: Lo que ya se leyó de cada PDF -- su RE o que no lo tiene --, con su tamaño y su

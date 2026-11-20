@@ -319,10 +319,15 @@ _DE_LA_EMPRESA = re.compile(r"\bCONSECUTIVO\s+N[O0°º]?\W")
 #: OCR hace de sus palabras: «Recibí Constanza del contenido» (UPD3102729 pág.
 #: 2), y por su formulario si el renglón no se lee: «PARA LA EMPRESA», «N° PQR»
 #: y «CAUSA:».
-_CONSTANCIA = re.compile(r"RECIB\w{0,2}\s+CONSTAN\w{1,4}\s+DE\w?\s+(?:\w{1,3}\s+)?CONTENIDO")
+#: Y la «O» que el escáner vuelve otra letra: «Recibí cgnstancia del
+#: contenido», con «N^POR:» por «N° PQR:» (4132560, UPD2427617 pág. 2,
+#: 2026-11-20): no se reconocía, y la constancia salía pegada a la autorización
+#: de la hoja de delante.
+_CONSTAN = r"C\w?NSTAN\w{1,4}"
+_CONSTANCIA = re.compile(r"RECIB\w{0,2}\s+" + _CONSTAN + r"\s+DE\w?\s+(?:\w{1,3}\s+)?CONTENIDO")
 _FORMULARIO_DE_LA_CONSTANCIA = (
     re.compile(r"PARA\s+LA\s+EMPRESA"),
-    re.compile(r"\bN\W{0,3}\s*P\W?Q\W?R\b"),
+    re.compile(r"\bN\W{0,3}\s*P\W?[QO0]\W?R\b"),
     re.compile(r"\bCAUSA\s*[:.]"),
 )
 #: Las otras dos formas de la constancia en las cajas de Magangué (2026-10-26):
@@ -331,7 +336,7 @@ _FORMULARIO_DE_LA_CONSTANCIA = (
 #: Con lo que el escáner hace de la palabra: «CONSTANOA DE RECEPCIÓN» (1000186
 #: pág. 3), «CONSTANZA».
 _OTRAS_CONSTANCIAS = re.compile(
-    r"CONSTAN\w{1,4}\s+DEL?\s+CONTENIDO\s+DE\s+LA\s+RECLAMACION|CONSTAN\w{1,4}\s+DE\s+RECEPCION\s+DE\s+PETICIONES"
+    _CONSTAN + r"\s+DEL?\s+CONTENIDO\s+DE\s+LA\s+RECLAMACION|" + _CONSTAN + r"\s+DE\s+RECEPCION\s+DE\s+PETICIONES"
 )
 #: La publicación del aviso, por su título en su renglón: lleva al lado el aviso,
 #: cuyo «Asunto: Notificación por aviso» no la nombra (1000690, 2026-10-22).
@@ -342,9 +347,14 @@ _PUBLICACION_DEL_AVISO = re.compile(r"^\W*PUBLICACION\s+DEL?\s+AVISO\W*$")
 #: «RECLAMO»), el aviso que notifica un acto (920933, salía «RECURSO DE
 #: REPOSICION» por los recursos que ofrece) y el formulario de la visita de
 #: cobro (887305, salía «PAGO NO APLICADO» por una casilla sin marcar).
+#: La carta del operador de aseo que autoriza la nota crédito de una
+#: reclamación («AUT-5073-ASEO»): se nombra RECLAMACION, sin RE
+#: (``nombre_oficial``; el operador, 2026-11-20). Su título interno sigue
+#: empezando por «AUTORIZACION»: no toma el RE de ningún trámite.
+AUTORIZACION_DEL_ASEO = "AUTORIZACION DE NOTA CREDITO DEL ASEO"
 _POR_LO_QUE_DICEN: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
-        "AUTORIZACION",
+        AUTORIZACION_DEL_ASEO,
         re.compile(r"\bAUT\W?\d{3,5}\W?ASEO\b|APLICAR\s+DESCUENTO\W{0,3}S?\W{0,3}\s*O\s+NOTAS?\s+CREDITO"),
     ),
     (

@@ -68,7 +68,7 @@ class TestLoQueDiceElPapel:
                 "ACTA DE SUSPENSION CORTE Y RECONEXION",
             ),
             ("CERTIFICADO DE TRADICION Y LIBERTAD", "CERTIFICADO DE TRADICION"),
-            ("Constancia del contenido de la reclamación", "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION"),
+            ("Constancia del contenido de la reclamación", "CONSTANCIA DE RECEPCION DE PETICIONES"),
         ],
     )
     def test_reconoce_el_rotulo_impreso(self, texto, esperado):

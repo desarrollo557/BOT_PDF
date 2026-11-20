@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import date
 
 from ..domain.anexos_declarados import (
     HOJA_MUDA,
@@ -583,6 +584,107 @@ def unir_soportes(
     )
 
 
+def constancias_solas(
+    grupos: GroupingResult,
+    textos: Mapping[int, str],
+    anexos: dict[str, list[int]] | None = None,
+    *,
+    constancias: Mapping[int, str | None],
+) -> SoportesUnidos:
+    """Cada constancia del contenido de la reclamación en su PDF, sola, siempre.
+
+    Lo dictó el operador el 2026-11-20 («una constancia del contenido de la
+    reclamación siempre va sola»; «siempre un documento así va solo»). Va al
+    final de los cortes: el filtro de formularios la dejaba con su anexo
+    evidente, y después los soportes, lo que no abre y el revisor le volvían a
+    pegar la cédula o la carta de detrás (1005652, UPD2437864).
+
+    ``constancias`` dice, de cada hoja de constancia, su RE: dos hojas seguidas
+    con el mismo RE son la misma constancia. Lo que tenía detrás en su
+    documento se queda aparte, y si es sólo soporte -- la cédula, la factura,
+    el reverso mudo -- va con el documento siguiente, que es del mismo cliente;
+    si no hay, con el anterior. Nunca con otra constancia.
+    """
+    anexos = {codigo: list(paginas) for codigo, paginas in (anexos or {}).items()}
+    if not any(p in constancias for g in grupos.groups for p in g.page_numbers):
+        return SoportesUnidos(grupos=grupos, anexos=anexos)
+    # 1. Partir: lo de antes, cada constancia, lo de detrás.
+    piezas: list[dict] = []
+    for grupo in grupos.groups:
+        tramos: list[list[int]] = []
+        claves: list[tuple[str | None] | None] = []
+        for pagina in grupo.page_numbers:
+            clave = (constancias[pagina],) if pagina in constancias else None
+            sigue = tramos and clave == claves[-1] and (clave is None or clave[0] is not None)
+            if not sigue:
+                tramos.append([])
+                claves.append(clave)
+            tramos[-1].append(pagina)
+        for indice, (tramo, clave) in enumerate(zip(tramos, claves, strict=True)):
+            piezas.append(
+                {
+                    "grupo": grupo,
+                    "paginas": tramo,
+                    "propio": indice == 0,
+                    "constancia": clave is not None,
+                    "tras": indice > 0 and claves[indice - 1] is not None and clave is None,
+                    "anexos": [p for p in anexos.get(grupo.code.value, []) if p in tramo],
+                }
+            )
+    if len(piezas) == len(grupos.groups):
+        return SoportesUnidos(grupos=grupos, anexos=anexos)
+
+    def soporte(pagina: int) -> bool:
+        texto = textos.get(pagina, "") or ""
+        return clase_de_soporte(texto) is not None or es_cedula(texto)
+
+    # 2. Lo de detrás que es sólo soporte, con el siguiente; si no, con el anterior.
+    movidas: dict[int, int] = {}
+    i = 0
+    while i < len(piezas):
+        pieza = piezas[i]
+        if not (pieza["tras"] and all(soporte(p) for p in pieza["paginas"])):
+            i += 1
+            continue
+        siguiente = next((j for j in range(i + 1, len(piezas)) if not piezas[j]["constancia"]), None)
+        anterior = next((j for j in range(i - 1, -1, -1) if not piezas[j]["constancia"]), None)
+        destino = siguiente if siguiente is not None else anterior
+        if destino is None:
+            i += 1
+            continue
+        otra = piezas[destino]
+        otra["paginas"] = (
+            [*pieza["paginas"], *otra["paginas"]] if destino > i else [*otra["paginas"], *pieza["paginas"]]
+        )
+        otra["anexos"] = [*otra["anexos"], *pieza["anexos"], *pieza["paginas"]]
+        for pagina in pieza["paginas"]:
+            movidas[pagina] = min(p for p in otra["paginas"] if p not in pieza["paginas"])
+        del piezas[i]
+    # 3. Numerar otra vez. La pieza que conserva la primera hoja de su documento
+    # conserva su nombre y su código; las nuevas se nombran después (F6).
+    ancho = max(2, len(re.match(r"^(\d*)", grupos.groups[0].code.value).group(1)))
+    salida: list[PageGroup] = []
+    nuevos: dict[str, list[int]] = {}
+    for puesto, pieza in enumerate(piezas, start=1):
+        grupo = pieza["grupo"]
+        numero = re.match(r"^\d+(.*)$", grupo.code.value)
+        resto = numero.group(1) if pieza["propio"] and numero else ""
+        valor = f"{puesto:0{ancho}d}{resto}"
+        codigo = ResolutionCode(value=valor, raw=grupo.code.raw if resto.strip() else valor)
+        paginas = sorted(pieza["paginas"])
+        if pieza["propio"]:
+            salida.append(replace(grupo, code=codigo, page_numbers=paginas))
+        else:
+            salida.append(PageGroup(code=codigo, page_numbers=paginas))
+        if pieza["anexos"]:
+            nuevos[valor] = sorted(set(pieza["anexos"]))
+    return SoportesUnidos(
+        grupos=GroupingResult(groups=salida, quarantine=list(grupos.quarantine), repairs=list(grupos.repairs)),
+        anexos=nuevos,
+        movidas=movidas,
+    )
+
+
 # -- y un documento nunca se llama como su anexo -----------------------------------
 
 #: Los tipos del catálogo que nombran un soporte. Un documento de la caja que
@@ -1009,8 +1111,21 @@ def partes_del_acuerdo(paginas: Sequence[int], textos: Mapping[int, str]) -> lis
     return partes
 
 
+def reconocimientos_del_acuerdo(paginas: Sequence[int], textos: Mapping[int, str]) -> list[list[int]]:
+    """Las hojas de cada reconocimiento de deuda del acuerdo, en el orden del papel.
+
+    Casi siempre uno; a veces dos -- el acuerdo renegociado trae el nuevo y el
+    anterior -- y entonces el más reciente va primero (``orden_del_acuerdo``).
+    """
+    return [hojas for parte, hojas in partes_del_acuerdo(paginas, textos) if parte == RECONOCIMIENTO]
+
+
 def orden_del_acuerdo(
-    paginas: Sequence[int], textos: Mapping[int, str], *, reconocimiento_fechado: bool
+    paginas: Sequence[int],
+    textos: Mapping[int, str],
+    *,
+    reconocimiento_fechado: bool,
+    fechas_del_reconocimiento: Mapping[int, date] | None = None,
 ) -> tuple[int, ...]:
     """Las hojas de un acuerdo de pago en el orden en que van en su PDF.
 
@@ -1020,16 +1135,44 @@ def orden_del_acuerdo(
     anexos; pero cuando no tenga fecha, colócalo de último: pagarés, Ley Habeas
     Data, anexos, reconocimiento de deuda y acuerdo de pago». Dentro de cada
     parte, el orden del papel. Lo que no trae reconocimiento queda como estaba.
+
+    Con dos reconocimientos (el operador, 2026-11-20: «coloca el más
+    reciente»), el más reciente primero y el anterior justo detrás, antes de
+    los pagarés; el que no tiene fecha, detrás de los fechados.
+    ``fechas_del_reconocimiento`` va por la primera hoja de cada uno. Una hoja
+    con el título que sigue a otra del reconocimiento sin fecha propia es su
+    continuación -- el encabezado repetido -- y va con ella.
     """
     partes = partes_del_acuerdo(paginas, textos)
     if not any(parte == RECONOCIMIENTO for parte, _ in partes):
         return tuple(sorted(paginas))
+    fechas = fechas_del_reconocimiento or {}
+    reconocimientos: list[list[int]] = []
+    anterior = None
+    for parte, hojas in partes:
+        if parte == RECONOCIMIENTO:
+            if anterior == RECONOCIMIENTO and hojas[0] not in fechas:
+                reconocimientos[-1].extend(hojas)
+            else:
+                reconocimientos.append(list(hojas))
+        anterior = parte
+    fechados = sorted((r for r in reconocimientos if r[0] in fechas), key=lambda r: fechas[r[0]], reverse=True)
+    reconocimientos = [*fechados, *(r for r in reconocimientos if r[0] not in fechas)]
+    del_reconocimiento = [p for hojas in reconocimientos for p in hojas]
     puestos = (
         (RECONOCIMIENTO, PAGARES, HABEAS, ANEXOS_DEL_ACUERDO)
         if reconocimiento_fechado
         else (PAGARES, HABEAS, ANEXOS_DEL_ACUERDO, RECONOCIMIENTO)
     )
-    return tuple(p for puesto in puestos for parte, hojas in partes if parte == puesto for p in hojas)
+    return tuple(
+        p
+        for puesto in puestos
+        for p in (
+            del_reconocimiento
+            if puesto == RECONOCIMIENTO
+            else [p for parte, hojas in partes if parte == puesto for p in hojas]
+        )
+    )
 
 
 def verificar_en_el_documento(

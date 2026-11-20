@@ -599,3 +599,49 @@ def fecha_de_expedicion(
                 if fecha is not None:
                     return fecha
     return None
+
+
+#: El día, el mes y el año en dos cifras, como se llenan a mano los huecos del
+#: reconocimiento de deuda: «16 de 09 de 20», «02 de 02 de 22», «16/Sep/20».
+_CON_EL_ANIO_EN_DOS_CIFRAS = re.compile(
+    r"\b(\d{1,2})\s*(?:de\s+|[/.\-]\s*)([a-z]{3,10}\.?|\d{1,2})\s*(?:del?\s+|[/.\-]\s*)(\d{2})(?![\d/])",
+    re.IGNORECASE,
+)
+
+
+def _mes_escrito(mes: str) -> int | None:
+    if mes.isdigit():
+        return int(mes)
+    palabra = _sin_tildes(mes.lower().rstrip("."))
+    if palabra in MESES:
+        return MESES[palabra]
+    abreviado = _ABREVIADOS.get(palabra[:4]) or _ABREVIADOS.get(palabra[:3])
+    return MESES.get(abreviado) if abreviado else None
+
+
+def fecha_escrita_en(texto: str | None, fecha: date) -> str | None:
+    """El trozo de ``texto`` que escribe ``fecha``, también con el año en dos cifras; ``None`` si no la escribe.
+
+    No fecha nada por sí misma: confirma una fecha que ya dio otra hoja. Lo
+    pidió el operador el 2026-11-20 («por qué no está el reconocimiento de
+    deuda de primero si tiene sus fechas»): el reconocimiento de 4132589 dice a
+    mano «16 de 09 de 20» y el de 4132537 «02 de 02 de 22»; el año en dos cifras
+    no basta para fecharlo, pero sí para saber que es la fecha que su carta de
+    instrucciones da entera.
+    """
+    plano = _sin_tildes(" ".join((texto or "").split()))
+    for hallado in _CON_EL_ANIO_EN_DOS_CIFRAS.finditer(plano):
+        dia, mes, anio = hallado.groups()
+        if (int(dia), _mes_escrito(mes), int(anio)) == (fecha.day, fecha.month, fecha.year % 100):
+            return hallado.group(0)
+    for hallado in _EN_LETRA.finditer(plano):
+        if MESES.get(hallado.group(2).lower()) == fecha.month and (int(hallado.group(1)), int(hallado.group(3))) == (
+            fecha.day,
+            fecha.year,
+        ):
+            return hallado.group(0)
+    for hallado in _MES_ABREVIADO.finditer(plano):
+        dia, mes, anio = hallado.groups()
+        if (int(dia), _mes_escrito(mes), int(anio)) == (fecha.day, fecha.month, fecha.year):
+            return hallado.group(0)
+    return None

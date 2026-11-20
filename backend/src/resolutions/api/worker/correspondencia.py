@@ -413,6 +413,88 @@ def _fechas_a_la_vista(piezas: list[dict], textos: dict, fuente, taller, releida
     return halladas
 
 
+def _el_reconocimiento_mas_reciente(pieza: dict, textos: dict, agente) -> list[dict]:
+    """Fecha cada reconocimiento de un acuerdo que trae varios; el acuerdo toma la del más reciente.
+
+    El operador, 2026-11-20: «cuando en un reconocimiento de deuda estén 2
+    reconocimientos de deuda, coloca el más reciente». Cada uno se busca
+    entero -- su texto, releído, con la IA si se eligió -- y lo releído no se
+    vuelve a pagar. Deja en la pieza ``fechas_del_reconocimiento`` --
+    [primera hoja, fecha] -- para ordenar el PDF.
+    """
+    from datetime import date
+
+    fechas: list[tuple[int, date, object]] = []
+    actual = date.fromisoformat(str(pieza["fecha"])[:10]) if pieza.get("fecha") else None
+    for hojas in pieza.get("reconocimientos") or ():
+        if actual is not None and pieza.get("fecha_pagina") in hojas:
+            fechas.append((hojas[0], actual, None))
+            continue
+        hallada = agente.buscar(hojas, textos)
+        if hallada is not None:
+            fechas.append((hojas[0], hallada.fecha, hallada))
+    pieza["fechas_del_reconocimiento"] = [[primera, fecha.isoformat()] for primera, fecha, _ in fechas]
+    if not fechas:
+        return []
+    primera, fecha, hallada = max(fechas, key=lambda f: f[1])
+    del_reconocimiento = {p for hojas in pieza["reconocimientos"] for p in hojas}
+    if hallada is None or (actual is not None and pieza.get("fecha_pagina") in del_reconocimiento and fecha <= actual):
+        return []
+    pieza["fecha"] = fecha.isoformat()
+    pieza["fecha_por"] = f"{hallada.como()}, el más reciente de {len(pieza['reconocimientos'])} reconocimientos"
+    pieza["fecha_pagina"] = hallada.pagina
+    pieza["fecha_via"] = hallada.via
+    return [{"pages": pieza["pages"], "fecha": pieza["fecha"], "como": pieza["fecha_por"]}]
+
+
+def _el_reconocimiento_la_confirma(pieza: dict, textos: dict, releidas: dict) -> list[dict]:
+    """El reconocimiento que escribe la fecha del acuerdo con el año en dos cifras, como la hoja que la da.
+
+    El operador, 2026-11-20: «por qué no está el reconocimiento de deuda de
+    primero si tiene sus fechas». El de 4132589 dice a mano «16 de 09 de 20» y
+    el de 4132537 «02 de 02 de 22»: el año a medias no fecha la hoja, la fecha
+    salía entera de la carta de instrucciones o de la Habeas Data, y el
+    reconocimiento, «sin fecha», iba al final. Si su texto -- la capa o lo que
+    se releyó de él -- escribe esa misma fecha, es él quien la da.
+    """
+    from datetime import date
+
+    from ...domain.fechas import fecha_escrita_en
+
+    if not pieza.get("fecha"):
+        return []
+    fecha = date.fromisoformat(str(pieza["fecha"])[:10])
+    reconocimientos = pieza.get("reconocimientos") or []
+    fechadas = {int(primera) for primera, _ in pieza.get("fechas_del_reconocimiento") or ()}
+    pagina_de_la_fecha = pieza.get("fecha_pagina")
+    if any(pagina_de_la_fecha in hojas for hojas in reconocimientos):
+        fechadas.update(hojas[0] for hojas in reconocimientos if pagina_de_la_fecha in hojas)
+    confirmadas: list[tuple[int, int, str]] = []
+    for hojas in reconocimientos:
+        if hojas[0] in fechadas:
+            continue
+        for pagina in hojas:
+            trozo = next(
+                (t for texto in [textos.get(pagina, ""), *(releidas.get(pagina) or [])] if (t := fecha_escrita_en(texto, fecha))),
+                None,
+            )
+            if trozo:
+                confirmadas.append((hojas[0], pagina, trozo))
+                break
+    if not confirmadas:
+        return []
+    pieza["fechas_del_reconocimiento"] = [
+        *(pieza.get("fechas_del_reconocimiento") or []),
+        *([primera, fecha.isoformat()] for primera, _, _ in confirmadas),
+    ]
+    if any(pagina_de_la_fecha in hojas for hojas in reconocimientos):
+        return []
+    _, pagina, trozo = confirmadas[0]
+    pieza["fecha_por"] = f"«{trozo}» en el reconocimiento (pág. {pagina}), con el año que da {pieza.get('fecha_por')}"
+    pieza["fecha_pagina"] = pagina
+    return [{"pages": pieza["pages"], "fecha": pieza["fecha"], "como": pieza["fecha_por"]}]
+
+
 def _completar_las_fechas(
     piezas: list[dict],
     textos: dict,
@@ -452,7 +534,9 @@ def _completar_las_fechas(
     from ...domain.tramites import es_cedula
 
     sin_fecha = [i for i, pieza in enumerate(piezas) if not pieza.get("fecha")]
-    if not sin_fecha:
+    # El acuerdo con dos reconocimientos: se fecha cada uno (2026-11-20).
+    con_varios = [i for i, pieza in enumerate(piezas) if len(pieza.get("reconocimientos") or ()) > 1]
+    if not sin_fecha and not con_varios:
         return []
     halladas: list[dict] = []
     fuente = None
@@ -484,6 +568,11 @@ def _completar_las_fechas(
                 piezas[i]["fecha_pagina"] = hallada.pagina
                 piezas[i]["fecha_via"] = hallada.via
                 halladas.append({"pages": piezas[i]["pages"], "fecha": piezas[i]["fecha"], "como": hallada.como()})
+        for i in con_varios:
+            halladas.extend(_el_reconocimiento_mas_reciente(piezas[i], textos, agente))
+        for pieza in piezas:
+            if pieza.get("reconocimientos"):
+                halladas.extend(_el_reconocimiento_la_confirma(pieza, textos, releidas))
         # El último recurso: la IA con visión copia las fechas de la hoja
         # principal (2026-11-18: «que todos los documentos puedan obtener la
         # fecha de creación o de radicación»). Sólo la del documento con que
@@ -874,8 +963,11 @@ def _poner_el_re_en_el_nombre(
         EvidenciaDeRE,
         candidatos_legibles,
         decidir_el_re,
+        familia,
         oficina_confirmada,
+        re_impreso_que_casa,
     )
+    from ...domain.fechas import fecha_de_la_pagina
     from ...domain.nombre_oficial import es_re, lleva_re_en_el_nombre
     from ...domain.sello import (
         OFICINAS_QUE_RADICAN,
@@ -886,6 +978,22 @@ def _poner_el_re_en_el_nombre(
     from ...domain.tramites import radicado_de
 
     impresos_de_la_caja = set().union(*(radicados_impresos(t or "") for t in textos.values())) if textos else set()
+    # Para el cruce de la letra a mano (2026-11-20): cada RE impreso de la caja,
+    # con las hojas que lo imprimen y su fecha. Sin las copias aportadas como
+    # prueba ni el acuerdo, que no son de ningún trámite de la caja.
+    impresos_fechados: dict[str, list[tuple[int, object]]] = {}
+    for pagina_impresa, texto_impreso in (textos or {}).items():
+        if pagina_impresa in sin_re or not (de_la_hoja := radicados_impresos(texto_impreso or "")):
+            continue
+        fecha_impresa = fecha_de_la_pagina(texto_impreso or "")
+        for impreso in de_la_hoja:
+            impresos_fechados.setdefault(impreso, []).append((pagina_impresa, fecha_impresa))
+
+    def impresos_fuera_de(paginas: set[int]) -> dict[str, list[tuple[int, object]]]:
+        """Los impresos de la caja que traen otras hojas, no las del documento: el escrito cita los RE de otros."""
+        fuera = {r: [(p, f) for p, f in hojas if p not in paginas] for r, hojas in impresos_fechados.items()}
+        return {r: hojas for r, hojas in fuera.items() if hojas}
+
     de_anexo = {p for paginas in anexos.values() for p in paginas if p not in abren}
     releidas_del_pqr = releidas_del_pqr or {}
     validas = OFICINAS_QUE_RADICAN | set(oficinas)
@@ -981,6 +1089,44 @@ def _poner_el_re_en_el_nombre(
             valido=valido,
             buscado=buscado,
         )
+        if not hallazgo.se_cree:
+            # El cruce (el operador, 2026-11-20, 1000690 pág. 3): la letra a mano
+            # del sello que los lectores de la IA leen igual de mal --
+            # «RE23D20210565», el «10» hecho una «D» y el «7» perdido -- casada
+            # con el único RE que su trámite trae impreso. Sólo con lo que
+            # leyeron el OCR de pago y la visión: con «Solo OCR», nada.
+            cruzadas = []
+            for evidencia in evidencias_del_documento:
+                if evidencia.fuente != "sello de tinta":
+                    continue
+                de_la_ia = tuple(
+                    (lector, leido)
+                    for lector, leido in evidencia.lecturas
+                    if familia(lector) in ("ocr de pago", "visión")
+                )
+                cruce = re_impreso_que_casa(
+                    de_la_ia,
+                    impresos_fuera_de(set(grupo.page_numbers)),
+                    fecha_del_sello=sellos[evidencia.pagina].fecha,
+                    valido=lambda valor, evidencia=evidencia: valido(valor, evidencia),
+                )
+                if cruce is not None:
+                    cruzadas.append(
+                        replace(
+                            evidencia,
+                            fuente="sello de tinta cruzado con lo impreso" if cruce.se_cree else evidencia.fuente,
+                            propuesto=cruce.valor,
+                            cruce=cruce.porque if cruce.se_cree else None,
+                            correccion=None if cruce.se_cree else cruce.porque,
+                        )
+                    )
+            if cruzadas:
+                hallazgo = decidir_el_re(
+                    [*cruzadas, *evidencias_del_documento],
+                    del_tramite=del_tramite if con_re and primera not in sellos_sin_re else None,
+                    valido=valido,
+                    buscado=buscado,
+                )
         if evidencias is not None:
             evidencias[str(primera)] = hallazgo.as_dict()
         if hallazgo.se_cree:
@@ -1613,6 +1759,7 @@ def _ordenar_los_acuerdos(grupos, piezas: list[dict], textos: dict, del_acuerdo:
     «anexos» (2026-11-18).
     """
     from dataclasses import replace
+    from datetime import date
 
     from ...application.anexos_declarados import (
         RECONOCIMIENTO,
@@ -1638,14 +1785,33 @@ def _ordenar_los_acuerdos(grupos, piezas: list[dict], textos: dict, del_acuerdo:
         if not reconocimiento:
             salida.append(grupo)
             continue
-        fechado = any(
-            pieza.get("archivo") == indice
-            and pieza.get("fecha")
-            and set(pieza.get("pages") or ()) & reconocimiento
-            and (pieza.get("fecha_pagina") is None or pieza.get("fecha_pagina") in reconocimiento)
+        del_archivo = [
+            pieza
             for pieza in piezas
+            if pieza.get("archivo") == indice and set(pieza.get("pages") or ()) & reconocimiento
+        ]
+        fechado = any(
+            pieza.get("fecha")
+            and (pieza.get("fecha_pagina") is None or pieza.get("fecha_pagina") in reconocimiento)
+            for pieza in del_archivo
         )
-        orden = [*antes, *orden_del_acuerdo(paginas, textos, reconocimiento_fechado=fechado), *despues]
+        # La fecha de cada reconocimiento, por su primera hoja: con dos, el más
+        # reciente va primero (2026-11-20). La del acuerdo -- que pudo corregir
+        # el revisor de fechas -- es la del reconocimiento de su hoja.
+        fechas: dict[int, date] = {}
+        for pieza in del_archivo:
+            for primera, valor in pieza.get("fechas_del_reconocimiento") or ():
+                fechas[int(primera)] = date.fromisoformat(valor)
+            pagina = pieza.get("fecha_pagina")
+            if pieza.get("fecha") and pagina in reconocimiento:
+                for hojas in pieza.get("reconocimientos") or ():
+                    if pagina in hojas:
+                        fechas[hojas[0]] = date.fromisoformat(str(pieza["fecha"])[:10])
+        orden = [
+            *antes,
+            *orden_del_acuerdo(paginas, textos, reconocimiento_fechado=fechado, fechas_del_reconocimiento=fechas),
+            *despues,
+        ]
         salida.append(replace(grupo, orden=None if list(orden) == sorted(grupo.page_numbers) else orden))
     return replace(grupos, groups=salida)
 
@@ -1946,7 +2112,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     )
     from ...application.anexos_declarados import (
         clase_de_soporte,
+        constancias_solas,
         nombrar_sin_soporte,
+        reconocimientos_del_acuerdo,
         retener_anexos,
         unir_el_acuerdo_de_pago,
         unir_soportes,
@@ -2582,12 +2750,15 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 # NACIMIENTO 21-MAY-1963» -- y la carta de instrucciones, y el
                 # reconocimiento fechado a mano «27 de Nov de 2021» quedaba sin
                 # fecha y al final (1005114, UPD2973876, 2026-11-18).
-                # Con sus respaldos detrás -- la firma de la carta de
-                # instrucciones, la Habeas Data --, que la regla ya nombra y
-                # que así no se buscaban: el reconocimiento «18 de 09 de 20»
-                # deja el año a medias y la carta de instrucciones dice «a los
-                # 18 días del mes septiembre del año 2020» (4100971,
-                # UPD2985239, 2026-11-19). La cédula sigue fuera.
+                # Sus respaldos -- la firma de la carta de instrucciones, la
+                # Habeas Data -- sólo si el reconocimiento no la da ni releído
+                # ni con la IA: el reconocimiento «18 de 09 de 20» deja el año
+                # a medias y la carta dice «a los 18 días del mes septiembre
+                # del año 2020» (4100971, UPD2985239, 2026-11-19). En esta
+                # primera pasada no: la firma de la carta, que Tesseract sí
+                # lee, ganaba al reconocimiento escrito a mano antes de que la
+                # IA lo mirara, y el reconocimiento fechado quedaba al final
+                # (1000258, 2026-11-20). La cédula sigue fuera.
                 respaldos_del_acuerdo = [
                     p
                     for p in paginas
@@ -2596,7 +2767,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                     and pieza_de_la_hoja(textos.get(p, "") or "").respaldo
                 ]
                 estructura = fecha_por_estructura(
-                    [*del_reconocimiento, *respaldos_del_acuerdo] or paginas,
+                    del_reconocimiento or paginas,
                     textos,
                     sellos={
                         p: con_pie[p].fecha
@@ -2629,7 +2800,17 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                         ),
                         # Dónde releerla si no salió: la hoja principal y
                         # sus respaldos.
-                        "donde_buscar": list(estructura.donde_buscar),
+                        "donde_buscar": [
+                            *estructura.donde_buscar,
+                            *(p for p in respaldos_del_acuerdo if p not in estructura.donde_buscar),
+                        ],
+                        # Las hojas de cada reconocimiento: si trae dos, se
+                        # fecha cada uno y manda el más reciente (2026-11-20).
+                        **(
+                            {"reconocimientos": reconocimientos_del_acuerdo(paginas, textos)}
+                            if acuerdo and del_reconocimiento
+                            else {}
+                        ),
                         # Lo que el documento dice ser en su primera hoja --
                         # «DERECHO DE PETICION», «RESPUESTA A RECLAMACION» --,
                         # que es el título de su fila en el índice.
@@ -2664,6 +2845,24 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                         ),
                     }
                 )
+        # El soporte -- la cédula, la factura -- nunca es la pieza con que abre
+        # su archivo, aunque vaya primero en el papel: la que abre da la fecha
+        # y el título de la fila. La cédula que iba detrás de una constancia
+        # pasa al documento siguiente (F5f) y, delante del acuerdo, lo dejaba
+        # sin fecha (1000228, UPD3102727 pág. 3, 2026-11-20).
+        from ...domain.tramites import es_cedula as _es_cedula
+
+        def solo_soporte(pieza: dict) -> bool:
+            return all(
+                clase_de_soporte(textos.get(p, "") or "") is not None or _es_cedula(textos.get(p, "") or "")
+                for p in pieza["pages"]
+            )
+
+        for archivo in dict.fromkeys(p["archivo"] for p in piezas):
+            suyas = [i for i, p in enumerate(piezas) if p["archivo"] == archivo]
+            primera = next((i for i in suyas if not solo_soporte(piezas[i])), None)
+            if primera is not None and primera != suyas[0]:
+                piezas.insert(suyas[0], piezas.pop(primera))
         return piezas
     # Un archivo por mes, si el operador lo pidió. Va después de los anexos
     # y no antes: se emparejan con los segmentos por posición, y la posición
@@ -2977,6 +3176,24 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         else:
             grupos, anexos, cortados = revisados.grupos, revisados.anexos, cortados_revisados
             del_acuerdo = revisados_del_acuerdo(del_acuerdo, revisados)
+    # F5f. La constancia del contenido de la reclamación, sola, siempre (el
+    # operador, 2026-11-20): lo que los filtros de arriba le pegaron detrás --
+    # la cédula, la carta -- sale; la cédula, con el documento siguiente. Salvo
+    # la constancia que un escrito aporta dentro de sus folios o como prueba:
+    # ésa es del escrito.
+    constancias_sueltas = None
+    if entregado_por is not Agrupacion.MES:
+        constancias_sueltas = constancias_solas(
+            grupos,
+            textos,
+            anexos,
+            constancias={
+                p: radicado_f
+                for p, (tipo_f, radicado_f) in formularios.items()
+                if tipo_f == _CONSTANCIA and p not in intocables
+            },
+        )
+        grupos, anexos = constancias_sueltas.grupos, constancias_sueltas.anexos
     # La lista de ANEXOS de cada escrito, verificada contra su PDF final: los
     # soportes, los folios y lo que no abría nada ya se le unieron.
     escritos = verificar_en_el_documento(retencion.escritos, grupos, textos, abren=abren)
@@ -3033,6 +3250,23 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # La carta, no la guía que la precede ni la autorización que se le unió
         # por delante.
         primera = next((x for x in g.page_numbers if x not in guias and x not in delanteras), g.page_numbers[0])
+        # Ni la cédula que se le unió por delante: la que iba detrás de una
+        # constancia pasa al documento siguiente (F5f), y la declaración
+        # juramentada de 4132540 (UPD3119343 págs. 5-6) se llamaba «PQR»
+        # (2026-11-20). Ningún documento se llama como su anexo.
+        from ...domain.tramites import es_cedula as _es_cedula_del_nombre
+
+        primera = next(
+            (
+                x
+                for x in g.page_numbers
+                if x not in guias
+                and x not in delanteras
+                and clase_de_soporte(textos.get(x, "") or "") is None
+                and not _es_cedula_del_nombre(textos.get(x, "") or "")
+            ),
+            primera,
+        )
         # La respuesta de la empresa a una reclamación se llama como la nombró
         # el operador, «CONTESTACION A LA RECLAMACION», y lleva su RE
         # (2026-11-11; con «LA» y también «EN ATENCIÓN A…», 2026-11-18).
@@ -3109,10 +3343,15 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # NOTIFICACION ELECTRONICA» al derecho de petición que la trae
         # (1004833, UPD3102764 págs. 16-17, 2026-11-18).
         propias = [p for p in g.page_numbers if p not in guias and p not in delanteras]
+        # Ni la cédula o la factura: no dicen qué es el documento (2026-11-20).
+        from ...domain.tramites import es_cedula as _es_cedula_de_la_ia
+
         sin_anexos = [
             p
             for p in propias
             if _titulo(textos.get(p, "") or "", None) not in (AUTORIZACION_DE_NOTIFICACION, "LEY HABEAS DATA")
+            and clase_de_soporte(textos.get(p, "") or "") is None
+            and not _es_cedula_de_la_ia(textos.get(p, "") or "")
         ]
         de_la_ia = _nombre_con_la_ia(
             fuente_de_encabezados[0],
@@ -3471,6 +3710,14 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             *avisos_de_agrupacion,
             *([aviso] if (aviso := retencion.aviso()) else []),
             *([aviso] if (aviso := soportes.aviso()) else []),
+            *(
+                [
+                    f"{len(constancias_sueltas.movidas)} hoja(s) de soporte que iban detrás de una constancia "
+                    "pasaron al documento siguiente: la constancia va sola"
+                ]
+                if constancias_sueltas is not None and constancias_sueltas.movidas
+                else []
+            ),
             *([aviso] if (aviso := aviso_de_varios_sellos(varios_sellos)) else []),
         ],
         # Y el detalle de cada PDF con dos o más sellos de RE distinto: sus
