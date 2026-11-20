@@ -31,9 +31,12 @@ import unicodedata
 
 from .asunto_del_documento import (
     AUTORIZACION_DEL_ASEO,
+    CONSTANCIA_DE_RECEPCION,
+    CONSTANCIA_DE_RECLAMACION,
     CONTESTACION_A_RECLAMACION,
     NOTIFICACION_POR_AVISO,
     PUBLICACION_DEL_AVISO,
+    es_constancia_de_recepcion,
 )
 from .catalogo import CATALOGO, FRASES
 
@@ -42,9 +45,10 @@ AL_CATALOGO: dict[str, str] = {
     "RECLAMACION": "RECLAMO",
     "AUTORIZACION DE NOTIFICACION ELECTRONICA": "AUTORIZACION PARA LA NOTIFICACION ELECTRONICA",
     "RECONOCIMIENTO DE DEUDA Y ACUERDO DE PAGO": "RECONOCIMIENTO DE DEUDA Y PROPUESTA DE ACUERDO DE PAGO",
-    # Como su título impreso, desde el 2026-11-20 (el operador: «deja de
-    # llamarlos CONSTANCIA-DEL-CONTENIDO-DE-LA-RECLAMACION»).
-    "CONSTANCIA DE RECLAMACION": "CONSTANCIA DE RECEPCION DE PETICIONES",
+    # La «PARA LA EMPRESA / Recibí constancia del contenido…». La de recepción
+    # de peticiones, quejas y reclamos se llama CONSTANCIA DE RECEPCION DE
+    # PETICIONES por su formato (``nombre_de_la_constancia``, 2026-11-20).
+    "CONSTANCIA DE RECLAMACION": "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION",
     # La autorización de la nota crédito del aseo («AUT-5073-ASEO»): el
     # operador, 2026-11-20, «a estos documentos colócale reclamación». Sin RE:
     # no es el reclamo del usuario ni trae uno de Afinia.
@@ -81,10 +85,9 @@ _MOTIVO = re.compile(
 CON_RE_EN_EL_NOMBRE = frozenset(
     {
         "RECLAMO",
-        "CONSTANCIA DE RECEPCION DE PETICIONES",
-        # El nombre de antes (hasta el 2026-11-20): una entrega vieja que se
-        # sigue o se repara todavía lo trae.
+        # Las dos constancias, cada una con el nombre de su formato (2026-11-20).
         "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION",
+        CONSTANCIA_DE_RECEPCION,
         CONTESTACION_A_RECLAMACION,
         "NOTIFICACION PERSONAL",
         "NOTIFICACION PERSONAL RECLAMOS",
@@ -253,6 +256,19 @@ def _del_catalogo_en(asunto: str, empieza: str) -> str | None:
         if tipo.nombre.startswith(empieza) and f" {frase} " in plano:
             return tipo.nombre
     return None
+
+
+def nombre_de_la_constancia(texto: str | None) -> str:
+    """El nombre de una constancia de reclamación, por su formato (el operador, 2026-11-20).
+
+    La «CONSTANCIA DE RECEPCIÓN DE PETICIONES, QUEJAS Y RECLAMOS (PQR)» se
+    llama CONSTANCIA DE RECEPCION DE PETICIONES; la «PARA LA EMPRESA / Recibí
+    constancia del contenido de la reclamación», como siempre: CONSTANCIA DEL
+    CONTENIDO DE LA RECLAMACION. Las dos con su RE.
+    """
+    if es_constancia_de_recepcion(texto or ""):
+        return CONSTANCIA_DE_RECEPCION
+    return AL_CATALOGO[CONSTANCIA_DE_RECLAMACION]
 
 
 def nombre_oficial(titulo: str | None, asunto: str | None = None) -> str | None:

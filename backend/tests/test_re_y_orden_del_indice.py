@@ -51,8 +51,8 @@ class TestElNombreDelArchivo:
     def test_el_reclamo_y_la_constancia_llevan_su_re_detras(self):
         assert _nombre(f"03 {RE}", "RECLAMO") == f"03_RECLAMO-{RE}.pdf"
         assert (
-            _nombre(f"01 {RE}", "CONSTANCIA DE RECEPCION DE PETICIONES")
-            == f"01_CONSTANCIA-DE-RECEPCION-DE-PETICIONES-{RE}.pdf"
+            _nombre(f"01 {RE}", "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION")
+            == f"01_CONSTANCIA-DEL-CONTENIDO-DE-LA-RECLAMACION-{RE}.pdf"
         )
 
     def test_el_documento_con_su_sello_lleva_su_re_sea_del_tipo_que_sea(self):
@@ -78,7 +78,7 @@ class TestElNombreDelArchivo:
         assert _nombre("04 P43102019110005", "RECLAMO") == "04_RECLAMO.pdf"
 
     def test_al_apretar_el_nombre_el_re_no_se_toca(self):
-        nombre = _nombre(f"01 {RE}", "CONSTANCIA DE RECEPCION DE PETICIONES", budget=40)
+        nombre = _nombre(f"01 {RE}", "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION", budget=40)
         assert nombre.endswith(f"-{RE}.pdf") and len(nombre) <= 40
         assert _nombre(f"01 {RE}", "RECLAMO", budget=24) == f"01_{RE}.pdf"
 
@@ -191,7 +191,7 @@ class TestElReDelWorker:
 
     def test_la_constancia_toma_el_que_imprime_su_texto(self):
         grupos, _, _ = self._poner(
-            self._grupos(("01", [1], "CONSTANCIA DE RECEPCION DE PETICIONES")),
+            self._grupos(("01", [1], "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION")),
             textos={1: f"RECIBI CONSTANCIA DEL CONTENIDO ... N° PQR {RE}"},
         )
         assert grupos.groups[0].code.value == f"01 {RE}"
@@ -669,8 +669,8 @@ class TestElIndiceDeLaCaja:
             "agrupar": "tramite",
             "inventory": {
                 "items": [
-                    item(1, f"01_CONSTANCIA-DE-RECEPCION-DE-PETICIONES-{RE}.pdf",
-                         "CONSTANCIA DE RECEPCION DE PETICIONES", "2024-02-20"),
+                    item(1, f"01_CONSTANCIA-DEL-CONTENIDO-DE-LA-RECLAMACION-{RE}.pdf",
+                         "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION", "2024-02-20"),
                     item(2, "02_NOTIFICACION-PERSONAL-RECLAMOS.pdf", "NOTIFICACION PERSONAL RECLAMOS", "2024-01-31"),
                     item(3, "03_RECLAMO.pdf", "RECLAMO", "2024-01-31"),
                     item(4, "04_PAGARE.pdf", "PAGARE", None),
@@ -698,7 +698,7 @@ class TestElIndiceDeLaCaja:
         assert filas == [
             ("NOTIFICACION PERSONAL RECLAMOS", "31/01/2024", 1),
             ("RECLAMO", "31/01/2024", 2),
-            (f"CONSTANCIA DE RECEPCION DE PETICIONES-{RE}", "20/02/2024", 3),
+            (f"CONSTANCIA DEL CONTENIDO DE LA RECLAMACION-{RE}", "20/02/2024", 3),
             ("PAGARE", "S.F.", 4),
         ]
 
@@ -707,12 +707,12 @@ class TestElIndiceDeLaCaja:
         raiz = tmp_path / "MAGANGUE PROCESADO"
         caja = raiz / "7285349"
         self._escribir(caja)
-        (caja / f"01_CONSTANCIA-DE-RECEPCION-DE-PETICIONES-{RE}.pdf").write_bytes(b"%PDF-1.4")
+        (caja / f"01_CONSTANCIA-DEL-CONTENIDO-DE-LA-RECLAMACION-{RE}.pdf").write_bytes(b"%PDF-1.4")
         respaldo = tmp_path / "respaldo"
 
         indice = script.paso_indice(str(caja), str(raiz), str(respaldo), False)
         assert indice["estado"] == "ya estaba bien"
         filas = script.paso_re(str(caja), str(raiz), str(raiz), str(respaldo), False, None, "eng")
         assert [(f["archivo_antes"], f["estado"]) for f in filas] == [
-            (f"01_CONSTANCIA-DE-RECEPCION-DE-PETICIONES-{RE}.pdf", "ya tenía RE")
+            (f"01_CONSTANCIA-DEL-CONTENIDO-DE-LA-RECLAMACION-{RE}.pdf", "ya tenía RE")
         ]

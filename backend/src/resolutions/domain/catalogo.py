@@ -156,19 +156,16 @@ CATALOGO: tuple[TipoDocumental, ...] = (
     TipoDocumental(
         "CONSTANCIA DE NOTIFICACION PERSONAL", ("CONSTANCIA DE NOTIFICACION PERSONAL",)
     ),
-    # La constancia que la oficina entrega al recibir la reclamación. Desde el
-    # 2026-11-20 se llama como su título impreso, «CONSTANCIA DE RECEPCIÓN DE
-    # PETICIONES, QUEJAS Y RECLAMOS (PQR)», acortado como lo dictó el operador:
-    # «CONSTANCIA DE RECEPCION DE PETICIONES - RE». Antes, «CONSTANCIA DEL
-    # CONTENIDO DE LA RECLAMACION», que es la frase de su pie.
+    # La constancia «CONSTANCIA DE RECEPCIÓN DE PETICIONES, QUEJAS Y RECLAMOS
+    # (PQR)», acortada como la dictó el operador el 2026-11-20: «CONSTANCIA DE
+    # RECEPCION DE PETICIONES - RE». La otra, «PARA LA EMPRESA», es la
+    # CONSTANCIA DEL CONTENIDO DE LA RECLAMACION («este formato sí déjale el
+    # nombre que tenía antes»).
     TipoDocumental(
         "CONSTANCIA DE RECEPCION DE PETICIONES",
         (
             "CONSTANCIA DE RECEPCION DE PETICIONES QUEJAS Y RECLAMOS",
             "CONSTANCIA DE RECEPCION DE PETICIONES",
-            "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION VERBAL",
-            "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION",
-            "RECIBI CONSTANCIA DEL CONTENIDO",
         ),
     ),
     TipoDocumental(
@@ -177,6 +174,14 @@ CATALOGO: tuple[TipoDocumental, ...] = (
             "CONSTANCIA DE VISITA REALIZADA EN EL INMUEBLE",
             "CONSTANCIA DE VISITA AL INMUEBLE",
             "CONSTANCIA DE VISITA",
+        ),
+    ),
+    TipoDocumental(
+        "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION",
+        (
+            "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION VERBAL",
+            "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION",
+            "RECIBI CONSTANCIA DEL CONTENIDO",
         ),
     ),
     TipoDocumental("CONTRATO DE TRANSACCION", ("CONTRATO DE TRANSACCION",)),

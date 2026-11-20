@@ -2143,7 +2143,11 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     from ...domain.fingerprint import nic_de_la_caja
     from ...domain.foliacion_del_escrito import foliacion_del_escrito
     from ...domain.naming import DOCUMENT_PREFIX, document_folder
-    from ...domain.nombre_oficial import CON_RE_EN_EL_NOMBRE, nombre_oficial
+    from ...domain.nombre_oficial import (
+        CON_RE_EN_EL_NOMBRE,
+        nombre_de_la_constancia,
+        nombre_oficial,
+    )
     from ...domain.segmentation import Verdict, continua_por_el_papel
     from ...domain.sello import (
         claves_del_envio,
@@ -2694,6 +2698,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         texto = textos.get(pagina, "") or ""
         asunto = asunto_de_la_carta(texto)
         titulo = titulo_del_documento(texto, None)
+        if titulo == _CONSTANCIA:
+            # Cada formato con su nombre (el operador, 2026-11-20).
+            return nombre_de_la_constancia(texto)
         if titulo != DOCUMENT_PREFIX:
             return nombre_oficial(titulo, asunto) or titulo
         if abre_carta(texto) and (del_asunto := nombre_oficial(DOCUMENT_PREFIX, asunto)):

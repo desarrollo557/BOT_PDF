@@ -172,9 +172,31 @@ class TestLaConstanciaVaSola:
 
 
 class TestSuNombre:
-    def test_se_llama_constancia_de_recepcion_de_peticiones_y_lleva_su_re(self):
-        assert nombre_oficial("CONSTANCIA DE RECLAMACION") == "CONSTANCIA DE RECEPCION DE PETICIONES"
+    """El operador, 2026-11-20: «este formato sí déjale el nombre que tenía antes, es al otro»."""
+
+    PARA_LA_EMPRESA = (
+        "PARA LA EMPRESA\nRecibí constancia del contenido de la reclamación presentada ante CARIBEMAR\n"
+        "N° PQR: RE2310202200001\nFECHA: 08/04/2022\nCAUSA:\nEmisión de documento para pago"
+    )
+
+    def test_la_de_para_la_empresa_sigue_con_su_nombre(self):
+        from resolutions.domain.nombre_oficial import nombre_de_la_constancia
+
+        assert nombre_de_la_constancia(self.PARA_LA_EMPRESA) == "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION"
+        assert nombre_oficial("CONSTANCIA DE RECLAMACION") == "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION"
+
+    def test_la_de_recepcion_de_peticiones_se_llama_asi(self):
+        from resolutions.domain.nombre_oficial import nombre_de_la_constancia
+
+        assert nombre_de_la_constancia(CONSTANCIA) == "CONSTANCIA DE RECEPCION DE PETICIONES"
+        # Aunque el escáner rompa el título: «FECHA DE ATENCION VENCE» sólo lo trae ella.
+        assert nombre_de_la_constancia("N° PQR: RE2310202100001\nFECHA DE ATENCION VENCE: 31/12/2999") == (
+            "CONSTANCIA DE RECEPCION DE PETICIONES"
+        )
+
+    def test_las_dos_llevan_su_re(self):
         assert lleva_re_en_el_nombre("CONSTANCIA DE RECEPCION DE PETICIONES")
+        assert lleva_re_en_el_nombre("CONSTANCIA DEL CONTENIDO DE LA RECLAMACION")
 
 
 class TestElAnioEnDosCifras:

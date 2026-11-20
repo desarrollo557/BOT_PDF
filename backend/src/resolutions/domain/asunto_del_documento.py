@@ -338,6 +338,24 @@ _FORMULARIO_DE_LA_CONSTANCIA = (
 _OTRAS_CONSTANCIAS = re.compile(
     _CONSTAN + r"\s+DEL?\s+CONTENIDO\s+DE\s+LA\s+RECLAMACION|" + _CONSTAN + r"\s+DE\s+RECEPCION\s+DE\s+PETICIONES"
 )
+#: El formato impreso de la constancia «CONSTANCIA DE RECEPCIÓN DE
+#: PETICIONES, QUEJAS Y RECLAMOS (PQR)», por su título o por lo que sólo él
+#: imprime. El otro, «PARA LA EMPRESA / Recibí constancia del contenido de la
+#: reclamación», no trae nada de esto.
+_CONSTANCIA_DE_RECEPCION = re.compile(
+    _CONSTAN + r"\s+DE\s+RECEPCION\s+DE\s+PETICIONES|FECHA\s+DE\s+ATENCION\s+VENCE|TIPO\s+DE\s+PQR\b"
+)
+#: Cómo se llama ese formato (el operador, 2026-11-20: «este formato sí déjale
+#: el nombre que tenía antes, es al otro»): la constancia «PARA LA EMPRESA»
+#: sigue siendo la CONSTANCIA DEL CONTENIDO DE LA RECLAMACION.
+CONSTANCIA_DE_RECEPCION = "CONSTANCIA DE RECEPCION DE PETICIONES"
+
+
+def es_constancia_de_recepcion(texto: str) -> bool:
+    """Si la constancia es la de recepción de peticiones, quejas y reclamos (PQR) y no la «PARA LA EMPRESA»."""
+    return bool(_CONSTANCIA_DE_RECEPCION.search(_plano(texto or "")))
+
+
 #: La publicación del aviso, por su título en su renglón: lleva al lado el aviso,
 #: cuyo «Asunto: Notificación por aviso» no la nombra (1000690, 2026-10-22).
 _PUBLICACION_DEL_AVISO = re.compile(r"^\W*PUBLICACION\s+DEL?\s+AVISO\W*$")
