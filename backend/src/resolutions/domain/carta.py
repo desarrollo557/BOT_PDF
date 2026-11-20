@@ -76,6 +76,11 @@ _CORTESIA = re.compile(
     r"^\W*(?:SALUDOS?\b|CORDIAL(?:MENTE)?\s+SALUDO|RESPETAD[OA]S?\b|ESTIMAD[OA]S?\b|APRECIAD[OA]S?\b"
     r"|DISTINGUID[OA]S?\b|BUEN(?:OS)?\s+DIAS?\b)"
 )
+#: Cómo arranca el cuerpo de la carta debajo del asunto: no lo continúa.
+_CUERPO = re.compile(
+    r"^\W*(?:ME\s+DIRIJO|NOS\s+DIRIGIMOS|POR\s+MEDIO\s+DE(?:L|\s+LA)?\s+PRESENTE|YO\s*,|EL\s+SUSCRITO|LA\s+SUSCRITA"
+    r"|COMEDIDAMENTE|DE\s+MANERA\s+(?:ATENTA|RESPETUOSA)|ATENTAMENTE\s+ME)"
+)
 #: El renglón del destinatario, que también puede ir encima de «REF.»: nunca es el asunto.
 _DESTINATARIO = re.compile(
     r"\b(?:AFINIA|CARIBEMAR|ELECTRICARIBE|EMPRESA|OFICINA|GERENTE|S\.?\s?A\.?\s?S?\.?\s?E\.?\s?S\.?\s?P)\b"
@@ -207,6 +212,16 @@ def asunto_de_la_carta(texto: str) -> str | None:
     if hallado is None:
         return None
     indice, asunto = hallado
+    # El renglón que sigue al «REF.» continúa el asunto («… en la factura del
+    # mes de / Marzo»), salvo que ya sea el cuerpo: «REF. Requerimiento / Me
+    # dirijo a ustedes…» se llamaba «REQUERIMIENTO ME DIRIJO» (1005652,
+    # UPD2437864 pág. 3, 2026-11-20).
+    propio = _ASUNTO.match(renglones[indice])
+    siguiente = renglones[indice + 1] if indice + 1 < len(renglones) else ""
+    if propio and propio.group("resto").strip() and (
+        _CUERPO.match(_plano(siguiente)) or _CORTESIA.match(_plano(siguiente))
+    ):
+        asunto = propio.group("resto").strip()
     if _CORTESIA.match(_plano(asunto)):
         anterior = renglones[indice - 1] if indice > 0 else ""
         if (

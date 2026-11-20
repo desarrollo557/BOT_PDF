@@ -443,6 +443,20 @@ body {
     min-height: 1.85rem;
     padding: 0.3rem 0.55rem;
   }
+  /* La lista que despliega un <select> la pinta el navegador, y en Windows la
+     saca blanca sobre la pantalla oscura si no se le dan los colores del tema
+     («Archivos en paralelo», 2026-11-20). */
+  select.input {
+    cursor: pointer;
+  }
+  select.input option {
+    background: var(--surface-2);
+    color: var(--ink);
+  }
+  select.input option:checked {
+    background: var(--accent-soft);
+    color: var(--ink);
+  }
   .input.mono {
     font-family: var(--font-mono);
     font-size: var(--text-sm);

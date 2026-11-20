@@ -2389,6 +2389,11 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
 
     def _anexo_evidente(pagina: int) -> bool:
         texto = textos.get(pagina, "") or ""
+        # Una carta -- fecha o saludo y su REF -- es un escrito, no el anexo de
+        # la constancia, por corta que sea: la de 1005652 (UPD2437864 pág. 3,
+        # 2026-11-20) tenía 55 palabras y se quedaba con la constancia.
+        if abre_carta(texto):
+            return False
         if _clase(texto) in _SOPORTES or _clase(texto) == _MUDA:
             return True
         return len(re.findall(r"[A-Za-zÁÉÍÓÚÑáéíóúñ]{4,}", texto)) < PALABRAS_DE_UN_DOCUMENTO

@@ -3,7 +3,12 @@
 # funciona de verdad. No gasta IA y borra todo lo que crea.
 #
 #   probar-instalacion            (CMD)  /  .\probar-instalacion.cmd   (PowerShell)
-#   .\probar-instalacion.cmd -Rapida      sin la corrida de punta a punta
+#   .\probar-instalacion.cmd -Rapida      solo los bloques 1 a 4, sin corrida
+#
+# Bloques: 1. Docker  2. Servicio  3. Dentro de la imagen  4. Equipo
+#          5. Corrida de carpeta (resoluciones digitales y escaneadas)
+#          6. Dentro del margen de errores (cuadre, revisor de cortes, auditoria)
+#          7. Detener y reanudar
 #
 # Deja el informe en "prueba-instalacion.txt", en la raiz del repositorio.
 # Sale con codigo 0 si todo paso, 1 si algo fallo.
@@ -205,9 +210,9 @@ Comprobar "Equipo" "Llaves de la IA" {
 }
 
 # =============================================================================
-Write-Host "5. De punta a punta" -ForegroundColor Cyan
+Write-Host "5. Corrida de carpeta" -ForegroundColor Cyan
 if ($Rapida) {
-    Anotar "Punta a punta" "Corrida de carpeta" "OMITIDA" "con -Rapida"
+    Anotar "Corrida" "Corrida de carpeta, margen y reanudar" "OMITIDA" "con -Rapida"
 } else {
     $sello = Get-Date -Format "yyyyMMdd-HHmmss"
     $base = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "BOT_PDF-prueba\$sello"
@@ -216,7 +221,7 @@ if ($Rapida) {
     $trabajos = @()
     $corridas = @()
     try {
-        Comprobar "Punta a punta" "Reconocer un PDF subido" {
+        Comprobar "Corrida" "Reconocer un PDF subido" {
             $minimo = Join-Path $env:TEMP "botpdf-prueba-$sello.pdf"
             $pdf = "%PDF-1.4`n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj`n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj`n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj`ntrailer<</Root 1 0 R>>`n%%EOF`n"
             [System.IO.File]::WriteAllText($minimo, $pdf, (New-Object System.Text.ASCIIEncoding))
@@ -272,36 +277,91 @@ print("listo")
             return $corrida
         }
 
-        # Lo primero que hace la pantalla al pulsar «Procesar carpeta»: reconocerla.
-        Comprobar "Punta a punta" "Reconocer la carpeta de origen" {
+        # Lo primero que hace la pantalla al pulsar 'Procesar carpeta': reconocerla.
+        Comprobar "Corrida" "Reconocer la carpeta de origen" {
             $cuerpo = @{ ruta = $entrada } | ConvertTo-Json
             $r = Invoke-RestMethod -Method Post -UseBasicParsing -DisableKeepAlive -TimeoutSec 60 -ContentType "application/json" -Body $cuerpo "$url/api/reconocer-carpeta"
             if ($r.total -eq 2) { Ok ("2 PDF reconocidos en {0}" -f $r.ruta) } else { Falla ("se esperaban 2 PDF y hay {0}" -f $r.total) }
         }
 
         $primera = $null
-        Comprobar "Punta a punta" "Corrida de carpeta con rutas de Windows" {
+        Comprobar "Corrida" "Corrida de carpeta con rutas de Windows" {
             $script:primera = Correr-Carpeta
             $c = $script:primera
             if ($c.state -eq "done" -and $c.processed -eq 2 -and $c.failed -eq 0) { Ok ("2 PDF procesados desde {0}" -f $c.source) }
             else { Falla ("estado {0}, procesados {1}, fallidos {2} {3}" -f $c.state, $c.processed, $c.failed, $c.error) }
         }
-        Comprobar "Punta a punta" "PDF digital partido por resolucion" {
-            $pdfs = @(Get-ChildItem (Join-Path $salida "DIGITAL 00001-00002") -Filter *.pdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
-            if ($pdfs.Count -eq 2) { Ok ($pdfs -join ", ") } else { Falla ("se esperaban 2 resoluciones y hay {0}: {1}" -f $pdfs.Count, ($pdfs -join ", ")) }
+        # Donde entrega de verdad: la corrida lo dice. Desde el 2026-10-30 el bot
+        # entrega en '<carpeta de origen> - PROCESADO' dentro del destino elegido
+        # (ENTRADA -> SALIDA\ENTRADA - PROCESADO); la prueba buscaba en SALIDA y
+        # daba por fallidas tres comprobaciones que el bot hacia bien.
+        $entrega = if ($primera -and $primera.destination) { $primera.destination } else { $salida }
+        Comprobar "Corrida" "Entrega en '<origen> - PROCESADO'" {
+            if ((Split-Path $entrega -Leaf) -eq "ENTRADA - PROCESADO" -and (Test-Path $entrega)) { Ok $entrega }
+            else { Falla "se esperaba SALIDA\ENTRADA - PROCESADO y la corrida dice '$entrega'" }
         }
-        Comprobar "Punta a punta" "PDF escaneado leido con Tesseract" {
-            $pdfs = @(Get-ChildItem (Join-Path $salida "ESCANEADO 00003") -Filter *.pdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+        Comprobar "Corrida" "PDF digital partido por resolucion" {
+            $pdfs = @(Get-ChildItem (Join-Path $entrega "DIGITAL 00001-00002") -Filter *.pdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+            if ($pdfs.Count -eq 2 -and ($pdfs -match "00001") -and ($pdfs -match "00002")) { Ok ($pdfs -join ", ") }
+            else { Falla ("se esperaban las resoluciones 00001 y 00002 y hay {0}: {1}" -f $pdfs.Count, ($pdfs -join ", ")) }
+        }
+        Comprobar "Corrida" "PDF escaneado leido con Tesseract" {
+            $pdfs = @(Get-ChildItem (Join-Path $entrega "ESCANEADO 00003") -Filter *.pdf -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
             if ($pdfs -match "00003") { Ok ($pdfs -join ", ") } else { Falla ("no salio la resolucion 00003: {0}" -f ($pdfs -join ", ")) }
         }
-        Comprobar "Punta a punta" "Inventarios y constancias" {
-            $general = Test-Path (Join-Path $salida "00.INVENTARIO GENERAL DE PROCESOS.xlsx")
-            $planillas = @(Get-ChildItem $salida -Recurse -Filter "*__inventario.xlsx" -ErrorAction SilentlyContinue).Count
-            $constancias = @(Get-ChildItem $salida -Recurse -Force -Filter ".bot-entrega.json" -ErrorAction SilentlyContinue).Count
-            if ($general -and $planillas -ge 2 -and $constancias -eq 2) { Ok "inventario general, $planillas planillas y $constancias constancias" }
-            else { Falla "general=$general planillas=$planillas constancias=$constancias" }
+        Comprobar "Corrida" "Inventarios y constancias" {
+            $faltan = @("00.INVENTARIO GENERAL DE PROCESOS.xlsx", "00.ANALISIS DE LA ENTREGA.xlsx") | Where-Object { -not (Test-Path (Join-Path $entrega $_)) }
+            $inventario = if ($primera.inventario) { Join-Path $entrega $primera.inventario } else { $null }
+            $planillas = @(Get-ChildItem $entrega -Recurse -Filter "*__inventario.xlsx" -ErrorAction SilentlyContinue).Count
+            $constancias = @(Get-ChildItem $entrega -Recurse -Force -Filter ".bot-entrega*.json" -ErrorAction SilentlyContinue).Count
+            if ($faltan) { Falla ("faltan: " + ($faltan -join ", ")) }
+            elseif (-not $inventario -or -not (Test-Path $inventario) -or $primera.inventario_filas -ne 3) { Falla ("inventario general '{0}' con {1} filas (se esperaban 3)" -f $primera.inventario, $primera.inventario_filas) }
+            elseif ($planillas -lt 2 -or $constancias -ne 2) { Falla "planillas=$planillas constancias=$constancias (se esperaban 2 y 2)" }
+            else { Ok ("{0} con 3 filas, inventario de procesos, analisis, {1} planillas y {2} constancias" -f $primera.inventario, $planillas, $constancias) }
         }
-        Comprobar "Punta a punta" "No repite lo ya entregado" {
+
+        # =====================================================================
+        # Lo que el propio bot comprueba al cerrar la corrida, leido de la API:
+        # que lo entregado cuadra con el origen, que el revisor de cortes dejo
+        # cada costura dentro de su margen y que la auditoria de cierre no hallo
+        # errores. Con dos PDF el intervalo del 95 % siempre cruza el 5 %
+        # aceptable ('sin certeza'): falla solo con errores, dudas o 'fuera del
+        # margen'.
+        Write-Host "6. Dentro del margen de errores" -ForegroundColor Cyan
+        Comprobar "Margen" "Cuadre origen / destino" {
+            $k = $primera.comparacion
+            if (-not $k) { return (Falla "la corrida no trae la comparacion de origen y destino") }
+            $raros = @($k.faltan) + @($k.sobran) + @($k.pdf_sin_entregar) + @($k.registros_que_no_cuadran) | Where-Object { $_ }
+            if ($k.completa -and $k.pdf_entregados -eq $k.pdf_origen -and $k.documentos_entregados -eq 3 -and -not $raros) {
+                Ok ("{0} de {1} PDF entregados, {2} documentos, nada falta ni sobra" -f $k.pdf_entregados, $k.pdf_origen, $k.documentos_entregados)
+            } else {
+                Falla ("PDF {0} de {1}, documentos {2} (se esperaban 3), completa={3}; {4}" -f $k.pdf_entregados, $k.pdf_origen, $k.documentos_entregados, $k.completa, ($raros -join "; "))
+            }
+        }
+        Comprobar "Margen" "Revisor de cortes" {
+            $a = $primera.agente
+            if (-not $a) { return (Falla "la corrida no trae el informe del revisor de cortes") }
+            if ($a.problemas_de_entrega -eq 0 -and $a.en_revision -eq 0 -and $a.dentro_del_margen -eq $a.costuras) {
+                Ok ("{0} PDF validados, {1} de {2} costuras dentro del margen, {3} hojas comprobadas en el disco" -f $a.validados, $a.dentro_del_margen, $a.costuras, $a.hojas_comprobadas)
+            } else {
+                Falla ("costuras {0} de {1} dentro del margen, en revision {2}, problemas de entrega {3}" -f $a.dentro_del_margen, $a.costuras, $a.en_revision, $a.problemas_de_entrega)
+            }
+        }
+        Comprobar "Margen" "Auditoria de cierre" {
+            $au = $primera.auditoria
+            if (-not $au -or $au.estado -ne "hecha") { return (Falla ("la auditoria de cierre no se hizo: {0}" -f $au.estado)) }
+            $m = $au.muestra
+            if ($m.errores -gt 0 -or $m.dudosos -gt 0 -or $m.margen.dictamen -eq "fuera del margen") {
+                Falla ("{0}; {1}" -f $m.margen.texto, $m.margen.texto_del_dictamen)
+            } else {
+                $nota = if ($m.margen.dictamen -eq "sin certeza") { " (muestra de prueba: el intervalo no puede bajar del 5 %)" } else { "" }
+                Ok ("{0} de {1} PDF bien, 0 errores, 0 dudas; {2}{3}" -f $m.bien, $m.revisados, $m.margen.dictamen, $nota)
+            }
+        }
+
+        # =====================================================================
+        Write-Host "7. Detener y reanudar" -ForegroundColor Cyan
+        Comprobar "Reanudar" "No repite lo ya entregado" {
             $c = Correr-Carpeta
             if ($c.state -eq "done" -and $c.ya_entregados -eq 2 -and $c.processed -eq 0) { Ok "la segunda corrida salto los 2 PDF sin leerlos" }
             else { Falla ("ya entregados {0}, procesados {1}, estado {2}" -f $c.ya_entregados, $c.processed, $c.state) }
@@ -338,7 +398,7 @@ print("listo")
         if (-not (Test-Path (Join-Path $entradaD "B LARGO ESCANEADO.pdf"))) { throw "no se pudieron crear los PDF de la prueba de detener ($hecho)" }
 
         $detenida = $null
-        Comprobar "Punta a punta" "Detener es inmediato" {
+        Comprobar "Reanudar" "Detener es inmediato" {
             $cuerpo = @{ source = $entradaD; destination = $salidaD; task = "both"; lectura = "local"; tipo = "auto"; paralelo = 1 } | ConvertTo-Json
             $corrida = Invoke-RestMethod -Method Post -UseBasicParsing -DisableKeepAlive -TimeoutSec 60 -ContentType "application/json" -Body $cuerpo "$url/api/folder-runs"
             $script:corridas += $corrida.id
@@ -386,7 +446,7 @@ print("listo")
             elseif ($estadoCorrida -ne "stopped") { Falla "la carpeta quedo en '$estadoCorrida'" }
             else { Ok ("contesto en {0:N2} s, cancelado en {1:N1} s, sin leer mas paginas ({2}), salud en {3:N2} s" -f $respuesta, $enCancelar, $antes, $salud) }
         }
-        Comprobar "Punta a punta" "Retomar tras detener no repite" {
+        Comprobar "Reanudar" "Retomar tras detener no repite" {
             $cuerpo = @{ source = $entradaD; destination = $salidaD; task = "both"; lectura = "local"; tipo = "auto"; paralelo = 1 } | ConvertTo-Json
             $corrida = Invoke-RestMethod -Method Post -UseBasicParsing -DisableKeepAlive -TimeoutSec 60 -ContentType "application/json" -Body $cuerpo "$url/api/folder-runs"
             $script:corridas += $corrida.id
@@ -403,7 +463,7 @@ print("listo")
             }
         }
     } catch {
-        Anotar "Punta a punta" "Corrida de carpeta" "FALLO" $_.Exception.Message
+        Anotar "Corrida" "Corrida de carpeta" "FALLO" $_.Exception.Message
     } finally {
         # Todo lo que la prueba creo se borra: archivos, filas del Archivo y corridas.
         $ids = @($trabajos | Where-Object { $_ } | Select-Object -Unique)
@@ -413,7 +473,7 @@ print("listo")
         }
         foreach ($id in $corridas) { try { Invoke-RestMethod -Method Delete -UseBasicParsing -DisableKeepAlive -TimeoutSec 30 "$url/api/folder-runs/$id" | Out-Null } catch {} }
         Remove-Item (Split-Path $base -Parent) -Recurse -Force -ErrorAction SilentlyContinue
-        Anotar "Punta a punta" "Limpieza" "OK" "se borro lo que creo la prueba"
+        Anotar "Reanudar" "Limpieza" "OK" "se borro lo que creo la prueba"
     }
 }
 

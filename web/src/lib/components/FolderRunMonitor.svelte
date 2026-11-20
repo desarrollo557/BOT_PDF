@@ -577,6 +577,7 @@
           <label class="en-paralelo">
             <span>Archivos en paralelo</span>
             <select
+              class="input input-sm"
               value={String(run.paralelo ?? 0)}
               disabled={cambiandoParalelo}
               onchange={(evento) => cambiarParalelo(evento.currentTarget.value)}

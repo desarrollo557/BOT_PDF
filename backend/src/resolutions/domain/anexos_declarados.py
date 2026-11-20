@@ -39,6 +39,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
+from .carta import abre_carta
 from .tramites import es_cedula
 
 #: Las clases de anexo, en el orden en que se prueban. Cada una con lo que la
@@ -523,7 +524,22 @@ def leer_lista_de_anexos(texto: str) -> ListaDeAnexos | None:
 
 
 def clase_de_la_hoja(texto: str) -> str | None:
-    """Qué anexo es una hoja, leída por sí misma: la que reconoce, la muda, o ``None``."""
+    """Qué anexo es una hoja, leída por sí misma: la que reconoce, la muda, o ``None``.
+
+    La carta -- su fecha o su saludo y su «REF.»/«ASUNTO» -- no es una factura
+    aunque nombre lo que la factura imprime: «solicitar el cambio de titular de
+    pago y usuario en la factura de cobro» (1005652, UPD2437864 pág. 3,
+    2026-11-20) se iba con su cédula dentro de la constancia de delante. Medido
+    en las 19 hojas que se leían como factura en las cajas 4100: las 18 facturas
+    de verdad no abren carta.
+    """
+    clase = _clase_de_la_hoja(texto)
+    if clase == "factura" and abre_carta(texto):
+        return None
+    return clase
+
+
+def _clase_de_la_hoja(texto: str) -> str | None:
     if es_cedula(texto):
         return "documento de identidad"
     todo = plano(texto)
