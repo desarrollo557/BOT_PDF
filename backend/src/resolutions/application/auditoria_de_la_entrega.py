@@ -505,7 +505,10 @@ def auditar_los_radicados(archivos: Sequence[ArchivoEntregado], textos: Mapping[
         CONTESTACION_A_RECLAMACION,
         es_contestacion_a_reclamacion,
     )
-    from ..domain.nombre_oficial import lleva_re_en_el_nombre, re_del_archivo
+    from ..domain.nombre_oficial import (
+        le_falta_su_re,
+        re_del_archivo,
+    )
     from ..domain.sello import folios_que_no_cuadran, leer_sello, radicados_impresos
     from ..domain.tramites import radicados_de
     from .anexos_declarados import RECONOCIMIENTO, partes_del_acuerdo
@@ -519,7 +522,8 @@ def auditar_los_radicados(archivos: Sequence[ArchivoEntregado], textos: Mapping[
         radicado = re_del_archivo(archivo.nombre)
         primera = textos.get(hojas[0], "") or ""
         etiqueta = leer_sello(primera)
-        if radicado is None and lleva_re_en_el_nombre(titulo):
+        # La notificación que no cita ningún radicado no lo lleva (920933, 2026-11-20).
+        if radicado is None and le_falta_su_re(titulo, [textos.get(p, "") or "" for p in hojas]):
             resultado.cuentas[RE_QUE_FALTA] += 1
             resultado.dudas.append(f"«{archivo.nombre}»: {titulo} sin RE en el nombre")
         elif radicado is None and _escrito_del_usuario(primera):

@@ -52,6 +52,7 @@ from functools import lru_cache
 #: ``_PALABRA_DE_NUMERO`` es la palabra de número con que ``fechas_del_texto``
 #: junta «dos mil doce (2012)»: la misma, para acotar sus rachas (``texto_acotado``).
 from .acta_consejo import _PALABRA_DE_NUMERO, fechas_del_texto, leer_acta
+from .fechas import fecha_escrita_en
 
 #: La precisión de una fecha de la fila: un día, o sólo un año.
 DIA = "dia"
@@ -754,7 +755,16 @@ def contrastar_las_fechas(
             else:
                 sin_dato.append(f"{dicho} (la fila la tomó {_origen_dicho(fechas.origen)}, no de su papel)")
             continue
-        esta = de_la_fila.year in anios if precision == ANIO else de_la_fila in escritas
+        # En la caja de correspondencia, también escrita con el año en dos
+        # cifras -- «02 de 02 de 22», a mano en el reconocimiento de deuda
+        # (4132537, 2026-11-20) --. En las demás no: «3.07.84» de una nómina
+        # se confirma con su papel ya normalizado (``el_papel_de_la_fila``).
+        esta = (
+            de_la_fila.year in anios
+            if precision == ANIO
+            else de_la_fila in escritas
+            or (regla == ESTRUCTURA and fecha_escrita_en(texto, de_la_fila) is not None)
+        )
         if del_papel is not None:
             if dada_por_buena or _otra_sesion_de_la_misma_acta(de_la_fila, del_papel, papel, regla):
                 confirmadas.append(dicho)

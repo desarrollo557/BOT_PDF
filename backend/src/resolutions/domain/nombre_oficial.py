@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Iterable
 
 from .asunto_del_documento import (
     AUTORIZACION_DEL_ASEO,
@@ -114,6 +115,37 @@ _COLGANDO = frozenset({"DE", "DEL", "LA", "EL", "LOS", "LAS", "Y", "O", "E"})
 def _plano(texto: str) -> str:
     sin_tildes = unicodedata.normalize("NFD", texto or "").encode("ascii", "ignore").decode()
     return re.sub(r"\s+", " ", sin_tildes.upper()).strip()
+
+
+#: Los que llevan el RE que citan sólo si lo citan: las notificaciones
+#: «siempre que se encuentre identificado en el documento» (el operador,
+#: 2026-11-18). La notificación por aviso de Electricaribe de 920933
+#: (UPD2998261, 2026-11-20) notifica el acto «MESUC 2818» y no trae ningún RE:
+#: sin él no le falta nada.
+RE_SI_LO_CITA = frozenset(
+    {
+        "NOTIFICACION PERSONAL",
+        "NOTIFICACION PERSONAL RECLAMOS",
+        "NOTIFICACION PERSONAL ESCRITA",
+        "CONSTANCIA DE NOTIFICACION PERSONAL",
+        NOTIFICACION_POR_AVISO,
+        PUBLICACION_DEL_AVISO,
+    }
+)
+#: Lo que dice que un texto cita un radicado: un «RE» con cifras, o el rótulo.
+_CITA_UN_RADICADO = re.compile(r"(?<![A-Z0-9])R\W?E\W?\d{4}|\bRADICAD[OA]\b|\bN\W{0,3}\s*P\W?[QO0]\W?R\b")
+
+
+def le_falta_su_re(nombre: str | None, textos: Iterable[str] | None = None) -> bool:
+    """Si un documento sin RE en el nombre debía llevarlo: por su tipo, y la notificación sólo si cita uno.
+
+    Sin ``textos`` no se sabe qué cita: le falta, como antes.
+    """
+    if not lleva_re_en_el_nombre(nombre):
+        return False
+    if _plano(nombre or "") not in RE_SI_LO_CITA or textos is None:
+        return True
+    return any(_CITA_UN_RADICADO.search(_plano(texto or "")) for texto in textos)
 
 
 def lleva_re_en_el_nombre(nombre: str | None) -> bool:

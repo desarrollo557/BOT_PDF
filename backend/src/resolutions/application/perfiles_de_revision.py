@@ -129,15 +129,28 @@ class PerfilDeRevision:
 def _cruces_del_acuerdo(textos: Mapping[int, str]) -> frozenset[int]:
     """Las hojas que por su propio título son piezas del acuerdo de pago o su Habeas Data."""
     from ..domain.asunto_del_documento import (
+        CONSTANCIA_DE_RECLAMACION,
         LEY_HABEAS_DATA,
         PIEZAS_DEL_ACUERDO,
+        formulario_que_abre,
         titulo_del_documento,
     )
+    from ..domain.tramites import es_cedula
+    from .anexos_declarados import clase_de_soporte
+
+    def soporte_tras_la_constancia(pagina: int, texto: str) -> bool:
+        # La constancia va sola (el operador, 2026-11-20): la cédula o la
+        # factura que la sigue pasa al documento siguiente del cliente, aunque
+        # otra constancia quede de por medio (1000265, UPD3102729 pág. 4).
+        return (clase_de_soporte(texto) is not None or es_cedula(texto)) and formulario_que_abre(
+            textos.get(pagina - 1, "") or ""
+        ) == CONSTANCIA_DE_RECLAMACION
 
     return frozenset(
         pagina
         for pagina, texto in textos.items()
         if titulo_del_documento(texto or "") in (*PIEZAS_DEL_ACUERDO, LEY_HABEAS_DATA)
+        or soporte_tras_la_constancia(pagina, texto or "")
     )
 
 

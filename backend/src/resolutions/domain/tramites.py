@@ -94,10 +94,18 @@ def pqr_reparado(roto: str, releido: str) -> str | None:
     return None
 
 
+#: El RE en su campo «N° PQR:» con una letra suelta pegada delante: «N“ PQR:
+#: JRE2310202104692» (4132569, UPD2427618 pág. 19, 2026-11-20). Sólo en el
+#: campo: en el texto corrido una letra delante es otra palabra. También con el
+#: «PQR» que el escáner deja en «POR».
+_PQR_DEL_CAMPO = re.compile(r"\bN\W{0,3}\s*P\W?[QO0]\W?R\W{0,6}\s*[A-Z]R\s?E\s?(\d{13})(?!\d)")
+
+
 def radicados_de(texto: str) -> list[str]:
     """Los radicados de una página, en orden y sin repetir: «RE4310202207352», «P4310…»."""
     plano = _plano(texto)
     hallados = [(m.start(), f"RE{m.group(1)}") for m in _PQR.finditer(plano)]
+    hallados += [(m.start(), f"RE{m.group(1)}") for m in _PQR_DEL_CAMPO.finditer(plano)]
     hallados += [(m.start(), f"P{m.group(1)}") for m in _EXPEDIENTE.finditer(plano)]
     vistos: list[str] = []
     for _, radicado in sorted(hallados):

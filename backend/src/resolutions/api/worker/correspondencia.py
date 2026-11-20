@@ -127,17 +127,20 @@ def documentos_con_sello_sin_re(grupos, sellos, *, no_cuentan=frozenset(), escri
     return salida
 
 
-def documentos_sin_su_re(grupos, ya_avisadas) -> list[dict]:
+def documentos_sin_su_re(grupos, ya_avisadas, textos: dict | None = None) -> list[dict]:
     """Los documentos que llevan su RE en el nombre por lo que son y salieron sin él, para la Revisión.
 
     También con «Solo OCR» (2026-11-18). No repite la hoja que ya tiene su
     aviso del RE -- el sello a mano sin leer, el RE que el agente no cree --.
+    La notificación que no cita ningún radicado no lo lleva (``le_falta_su_re``).
     """
-    from ...domain.nombre_oficial import es_re, lleva_re_en_el_nombre
+    from ...domain.nombre_oficial import es_re, le_falta_su_re
 
     avisos = []
     for grupo in grupos.groups:
-        if not lleva_re_en_el_nombre(grupo.kind) or not grupo.page_numbers:
+        if not grupo.page_numbers or not le_falta_su_re(
+            grupo.kind, None if textos is None else [textos.get(p, "") or "" for p in grupo.page_numbers]
+        ):
             continue
         if any(es_re(pieza) for pieza in grupo.code.value.split()):
             continue
@@ -651,7 +654,10 @@ def lo_leido_fuera_de_la_capa(
         fecha, pagina, via = pieza.get("fecha"), pieza.get("fecha_pagina"), pieza.get("fecha_via")
         if not fecha or pagina is None:
             continue
-        if via in ("ocr", "ia"):
+        # También lo que vio la IA con visión: el recurso de 4132571 (pág. 6)
+        # se fechó «21/10/2020» por lo visto y la auditoría, que no lo tenía,
+        # lo daba por «no escrito en el documento» (2026-11-20).
+        if via in ("ocr", "ia", "visión"):
             leidos = list(releidas.get(pagina, ()))
         elif via == "sello":
             leidos = [f"SELLO DE RADICACION: {date.fromisoformat(str(fecha)[:10]):%d/%m/%Y}"]
@@ -2395,7 +2401,11 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # manda»), con la IA si se eligió: diez esquinas por página pagada, cada
         # una con su hoja al lado. Tesseract no lee la letra a mano: con «Solo
         # OCR» no hay folios y el corte queda como estaba.
-        folios_de_la_esquina = _leer_los_folios(payload, taller, source, page_count)
+        # Sin las rachas del mismo número, que no son foliación (4132539,
+        # 2026-11-20): tampoco van a la constancia ni a las marcas.
+        from ...domain.foliacion_del_escrito import folios_creibles
+
+        folios_de_la_esquina = folios_creibles(_leer_los_folios(payload, taller, source, page_count))
     finally:
         source.close()
     # Lo que abre por sí mismo cuando la numeración de un escrito se acaba: la
@@ -3488,6 +3498,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 *re_al_pie_que_importa,
                 *(rechazado["page"] for rechazado in re_rechazados),
             },
+            textos,
         )
     piezas = describir_piezas(grupos.groups)
     # F7. La fecha que la estructura no dio en la capa: el agente relee la hoja

@@ -97,6 +97,33 @@ def _encaja(folios: Mapping[int, int], anterior: int, pagina: int) -> bool:
     )
 
 
+#: Cuántas hojas seguidas pueden llevar el mismo folio: las dos caras de una.
+HOJAS_DE_UN_FOLIO = 2
+
+
+def folios_creibles(folios: Mapping[int, int]) -> dict[int, int]:
+    """Los folios que pueden ser una numeración: sin las rachas del mismo número en más hojas de las que tiene un folio.
+
+    En 4132539 (UPD2427614, 2026-11-20) la IA leyó «11» en la esquina de ocho
+    de diez constancias que no traen ningún folio a mano -- lo sacaba del
+    formulario impreso --, y «el folio 11 sigue al 11» las daba por un mismo
+    escrito: nueve avisos del revisor y «Con error» en la auditoría. Un folio
+    son las dos caras de una hoja; el mismo número en tres hojas foliadas
+    seguidas no es foliación.
+    """
+    folios = {p: f for p, f in folios.items() if f}
+    foliadas = sorted(folios)
+    descartadas: set[int] = set()
+    inicio = 0
+    for fin in range(1, len(foliadas) + 1):
+        if fin < len(foliadas) and folios[foliadas[fin]] == folios[foliadas[inicio]]:
+            continue
+        if fin - inicio > HOJAS_DE_UN_FOLIO:
+            descartadas.update(foliadas[inicio:fin])
+        inicio = fin
+    return {p: f for p, f in folios.items() if p not in descartadas}
+
+
 def foliacion_del_escrito(
     folios: Mapping[int, int], paginas: Iterable[int], abren_solas: Iterable[int] = ()
 ) -> Foliacion:
@@ -121,7 +148,7 @@ def foliacion_del_escrito(
       nada por sí mismo y se queda con su escrito (el operador, 2026-11-12).
     """
     orden = sorted(paginas)
-    folios = {p: f for p, f in folios.items() if f and f <= FOLIO_MAXIMO}
+    folios = folios_creibles({p: f for p, f in folios.items() if f and f <= FOLIO_MAXIMO})
     foliadas = [p for p in orden if folios.get(p)]
     continua: set[int] = set()
     abre: set[int] = set()
