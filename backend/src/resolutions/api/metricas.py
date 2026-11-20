@@ -41,6 +41,7 @@ def entregados_en(destino: Path) -> Iterator[PdfEntregado]:
             revision=list(constancia.revision or []),
             proceso=constancia.proceso or {},
             filas=[f for f in (constancia.indice or {}).get("filas") or [] if isinstance(f, dict)],
+            documentos=[d for d in constancia.documentos or [] if isinstance(d, dict)],
         )
 
 

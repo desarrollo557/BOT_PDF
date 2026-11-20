@@ -4203,6 +4203,12 @@ class FolderRunner:
             # (2026-11-18): las métricas y la Revisión las leen después.
             evidencia=dict(informe.get("evidencia") or {}),
             revision=[r for r in informe.get("review_queue") or [] if isinstance(r, dict)],
+            # Las hojas de cada documento, para la auditoría (2026-11-20).
+            documentos=[
+                {"hojas": list(grupo.get("pages") or [])}
+                for grupo in informe.get("groups") or []
+                if isinstance(grupo, dict)
+            ],
             # De la copia que se procesó, que es la del origen: sin otra lectura
             # de la red.
             firma=self._firma_de(job, origin),

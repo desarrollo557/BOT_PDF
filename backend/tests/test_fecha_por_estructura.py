@@ -554,3 +554,28 @@ def test_sin_trampas_tacha_lo_que_va_tras_el_plazo() -> None:
     plano = sin_trampas("FECHA: 03/05/2021 le será notificada a más tardar el 25/05/2021")
     assert "03/05/2021" in plano
     assert "25/05/2021" not in plano
+
+
+class TestLaFechaSolaEnLaCabeza:
+    """910349 (UPD2998266 pág. 1, 2026-11-20): el formato «____, ____ de 20__» con la ciudad en blanco."""
+
+    def test_el_acta_de_predio_desocupado_se_fecha_por_su_cabeza(self):
+        from datetime import date
+
+        from resolutions.domain.fecha_por_estructura import fecha_de_la_hoja
+
+        acta = (
+            "afinia\nGrupo-epm\n\n26, Nov de 2022\n\n# ACTA DE VERIFICACIÓN DE PREDIO DESOCUPADO\n"
+            "El sr(a) Pedro Pérez identificado con C.C. afirma que el predio se encontraba desocupado al momento de "
+            "realizar la visita desde Mayo-21 hasta 06-11-22"
+        )
+        assert fecha_de_la_hoja(acta) == date(2022, 11, 26)
+        assert fecha_de_la_hoja("___26___, ___Nov___ de 2022\nACTA DE VERIFICACION DE PREDIO DESOCUPADO") == date(
+            2022, 11, 26
+        )
+
+    def test_una_fecha_sola_en_el_cuerpo_no_es_la_del_documento(self):
+        from resolutions.domain.fecha_por_estructura import fecha_de_la_hoja
+
+        carta = "Señores AFINIA\nREF: reclamo\nPor medio de la presente\nuno\ndos\ntres\ncuatro\n15 de marzo de 2021\n"
+        assert fecha_de_la_hoja(carta) is None

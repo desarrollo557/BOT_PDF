@@ -123,3 +123,64 @@ class TestLasMetricas:
 
     def test_la_duracion_en_segundos(self):
         assert (segundos_de("1 min 05 s"), segundos_de("42 s"), segundos_de("—")) == (65, 42, 0)
+
+
+class TestLaAuditoria:
+    """El operador, 2026-11-20: «un Excel con sus filtros… qué UPD o qué NIC no tiene fecha, cuáles no tienen RE»."""
+
+    def _pdf(self, *, documentos=()):
+        from resolutions.application.metricas_de_la_extraccion import PdfEntregado
+
+        return PdfEntregado(
+            documento="1000001/UPD1",
+            estado="completa",
+            archivos=["01_RECLAMO-RE2310202402908.pdf", "02_PUBLICACION-DEL-AVISO.pdf", "03_ACTA.pdf"],
+            evidencia={
+                "re": {"1": _hallazgo(valor=RE, metodo="sello de radicación", pagina=1),
+                       "4": _hallazgo(estado="no encontrado", buscado="sello y etiqueta en las hojas 4")},
+                "fecha": {"1": _hallazgo(parametro="fecha", valor="2024-02-01"),
+                          "4": _hallazgo(parametro="fecha", valor="2024-03-01"),
+                          "6": _hallazgo(parametro="fecha", estado="no encontrado", buscado="la hoja 6")},
+            },
+            revision=[{"page": 6, "reason": "la fecha del documento no se pudo leer"}],
+            proceso={"paginas": 6, "paginas_pagadas": 2, "duracion": "12 s", "lectura": "OCR + IA"},
+            filas=[
+                {"nombre": f"RECLAMO-{RE}", "fecha_creacion": "2024-02-01", "paginas": 3},
+                {"nombre": "PUBLICACION DEL AVISO", "fecha_creacion": "2024-03-01", "paginas": 2},
+                {"nombre": "ACTA", "fecha_creacion": None, "paginas": 1},
+            ],
+            documentos=list(documentos),
+        )  # fmt: skip
+
+    def test_una_fila_por_documento_con_lo_que_le_falta(self):
+        from resolutions.application.metricas_de_la_extraccion import auditar
+
+        filas, upd = auditar(self._pdf(documentos=[{"hojas": [1, 2, 3]}, {"hojas": [4, 5]}, {"hojas": [6]}]))
+        assert [f["alerta"] for f in filas] == ["OK", "Sin RE", "Sin fecha · En Revisión"]
+        assert [f["hojas"] for f in filas] == ["1-3", "4-5", "6"]
+        assert filas[0]["re_como"] == "sello de radicación, pág. 1"
+        assert (upd["sin_fecha"], upd["sin_re"], upd["en_revision"]) == (1, 1, 1)
+
+    def test_sin_las_hojas_se_casa_por_la_fecha_y_el_re(self):
+        from resolutions.application.metricas_de_la_extraccion import auditar
+
+        filas, _ = auditar(self._pdf())
+        assert [f["re_estado"] for f in filas[:2]] == ["encontrado", "no encontrado"]
+        assert filas[2]["en_revision"] == "Sí"
+
+    def test_el_libro_trae_la_auditoria_al_frente_con_sus_filtros(self, tmp_path):
+        from openpyxl import load_workbook
+
+        _constancia(
+            tmp_path / "1000001",
+            "UPD1",
+            {"re": {"1": _hallazgo(valor=RE)}},
+            [{"nombre": f"RECLAMO-{RE}", "fecha_creacion": None, "paginas": 1}],
+        )
+        escribir_las_metricas(tmp_path)
+        libro = load_workbook(tmp_path / NOMBRE_DE_LAS_METRICAS)
+        assert libro.sheetnames[:5] == ["Documentos", "Pendientes", "Por UPD", "Por NIC", "Resumen"]
+        documentos = libro["Documentos"]
+        assert documentos.auto_filter.ref and documentos.freeze_panes == "A2"
+        assert documentos["I2"].value == "No" and documentos["I2"].fill.start_color.rgb.endswith("F8CBAD")
+        assert libro["Pendientes"]["F2"].value == "Sin fecha"

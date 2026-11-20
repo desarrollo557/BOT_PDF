@@ -110,6 +110,10 @@ class Constancia:
     #: La cola de Revisión del trabajo, con sus motivos: sin ella, tras la
     #: corrida no quedaba por qué un documento estaba en Revisión.
     revision: list[dict] = field(default_factory=list)
+    #: Las hojas del origen de cada documento entregado, en el orden de sus
+    #: archivos: {"hojas"}. Con ellas la auditoría casa cada fila del índice con
+    #: su evidencia y su Revisión sin adivinar (2026-11-20).
+    documentos: list[dict] = field(default_factory=list)
     #: El principio y el final del PDF de origen (``firma_del_origen``): dice si
     #: es el mismo aunque se haya copiado y tenga otra fecha.
     firma: str | None = None

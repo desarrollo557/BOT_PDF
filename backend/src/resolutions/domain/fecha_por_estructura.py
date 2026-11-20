@@ -639,6 +639,30 @@ def _del_encabezado_de_la_cabeza(texto: str, hoy: date | None) -> date | None:
             declaradas = fechas_de(encabezado.group(2), hoy=hoy)
             if declaradas:
                 return declaradas[0]
+    return _renglon_que_es_la_fecha(texto, hoy)
+
+
+#: Cuántos renglones de la cabeza se miran para la fecha que va sola.
+_RENGLONES_DE_LA_CABEZA = 6
+#: Un renglón que no es más que una fecha: «26 de noviembre de 2022».
+_SOLO_LA_FECHA = re.compile(r"\W*\d{1,2}\s+de\s+[a-záéíóúñ]+\s+del?\s+\d{4}\W*", re.IGNORECASE)
+
+
+def _renglon_que_es_la_fecha(texto: str, hoy: date | None) -> date | None:
+    """La fecha que va sola en un renglón de la cabeza, sin la ciudad delante.
+
+    El formato impreso «______, ______ de 20__» del acta de verificación de
+    predio desocupado deja la ciudad en blanco: la IA lee «26, Nov de 2022», y
+    sin un «Ciudad,» delante no era el encabezado de nadie (910349, UPD2998266
+    pág. 1, 2026-11-20: «se te pasó tomar la fecha de aquí»). Sólo un renglón
+    que no trae nada más que la fecha, y sólo en los primeros de la hoja: en el
+    cuerpo, una fecha es lo que se cita.
+    """
+    renglones = [r for r in (texto or "").splitlines() if r.strip(" _\t")][:_RENGLONES_DE_LA_CABEZA]
+    for renglon in renglones:
+        normalizado = _normalizar(" ".join(renglon.replace("_", " ").split()))
+        if _SOLO_LA_FECHA.fullmatch(normalizado) and (declaradas := fechas_de(normalizado, hoy=hoy)):
+            return declaradas[0]
     return None
 
 

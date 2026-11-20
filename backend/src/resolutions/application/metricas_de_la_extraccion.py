@@ -51,6 +51,10 @@ class PdfEntregado:
     revision: list[Mapping]
     proceso: Mapping
     filas: list[Mapping]
+    #: Las hojas del origen de cada archivo, en el orden de ``filas``
+    #: (``Constancia.documentos``, desde el 2026-11-20). Las constancias de
+    #: antes no las traen: su evidencia se casa por la fecha, el RE y el tipo.
+    documentos: list[Mapping] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -73,6 +77,11 @@ class Metricas:
     no_recuperados: list[tuple[str, str, str, str]] = field(default_factory=list)
     #: Una fila por documento y parámetro, con su evidencia.
     evidencia: list[dict] = field(default_factory=list)
+    #: La auditoría (2026-11-20): una fila por documento entregado, con su
+    #: fecha, su RE y su Revisión juntos (``auditar``).
+    auditoria: list[dict] = field(default_factory=list)
+    #: Una fila por PDF de origen, con lo que le falta.
+    por_upd: list[dict] = field(default_factory=list)
 
     @property
     def segundos_por_pdf(self) -> float:
@@ -109,6 +118,168 @@ def _causa(hallazgo: Mapping) -> str:
     return f"se buscó: {hallazgo.get('buscado')}" if hallazgo.get("buscado") else str(hallazgo.get("motivo") or "")
 
 
+# -- la auditoría: una fila por documento (2026-11-20) -------------------------------
+#
+# El operador: «necesito un Excel con sus filtros donde pueda ver el detalle del
+# procesamiento, por ejemplo qué UPD o qué NIC no tiene fecha, cuáles no tienen
+# RE… una auditoría en un Excel bien organizada». La evidencia va por la primera
+# hoja de cada documento y por parámetro; aquí se junta, por documento, lo que
+# el operador mira: su fecha, su RE y su Revisión.
+
+SI, NO, NO_APLICA = "Sí", "No", "No aplica"
+#: El RE con que termina el nombre de una fila: «RECLAMO-RE2310202403286».
+_RE_AL_FINAL = re.compile(r"-(RE\d{13})$", re.IGNORECASE)
+
+
+def _pagina(clave: object) -> int:
+    return int(clave) if str(clave).isdigit() else 0
+
+
+def _casar_por_lo_que_dicen(filas: list[Mapping], evidencia: Mapping[str, Mapping]) -> list[str | None]:
+    """La primera hoja de cada fila, en las constancias que no la guardan: por su fecha, su RE y su tipo.
+
+    Cada fila toma la hoja libre cuya evidencia más se le parece; a igual
+    parecido, la primera del papel -- es el orden del índice a igual fecha --.
+    """
+    hojas = sorted({str(h) for p in PARAMETROS for h in (evidencia.get(p) or {})}, key=_pagina)
+    usadas: set[str] = set()
+    primeras: list[str | None] = []
+    for fila in filas:
+        nombre = str(fila.get("nombre") or "").strip().upper()
+        con_re = _RE_AL_FINAL.search(nombre)
+        tipo = nombre[: con_re.start()] if con_re else nombre
+
+        def parecido(hoja: str, tipo: str = tipo, con_re: re.Match | None = con_re, fila: Mapping = fila) -> int:
+            fecha = (evidencia.get("fecha") or {}).get(hoja) or {}
+            del_re = (evidencia.get("re") or {}).get(hoja) or {}
+            del_tipo = (evidencia.get("tipo") or {}).get(hoja) or {}
+            puntos = 2 if str(fecha.get("valor") or "") == str(fila.get("fecha_creacion") or "") else 0
+            puntos += 2 if (del_re.get("valor") or None) == (con_re.group(1).upper() if con_re else None) else 0
+            puntos += 1 if str(del_tipo.get("valor") or "").upper() == tipo else 0
+            return puntos
+
+        libres = [h for h in hojas if h not in usadas]
+        if not libres:
+            primeras.append(None)
+            continue
+        elegida = max(libres, key=lambda h: (parecido(h), -_pagina(h)))
+        usadas.add(elegida)
+        primeras.append(elegida)
+    return primeras
+
+
+def _como(hallazgo: Mapping) -> str:
+    """Cómo salió un valor: «sello de radicación, pág. 3»; o, si no salió, qué se buscó."""
+    metodo = str(hallazgo.get("metodo") or "").strip()
+    if metodo:
+        return metodo + (f", pág. {hallazgo['pagina']}" if hallazgo.get("pagina") and "pág." not in metodo else "")
+    return _causa(hallazgo)
+
+
+def auditar(pdf: PdfEntregado) -> tuple[list[dict], dict]:
+    """Las filas de la auditoría de un PDF de origen -- una por documento entregado -- y su fila por UPD."""
+    from ..domain.nombre_oficial import lleva_re_en_el_nombre
+
+    nic, _, upd = pdf.documento.replace("\\", "/").rpartition("/")
+    evidencia = {p: (pdf.evidencia.get(p) or {}) if isinstance(pdf.evidencia.get(p), Mapping) else {} for p in PARAMETROS}
+    exactas = len(pdf.documentos) == len(pdf.filas) and all(d.get("hojas") for d in pdf.documentos)
+    hojas_de: list[list[int]] = [[int(h) for h in d.get("hojas") or []] for d in pdf.documentos] if exactas else []
+    if exactas:
+        primeras = [
+            next((str(h) for h in hojas if str(h) in evidencia["re"] or str(h) in evidencia["fecha"]), str(hojas[0]))
+            for hojas in hojas_de
+        ]
+    else:
+        primeras = _casar_por_lo_que_dicen(pdf.filas, evidencia)
+    archivos = sorted(a.rsplit("/", 1)[-1] for a in pdf.archivos if a.lower().endswith(".pdf"))
+    # La Revisión de cada documento: la de sus hojas; sin sus hojas, la de la
+    # última primera hoja que no pasa de la del aviso.
+    de_cada_uno: list[list[str]] = [[] for _ in pdf.filas]
+    for entrada in pdf.revision:
+        pagina = _pagina(entrada.get("page"))
+        motivo = f"pág. {pagina}: {entrada.get('reason') or ''}".strip()
+        if exactas:
+            puesto = next((i for i, hojas in enumerate(hojas_de) if pagina in hojas), None)
+        else:
+            antes = [(i, _pagina(p)) for i, p in enumerate(primeras) if p is not None and _pagina(p) <= pagina]
+            puesto = max(antes, key=lambda par: par[1])[0] if antes else (0 if pdf.filas else None)
+        if puesto is not None:
+            de_cada_uno[puesto].append(motivo)
+    filas: list[dict] = []
+    for i, fila in enumerate(pdf.filas):
+        nombre = str(fila.get("nombre") or "").strip()
+        con_re = _RE_AL_FINAL.search(nombre)
+        tipo = nombre[: con_re.start()] if con_re else nombre
+        primera = primeras[i] if i < len(primeras) else None
+        de_la_fecha = evidencia["fecha"].get(primera) or {} if primera else {}
+        del_re = evidencia["re"].get(primera) or {} if primera else {}
+        fecha = str(fila.get("fecha_creacion") or "")
+        lleva = lleva_re_en_el_nombre(tipo)
+        radicado = con_re.group(1).upper() if con_re else ""
+        motivos = de_cada_uno[i]
+        alertas = [
+            *(["Sin fecha"] if not fecha else []),
+            *(["Sin RE"] if lleva and not radicado else []),
+            *(["RE por confirmar"] if str(del_re.get("estado") or "") == "requiere validación" else []),
+            *(["En Revisión"] if motivos else []),
+        ]
+        filas.append(
+            {
+                "nic": nic,
+                "upd": upd,
+                "orden": i + 1,
+                "archivo": archivos[i] if len(archivos) == len(pdf.filas) else "",
+                "tipo": tipo,
+                "paginas": int(fila.get("paginas") or 0),
+                "hojas": (
+                    f"{hojas_de[i][0]}-{hojas_de[i][-1]}" if exactas and len(hojas_de[i]) > 1
+                    else str(hojas_de[i][0]) if exactas
+                    else ""
+                ),
+                "fecha": fecha,
+                "tiene_fecha": SI if fecha else NO,
+                "fecha_como": _como(de_la_fecha) if de_la_fecha else "",
+                "re": radicado,
+                "lleva_re": SI if lleva else NO,
+                "tiene_re": SI if radicado else (NO if lleva else NO_APLICA),
+                "re_estado": str(del_re.get("estado") or ""),
+                "re_como": _como(del_re) if del_re else "",
+                "en_revision": SI if motivos else NO,
+                "motivos": " | ".join(motivos),
+                "alerta": " · ".join(alertas) or "OK",
+            }
+        )
+    proceso = pdf.proceso or {}
+    resumen = {
+        "nic": nic,
+        "upd": upd,
+        "estado": pdf.estado,
+        "lectura": str(proceso.get("lectura") or ""),
+        "paginas": int(proceso.get("paginas") or 0),
+        "documentos": len(filas),
+        "sin_fecha": sum(1 for f in filas if f["tiene_fecha"] == NO),
+        "sin_re": sum(1 for f in filas if f["tiene_re"] == NO),
+        "en_revision": sum(1 for f in filas if f["en_revision"] == SI),
+        "avisos": len(pdf.revision),
+        "paginas_pagadas": int(proceso.get("paginas_pagadas") or 0),
+        "duracion": str(proceso.get("duracion") or ""),
+        "procesado": str(proceso.get("inicio") or "")[:16].replace("T", " "),
+    }
+    resumen["alerta"] = (
+        " · ".join(
+            texto
+            for n, texto in (
+                (resumen["sin_fecha"], f"{resumen['sin_fecha']} sin fecha"),
+                (resumen["sin_re"], f"{resumen['sin_re']} sin RE"),
+                (resumen["en_revision"], f"{resumen['en_revision']} en Revisión"),
+            )
+            if n
+        )
+        or "OK"
+    )
+    return filas, resumen
+
+
 def medir(entregados: Iterable[PdfEntregado]) -> Metricas:
     """Las métricas de una entrega."""
     metricas = Metricas()
@@ -122,6 +293,9 @@ def medir(entregados: Iterable[PdfEntregado]) -> Metricas:
         for entrada in pdf.revision:
             metricas.revision[familia_de_la_revision(str(entrada.get("reason") or ""))] += 1
         metricas.reparos += verificar(pdf.evidencia, pdf.documento)
+        filas, resumen = auditar(pdf)
+        metricas.auditoria += filas
+        metricas.por_upd.append(resumen)
         for parametro in PARAMETROS:
             por_hoja = pdf.evidencia.get(parametro) or {}
             if not isinstance(por_hoja, Mapping):
