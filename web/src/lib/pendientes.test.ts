@@ -19,3 +19,28 @@ describe('la Revisión que el agente ya resolvió (2026-11-23)', () => {
     expect(pendientes({})).toEqual([]);
   });
 });
+
+describe('los RE decididos con confianza baja, para auditar (2026-11-23)', () => {
+  it('salen los de confianza baja y los revertidos, no los confirmados ni los de confianza media', async () => {
+    const { reDecididosPorAuditar } = await import('./revision');
+    const decision = (pagina: number, extra: Record<string, unknown>) => ({
+      page: pagina, valor: 'RE2310202408877', regla: 'el más votado', confianza: 'baja', por_que: 'leído', auditor: 'verificada por el auditor',
+      opciones: ['RE2310202408877', 'RE2310202408897'], ...extra
+    });
+    const job = {
+      id: 'j1', filename: 'UPD1.pdf',
+      report: {
+        decisiones_del_agente: [
+          decision(1, {}),
+          decision(2, { confianza: 'media' }),
+          decision(3, { valor: null }),
+          decision(4, { auditor: 'confirmado por el operador' })
+        ]
+      }
+    } as never;
+    const guardado = { job_id: 'j2', documento: 'UPD2.pdf', pagina: 5, motivo: 'm', candidatos: [], valor: null, archivo: null };
+    const salida = reDecididosPorAuditar([job], [guardado]);
+    expect(salida.map((r) => `${r.jobId}:${r.pagina}`)).toEqual(['j1:1', 'j1:3', 'j2:5']);
+    expect(salida[0].candidatos.map((c) => c.valor)).toEqual(['RE2310202408877', 'RE2310202408897']);
+  });
+});

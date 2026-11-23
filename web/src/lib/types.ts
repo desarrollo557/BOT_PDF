@@ -161,6 +161,8 @@ export interface Report {
   quarantine?: number[];
   repairs?: Repair[];
   review_queue?: ReviewItem[];
+  /** Lo que el agente decidió del RE (2026-11-23), con su regla, su confianza y su auditor. */
+  decisiones_del_agente?: DecisionDelAgente[];
   outputs?: string[];
   stats?: Stats;
   inventory?: Inventory | null;
@@ -472,6 +474,30 @@ export interface FilaDelFuid {
  * en disco (`GET /api/nombres-por-revisar`, 2026-11-17): tras un reinicio, o
  * porque la corrida sacó de la memoria a los trabajos viejos.
  */
+/** Una decisión del agente sobre el RE de un documento (2026-11-23). */
+export interface DecisionDelAgente {
+  page: number;
+  paginas?: number[];
+  valor: string | null;
+  propuesto?: string;
+  regla: string;
+  confianza: string;
+  por_que: string;
+  auditor: string;
+  opciones?: string[];
+}
+
+/** Un RE decidido por el agente en un trabajo que ya no está en memoria, como se guardó. */
+export interface ReDecididoGuardado {
+  job_id: string;
+  documento: string;
+  pagina: number;
+  motivo: string;
+  candidatos: CandidatoDelRe[];
+  valor: string | null;
+  archivo: string | null;
+}
+
 export interface NombreGuardado {
   job_id: string;
   documento: string;

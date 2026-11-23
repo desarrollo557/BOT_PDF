@@ -77,6 +77,9 @@ class Contexto:
     #: Revisión de nombres los enseña aunque el trabajo ya no esté en memoria.
     #: Sin él -- en las pruebas que no lo ponen --, la Revisión vive en memoria.
     nombres_por_revisar: NombresPorRevisarEnDisco | None = None
+    #: Los RE que el agente decidió, en disco (2026-11-23): mismo almacén, otra
+    #: carpeta. Sin él, el «Confirmar» del RE vive en memoria.
+    re_por_revisar: NombresPorRevisarEnDisco | None = None
 
 
 def contexto_de(request: Request) -> Contexto:

@@ -15,10 +15,12 @@ la corrida abierta, el PDF entregado en la carpeta del NIC, su constancia, el
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
@@ -30,6 +32,13 @@ from ..contexto import Ctx
 from ..identidad import Quien, exigir_identificado
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+#: Un cerrojo por trabajo para el «Confirmar» del RE.
+_cerrojos_de_los_trabajos: dict[str, asyncio.Lock] = {}
+
+
+def _cerrojo_del_trabajo(job_id: str) -> asyncio.Lock:
+    return _cerrojos_de_los_trabajos.setdefault(job_id, asyncio.Lock())
 
 #: Lo que el operador escribe: «RE» y trece cifras, con los blancos que quiera.
 _LO_ESCRITO = re.compile(r"[\s.\-]")
@@ -40,11 +49,86 @@ PPP_DE_LA_HOJA = 110
 _NUMERO = re.compile(r"^(\d+)_")
 
 
+#: Lo del informe que se guarda para corregir el RE sin el trabajo en memoria.
+CLAVES_GUARDADAS = (
+    "inventory",
+    "groups",
+    "outputs",
+    "review_queue",
+    "evidencia",
+    "decisiones_del_agente",
+    "re_en_el_nombre",
+    "donde_se_entrega_el_re",
+    "page_count",
+)
+#: Lo que deja una decisión del agente cuando la cambia o la confirma el operador.
+CONFIRMADO = "confirmado por el operador"
+
+
+def guardar_los_re_decididos(ctx, job) -> None:
+    """El trabajo con RE decididos por el agente, en disco; sin ninguno, se quita (2026-11-23).
+
+    Al terminar el trabajo y tras cada corrección: el operador audita los de
+    confianza baja y los cambia aunque el bot se haya reiniciado. Con dónde se
+    entregó, para corregir lo entregado sin la corrida. Que falle no toca el
+    trabajo.
+    """
+    almacen = getattr(ctx, "re_por_revisar", None)
+    report = getattr(job, "report", None)
+    if almacen is None or not isinstance(report, dict):
+        return
+    try:
+        if not report.get("decisiones_del_agente"):
+            almacen.quitar(job.id)
+            return
+        informe = {clave: report[clave] for clave in CLAVES_GUARDADAS if clave in report}
+        donde = report.get("donde_se_entrega_el_re")
+        if not donde and getattr(ctx, "folders", None) is not None:
+            donde = ctx.folders.donde_se_entrega(job)
+        if not donde and (anterior := almacen.leer(job.id)):
+            donde = (anterior.get("informe") or {}).get("donde_se_entrega_el_re")
+        if donde:
+            informe["donde_se_entrega_el_re"] = donde
+        almacen.guardar(
+            job.id,
+            {
+                "job_id": job.id,
+                "documento": job.filename,
+                "guardado": datetime.now(UTC).isoformat(),
+                "origen": getattr(job, "origen", None) or {},
+                "informe": informe,
+            },
+        )
+    except Exception:  # noqa: BLE001 - la Revisión en memoria sigue valiendo
+        logger.warning("no se pudieron guardar los RE decididos de %s", getattr(job, "filename", ""), exc_info=True)
+
+
+def _trabajo_guardado(ctx, job_id: str):
+    """El trabajo como se guardó para la Revisión del RE; ``None`` si no está."""
+    almacen = getattr(ctx, "re_por_revisar", None)
+    entrada = almacen.leer(job_id) if almacen is not None else None
+    if not entrada or not isinstance(entrada.get("informe"), dict):
+        return None
+    return SimpleNamespace(
+        id=job_id,
+        filename=str(entrada.get("documento") or job_id),
+        report=entrada["informe"],
+        origen=entrada.get("origen") or {},
+        source=None,
+        guardado=True,
+    )
+
+
 def _trabajo(ctx, job_id: str):
     job = ctx.registry.get(job_id)
-    if job is None or not job.report:
+    if job is not None and job.report:
+        return job
+    # Tras un reinicio, o cuando la corrida sacó al trabajo de la memoria: lo
+    # que se guardó de él (2026-11-23).
+    guardado = _trabajo_guardado(ctx, job_id)
+    if guardado is None:
         raise HTTPException(status_code=404, detail="Ese trabajo ya no está en el servicio.")
-    return job
+    return guardado
 
 
 def _items(report: dict) -> list[dict]:
@@ -180,6 +264,13 @@ async def corregir_re(ctx: Ctx, job_id: str, pagina: int, payload: dict, quien: 
     radicado = _LO_ESCRITO.sub("", str(payload.get("re") or "")).upper()
     if not _RE.fullmatch(radicado):
         raise HTTPException(status_code=422, detail="Un RE es «RE» y trece cifras: «RE2310202402908».")
+    # De uno en uno por trabajo: dos «Confirmar» seguidos sobre un trabajo
+    # guardado se pisaban (la verificación del 2026-11-23).
+    async with _cerrojo_del_trabajo(job_id):
+        return await _corregir_re(ctx, job_id, pagina, radicado, usuario)
+
+
+async def _corregir_re(ctx, job_id: str, pagina: int, radicado: str, usuario) -> dict[str, object]:
     job = _trabajo(ctx, job_id)
     report = job.report
     item = _documento(report, pagina)
@@ -224,20 +315,100 @@ async def corregir_re(ctx: Ctx, job_id: str, pagina: int, payload: dict, quien: 
         ).as_dict(),
         "quien": getattr(usuario, "nombre", None) or getattr(usuario, "cedula", None),
     }
+    from ..correccion_del_re import es_aviso_del_re
+
     report["review_queue"] = [
         r
         for r in report.get("review_queue") or []
-        if not (isinstance(r, dict) and r.get("page") in hojas and re.search(r"\bRE\b", str(r.get("reason") or "")))
+        if not (isinstance(r, dict) and r.get("page") in hojas and es_aviso_del_re(str(r.get("reason") or "")))
     ]
 
-    # El destino, con la corrida abierta.
+    # El destino: con la corrida abierta, por ella; si ya no está, por las
+    # rutas que la entrega guardó en el informe (2026-11-23).
     folders = getattr(ctx, "folders", None)
+    nombre_de_quien = getattr(usuario, "nombre", None) or getattr(usuario, "cedula", None)
     if folders is not None and folders.tiene_la_corrida(job):
-        avisos += await asyncio.to_thread(folders.corregir_re, job, posicion, radicado)
+        avisos += await asyncio.to_thread(folders.corregir_re, job, posicion, radicado, nombre_de_quien)
+    elif report.get("donde_se_entrega_el_re"):
+        from ..correccion_del_re import corregir_re_en_el_destino
+
+        avisos += await asyncio.to_thread(
+            corregir_re_en_el_destino,
+            report["donde_se_entrega_el_re"],
+            posicion,
+            radicado,
+            nombre_de_quien,
+            job_id=job.id,
+        )
     elif (getattr(job, "origen", None) or {}).get("tipo") == "carpeta":
         avisos.append(
             "la corrida de esta carpeta ya no está en memoria: el PDF entregado y el índice del NIC no cambiaron"
         )
-    if hasattr(ctx.registry, "publish"):
-        ctx.registry.publish(job)
+    # Y la decisión del agente de ese documento, en el informe: la confirmó o la cambió el operador.
+    for decision in report.get("decisiones_del_agente") or []:
+        if isinstance(decision, dict) and set(decision.get("paginas") or [decision.get("page")]) & hojas:
+            decision.update({"valor": radicado, "auditor": CONFIRMADO})
+    if getattr(job, "guardado", False):
+        # El trabajo guardado: su informe corregido vuelve al disco.
+        almacen = getattr(ctx, "re_por_revisar", None)
+        if almacen is not None and (entrada := almacen.leer(job.id)):
+            await asyncio.to_thread(almacen.guardar, job.id, {**entrada, "informe": report})
+    else:
+        if hasattr(ctx.registry, "publish"):
+            ctx.registry.publish(job)
+        await asyncio.to_thread(guardar_los_re_decididos, ctx, job)
     return {"re": radicado, "archivo": nuevo, "avisos": avisos}
+
+
+def por_auditar(decision: object) -> bool:
+    """Si una decisión del agente se enseña para auditar: confianza baja o revertida, y no tocada por el operador."""
+    if not isinstance(decision, dict) or decision.get("auditor") == CONFIRMADO:
+        return False
+    return not decision.get("valor") or decision.get("confianza") == "baja"
+
+
+@router.get("/api/re-decididos")
+async def re_decididos(ctx: Ctx) -> list[dict[str, object]]:
+    """Los RE que el agente decidió con confianza baja -- o que su auditor revirtió -- en los trabajos que ya no están en memoria (2026-11-23).
+
+    Los de los trabajos en memoria los enseña la pantalla desde el trabajo en
+    vivo. Cada uno con su hoja, lo que se leyó y el archivo donde quedó, para
+    auditarlo y cambiarlo con el mismo «Confirmar».
+    """
+    almacen = getattr(ctx, "re_por_revisar", None)
+    if almacen is None:
+        return []
+    salida: list[dict[str, object]] = []
+    for entrada in await asyncio.to_thread(almacen.todas):
+        job_id = str(entrada.get("job_id") or "")
+        vivo = ctx.registry.get(job_id)
+        if not job_id or (vivo is not None and vivo.report):
+            continue
+        informe = entrada.get("informe") or {}
+        for decision in informe.get("decisiones_del_agente") or []:
+            if not por_auditar(decision):
+                continue
+            pagina = int(decision.get("page") or 0)
+            archivo = next(
+                (
+                    str(item.get("file_name") or "")
+                    for item in _items(informe)
+                    if pagina in (item.get("page_numbers") or [])
+                ),
+                None,
+            )
+            regla, confianza = decision.get("regla") or "", decision.get("confianza") or ""
+            salida.append(
+                {
+                    "job_id": job_id,
+                    "documento": entrada.get("documento") or job_id,
+                    "pagina": pagina,
+                    "motivo": f"{regla} ({confianza}): {decision.get('por_que') or ''}",
+                    "candidatos": [
+                        {"valor": v, "motivo": "leído", "pagina": pagina} for v in decision.get("opciones") or []
+                    ],
+                    "valor": decision.get("valor"),
+                    "archivo": archivo,
+                }
+            )
+    return salida

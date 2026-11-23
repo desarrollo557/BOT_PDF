@@ -56,6 +56,8 @@ def client(tmp_path, monkeypatch):
         # en él (2026-11-17).
         padron_path=tmp_path / "padron.jsonl",
         nombres_por_revisar_dir=tmp_path / "nombres-por-revisar",
+        # Y los RE decididos por el agente (2026-11-23), por lo mismo.
+        re_por_revisar_dir=tmp_path / "re-por-revisar",
         # Long enough that the background ticker never fires mid-test; the sweep
         # is exercised directly instead, where its timing is not a coin flip.
         sweep_seconds=3600.0,
@@ -72,6 +74,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(
         main.contexto, "nombres_por_revisar", NombresPorRevisarEnDisco(settings.nombres_por_revisar_dir)
     )
+    monkeypatch.setattr(main.contexto, "re_por_revisar", NombresPorRevisarEnDisco(settings.re_por_revisar_dir))
     monkeypatch.setattr(
         main.contexto, "janitor", IdleJanitor(registry, settings, referenced=ledger.job_ids)
     )

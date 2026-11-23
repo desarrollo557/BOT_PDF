@@ -1,5 +1,5 @@
 import { pendientes } from './pendientes';
-import type { CandidatoDelRe, FilaConPersona, Job, NombreGuardado } from './types';
+import type { CandidatoDelRe, FilaConPersona, Job, NombreGuardado, ReDecididoGuardado } from './types';
 
 /**
  * Dónde acabó archivada una página que hay que revisar.
@@ -132,6 +132,44 @@ export interface RePorMirar {
  * confirmar, el escrito a mano que no se leyó con certeza, el que no se cree.
  */
 const ES_DEL_RE = /^RE por confirmar|RE escrito a mano|sin su RE|el RE leído a mano/i;
+
+/**
+ * Los RE que el agente decidió con confianza baja -- o que su auditor revirtió --,
+ * para auditarlos por muestreo y cambiarlos con el mismo «Confirmar» (2026-11-23):
+ * los de los trabajos en pantalla y los guardados de los que ya no están.
+ */
+export function reDecididosPorAuditar(jobs: Job[], guardados: ReDecididoGuardado[] = []): RePorMirar[] {
+  const salida: RePorMirar[] = [];
+  const enPantalla = new Set<string>();
+  for (const job of jobs) {
+    enPantalla.add(job.id);
+    for (const decision of job.report?.decisiones_del_agente ?? []) {
+      if (decision.auditor === 'confirmado por el operador') continue;
+      if (decision.valor && decision.confianza !== 'baja') continue;
+      const { file } = whereItLanded(job, decision.page);
+      salida.push({
+        jobId: job.id,
+        documento: job.filename,
+        pagina: decision.page,
+        motivo: `${decision.regla} (${decision.confianza}): ${decision.por_que}`,
+        candidatos: (decision.opciones ?? []).map((valor) => ({ valor, motivo: 'leído', pagina: decision.page })),
+        archivo: file
+      });
+    }
+  }
+  for (const guardado of guardados) {
+    if (enPantalla.has(guardado.job_id)) continue;
+    salida.push({
+      jobId: guardado.job_id,
+      documento: guardado.documento,
+      pagina: guardado.pagina,
+      motivo: guardado.motivo,
+      candidatos: guardado.candidatos,
+      archivo: guardado.archivo
+    });
+  }
+  return salida;
+}
 
 /** Los RE por confirmar de los trabajos en pantalla: uno por documento, con sus candidatos. */
 export function radicadosPorMirar(jobs: Job[]): RePorMirar[] {

@@ -285,6 +285,11 @@ async def _correr(ctx: Contexto, job: Job, hilos: int | None) -> None:
         from .routers.nombres import guardar_los_por_revisar
 
         guardar_los_por_revisar(ctx, job)
+        # Y sus RE decididos por el agente, para auditarlos y cambiarlos tras
+        # un reinicio (2026-11-23).
+        from .routers.radicados import guardar_los_re_decididos
+
+        guardar_los_re_decididos(ctx, job)
     except Cancelled:
         # No es un fallo: es lo que el operador pidió. Se distingue de un error
         # porque un lote con documentos cancelados no está roto.

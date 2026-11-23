@@ -17,7 +17,8 @@ import type {
   SourceDisposition,
   UsuarioApi,
   FuidTabla,
-  NombreGuardado
+  NombreGuardado,
+  ReDecididoGuardado
 } from './types';
 
 const BASE = '/api';
@@ -824,6 +825,13 @@ export function corregirRe(
  * guardaron en disco (2026-11-17): la Revisión de nombres sobrevive a un
  * reinicio. Las de los trabajos en memoria llegan con el trabajo en vivo.
  */
+/** Los RE decididos con confianza baja de los trabajos que ya no están en memoria (2026-11-23). */
+export async function fetchReDecididos(): Promise<ReDecididoGuardado[]> {
+  const response = await pedir(`${BASE}/re-decididos`, { headers: attribution() });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
+}
+
 export async function fetchNombresGuardados(): Promise<NombreGuardado[]> {
   const response = await pedir(`${BASE}/nombres-por-revisar`, { headers: attribution() });
   if (!response.ok) throw new ApiError(await detailOf(response));

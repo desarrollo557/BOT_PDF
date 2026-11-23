@@ -202,6 +202,10 @@ class Settings:
     #: nombres sobrevive a reiniciar y a que la corrida saque de la memoria los
     #: trabajos viejos. Junto al padrón, por lo mismo.
     nombres_por_revisar_dir: Path = DEFAULT_ROOT / "nombres-por-revisar"
+    #: Los RE que el agente decidió en cada trabajo, con dónde se entregó
+    #: (2026-11-23): el operador los audita y los cambia aunque el bot se haya
+    #: reiniciado.
+    re_por_revisar_dir: Path = DEFAULT_ROOT / "re-por-revisar"
 
     #: La plantilla oficial del FUID. Vacío significa la que viaja con el
     #: programa; se pone una ruta cuando la Universidad publique otra versión
@@ -273,6 +277,7 @@ class Settings:
             nombres_por_revisar_dir=Path(
                 os.environ.get("RESOLUTIONS_NOMBRES_POR_REVISAR", DEFAULT_ROOT / "nombres-por-revisar")
             ),
+            re_por_revisar_dir=Path(os.environ.get("RESOLUTIONS_RE_POR_REVISAR", DEFAULT_ROOT / "re-por-revisar")),
             sweep_seconds=_float("RESOLUTIONS_SWEEP_SECONDS", 30.0),
             fuid_template=os.environ.get("RESOLUTIONS_FUID_TEMPLATE") or None,
             fuid_caja=os.environ.get("RESOLUTIONS_FUID_CAJA", ""),
@@ -288,6 +293,7 @@ class Settings:
         self.users_path.parent.mkdir(parents=True, exist_ok=True)
         self.padron_path.parent.mkdir(parents=True, exist_ok=True)
         self.nombres_por_revisar_dir.mkdir(parents=True, exist_ok=True)
+        self.re_por_revisar_dir.mkdir(parents=True, exist_ok=True)
 
     def as_worker_payload(self) -> dict[str, object]:
         """Only what a worker process needs, and nothing that cannot be pickled."""

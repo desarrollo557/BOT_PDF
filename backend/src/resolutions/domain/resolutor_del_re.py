@@ -81,6 +81,9 @@ class ContextoDelRe:
     anio: int | None = None
     #: Los RE de los demás trámites de la caja.
     de_otros_tramites: frozenset[str] = frozenset()
+    #: El RE que eligió el juez de la IA mirando el sello, entre lo leído
+    #: (``eleccion_del_juez``, 2026-11-23).
+    elegido_por_el_juez: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +108,24 @@ _LO_QUE_EL_RECLAMO_CITA = "el reclamo cita RE de otras reclamaciones"
 _EL_DE_SU_TRAMITE = "el de su trámite"
 
 
+def _validos(candidatos: Sequence[Candidato], contexto: ContextoDelRe) -> list[Candidato]:
+    """Los candidatos entre los que el agente puede decidir: ni lo que el reclamo sólo cita ni, para quien no lo lleva, el de su trámite."""
+    return [
+        c
+        for c in candidatos
+        if es_re_entero(c.valor)
+        and _LO_QUE_EL_RECLAMO_CITA not in (c.motivo or "")
+        and (contexto.lleva_el_del_tramite or not (c.motivo or "").startswith(_EL_DE_SU_TRAMITE))
+    ]
+
+
+def destinos_de(candidatos: Sequence[Candidato], contexto: ContextoDelRe | None = None) -> list[str]:
+    """Los RE entre los que se decide: lo leído y su corrección, sin repetir; con ``contexto``, sólo lo que el agente puede elegir."""
+    if contexto is not None:
+        candidatos = _validos(candidatos, contexto)
+    return list(dict.fromkeys(d for c in candidatos if es_re_entero(d := _destino(c))))
+
+
 def _votos(candidatos: Sequence[Candidato], radican: frozenset[str]) -> Counter:
     """Cuántas lecturas distintas apuntan a cada RE: lo leído y su corrección son una sola."""
     lecturas: dict[str, set[str]] = {}
@@ -122,17 +143,23 @@ def _leido(candidatos: Sequence[Candidato]) -> str:
 
 def resolver_sin_certeza(candidatos: Sequence[Candidato], contexto: ContextoDelRe) -> Decision | None:
     """El RE más probable entre los candidatos de un documento, con la regla que lo eligió; ``None`` si no hay nada."""
-    validos = [
-        c
-        for c in candidatos
-        if es_re_entero(c.valor)
-        and _LO_QUE_EL_RECLAMO_CITA not in (c.motivo or "")
-        and (contexto.lleva_el_del_tramite or not (c.motivo or "").startswith(_EL_DE_SU_TRAMITE))
-    ]
-    destinos = list(dict.fromkeys(_destino(c) for c in validos if es_re_entero(_destino(c))))
+    validos = _validos(candidatos, contexto)
+    destinos = destinos_de(validos)
     votos = _votos(validos, contexto.oficinas_que_radican)
     leido = _leido(validos)
 
+    # 0. El juez de la IA, que miró el sello, eligió uno de lo leído. Sólo si
+    # su auditor lo sostendría: si no, deciden las reglas de siempre.
+    elegido = (contexto.elegido_por_el_juez or "").upper()
+    if elegido and elegido in destinos:
+        del_juez = Decision(
+            elegido,
+            "el juez de la IA, mirando el sello, eligió entre lo leído",
+            MEDIA,
+            f"entre {', '.join(destinos)} el juez vio {elegido}; leído {leido}",
+        )
+        if auditar_la_decision(del_juez, contexto) is None:
+            return del_juez
     # 1. La oficina que el sello trae impresa.
     if contexto.oficina_del_sello and contexto.oficina_del_sello.isdigit():
         con_ella = [d for d in destinos if d[2:6] == contexto.oficina_del_sello]
@@ -211,7 +238,7 @@ def auditar_la_decision(decision: Decision, contexto: ContextoDelRe, *, hoy: dat
 # esperando un «Confirmar»: cada uno lleva lo que se hizo y por qué.
 
 DECIDIDO, CERRADO, REVERTIDO = "decidido por el agente", "cerrado por el agente", "revertido por el auditor"
-_DEL_RE = re.compile(
+AVISO_DEL_RE = re.compile(
     r"^RE por confirmar|RE escrito a mano|el RE leído a mano|sin su RE|sin RE\b|sello de radicación al pie"
     r"|RE a mano|\bRE del sello",
     re.IGNORECASE,
@@ -229,7 +256,7 @@ def lo_que_hizo_el_agente(
 ) -> dict:
     """Lo que el agente hizo con un aviso de la Revisión: ``{"accion", "conclusion"}``."""
     razon = razon or ""
-    if _DEL_RE.search(razon):
+    if AVISO_DEL_RE.search(razon):
         if decision and decision.get("valor"):
             return {
                 "accion": DECIDIDO,
@@ -295,3 +322,27 @@ def avisos_pendientes(avisos: Sequence[Mapping] | None) -> list[Mapping]:
     el libro mayor, el Excel de procesos y las métricas cuentan éstos.
     """
     return [a for a in avisos or [] if isinstance(a, Mapping) and not isinstance(a.get("resuelto"), Mapping)]
+
+
+#: Las reglas que deciden sin desempatar: lo que se le pregunta al juez de la IA.
+REGLAS_DEL_EMPATE = frozenset(
+    {"el más votado entre lecturas que no coinciden", "el primero leído entre lecturas que no coinciden"}
+)
+#: Un RE entero en la respuesta del juez: ni pegado a otra letra o cifra
+#: delante ni con una cifra más detrás (el prefijo de un número más largo).
+_RE_EN_LA_RESPUESTA = re.compile(r"(?<![A-Za-z0-9])R\W?E\W{0,2}((?:\d\W?){12}\d)(?!\d)", re.IGNORECASE)
+#: El juez descarta: «ninguno», «no es…», «descarto…». Entonces no eligió,
+#: aunque nombre uno de la lista («ninguno; el más parecido es RE…»).
+_EL_JUEZ_DESCARTA = re.compile(
+    r"\bning[uú]n|\bno\s+(?:es|son|est[aá]|coincide|se\s+ve|aparece)\b|descart", re.IGNORECASE
+)
+
+
+def eleccion_del_juez(respuesta: str | None, candidatos: Sequence[str]) -> str | None:
+    """El RE que eligió el juez de la IA, sólo si es uno de los ``candidatos``; ``None`` si dijo «ninguno» u otro."""
+    if _EL_JUEZ_DESCARTA.search(respuesta or ""):
+        return None
+    lista = {c.upper() for c in candidatos if es_re_entero(c.upper())}
+    vistos = {"RE" + re.sub(r"\D", "", h.group(1)) for h in _RE_EN_LA_RESPUESTA.finditer(respuesta or "")}
+    elegidos = vistos & lista
+    return elegidos.pop() if len(elegidos) == 1 else None

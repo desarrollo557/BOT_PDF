@@ -1,14 +1,14 @@
 <script lang="ts">
   import { pendientes, resueltos } from '$lib/pendientes';
-  import { downloadUrl, fetchNombresGuardados } from '$lib/api';
+  import { downloadUrl, fetchNombresGuardados, fetchReDecididos } from '$lib/api';
   import EncabezadoDePagina from '$lib/components/EncabezadoDePagina.svelte';
   import Icono from '$lib/components/Icono.svelte';
   import { jobStore } from '$lib/jobs.svelte';
   import NombreAMirar from '$lib/components/NombreAMirar.svelte';
   import ReAMirar from '$lib/components/ReAMirar.svelte';
-  import { nombresPorMirar, radicadosPorMirar, whereItLanded } from '$lib/revision';
+  import { nombresPorMirar, radicadosPorMirar, reDecididosPorAuditar, whereItLanded } from '$lib/revision';
   import { enlaceAlDocumento } from '$lib/navegacion.svelte';
-  import type { Job, NombreGuardado } from '$lib/types';
+  import type { Job, NombreGuardado, ReDecididoGuardado } from '$lib/types';
 
   /**
    * The queue of what the machine refused to guess at.
@@ -163,6 +163,21 @@
   /** Los RE que la máquina sólo propone (2026-11-18): se confirman viendo la hoja del sello. */
   const radicados = $derived(radicadosPorMirar(jobStore.reviewable));
   let radicadosVisibles = $state(24);
+  /**
+   * Los RE que el agente decidió con confianza baja (2026-11-23): se auditan por
+   * muestreo y se cambian aquí si hace falta. Los de los trabajos que ya no
+   * están en memoria llegan guardados en disco, como los nombres.
+   */
+  let reGuardados = $state<ReDecididoGuardado[]>([]);
+  $effect(() => {
+    fetchReDecididos()
+      .then((lista) => (reGuardados = lista))
+      .catch(() => {
+        // Sin ellos, los de los trabajos en pantalla.
+      });
+  });
+  const reDecididos = $derived(reDecididosPorAuditar(jobStore.finished, reGuardados));
+  let reDecididosVisibles = $state(24);
   /** Cuántos se enseñan a la vez: cada uno trae su imagen. */
   const NOMBRES_A_LA_VEZ = 24;
   let nombresVisibles = $state(NOMBRES_A_LA_VEZ);
@@ -233,6 +248,29 @@
     {#if radicados.length > radicadosVisibles}
       <button class="btn btn-tonal btn-sm mas" onclick={() => (radicadosVisibles += 24)}>
         Ver {Math.min(24, radicados.length - radicadosVisibles)} más
+      </button>
+    {/if}
+  </section>
+{/if}
+
+{#if reDecididos.length}
+  <section class="nombres-por-mirar">
+    <h2 class="caps band">
+      RE decididos con confianza baja — para auditar (<span class="tabular">{reDecididos.length}</span>)
+    </h2>
+    <p class="advice">
+      El agente los puso solo: las lecturas no coincidían y eligió el más probable, o su auditor no sostuvo lo que
+      propuso. No hace falta confirmarlos; mire una muestra y, si alguno no es, escriba el RE de la hoja y pulse
+      «Confirmar»: cambian a la vez el PDF, la constancia y los índices.
+    </p>
+    <div class="grid-de-nombres">
+      {#each reDecididos.slice(0, reDecididosVisibles) as { jobId, documento, pagina, motivo, candidatos, archivo } (`d-${jobId}-${pagina}`)}
+        <ReAMirar {jobId} {documento} {pagina} {motivo} {candidatos} {archivo} />
+      {/each}
+    </div>
+    {#if reDecididos.length > reDecididosVisibles}
+      <button class="btn btn-tonal btn-sm mas" onclick={() => (reDecididosVisibles += 24)}>
+        Ver {Math.min(24, reDecididos.length - reDecididosVisibles)} más
       </button>
     {/if}
   </section>

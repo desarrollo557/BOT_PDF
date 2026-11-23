@@ -540,6 +540,32 @@ class Taller:
             antes_de_pedir=self.control.check,
         )
 
+    def juez_de_candidatos_del_re(self):
+        """El juez de la IA que mira el sello y elige uno de los RE leídos cuando no coinciden, si se pidió la IA.
+
+        El operador, 2026-11-23: «implementa el juez de IA». Sólo elige entre lo
+        leído (``domain.resolutor_del_re.eleccion_del_juez``): un RE que no
+        está en la lista no vale.
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_resumen import MistralResumenConfig, MistralResumidor
+        from ...domain.sello import INSTRUCCIONES_PARA_ELEGIR_EL_RE
+
+        return MistralResumidor(
+            api_key=llave,
+            config=MistralResumenConfig(model="mistral-medium-latest", max_tokens=40, temperatura=0.0),
+            consumo=self.consumo,
+            turnos=self.turnos_de_ia,
+            instrucciones=INSTRUCCIONES_PARA_ELEGIR_EL_RE,
+            encabezado="Los RE leídos",
+            antes_de_pedir=self.control.check,
+        )
+
     def lector_de_fechas_a_la_vista(self):
         """Quien copia con visión las fechas de la hoja principal de un documento sin fecha, si se pidió la IA.
 

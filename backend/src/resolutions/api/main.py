@@ -122,6 +122,7 @@ def _arrancar() -> Contexto:
         procesar=process_document_job,
         padron=PadronEnArchivo(settings.padron_path),
         nombres_por_revisar=NombresPorRevisarEnDisco(settings.nombres_por_revisar_dir),
+        re_por_revisar=NombresPorRevisarEnDisco(settings.re_por_revisar_dir),
     )
 
 

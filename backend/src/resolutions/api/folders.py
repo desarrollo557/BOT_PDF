@@ -4233,6 +4233,15 @@ class FolderRunner:
             # de la red.
             firma=self._firma_de(job, origin),
         )
+        # Dónde quedó, para corregir el RE en la Revisión aunque la corrida ya no
+        # esté en memoria (2026-11-23, ``api.correccion_del_re``).
+        if isinstance(job.report, dict):
+            job.report["donde_se_entrega_el_re"] = {
+                "carpeta": str(entrega.base),
+                "constancia": str(entrega.constancia),
+                # La raíz del destino, por su índice general.
+                "raiz": str(run.destination),
+            }
         try:
             with run.cerrojo:
                 constancias.escribir(entrega.constancia, constancia)
@@ -4270,6 +4279,8 @@ class FolderRunner:
             "constancia_de_actas": str(self._ruta_de_la_constancia(run, origen, actas=True)),
             "constancia": str(self._ruta_de_la_constancia(run, origen, actas=False)),
             "general": str(self._ruta_del_inventario(run)),
+            # La raíz, por su índice general (la corrección del RE, 2026-11-23).
+            "raiz": str(run.destination),
         }
 
     def corregir_nombre(self, job: Job, pagina: int, viejo: dict, nuevo: dict) -> list[str]:
@@ -4448,7 +4459,7 @@ class FolderRunner:
         self._pedir_generales(run)
         return avisos
 
-    def corregir_re(self, job: Job, posicion: int, radicado: str) -> list[str]:
+    def corregir_re(self, job: Job, posicion: int, radicado: str, quien: str | None = None) -> list[str]:
         """Lleva al destino el RE que el operador confirmó o escribió en la Revisión (2026-11-18).
 
         Todo junto, como la Revisión de nombres: el PDF entregado en la carpeta
@@ -4461,7 +4472,7 @@ class FolderRunner:
         número: el mismo en la constancia y en sus filas del índice. Devuelve lo
         que no se pudo hacer. Fuera de una corrida de carpeta, nada.
         """
-        from ..domain.nombre_oficial import con_su_re, con_su_re_en_la_ruta
+        from ..domain.nombre_oficial import con_su_re_en_la_ruta
 
         avisos: list[str] = []
         run = self._runs.get(str((job.origen or {}).get("id") or ""))
@@ -4473,6 +4484,9 @@ class FolderRunner:
         constancia = constancias.leer(ruta)
         if constancia is None:
             return [f"no está la constancia de «{origen.name}» en el destino: el PDF entregado no se renombró"]
+        if constancia.job_id and constancia.job_id != job.id:
+            # La carpeta se reprocesó: lo entregado es de otro trabajo.
+            return [f"la entrega de «{origen.name}» es ahora de otro trabajo (se reprocesó): lo entregado no se tocó"]
         prefijo = _prefijo_de_la_constancia(constancia)
         pdfs = sorted(
             (a for a in constancia.archivos if str(a.get("ruta") or "").lower().endswith(".pdf")),
@@ -4494,12 +4508,11 @@ class FolderRunner:
                 os.replace(antes, despues)
         except OSError as error:
             return [f"no se pudo renombrar «{antes.name}» en el destino: {explicar_fallo(error)}"]
-        archivo["ruta"] = renombrado
-        filas = (constancia.indice or {}).get("filas")
-        if isinstance(filas, list) and posicion < len(filas) and isinstance(filas[posicion], dict):
-            filas[posicion]["nombre"] = con_su_re(str(filas[posicion].get("nombre") or ""), radicado)
-        else:
-            avisos.append("la fila de este documento no está en la constancia: el índice del NIC no cambió")
+        # El archivo, su fila, su evidencia, su Revisión y la decisión del
+        # agente, todo junto (2026-11-23).
+        from .correccion_del_re import re_en_la_constancia
+
+        avisos += re_en_la_constancia(constancia, posicion, radicado, quien)
         try:
             with run.cerrojo:
                 constancias.escribir(ruta, constancia)
@@ -4543,8 +4556,11 @@ class FolderRunner:
             escribir_indice,
             leer_indice,
         )
+        from .correccion_del_re import cerrojo_de_la_carpeta
 
-        with run.cerrojo:
+        # El cerrojo de la carpeta del NIC también: la corrección del RE sin la
+        # corrida (``correccion_del_re``) no se cruza con la renumeración.
+        with run.cerrojo, cerrojo_de_la_carpeta(carpeta):
             try:
                 rutas = sorted(carpeta.glob(f"{Path(constancias.NOMBRE).stem}-*.json"))
             except OSError:

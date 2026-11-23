@@ -822,6 +822,16 @@ INSTRUCCIONES_PARA_BUSCAR_EL_RE = (
 )
 
 
+#: Lo que se le pide al juez de la IA cuando las lecturas del RE no coinciden
+#: (2026-11-23): mirar el sello y elegir UNO de lo leído, nunca otro valor.
+INSTRUCCIONES_PARA_ELEGIR_EL_RE = (
+    "En la imagen está el sello de radicación de un documento, con su RE escrito a mano o impreso. "
+    "Varias lecturas lo leyeron distinto. Mira el sello y di cuál de los RE de la lista es el que está "
+    "escrito. Contesta sólo con uno de la lista, copiado tal cual, o con «ninguno» si ninguno es el "
+    "que se ve. No escribas otro número ni corrijas cifras."
+)
+
+
 def sello_sin_transcribir(leido: str) -> bool:
     """Si la lectura del OCR de pago de la cabecera no trae ningún sello reconocible: ni etiqueta, ni fecha ni folios de tinta.
 

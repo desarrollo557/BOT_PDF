@@ -198,6 +198,54 @@ def hojas_del_barrido(grupos, *, sellos: dict, escritos: set[int], sin_re: set[i
     return salida
 
 
+#: Cuántos empates se le enseñan al juez de la IA por caja, como mucho.
+DOCUMENTOS_AL_JUEZ_POR_CAJA = 40
+
+
+def _preguntar_al_juez(ruta_pdf, decisiones: list[dict], sellos: dict, taller) -> dict[int, str]:
+    """Lo que eligió el juez de la IA para cada documento decidido por empate, por su primera hoja.
+
+    Se le enseña el sello del documento -- su zona abierta, o la hoja si no se
+    ubicó -- con los RE leídos, y sólo vale uno de ellos
+    (``eleccion_del_juez``). Sin la IA, o si no contesta, nada.
+    """
+    from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...application.sellos import zonas_del_sello
+    from ...domain.resolutor_del_re import REGLAS_DEL_EMPATE, eleccion_del_juez
+
+    empates = [
+        d
+        for d in decisiones
+        if d.get("valor") and d.get("regla") in REGLAS_DEL_EMPATE and len(d.get("opciones") or []) >= 2
+    ][:DOCUMENTOS_AL_JUEZ_POR_CAJA]
+    if not empates:
+        return {}
+    juez = taller.juez_de_candidatos_del_re()
+    if juez is None:
+        return {}
+    elegidos: dict[int, str] = {}
+    fuente = PyMuPDFPageSource(ruta_pdf, taller.name)
+    try:
+        for decision in empates:
+            taller.control.check()
+            paginas = list(decision.get("hojas_de_las_opciones") or decision.get("paginas") or [decision["page"]])
+            pagina = next((p for p in paginas if getattr(sellos.get(p), "zona", None)), None)
+            try:
+                if pagina is not None:
+                    imagen = fuente.render(pagina, zonas_del_sello(sellos[pagina].zona)[-1], 200, "jpeg")
+                else:
+                    imagen = fuente.render(paginas[0], None, 150, "jpeg")
+                respuesta = juez.resumir("\n".join(decision["opciones"]), imagen=imagen)
+            except Exception:  # noqa: BLE001 - sin el juez, queda lo que decidió el agente
+                logger.debug("el juez de la IA no contestó para la pág. %s", decision["page"], exc_info=True)
+                continue
+            if elegido := eleccion_del_juez(respuesta, decision["opciones"]):
+                elegidos[int(decision["page"])] = elegido
+    finally:
+        fuente.close()
+    return elegidos
+
+
 def _barrer_las_hojas(ruta_pdf, paginas: list[int], textos: dict, taller) -> tuple[dict[int, tuple], list[str]]:
     """Cada hoja leída entera por todos los lectores que hay, para el barrido del RE, y quiénes leyeron.
 
@@ -1052,6 +1100,7 @@ def _poner_el_re_en_el_nombre(
     barrido: dict[int, tuple[tuple[str, str], ...]] | None = None,
     lectores_del_barrido: list[str] | None = None,
     decisiones: list[dict] | None = None,
+    elegidos_por_el_juez: dict[int, str] | None = None,
 ):
     """El RE de cada documento para su nombre, sólo con la evidencia de sus propias hojas.
 
@@ -1093,6 +1142,7 @@ def _poner_el_re_en_el_nombre(
     from ...domain.evidencia import (
         BARRIDO,
         FUENTES_IMPRESAS,
+        LECTOR_GIRADO,
         Estado,
         EvidenciaDeRE,
         Hallazgo,
@@ -1110,6 +1160,7 @@ def _poner_el_re_en_el_nombre(
         VERIFICADA,
         ContextoDelRe,
         auditar_la_decision,
+        destinos_de,
         nombre_de_la_oficina,
         resolver_sin_certeza,
     )
@@ -1282,7 +1333,7 @@ def _poner_el_re_en_el_nombre(
                 de_la_ia = tuple(
                     (lector, leido)
                     for lector, leido in evidencia.lecturas
-                    if familia(lector) in ("ocr de pago", "visión")
+                    if familia(lector) in ("ocr de pago", "visión") and lector != LECTOR_GIRADO
                 )
                 cruce = re_impreso_que_casa(
                     de_la_ia,
@@ -1345,6 +1396,7 @@ def _poner_el_re_en_el_nombre(
                     else getattr(fecha_de_la_pagina(textos.get(primera, "") or ""), "year", None)
                 ),
                 de_otros_tramites=frozenset(r for r in tramites_de_la_caja if r != (del_tramite or "")),
+                elegido_por_el_juez=(elegidos_por_el_juez or {}).get(primera),
             )
             antes = f"{RE_POR_CONFIRMAR}: {candidatos_legibles(hallazgo)}" if hallazgo.candidatos else "sin RE"
             decision = resolver_sin_certeza(hallazgo.candidatos, contexto)
@@ -1362,6 +1414,15 @@ def _poner_el_re_en_el_nombre(
                         "confianza": decision.confianza,
                         "por_que": decision.por_que,
                         "auditor": f"no la sostiene: {reparo}" if reparo else VERIFICADA,
+                        # Entre qué eligió -- lo mismo que el agente puede
+                        # elegir --: lo que se le enseña al juez de la IA.
+                        "opciones": destinos_de(hallazgo.candidatos, contexto),
+                        # Y dónde se leyó: el juez mira esas hojas, nunca la
+                        # copia «Recibido» ni el anexo del mismo grupo.
+                        "hojas_de_las_opciones": list(
+                            dict.fromkeys(c.pagina for c in hallazgo.candidatos if c.pagina is not None)
+                        )
+                        or list(propias),
                     }
                 )
                 if reparo is None:
@@ -2543,6 +2604,12 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             if _transcriptor is not None
             else None
         )
+
+        def _vision_girada(imagen: bytes) -> str:
+            girada = _girada(imagen)
+            return (_transcriptor.resumir(PEDIDO_DEL_SELLO_GIRADO, imagen=girada) or "") if girada else ""
+
+        vision_del_sello_girada = _vision_girada if _transcriptor is not None else None
         # L2. El sello de radicación de cada hoja que puede llevarlo, leído
         # aparte con el OCR de casa. Los radicados bien escritos en la caja
         # corrigen la cifra que la OCR del sello leyó mal.
@@ -2622,7 +2689,10 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # releído en toda su zona, abierta alrededor y más fina (el operador,
         # 2026-11-18, ante 4100974: «que busque afuera, alrededor, en toda el
         # área del sello»). Sólo con «OCR + IA».
-        for de_donde in (sellos, al_pie):
+        # Lo que se leyó entero y sin RE no se vuelve a pagar girado. Lo demás
+        # sí: L2c gira la banda de arriba, no la zona de cada sello, y no gira
+        # si derecho leyó algo (la verificación del 2026-11-23).
+        for de_donde, ya_girados in ((sellos, set(sellos_sin_re)), (al_pie, set())):
             de_donde.update(
                 releer_la_zona_del_sello(
                     source,
@@ -2632,6 +2702,10 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                     control=taller.control,
                     oficinas={s.radicado[2:6] for s in sellos.values() if s.clase == "impreso" and s.radicado},
                     workers=workers,
+                    # Y girada, si derecho no sale (2026-11-23): el RE escrito
+                    # de lado junto al recuadro del sello.
+                    vision_girada=vision_del_sello_girada,
+                    ya_girados=ya_girados,
                 )
             )
         # El agente no cree el RE que no cuadra: con la IA, el sello al pie sin
@@ -3693,7 +3767,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         grupos_por_nombrar, anexos_por_nombrar = grupos, anexos
         sin_re_del_nombre = set(cartas.copias) | set(de_prueba) | set(del_acuerdo) | set(foliacion.continua)
 
-        def nombrar(barrido=None, lectores_del_barrido=None):
+        def nombrar(barrido=None, lectores_del_barrido=None, elegidos=None):
             evidencia_del_re.clear()
             re_rechazados.clear()
             decisiones_del_agente.clear()
@@ -3712,8 +3786,10 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 barrido=barrido,
                 lectores_del_barrido=lectores_del_barrido,
                 decisiones=decisiones_del_agente,
+                elegidos_por_el_juez=elegidos,
             )
 
+        barridas, lectores_del_barrido = None, None
         grupos, anexos, re_en_el_nombre = _poner_el_re_en_el_nombre(
             grupos,
             anexos,
@@ -3780,6 +3856,13 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         else:
             # Sin nada que barrer, el agente decide en la única pasada que queda.
             grupos, anexos, re_en_el_nombre = nombrar()
+        # F6d. El juez de la IA (el operador, 2026-11-23: «implementa el juez de
+        # IA»): lo que el agente decidió por empate -- el más votado, el primero
+        # leído -- se le enseña con el sello, y elige uno de lo leído o ninguno.
+        # Con lo que elige, la última pasada otra vez. Sólo con «OCR + IA».
+        elegidos = _preguntar_al_juez(tmp_path, decisiones_del_agente, {**al_pie, **sellos}, taller)
+        if elegidos:
+            grupos, anexos, re_en_el_nombre = nombrar(barridas, lectores_del_barrido, elegidos)
         if taller.con_ia():
             from ...domain.nombre_oficial import es_re as _es_re
 

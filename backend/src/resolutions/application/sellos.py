@@ -28,7 +28,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 
 from ..domain.anexos_declarados import HOJA_MUDA, clase_de_la_hoja
-from ..domain.evidencia import oficina_confirmada, res_en_la_lectura
+from ..domain.evidencia import LECTOR_GIRADO, oficina_confirmada, res_en_la_lectura
 from ..domain.grouping import GroupingResult, PageGroup
 from ..domain.sello import (
     Sello,
@@ -749,6 +749,9 @@ def sellos_al_pie(
             # Sólo el sello, recortado alrededor de sus señales: la zona entera
             # la IA la toma por una imagen y no la transcribe.
             recorte = _recorte_del_sello(imagen, palabras) or BANDA_DE_LA_FIRMA
+            # Aunque la IA no lea ahora -- un fallo, nada --, la zona queda: L2d
+            # la relee, derecha y girada (2026-11-23).
+            sello = Sello("tinta", zona=(recorte.x0, recorte.y0, recorte.x1, recorte.y1))
             imagen_del_sello = None
             try:
                 imagen_del_sello = source.render(pagina, recorte, DPI_DEL_PAGO, "jpeg")
@@ -826,8 +829,12 @@ def _validos(lecturas: Iterable[tuple[str, str]], fecha, oficinas: Iterable[str]
 
 
 def re_que_se_cree(sello: Sello, oficinas: Iterable[str] = ()) -> str | None:
-    """El único RE válido que las lecturas del sello traen tal cual, o ``None``: ninguno, o dos que se contradicen."""
-    distintos = set(_validos(sello.lecturas, sello.fecha, oficinas))
+    """El único RE válido que las lecturas del sello traen tal cual, o ``None``: ninguno, o dos que se contradicen.
+
+    Sin la lectura girada: sola no se cree (2026-11-23); la decide ``domain.evidencia``.
+    """
+    lecturas = tuple(par for par in sello.lecturas if par[0] != LECTOR_GIRADO)
+    distintos = set(_validos(lecturas, sello.fecha, oficinas))
     return distintos.pop() if len(distintos) == 1 else None
 
 
@@ -858,8 +865,15 @@ def releer_la_zona_del_sello(
     control: RunControl | None = None,
     oficinas: Iterable[str] = (),
     workers: int = 4,
+    vision_girada: Callable[[bytes], str] | None = None,
+    ya_girados: Iterable[int] = (),
 ) -> dict[int, Sello]:
     """L2d: el sello de tinta cuyo RE a mano ninguna lectura dejó creer, releído en toda su zona.
+
+    ``vision_girada`` (2026-11-23): si derecho ningún intento da un RE válido,
+    la visión lee la zona abierta girada un cuarto de vuelta -- el RE escrito
+    de lado junto al recuadro, como en 1005117 --. Quien la pasa gira la
+    imagen: aquí sólo se le da el recorte.
 
     Lo pidió el operador el 2026-11-18 ante 4100974: «necesito poder obtener el
     RE aun así esté en manuscritos… que busque afuera, alrededor, en toda el
@@ -893,12 +907,22 @@ def releer_la_zona_del_sello(
         if s.clase == "tinta" and s.zona is not None and not _validos(s.lecturas, s.fecha, oficinas)
     ][:ZONAS_POR_CAJA]
 
+    ya_girados = frozenset(ya_girados)
+
     def releer(pagina: int) -> tuple[tuple[str, str], ...]:
         sello = sellos[pagina]
         nuevas: list[tuple[str, str]] = []
-        lectores: list[tuple[str, int, Callable[[bytes], str]]] = [
-            ("ocr de pago", DPI_DE_LA_ZONA, lambda imagen: renglones_del_sello(de_pago.read(imagen).text or ""))
-        ]
+        #: Los RE que el OCR de pago leyó en la prosa o en una cita de la carta,
+        #: no en el sello: la girada que los lea no vale.
+        citados: set[str] = set()
+
+        def de_pago_sin_prosa(imagen: bytes) -> str:
+            crudo = de_pago.read(imagen).text or ""
+            suyo = renglones_del_sello(crudo)
+            citados.update(set(res_en_la_lectura(crudo)) - set(res_en_la_lectura(suyo)))
+            return suyo
+
+        lectores: list[tuple[str, int, Callable[[bytes], str]]] = [("ocr de pago", DPI_DE_LA_ZONA, de_pago_sin_prosa)]
         if vision is not None:
             lectores.append(("visión", DPI_DE_LA_VISION, lambda imagen: vision(imagen) or ""))
         for zona in zonas_del_sello(sello.zona):
@@ -913,6 +937,18 @@ def releer_la_zona_del_sello(
                 validos = _validos(nuevas, sello.fecha, oficinas)
                 if any(validos.count(v) >= INTENTOS_QUE_COINCIDEN for v in validos):
                     return tuple(nuevas)
+        # Derecho no salió ningún RE válido: la zona abierta, girada.
+        if (
+            vision_girada is not None
+            and pagina not in ya_girados
+            and not _validos((*sello.lecturas, *nuevas), sello.fecha, oficinas)
+        ):
+            try:
+                leido = vision_girada(source.render(pagina, zonas_del_sello(sello.zona)[-1], DPI_DE_LA_VISION, "jpeg"))
+            except Exception:  # noqa: BLE001 - sin el giro, con lo leído derecho
+                leido = ""
+            if leido and not set(res_en_la_lectura(leido)) & citados:
+                nuevas.append((LECTOR_GIRADO, leido))
         return tuple(nuevas)
 
     releidos: dict[int, Sello] = {}

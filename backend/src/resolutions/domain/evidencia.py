@@ -144,7 +144,12 @@ FAMILIA_DEL_LECTOR = {
     "ocr de pago": "ocr de pago",
     "vision": "visión",
     "visión": "visión",
+    # La visión sobre el sello girado (2026-11-23): de la familia visión, así
+    # que no cuenta como un segundo lector, y sola nunca se cree.
+    "visión girada": "visión",
 }
+#: El lector de la relectura girada del sello.
+LECTOR_GIRADO = "visión girada"
 #: Las fuentes impresas: basta una lectura literal.
 FUENTES_IMPRESAS = frozenset(
     {"etiqueta impresa", "sello impreso", "PQR de la constancia", "citado en su texto"}
@@ -214,7 +219,11 @@ def oficina_confirmada(valor: str, lecturas: Iterable[tuple[str, str]]) -> bool:
     if not es_re_entero(valor):
         return False
     cabeza = re.compile(r"(?<![A-Z0-9])" + _PREFIJO_DEL_RE + r"\W{0,2}" + _SEPARADOR.join(valor.upper()[2:10]))
-    familias = {familia(lector) for lector, texto in lecturas if cabeza.search((texto or "").upper())}
+    familias = {
+        familia(lector)
+        for lector, texto in lecturas
+        if lector != LECTOR_GIRADO and cabeza.search((texto or "").upper())
+    }
     return len(familias) >= LECTORES_PARA_LA_LETRA_A_MANO
 
 
@@ -541,6 +550,9 @@ def _lectores_literales(valor: str, lecturas: Iterable[tuple[str, str]]) -> tupl
     familias: list[str] = []
     fragmento = original = None
     for lector, texto in lecturas:
+        if lector == LECTOR_GIRADO:
+            # La girada nunca cuenta como lector para creer: sólo propone.
+            continue
         trozo = aparece_literal(valor, texto)
         if trozo is None:
             continue
@@ -610,6 +622,12 @@ def decidir_el_re(
                 # La letra a mano que todos los lectores leen igual de mal,
                 # casada con el único RE que su trámite trae impreso.
                 creidos.append(_Visto(propuesto, evidencia, ("cruce con lo impreso",), evidencia.cruce, None))
+                continue
+            if not lectores and any(
+                lector == LECTOR_GIRADO and aparece_literal(propuesto, texto) for lector, texto in evidencia.lecturas
+            ):
+                # Lo que sólo vio la imagen girada no se cree solo (2026-11-23).
+                proponer(propuesto, "leído sólo con la imagen girada", evidencia.pagina)
                 continue
             if not lectores:
                 motivo = f"corregido: {evidencia.correccion}" if evidencia.correccion else "ninguna lectura lo trae tal cual"
