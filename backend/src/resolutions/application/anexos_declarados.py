@@ -424,7 +424,8 @@ def _renumerar(
 #: factura (o su estado de cuenta). Lo dictó el operador sin excepciones: «una
 #: cédula nunca podrá ir sola en el inventario o en la división, siempre será
 #: acompañada o inventariada dentro del PDF de la página anterior».
-SOPORTES = frozenset({"documento de identidad", "factura"})
+DOCUMENTO_DE_IDENTIDAD = "documento de identidad"
+SOPORTES = frozenset({DOCUMENTO_DE_IDENTIDAD, "factura"})
 
 #: Los demás soportes que tampoco abren un documento -- revisando la caja
 #: 108C000033 salían como documentos propios: el certificado de tradición
@@ -582,6 +583,41 @@ def unir_soportes(
         anexos=anexos,
         movidas=movidas,
     )
+
+
+def la_cedula_detras(grupos: GroupingResult, textos: Mapping[int, str]) -> GroupingResult:
+    """Ningún PDF empieza por una cédula: va detrás, como anexo (el operador, 2026-11-23).
+
+    «Una cédula siempre será un anexo, nunca debería ir de primero en un PDF».
+    En 4132540 la constancia iba sola y su cédula pasaba al documento siguiente
+    -- la declaración juramentada --, pero delante de él. Sólo cambia el orden
+    en que se escriben las hojas (``PageGroup.orden``); el inventario y la
+    fecha siguen con el del papel. La cédula con su reverso mudo va al final;
+    un PDF que es sólo cédula no se toca.
+    """
+    salida: list[PageGroup] = []
+    cambio = False
+    for grupo in grupos.groups:
+        hojas = grupo.en_el_pdf
+        delante = 0
+        con_cedula = False
+        while delante < len(hojas):
+            texto = textos.get(hojas[delante], "") or ""
+            clase = clase_de_la_hoja(texto)
+            # Las dos señales: los rótulos de la tarjeta, o la clase de la hoja,
+            # que aguanta el OCR roto («CEBULABÉ ClUDi^DANiA» de 4132540).
+            if es_cedula(texto) or clase == DOCUMENTO_DE_IDENTIDAD:
+                con_cedula = True
+            elif not (con_cedula and clase == HOJA_MUDA):
+                break
+            delante += 1
+        if not con_cedula or delante == len(hojas):
+            salida.append(grupo)
+            continue
+        orden = (*hojas[delante:], *hojas[:delante])
+        salida.append(replace(grupo, orden=None if list(orden) == sorted(grupo.page_numbers) else orden))
+        cambio = True
+    return replace(grupos, groups=salida) if cambio else grupos
 
 
 def constancias_solas(
@@ -1063,6 +1099,10 @@ def unir_el_acuerdo_de_pago(
 
 #: Las partes del acuerdo de pago, por su lugar en el PDF.
 RECONOCIMIENTO, PAGARES, HABEAS, ANEXOS_DEL_ACUERDO = "reconocimiento", "pagares", "habeas", "anexos"
+#: Un escrito de otro formato dentro del acuerdo -- la autorización para la
+#: financiación, una carta del usuario --: va detrás de la Habeas Data y antes
+#: de los anexos (el operador, 2026-11-23, 1000258).
+OTRO_DOCUMENTO = "otro documento"
 
 
 def partes_del_acuerdo(paginas: Sequence[int], textos: Mapping[int, str]) -> list[tuple[str, list[int]]]:
@@ -1073,6 +1113,11 @@ def partes_del_acuerdo(paginas: Sequence[int], textos: Mapping[int, str]) -> lis
     sigue a la de delante -- la segunda hoja del pagaré es del pagaré --, salvo
     el soporte -- la cédula, la factura -- y lo que no es de ninguna, que son
     anexos; también el simulador de la financiación.
+
+    La hoja que abre un escrito propio sin ser ninguna de esas -- «Señores
+    AFINIA… AUTORIZACION», «REF: AUTORIZACION PARA FINANCIACION» -- es otro
+    documento (``OTRO_DOCUMENTO``): antes se pegaba al reconocimiento o al
+    pagaré de delante (1000258, 2026-11-23).
     """
     from ..domain.asunto_del_documento import (
         ACUERDO_DE_PAGO,
@@ -1092,6 +1137,13 @@ def partes_del_acuerdo(paginas: Sequence[int], textos: Mapping[int, str]) -> lis
             parte = PAGARES
         elif titulo == LEY_HABEAS_DATA:
             parte = HABEAS
+        elif es_cedula(texto) or (soporte := clase_de_soporte(texto)) not in (None, HOJA_MUDA, DOCUMENTO_DE_IDENTIDAD):
+            # La tarjeta con sus rótulos, la factura, el certificado: anexos.
+            parte = ANEXOS_DEL_ACUERDO
+        elif soporte != HOJA_MUDA and _ABRE.search(plano(texto)[:CABEZA_QUE_ABRE]):
+            # Abre un escrito -- «Señores…», «REF:» -- aunque nombre la cédula
+            # de quien firma: es otro documento, no la fotocopia de la cédula.
+            parte = OTRO_DOCUMENTO
         elif (
             titulo
             or clase_de_la_hoja(texto) in SOPORTES
@@ -1160,9 +1212,9 @@ def orden_del_acuerdo(
     reconocimientos = [*fechados, *(r for r in reconocimientos if r[0] not in fechas)]
     del_reconocimiento = [p for hojas in reconocimientos for p in hojas]
     puestos = (
-        (RECONOCIMIENTO, PAGARES, HABEAS, ANEXOS_DEL_ACUERDO)
+        (RECONOCIMIENTO, PAGARES, HABEAS, OTRO_DOCUMENTO, ANEXOS_DEL_ACUERDO)
         if reconocimiento_fechado
-        else (PAGARES, HABEAS, ANEXOS_DEL_ACUERDO, RECONOCIMIENTO)
+        else (PAGARES, HABEAS, OTRO_DOCUMENTO, ANEXOS_DEL_ACUERDO, RECONOCIMIENTO)
     )
     return tuple(
         p

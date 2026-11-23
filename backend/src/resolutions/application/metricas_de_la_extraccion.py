@@ -55,6 +55,8 @@ class PdfEntregado:
     #: (``Constancia.documentos``, desde el 2026-11-20). Las constancias de
     #: antes no las traen: su evidencia se casa por la fecha, el RE y el tipo.
     documentos: list[Mapping] = field(default_factory=list)
+    #: El trabajo que lo entregó: con él se sabe de qué corrida es (2026-11-20).
+    job_id: str = ""
 
 
 @dataclass(slots=True)
@@ -131,6 +133,16 @@ SI, NO, NO_APLICA = "Sí", "No", "No aplica"
 _RE_AL_FINAL = re.compile(r"-(RE\d{13})$", re.IGNORECASE)
 
 
+def _hora_local(iso: object) -> str:
+    """«2026-11-19T21:56:10+00:00» a la hora local: «2026-11-19 16:56»."""
+    from datetime import datetime
+
+    try:
+        return f"{datetime.fromisoformat(str(iso)).astimezone():%Y-%m-%d %H:%M}"
+    except (TypeError, ValueError):
+        return str(iso or "")[:16].replace("T", " ")
+
+
 def _pagina(clave: object) -> int:
     return int(clave) if str(clave).isdigit() else 0
 
@@ -174,6 +186,17 @@ def _como(hallazgo: Mapping) -> str:
     if metodo:
         return metodo + (f", pág. {hallazgo['pagina']}" if hallazgo.get("pagina") and "pág." not in metodo else "")
     return _causa(hallazgo)
+
+
+def _lo_leido(hallazgo: Mapping) -> str:
+    """Lo que el bot leyó de un parámetro que no se creyó: lo leído tal cual o sus candidatos."""
+    candidatos = "; ".join(
+        f"{c.get('valor')} ({c.get('motivo')})" if c.get("motivo") else str(c.get("valor"))
+        for c in hallazgo.get("candidatos") or []
+        if isinstance(c, Mapping) and c.get("valor")
+    )
+    original = str(hallazgo.get("valor_original") or "").strip()
+    return " · ".join(x for x in (original, f"candidatos: {candidatos}" if candidatos else "") if x)
 
 
 def auditar(pdf: PdfEntregado) -> tuple[list[dict], dict]:
@@ -247,6 +270,16 @@ def auditar(pdf: PdfEntregado) -> tuple[list[dict], dict]:
                 "en_revision": SI if motivos else NO,
                 "motivos": " | ".join(motivos),
                 "alerta": " · ".join(alertas) or "OK",
+                # El detalle de lo que no se tomó, para la hoja «Faltantes».
+                "avisos": list(motivos),
+                "primera": _pagina(primera) if primera else None,
+                "fecha_estado": str(de_la_fecha.get("estado") or ""),
+                "fecha_leido": _lo_leido(de_la_fecha),
+                "fecha_hoja": de_la_fecha.get("pagina") or (_pagina(primera) if primera else None),
+                "fecha_buscado": str(de_la_fecha.get("buscado") or de_la_fecha.get("motivo") or ""),
+                "re_leido": _lo_leido(del_re),
+                "re_hoja": del_re.get("pagina") or (_pagina(primera) if primera else None),
+                "re_buscado": str(del_re.get("buscado") or del_re.get("motivo") or ""),
             }
         )
     proceso = pdf.proceso or {}
@@ -263,7 +296,7 @@ def auditar(pdf: PdfEntregado) -> tuple[list[dict], dict]:
         "avisos": len(pdf.revision),
         "paginas_pagadas": int(proceso.get("paginas_pagadas") or 0),
         "duracion": str(proceso.get("duracion") or ""),
-        "procesado": str(proceso.get("inicio") or "")[:16].replace("T", " "),
+        "procesado": _hora_local(proceso.get("inicio")),
     }
     resumen["alerta"] = (
         " · ".join(
@@ -278,6 +311,187 @@ def auditar(pdf: PdfEntregado) -> tuple[list[dict], dict]:
         or "OK"
     )
     return filas, resumen
+
+
+# -- lo que no se tomó, parámetro por parámetro (2026-11-20) -------------------------
+#
+# El operador: «necesito saber qué archivos no tomaron o no encontraron los
+# parámetros… una auditoría de revisión bien estructurada por proceso
+# ejecutado». Un renglón por documento y parámetro que falta o se tomó con
+# duda: qué leyó el bot, en qué hoja, dónde buscó y qué hacer.
+
+FECHA, RE_, TIPO = "Fecha", "RE", "Tipo documental"
+NO_SE_ENCONTRO = "No se encontró"
+POR_CONFIRMAR = "Tomado, por confirmar"
+ILEGIBLE = "Ilegible: no se tomó"
+NO_COINCIDEN = "Lecturas que no coinciden: no se tomó"
+SIN_CATALOGO = "Sin nombre del catálogo"
+NO_SE_PROCESO = "El PDF no se procesó"
+#: El nombre que se da a un documento que no se pudo nombrar.
+_SIN_NOMBRE = frozenset({"", "DOCUMENTO"})
+
+
+def _situacion(estado: str, *, tomado: bool) -> str | None:
+    """La situación de un parámetro por el estado de su evidencia; ``None`` si está bien."""
+    if tomado:
+        return POR_CONFIRMAR if estado in ("requiere validación", "contradictorio") else None
+    return {"requiere validación": ILEGIBLE, "contradictorio": NO_COINCIDEN}.get(estado, NO_SE_ENCONTRO)
+
+
+def _sin_nombre(fila: Mapping) -> bool:
+    """Si el documento salió sin tipo documental: sin nombre o «DOCUMENTO».
+
+    Por el nombre entregado, no por el estado de la evidencia del tipo: ésa es
+    de la primera hoja casada, y en las constancias sin ``documentos`` puede
+    ser la de otro documento (salían «DERECHO DE PETICION» sin catálogo).
+    """
+    return str(fila.get("tipo") or "").strip().upper() in _SIN_NOMBRE
+
+
+def _hoja_de(valor: object, fila: Mapping) -> str:
+    return str(valor) if valor else str(fila.get("hojas") or "")
+
+
+def faltantes(auditoria: Iterable[Mapping], fallidos: Mapping[str, str] | None = None) -> list[dict]:
+    """Lo que no se tomó -- o se tomó con duda -- de cada documento, y los PDF que no se procesaron."""
+    filas: list[dict] = []
+    for f in auditoria:
+        base = {k: f.get(k) for k in ("nic", "upd", "orden", "archivo", "tipo")}
+        situacion = _situacion(f.get("fecha_estado") or "", tomado=f.get("tiene_fecha") == SI)
+        if situacion:
+            hoja = _hoja_de(f.get("fecha_hoja"), f)
+            filas.append(
+                {
+                    **base,
+                    "parametro": FECHA,
+                    "situacion": situacion,
+                    "valor": f.get("fecha") or "",
+                    "leido": f.get("fecha_leido") or "",
+                    "hoja": hoja,
+                    "buscado": f.get("fecha_buscado") or f.get("fecha_como") or "",
+                    "que_hacer": (
+                        f"Confirmar la fecha {f.get('fecha')} en la hoja {hoja} del {f.get('upd')}"
+                        if situacion == POR_CONFIRMAR
+                        else f"Leer la fecha en la hoja {hoja} del {f.get('upd')} y escribirla en el índice del NIC"
+                    ),
+                }
+            )
+        if f.get("lleva_re") == SI or f.get("re"):
+            situacion = _situacion(f.get("re_estado") or "", tomado=bool(f.get("re")))
+            if situacion:
+                hoja = _hoja_de(f.get("re_hoja"), f)
+                filas.append(
+                    {
+                        **base,
+                        "parametro": RE_,
+                        "situacion": situacion,
+                        "valor": f.get("re") or "",
+                        "leido": f.get("re_leido") or "",
+                        "hoja": hoja,
+                        "buscado": f.get("re_buscado") or f.get("re_como") or "",
+                        "que_hacer": (
+                            f"Confirmar el {f.get('re')} contra el sello o la etiqueta de la hoja {hoja}"
+                            if situacion == POR_CONFIRMAR
+                            else f"Leer el RE del sello o la etiqueta de la hoja {hoja} y ponerlo en el nombre del "
+                            "archivo y en el índice"
+                        ),
+                    }
+                )
+        if _sin_nombre(f):
+            filas.append(
+                {
+                    **base,
+                    "parametro": TIPO,
+                    "situacion": SIN_CATALOGO,
+                    "valor": f.get("tipo") or "",
+                    "leido": "",
+                    "hoja": str(f.get("hojas") or f.get("primera") or ""),
+                    "buscado": "su asunto, su formato y el catálogo de tipos documentales",
+                    "que_hacer": "Nombrar el documento con el tipo del catálogo",
+                }
+            )
+    for pdf, por_que in sorted((fallidos or {}).items()):
+        carpeta, _, nombre = str(pdf).replace("\\", "/").rpartition("/")
+        filas.append(
+            {
+                "nic": carpeta.rsplit("/", 1)[-1],
+                "upd": PurePosixPath(nombre).stem,
+                "orden": None,
+                "archivo": nombre,
+                "tipo": "",
+                "parametro": "El PDF entero",
+                "situacion": NO_SE_PROCESO,
+                "valor": "",
+                "leido": "",
+                "hoja": "",
+                "buscado": str(por_que or ""),
+                "que_hacer": "Volver a procesar el PDF (Retomar: sólo lo que falta)",
+            }
+        )
+    return filas
+
+
+def avisos_de_revision(auditoria: Iterable[Mapping]) -> list[dict]:
+    """Un renglón por aviso de Revisión, con su documento."""
+    return [
+        {k: f.get(k) for k in ("nic", "upd", "orden", "archivo", "tipo")} | {"aviso": aviso}
+        for f in auditoria
+        for aviso in f.get("avisos") or []
+    ]
+
+
+def por_parametro(auditoria: list[Mapping]) -> list[dict]:
+    """Cada parámetro contado por documento: tomado, por confirmar, no tomado y no aplica."""
+    cuenta = {p: Counter() for p in (FECHA, RE_, TIPO)}
+    dudosos = {(x["parametro"], x["upd"], x["orden"]) for x in faltantes(auditoria) if x["situacion"] == POR_CONFIRMAR}
+    for f in auditoria:
+        clave = (f.get("upd"), f.get("orden"))
+        cuenta[FECHA]["tomado" if f.get("tiene_fecha") == SI else "no"] += 1
+        if f.get("re"):
+            cuenta[RE_]["tomado"] += 1
+        else:
+            cuenta[RE_]["no" if f.get("lleva_re") == SI else "no_aplica"] += 1
+        cuenta[TIPO]["no" if _sin_nombre(f) else "tomado"] += 1
+        for parametro in (FECHA, RE_):
+            if (parametro, *clave) in dudosos:
+                cuenta[parametro]["dudoso"] += 1
+    filas = []
+    for parametro, c in cuenta.items():
+        aplica = c["tomado"] + c["no"]
+        filas.append(
+            {
+                "parametro": parametro,
+                "documentos": aplica + c["no_aplica"],
+                "tomado": c["tomado"] - c["dudoso"],
+                "por_confirmar": c["dudoso"],
+                "no_tomado": c["no"],
+                "no_aplica": c["no_aplica"],
+                "porcentaje": round((c["tomado"] - c["dudoso"]) / aplica, 4) if aplica else None,
+            }
+        )
+    return filas
+
+
+@dataclass(frozen=True, slots=True)
+class LaCorrida:
+    """La ficha de una corrida, para la cabeza de su auditoría."""
+
+    inicio: str
+    fin: str
+    origen: str
+    destino: str
+    #: PDF del origen que vio la corrida, los que procesó, los que ya estaban
+    #: entregados y no tocó, y los que fallaron con su porqué.
+    encontrados: int = 0
+    procesados: int = 0
+    ya_entregados: int = 0
+    fallidos: Mapping[str, str] = field(default_factory=dict)
+    operador: str = ""
+    habilidad: str = ""
+    lectura: str = ""
+    entrega: str = ""
+    #: El dictamen de la auditoría de cierre, si se hizo.
+    dictamen: str = ""
 
 
 def medir(entregados: Iterable[PdfEntregado]) -> Metricas:

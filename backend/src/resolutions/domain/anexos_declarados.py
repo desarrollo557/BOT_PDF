@@ -185,6 +185,10 @@ _CEDULA_MAL_LEIDA = re.compile(
     # El reverso: «FECHA DF NACIMIENTO», «FECHA Y LUGAR DE EXPEDICION»
     # (UPD2326302 p12, sin una sola palabra del anverso legible).
     r"|FECHA\s+D[EF]\s+NACIMIENTO|LUGAR\s+D[EF]\s+EXPEDICION"
+    # «CEDUIA P| OfyPADANIA», «CEDUUoiltüDADANtA»: el rótulo de la tarjeta
+    # roto por la OCR (1000258, UPD3102728 pág. 6, 2026-11-23). Sólo se mira
+    # en una hoja muda: en un escrito, «cédula de ciudadanía» es prosa.
+    r"|C[EI]D[UL][^\n]{0,15}?ADAN"
 )
 #: Cómo se llama la clase de una hoja así.
 HOJA_MUDA = "hoja sin texto legible"

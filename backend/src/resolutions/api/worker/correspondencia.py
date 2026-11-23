@@ -3558,6 +3558,12 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     grupos = _ordenar_los_acuerdos(
         grupos, piezas, textos, set(del_acuerdo), por_mes=entregado_por is Agrupacion.MES
     )
+    # F8d. Ningún PDF empieza por una cédula: va detrás, como anexo (el
+    # operador, 2026-11-23, 4132540). Por mes no: el archivo es un mes entero.
+    if entregado_por is not Agrupacion.MES:
+        from ...application.anexos_declarados import la_cedula_detras
+
+        grupos = la_cedula_detras(grupos, textos)
     _anunciar(
         payload,
         Stage.ASSEMBLING,

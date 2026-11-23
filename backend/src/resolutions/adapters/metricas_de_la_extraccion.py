@@ -17,20 +17,28 @@ de evidencia, y el libro no se carga entero en memoria.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 
 from ..application.metricas_de_la_extraccion import (
     NO,
     PARAMETROS,
+    POR_CONFIRMAR,
     SI,
     ComparacionDeUnNic,
+    LaCorrida,
     Metricas,
+    avisos_de_revision,
+    faltantes,
+    por_parametro,
 )
 from .guardar_libro import guardar_libro
 
 NOMBRE_DE_LAS_METRICAS = "00.METRICAS DE LA EXTRACCION.xlsx"
 NOMBRE_DE_LA_EVIDENCIA = "00.EVIDENCIA DE LA EXTRACCION.xlsx"
+#: Una auditoría por corrida, con la hora en que empezó (2026-11-20).
+PREFIJO_DE_LA_AUDITORIA = "00.AUDITORIA DE LA CORRIDA"
 #: Lo más largo que se escribe de un fragmento o de una causa en una celda.
 LARGO_DE_LA_CELDA = 300
 _ESTADOS = ("verificado", "encontrado", "requiere validación", "no encontrado", "contradictorio")
@@ -138,23 +146,40 @@ def _por_nic(metricas: Metricas) -> list[list[object]]:
     ]  # fmt: skip
 
 
-def _pendientes(metricas: Metricas) -> list[list[object]]:
-    """Sólo lo que falta: un renglón por documento y problema, con su detalle."""
-    filas = []
-    for f in metricas.auditoria:
-        problemas = []
-        if f["tiene_fecha"] == NO:
-            problemas.append(("Sin fecha", f["fecha_como"] or "la fecha no se pudo leer"))
-        if f["tiene_re"] == NO:
-            problemas.append(("Sin RE", f["re_como"] or "su tipo lleva RE y no se halló"))
-        if f["en_revision"] == SI:
-            problemas.append(("En Revisión", f["motivos"]))
-        filas += [[f["nic"], f["upd"], f["orden"], f["archivo"], f["tipo"], p, d] for p, d in problemas]
-    return filas
+def _situacion(valor: object) -> str | None:
+    if valor == POR_CONFIRMAR:
+        return _FONDO_DE_LO_QUE_SE_MIRA
+    return _FONDO_DE_LO_QUE_FALTA if valor else None
 
 
-def _escribir_la_auditoria(libro, metricas: Metricas) -> None:
+def _escribir_los_faltantes(libro, metricas: Metricas, fallidos: Mapping[str, str] | None = None) -> None:
+    """«Faltantes» y «Avisos de Revisión»: lo que el operador tiene que mirar, archivo por archivo."""
+    _hoja(
+        libro,
+        "Faltantes",
+        (
+            ("NIC", 11), ("UPD", 13), ("Nº", 5), ("Archivo", 50), ("Tipo documental", 34), ("Parámetro", 15),
+            ("Situación", 26), ("Valor tomado", 17), ("Lo que leyó el bot", 40), ("Hoja del origen", 9),
+            ("Dónde se buscó", 60), ("Qué hacer", 60),
+        ),
+        (
+            [x["nic"], x["upd"], x["orden"], x["archivo"], x["tipo"], x["parametro"], x["situacion"], x["valor"],
+             x["leido"], x["hoja"], x["buscado"], x["que_hacer"]]
+            for x in faltantes(metricas.auditoria, fallidos)
+        ),
+        colores={6: _situacion},
+    )  # fmt: skip
+    _hoja(
+        libro,
+        "Avisos de Revisión",
+        (("NIC", 11), ("UPD", 13), ("Nº", 5), ("Archivo", 50), ("Tipo documental", 34), ("Aviso", 110)),
+        ([x["nic"], x["upd"], x["orden"], x["archivo"], x["tipo"], x["aviso"]] for x in avisos_de_revision(metricas.auditoria)),
+    )  # fmt: skip
+
+
+def _escribir_la_auditoria(libro, metricas: Metricas, fallidos: Mapping[str, str] | None = None) -> None:
     """Las hojas de la auditoría, al frente del libro (el operador, 2026-11-20)."""
+    _escribir_los_faltantes(libro, metricas, fallidos)
     _hoja(
         libro,
         "Documentos",
@@ -171,14 +196,6 @@ def _escribir_la_auditoria(libro, metricas: Metricas) -> None:
             for f in metricas.auditoria
         ),
         colores={8: _falta_si(NO), 12: _falta_si(NO), 15: _se_mira, 17: _alerta},
-    )  # fmt: skip
-    _hoja(
-        libro,
-        "Pendientes",
-        (("NIC", 11), ("UPD", 13), ("Nº", 5), ("Archivo", 52), ("Tipo documental", 40), ("Problema", 14),
-         ("Detalle", 100)),
-        _pendientes(metricas),
-        colores={5: _falta_si("Sin fecha", "Sin RE", "En Revisión")},
     )  # fmt: skip
     _hoja(
         libro,
@@ -306,3 +323,90 @@ def escribir_metricas(
     )  # fmt: skip
     rutas.append(guardar_libro(evidencia, destino / NOMBRE_DE_LA_EVIDENCIA))
     return rutas
+
+
+# -- la auditoría de una corrida (2026-11-20) ----------------------------------------
+#
+# El operador: «una auditoría de revisión bien estructurada por proceso
+# ejecutado». «00.METRICAS» es del destino entero, acumulado; ésta es sólo de
+# los PDF que tocó una corrida, y no se pisa con la siguiente.
+
+
+def nombre_de_la_auditoria(inicio: str) -> str:
+    """«00.AUDITORIA DE LA CORRIDA 2026-11-20 14h30.xlsx», a la hora local en que empezó la corrida."""
+    try:
+        cuando = datetime.fromisoformat(inicio).astimezone()
+        sello = f"{cuando:%Y-%m-%d %Hh%M}"
+    except (TypeError, ValueError):
+        sello = "".join(c if c.isalnum() or c in "- " else "-" for c in str(inicio)[:16]) or "sin fecha"
+    return f"{PREFIJO_DE_LA_AUDITORIA} {sello}.xlsx"
+
+
+def _hora(iso: str) -> str:
+    try:
+        return f"{datetime.fromisoformat(iso).astimezone():%Y-%m-%d %H:%M}"
+    except (TypeError, ValueError):
+        return str(iso or "")
+
+
+def _porcentaje(valor: object) -> str | None:
+    return f"{valor:.0%}" if isinstance(valor, float) else None
+
+
+def escribir_la_auditoria_de_la_corrida(destino: Path, corrida: LaCorrida, metricas: Metricas) -> Path:
+    """El libro de una corrida: su ficha, lo que no se tomó, la Revisión y el detalle, documento por documento."""
+    from openpyxl import Workbook
+
+    documentos = metricas.auditoria
+    parametros = por_parametro(documentos)
+    lo_que_falta = faltantes(documentos, corrida.fallidos)
+    con_algo = {(x["upd"], x["orden"]) for x in lo_que_falta if x["orden"] is not None}
+    libro = Workbook(write_only=True)
+    _hoja(
+        libro,
+        "Corrida",
+        (("Concepto", 52), ("Valor", 70)),
+        (
+            ("Empezó", _hora(corrida.inicio)),
+            ("Terminó", _hora(corrida.fin)),
+            ("Origen", corrida.origen),
+            ("Destino", corrida.destino),
+            ("Operador", corrida.operador),
+            ("Habilidad", corrida.habilidad),
+            ("Lectura", corrida.lectura),
+            ("Entrega", corrida.entrega),
+            ("PDF del origen que vio la corrida", corrida.encontrados),
+            ("PDF procesados en esta corrida", corrida.procesados),
+            ("PDF que ya estaban entregados (no se tocaron)", corrida.ya_entregados),
+            ("PDF que no se procesaron (ver «Faltantes»)", len(corrida.fallidos)),
+            ("NIC", len({u["nic"] for u in metricas.por_upd})),
+            ("Documentos entregados", len(documentos)),
+            ("Documentos completos", len(documentos) - len(con_algo)),
+            ("Documentos con algo que falta o se duda (ver «Faltantes»)", len(con_algo)),
+            *(
+                (f"{p['parametro']}: tomado / por confirmar / no tomado / no aplica",
+                 f"{p['tomado']} / {p['por_confirmar']} / {p['no_tomado']} / {p['no_aplica']}"
+                 + (f"  ({_porcentaje(p['porcentaje'])} tomado sin duda)" if p["porcentaje"] is not None else ""))
+                for p in parametros
+            ),
+            ("Documentos con avisos de Revisión", sum(1 for f in documentos if f["en_revision"] == SI)),
+            ("Páginas", metricas.paginas),
+            ("Páginas pagadas a la IA", metricas.paginas_pagadas),
+            ("Auditoría de cierre", corrida.dictamen or "no se hizo"),
+            ("Cómo se lee",
+             "«Faltantes»: un renglón por archivo y parámetro que no se tomó o se tomó con duda; filtre por "
+             "Parámetro o Situación. «Avisos de Revisión»: lo que el bot pidió mirar. «Documentos»: todo lo "
+             "entregado, con cómo se tomó cada dato."),
+        ),
+    )  # fmt: skip
+    _escribir_la_auditoria(libro, metricas, corrida.fallidos)
+    _hoja(
+        libro,
+        "Por parámetro",
+        (("Parámetro", 16), ("Documentos", 11), ("Tomado", 10), ("Por confirmar", 12), ("No tomado", 10),
+         ("No aplica", 10), ("% tomado sin duda", 12)),
+        ([p["parametro"], p["documentos"], p["tomado"], p["por_confirmar"], p["no_tomado"], p["no_aplica"],
+          _porcentaje(p["porcentaje"]) or "—"] for p in parametros),
+        colores={3: _mas_de_cero, 4: _mas_de_cero},
+    )  # fmt: skip
+    return guardar_libro(libro, destino / nombre_de_la_auditoria(corrida.inicio))

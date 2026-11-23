@@ -2753,12 +2753,31 @@ class FolderRunner:
             await asyncio.to_thread(self._escribir_las_metricas, run)
 
     def _escribir_las_metricas(self, run: FolderRun) -> None:
-        from .metricas import escribir_las_metricas
+        from ..application.metricas_de_la_extraccion import LaCorrida
+        from .metricas import escribir_la_auditoria, escribir_las_metricas
 
         try:
             escribir_las_metricas(run.destination)
         except Exception:  # noqa: BLE001 - la entrega ya está; las métricas se rehacen con su script
             logger.warning("no se pudieron escribir las métricas de la extracción", exc_info=True)
+        # La auditoría de esta corrida sola (el operador, 2026-11-20: «por
+        # proceso ejecutado»): sus PDF, lo que no tomaron y los que fallaron.
+        try:
+            corrida = LaCorrida(
+                inicio=run.started_at,
+                fin=run.finished_at or _now(),
+                origen=str(run.source),
+                destino=str(run.destination),
+                encontrados=run.discovered,
+                procesados=run.processed,
+                ya_entregados=run.ya_entregados,
+                fallidos=dict(run.fallidos),
+                operador=run.operator or "",
+                dictamen=f"{run.etapa} — {run.etapa_detalle}".strip(" —") if run.etapa else "",
+            )
+            escribir_la_auditoria(run.destination, corrida, run.job_ids)
+        except Exception:  # noqa: BLE001 - la entrega ya está
+            logger.warning("no se pudo escribir la auditoría de la corrida", exc_info=True)
 
     def _escribir_todo_lo_general(self, run: FolderRun) -> None:
         with run.cerrojo_generales:

@@ -133,7 +133,11 @@ RE_SI_LO_CITA = frozenset(
     }
 )
 #: Lo que dice que un texto cita un radicado: un «RE» con cifras, o el rótulo.
-_CITA_UN_RADICADO = re.compile(r"(?<![A-Z0-9])R\W?E\W?\d{4}|\bRADICAD[OA]\b|\bN\W{0,3}\s*P\W?[QO0]\W?R\b")
+#: «Radicado número: …», «radicada bajo el No. …» cita uno; «la solicitud
+#: radicada en el asunto» es prosa: sin número detrás, no cita nada (2026-11-23).
+_CITA_UN_RADICADO = re.compile(
+    r"(?<![A-Z0-9])R\W?E\W?\d{4}|\bRADICAD[OA]\b[^0-9\n]{0,30}\d|\bN\W{0,3}\s*P\W?[QO0]\W?R\b"
+)
 
 
 def le_falta_su_re(nombre: str | None, textos: Iterable[str] | None = None) -> bool:

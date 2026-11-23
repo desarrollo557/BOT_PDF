@@ -8,6 +8,7 @@ comparan NIC por NIC con la entrega anterior.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -179,8 +180,71 @@ class TestLaAuditoria:
         )
         escribir_las_metricas(tmp_path)
         libro = load_workbook(tmp_path / NOMBRE_DE_LAS_METRICAS)
-        assert libro.sheetnames[:5] == ["Documentos", "Pendientes", "Por UPD", "Por NIC", "Resumen"]
+        assert libro.sheetnames[:6] == ["Faltantes", "Avisos de Revisión", "Documentos", "Por UPD", "Por NIC", "Resumen"]
         documentos = libro["Documentos"]
         assert documentos.auto_filter.ref and documentos.freeze_panes == "A2"
         assert documentos["I2"].value == "No" and documentos["I2"].fill.start_color.rgb.endswith("F8CBAD")
-        assert libro["Pendientes"]["F2"].value == "Sin fecha"
+        assert (libro["Faltantes"]["F2"].value, libro["Faltantes"]["G2"].value) == ("Fecha", "No se encontró")
+
+
+class TestLaAuditoriaDeLaCorrida:
+    """El operador, 2026-11-20: «necesito saber qué archivos no tomaron o no encontraron los parámetros… por proceso ejecutado»."""
+
+    def test_un_renglon_por_archivo_y_parametro_que_no_se_tomo(self):
+        from resolutions.application.metricas_de_la_extraccion import (
+            auditar,
+            faltantes,
+            por_parametro,
+        )
+
+        filas, _ = auditar(TestLaAuditoria()._pdf(documentos=[{"hojas": [1, 2, 3]}, {"hojas": [4, 5]}, {"hojas": [6]}]))
+        lo_que_falta = faltantes(filas, {"/origen/1000002/UPD9.pdf": "el PDF está dañado"})
+        assert [(x["archivo"], x["parametro"], x["situacion"]) for x in lo_que_falta] == [
+            ("02_PUBLICACION-DEL-AVISO.pdf", "RE", "No se encontró"),
+            ("03_ACTA.pdf", "Fecha", "No se encontró"),
+            ("UPD9.pdf", "El PDF entero", "El PDF no se procesó"),
+        ]
+        sin_re, sin_fecha, fallido = lo_que_falta
+        assert (sin_re["hoja"], sin_re["buscado"]) == ("4", "sello y etiqueta en las hojas 4")
+        assert sin_fecha["hoja"] == "6" and "hoja 6 del UPD1" in sin_fecha["que_hacer"]
+        assert (fallido["nic"], fallido["upd"], fallido["buscado"]) == ("1000002", "UPD9", "el PDF está dañado")
+        fecha, re_, tipo = por_parametro(filas)
+        assert (fecha["tomado"], fecha["no_tomado"]) == (2, 1)
+        assert (re_["tomado"], re_["no_tomado"], re_["no_aplica"]) == (1, 1, 1)
+        assert tipo["no_tomado"] == 0
+
+    def test_lo_tomado_con_duda_y_lo_ilegible(self):
+        from resolutions.application.metricas_de_la_extraccion import faltantes
+
+        base = {"nic": "1", "upd": "UPD1", "orden": 1, "archivo": "01_RECLAMO.pdf", "tipo": "RECLAMO", "hojas": "1",
+                "tiene_fecha": "Sí", "fecha": "2024-01-01", "lleva_re": "Sí"}  # fmt: skip
+        dudoso = {**base, "re": RE, "re_estado": "requiere validación"}
+        ilegible = {**base, "re": "", "re_estado": "requiere validación", "re_leido": "candidatos: RE23D20210565"}
+        sin_nombre = {**base, "re": RE, "tipo": "DOCUMENTO"}
+        assert [x["situacion"] for x in faltantes([dudoso, ilegible, sin_nombre])] == [
+            "Tomado, por confirmar",
+            "Ilegible: no se tomó",
+            "Sin nombre del catálogo",
+        ]
+        assert faltantes([ilegible])[0]["leido"] == "candidatos: RE23D20210565"
+
+    def test_el_libro_es_de_la_corrida_y_no_del_destino_entero(self, tmp_path):
+        from openpyxl import load_workbook
+
+        from resolutions.api.metricas import escribir_la_auditoria
+        from resolutions.application.metricas_de_la_extraccion import LaCorrida
+
+        for upd, trabajo in (("UPD1", "de-esta"), ("UPD2", "de-otra")):
+            carpeta = tmp_path / "1000001"
+            _constancia(carpeta, upd, {}, [{"nombre": "RECLAMO", "fecha_creacion": None, "paginas": 1}])
+            ruta = carpeta / f".bot-entrega-{upd}.json"
+            constancia = constancias.leer(ruta)
+            constancias.escribir(ruta, replace(constancia, job_id=trabajo))
+        corrida = LaCorrida(inicio="2026-11-20T19:30:00+00:00", fin="2026-11-20T20:00:00+00:00", origen="o", destino="d")
+        ruta = escribir_la_auditoria(tmp_path, corrida, ["de-esta"])
+        assert ruta.name.startswith("00.AUDITORIA DE LA CORRIDA 2026-11-20 ") and ruta.suffix == ".xlsx"
+        libro = load_workbook(ruta, read_only=True)
+        assert libro.sheetnames[:3] == ["Corrida", "Faltantes", "Avisos de Revisión"]
+        assert "Por parámetro" in libro.sheetnames
+        faltan = list(libro["Faltantes"].iter_rows(min_row=2, values_only=True))
+        assert [(f[1], f[5]) for f in faltan] == [("UPD1", "Fecha"), ("UPD1", "RE")]

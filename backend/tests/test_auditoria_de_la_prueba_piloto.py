@@ -115,3 +115,56 @@ class TestElDiaRotoEnElRevisor:
             "Firmado en Magangue a los 29 días del mes Octubre del año 2010",
         ]
         assert not contrastar_las_fechas(fila, textos, regla=ESTRUCTURA).preguntas
+
+
+#: Una hoja escrita de verdad: con menos de 25 palabras el bot la toma por muda.
+ESCRITO = (
+    "DECLARACION JURAMENTADA DE IDENTIDAD\nSeñores Afinia, mediante la presente declaro bajo la gravedad "
+    "de juramento que soy la persona titular del servicio de energía del predio ubicado en la dirección "
+    "indicada y que los datos que suministro en este documento son ciertos y verificables por la empresa"
+)
+
+
+class TestLaCedulaNuncaAbreUnPdf:
+    """4132540: la constancia va sola y su cédula pasa a la declaración juramentada, pero detrás de ella."""
+
+    def _grupos(self, *tramos):
+        from resolutions.domain.grouping import GroupingResult, PageGroup
+        from resolutions.domain.resolution_code import ResolutionCode
+
+        return GroupingResult(
+            groups=[
+                PageGroup(code=ResolutionCode(value=f"{n:02d}", raw=f"{n:02d}"), page_numbers=list(t))
+                for n, t in enumerate(tramos, start=1)
+            ],
+        )
+
+    def test_la_cedula_va_detras_del_documento(self):
+        from resolutions.application.anexos_declarados import la_cedula_detras
+
+        textos = {4: CONSTANCIA, 5: CEDULA, 6: ESCRITO}
+        [constancia, declaracion] = la_cedula_detras(self._grupos([4], [5, 6]), textos).groups
+        assert constancia.en_el_pdf == [4]
+        assert declaracion.en_el_pdf == [6, 5] and declaracion.page_numbers == [5, 6]
+
+    def test_tambien_con_el_ocr_roto(self):
+        from resolutions.application.anexos_declarados import la_cedula_detras
+
+        rota = "REPUBLICA DE COLOMIA\nIDENTIFICACION PERSONAL\nCEBULABE ClUDi^DANiA\n1.000.000.001\nPEREZ"
+        textos = {5: rota, 6: ESCRITO}
+        [grupo] = la_cedula_detras(self._grupos([5, 6]), textos).groups
+        assert grupo.en_el_pdf == [6, 5]
+
+    def test_con_su_reverso_mudo(self):
+        from resolutions.application.anexos_declarados import la_cedula_detras
+
+        textos = {1: CEDULA, 2: "", 3: ESCRITO, 4: ESCRITO}
+        [grupo] = la_cedula_detras(self._grupos([1, 2, 3, 4]), textos).groups
+        assert grupo.en_el_pdf == [3, 4, 1, 2]
+
+    def test_sola_o_ya_detras_no_se_toca(self):
+        from resolutions.application.anexos_declarados import la_cedula_detras
+
+        textos = {1: CEDULA, 2: ESCRITO, 3: CEDULA}
+        grupos = self._grupos([1], [2, 3])
+        assert la_cedula_detras(grupos, textos) is grupos

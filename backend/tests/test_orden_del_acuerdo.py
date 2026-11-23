@@ -87,3 +87,41 @@ class TestElPdfEscrito:
         # Lo que no es del acuerdo no se toca.
         otro = replace(self._grupo())
         assert _ordenar_los_acuerdos(GroupingResult(groups=[otro]), [fechada], TEXTOS, set()).groups[0].orden is None
+
+
+class TestElOtroDocumentoDentroDelAcuerdo:
+    """1000258 (2026-11-23): «reconocimiento, pagaré, Ley Habeas Data, y luego nuevo documento, y luego anexos».
+
+    La autorización para la financiación no tiene título del catálogo: se pegaba
+    al reconocimiento de delante. Y la cédula que la OCR casi no leyó seguía al
+    pagaré. Los nombres son inventados.
+    """
+
+    AUTORIZACION = (
+        "Santa Rosa del Sur, 05 de Junio de 2023\nSeñores\nAFINIA\nAUTORIZACION\n"
+        "Yo, Juana Carrera, identificada con cédula de ciudadanía, autorizo la financiación de la deuda.\n"
+    )
+    #: La foto de una cédula de la que la OCR sólo dejó basura y el rótulo roto.
+    CEDULA_ROTA = "Si f r V 4 4 V % .<í^5 f CEDUIA P| OfyPADANIA 7 ,f r^. •^5 CARRERA APaUDOS JUANA :.>í4Síí?4"
+
+    def test_va_despues_de_la_habeas_data_y_antes_de_los_anexos(self):
+        from resolutions.application.anexos_declarados import OTRO_DOCUMENTO
+
+        textos = {
+            1: HABEAS_DATA, 2: CEDULA, 3: PAGARE, 4: self.CEDULA_ROTA, 5: CARTA,
+            6: RECONOCIMIENTO_FECHADO, 7: self.AUTORIZACION, 8: CEDULA,
+        }  # fmt: skip
+        assert (OTRO_DOCUMENTO, [7]) in partes_del_acuerdo(range(1, 9), textos)
+        assert (ANEXOS_DEL_ACUERDO, [4]) in partes_del_acuerdo(range(1, 9), textos)
+        assert orden_del_acuerdo(range(1, 9), textos, reconocimiento_fechado=True) == (6, 3, 5, 1, 7, 2, 4, 8)
+        assert orden_del_acuerdo(range(1, 9), textos, reconocimiento_fechado=False) == (3, 5, 1, 7, 2, 4, 8, 6)
+
+    def test_tras_el_pagare_tambien(self):
+        textos = {1: RECONOCIMIENTO_FECHADO, 2: PAGARE, 3: self.AUTORIZACION, 4: CEDULA}
+        assert orden_del_acuerdo(range(1, 5), textos, reconocimiento_fechado=True) == (1, 2, 3, 4)
+
+    def test_la_cedula_rota_es_de_identidad(self):
+        from resolutions.domain.anexos_declarados import clase_de_la_hoja
+
+        assert clase_de_la_hoja(self.CEDULA_ROTA) == "documento de identidad"
+        assert clase_de_la_hoja("CEDUUoiltüDADANtA ; CARRERA APBiKSDS JUANA I® í1í:S^") == "documento de identidad"
