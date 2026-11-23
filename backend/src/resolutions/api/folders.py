@@ -4222,6 +4222,7 @@ class FolderRunner:
             # (2026-11-18): las métricas y la Revisión las leen después.
             evidencia=dict(informe.get("evidencia") or {}),
             revision=[r for r in informe.get("review_queue") or [] if isinstance(r, dict)],
+            decisiones_del_agente=[d for d in informe.get("decisiones_del_agente") or [] if isinstance(d, dict)],
             # Las hojas de cada documento, para la auditoría (2026-11-20).
             documentos=[
                 {"hojas": list(grupo.get("pages") or [])}

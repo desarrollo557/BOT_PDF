@@ -1,3 +1,4 @@
+import { pendientes } from './pendientes';
 import type { Entry } from './components/ProcessedCard.svelte';
 import type { Job, Origen, ProcessedDocument } from './types';
 
@@ -50,7 +51,7 @@ export function fromJob(job: Job): Entry {
     resolutions: job.report?.groups?.length ?? 0,
     pages: job.report?.page_count ?? 0,
     bytes: job.bytes ?? 0,
-    review: job.report?.review_queue?.length ?? 0,
+    review: pendientes(job.report).length,
     operator: job.operator,
     codes: job.report?.groups?.map((group) => group.code) ?? [],
     failed: job.state === 'failed',

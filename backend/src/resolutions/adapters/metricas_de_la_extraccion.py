@@ -17,6 +17,7 @@ de evidencia, y el libro no se carga entero en memoria.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,7 @@ from ..application.metricas_de_la_extraccion import (
     LaCorrida,
     Metricas,
     avisos_de_revision,
+    decisiones_del_agente,
     faltantes,
     por_parametro,
 )
@@ -152,6 +154,12 @@ def _situacion(valor: object) -> str | None:
     return _FONDO_DE_LO_QUE_FALTA if valor else None
 
 
+def _accion(valor: object) -> str | None:
+    if valor == "revertido por el auditor":
+        return _FONDO_DE_LO_QUE_FALTA
+    return _FONDO_DE_LO_QUE_ESTA_BIEN if valor else None
+
+
 def _escribir_los_faltantes(libro, metricas: Metricas, fallidos: Mapping[str, str] | None = None) -> None:
     """«Faltantes» y «Avisos de Revisión»: lo que el operador tiene que mirar, archivo por archivo."""
     _hoja(
@@ -174,6 +182,21 @@ def _escribir_los_faltantes(libro, metricas: Metricas, fallidos: Mapping[str, st
         "Avisos de Revisión",
         (("NIC", 11), ("UPD", 13), ("Nº", 5), ("Archivo", 50), ("Tipo documental", 34), ("Aviso", 110)),
         ([x["nic"], x["upd"], x["orden"], x["archivo"], x["tipo"], x["aviso"]] for x in avisos_de_revision(metricas.auditoria)),
+    )  # fmt: skip
+    _hoja(
+        libro,
+        "Decisiones del agente",
+        (
+            ("NIC", 11), ("UPD", 13), ("Nº", 5), ("Archivo", 50), ("Parámetro", 10), ("Aviso de antes", 60),
+            ("Lo que hizo", 24), ("Valor puesto", 17), ("Regla", 36), ("Confianza", 10), ("Auditor", 40),
+            ("Por qué", 80),
+        ),
+        (
+            [x["nic"], x["upd"], x["orden"], x["archivo"], x["parametro"], x["antes"], x["accion"], x["valor"],
+             x["regla"], x["confianza"], x["auditor"], x["por_que"]]
+            for x in decisiones_del_agente(metricas.auditoria)
+        ),
+        colores={6: _accion, 9: lambda v: _FONDO_DE_LO_QUE_SE_MIRA if v == "baja" else None},
     )  # fmt: skip
 
 
@@ -389,7 +412,16 @@ def escribir_la_auditoria_de_la_corrida(destino: Path, corrida: LaCorrida, metri
                  + (f"  ({_porcentaje(p['porcentaje'])} tomado sin duda)" if p["porcentaje"] is not None else ""))
                 for p in parametros
             ),
-            ("Documentos con avisos de Revisión", sum(1 for f in documentos if f["en_revision"] == SI)),
+            ("Documentos con avisos de Revisión sin resolver", sum(1 for f in documentos if f["en_revision"] == SI)),
+            *(
+                (f"Resuelto por el agente: {accion}", n)
+                for accion, n in sorted(
+                    Counter(x["accion"] for x in decisiones_del_agente(documentos)).items()
+                )
+            ),
+            ("RE decididos con confianza baja (para auditar por muestreo)",
+             sum(1 for f in documentos if (f.get("decision") or {}).get("confianza") == "baja"
+                 and (f.get("decision") or {}).get("valor"))),
             ("Páginas", metricas.paginas),
             ("Páginas pagadas a la IA", metricas.paginas_pagadas),
             ("Auditoría de cierre", corrida.dictamen or "no se hizo"),

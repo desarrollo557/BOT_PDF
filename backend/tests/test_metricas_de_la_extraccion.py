@@ -180,7 +180,7 @@ class TestLaAuditoria:
         )
         escribir_las_metricas(tmp_path)
         libro = load_workbook(tmp_path / NOMBRE_DE_LAS_METRICAS)
-        assert libro.sheetnames[:6] == ["Faltantes", "Avisos de Revisión", "Documentos", "Por UPD", "Por NIC", "Resumen"]
+        assert libro.sheetnames[:6] == ["Faltantes", "Avisos de Revisión", "Decisiones del agente", "Documentos", "Por UPD", "Por NIC"]
         documentos = libro["Documentos"]
         assert documentos.auto_filter.ref and documentos.freeze_panes == "A2"
         assert documentos["I2"].value == "No" and documentos["I2"].fill.start_color.rgb.endswith("F8CBAD")

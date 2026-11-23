@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { pendientes } from '$lib/pendientes';
   // Las fuentes van dentro del build: el servicio corre en la intranet y no
   // puede depender de Google Fonts. Cada archivo declara su `unicode-range`, así
   // que el navegador sólo baja los alfabetos que la página usa.
@@ -62,7 +63,7 @@
 
   const ready = $derived(jobStore.finished.length);
   const pending = $derived(
-    jobStore.finished.reduce((sum, job) => sum + (job.report?.review_queue?.length ?? 0), 0)
+    jobStore.finished.reduce((sum, job) => sum + pendientes(job.report).length, 0)
   );
 
   /**

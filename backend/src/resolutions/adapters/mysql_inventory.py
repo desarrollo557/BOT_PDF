@@ -23,6 +23,7 @@ from typing import Any
 
 from ..application.inventory import rows_of
 from ..domain.page import Provenance
+from ..domain.resolutor_del_re import avisos_pendientes
 from .ledger import InventoryReads
 
 logger = logging.getLogger(__name__)
@@ -193,7 +194,7 @@ class MySQLInventory(InventoryReads):
 
         source = inventory.get("source_document") or report.get("document") or ""
         pages = int(inventory.get("source_pages") or report.get("page_count") or 0)
-        review = len(report.get("review_queue") or [])
+        review = len(avisos_pendientes(report.get("review_queue")))
         stats = report.get("stats") or {}
         provenance = stats.get("by_provenance") or {}
         moment = _at(inventory.get("recorded_at"))

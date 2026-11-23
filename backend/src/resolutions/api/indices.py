@@ -18,6 +18,7 @@ from ..adapters.indice_electronico import (
     escribir_indices_por_hoja,
     leer_indice,
 )
+from ..domain.resolutor_del_re import avisos_pendientes
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +199,7 @@ def fila_de_proceso(job, destino: str | Path | None = None):
         entrega=entrega,
         paginas=int(informe.get("page_count") or job.progress.page_count or 0),
         documentos=len(informe.get("groups") or []) or len(informe.get("inventario_actas") or []),
-        en_revision=len(informe.get("review_queue") or []),
+        en_revision=len(avisos_pendientes(informe.get("review_queue"))),
         estado=estado,
         inicio=job.started_at,
         duracion=_duracion(job.started_at, job.finished_at),

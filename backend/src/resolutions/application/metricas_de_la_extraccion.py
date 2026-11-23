@@ -57,6 +57,8 @@ class PdfEntregado:
     documentos: list[Mapping] = field(default_factory=list)
     #: El trabajo que lo entregó: con él se sabe de qué corrida es (2026-11-20).
     job_id: str = ""
+    #: Lo que el agente decidió por su cuenta, con su auditor (2026-11-23).
+    decisiones: list[Mapping] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -218,16 +220,32 @@ def auditar(pdf: PdfEntregado) -> tuple[list[dict], dict]:
     # La Revisión de cada documento: la de sus hojas; sin sus hojas, la de la
     # última primera hoja que no pasa de la del aviso.
     de_cada_uno: list[list[str]] = [[] for _ in pdf.filas]
+    # Lo que el agente resolvió (``resuelto``, 2026-11-23) ya no está en
+    # Revisión: va aparte, con lo que hizo.
+    resueltos_de_cada_uno: list[list[dict]] = [[] for _ in pdf.filas]
+    decision_de_cada_uno: list[Mapping | None] = [None for _ in pdf.filas]
+
+    def puesto_de(pagina: int) -> int | None:
+        if exactas:
+            return next((i for i, hojas in enumerate(hojas_de) if pagina in hojas), None)
+        antes = [(i, _pagina(p)) for i, p in enumerate(primeras) if p is not None and _pagina(p) <= pagina]
+        return max(antes, key=lambda par: par[1])[0] if antes else (0 if pdf.filas else None)
+
     for entrada in pdf.revision:
         pagina = _pagina(entrada.get("page"))
         motivo = f"pág. {pagina}: {entrada.get('reason') or ''}".strip()
-        if exactas:
-            puesto = next((i for i, hojas in enumerate(hojas_de) if pagina in hojas), None)
+        puesto = puesto_de(pagina)
+        if puesto is None:
+            continue
+        resuelto = entrada.get("resuelto")
+        if isinstance(resuelto, Mapping):
+            resueltos_de_cada_uno[puesto].append({"aviso": motivo, **resuelto})
         else:
-            antes = [(i, _pagina(p)) for i, p in enumerate(primeras) if p is not None and _pagina(p) <= pagina]
-            puesto = max(antes, key=lambda par: par[1])[0] if antes else (0 if pdf.filas else None)
-        if puesto is not None:
             de_cada_uno[puesto].append(motivo)
+    for decision in pdf.decisiones:
+        puesto = puesto_de(_pagina(decision.get("page")))
+        if puesto is not None:
+            decision_de_cada_uno[puesto] = decision
     filas: list[dict] = []
     for i, fila in enumerate(pdf.filas):
         nombre = str(fila.get("nombre") or "").strip()
@@ -272,6 +290,8 @@ def auditar(pdf: PdfEntregado) -> tuple[list[dict], dict]:
                 "alerta": " · ".join(alertas) or "OK",
                 # El detalle de lo que no se tomó, para la hoja «Faltantes».
                 "avisos": list(motivos),
+                "resueltos": resueltos_de_cada_uno[i],
+                "decision": decision_de_cada_uno[i],
                 "primera": _pagina(primera) if primera else None,
                 "fecha_estado": str(de_la_fecha.get("estado") or ""),
                 "fecha_leido": _lo_leido(de_la_fecha),
@@ -293,7 +313,7 @@ def auditar(pdf: PdfEntregado) -> tuple[list[dict], dict]:
         "sin_fecha": sum(1 for f in filas if f["tiene_fecha"] == NO),
         "sin_re": sum(1 for f in filas if f["tiene_re"] == NO),
         "en_revision": sum(1 for f in filas if f["en_revision"] == SI),
-        "avisos": len(pdf.revision),
+        "avisos": sum(len(f["avisos"]) for f in filas),
         "paginas_pagadas": int(proceso.get("paginas_pagadas") or 0),
         "duracion": str(proceso.get("duracion") or ""),
         "procesado": _hora_local(proceso.get("inicio")),
@@ -472,6 +492,46 @@ def por_parametro(auditoria: list[Mapping]) -> list[dict]:
     return filas
 
 
+def decisiones_del_agente(auditoria: Iterable[Mapping]) -> list[dict]:
+    """Lo que el agente hizo por su cuenta, documento por documento: el RE que decidió y cada aviso que cerró."""
+    filas: list[dict] = []
+    for f in auditoria:
+        base = {k: f.get(k) for k in ("nic", "upd", "orden", "archivo", "tipo")}
+        if decision := f.get("decision"):
+            filas.append(
+                {
+                    **base,
+                    "parametro": "RE",
+                    "antes": decision.get("antes") or "",
+                    "accion": "decidido por el agente" if decision.get("valor") else "revertido por el auditor",
+                    "valor": decision.get("valor") or (
+                        f"(propuso {decision['propuesto']})" if decision.get("propuesto") else ""
+                    ),
+                    "regla": decision.get("regla") or "",
+                    "confianza": decision.get("confianza") or "",
+                    "auditor": decision.get("auditor") or "",
+                    "por_que": decision.get("por_que") or "",
+                }
+            )
+        for resuelto in f.get("resueltos") or []:
+            if decision and resuelto.get("accion") in ("decidido por el agente", "revertido por el auditor"):
+                continue
+            filas.append(
+                {
+                    **base,
+                    "parametro": "Aviso",
+                    "antes": resuelto.get("aviso") or "",
+                    "accion": resuelto.get("accion") or "",
+                    "valor": "",
+                    "regla": "",
+                    "confianza": "",
+                    "auditor": "",
+                    "por_que": resuelto.get("conclusion") or "",
+                }
+            )
+    return filas
+
+
 @dataclass(frozen=True, slots=True)
 class LaCorrida:
     """La ficha de una corrida, para la cabeza de su auditoría."""
@@ -505,7 +565,8 @@ def medir(entregados: Iterable[PdfEntregado]) -> Metricas:
         metricas.paginas_pagadas += int(pdf.proceso.get("paginas_pagadas") or 0)
         metricas.segundos += segundos_de(pdf.proceso.get("duracion"))
         for entrada in pdf.revision:
-            metricas.revision[familia_de_la_revision(str(entrada.get("reason") or ""))] += 1
+            if not isinstance(entrada.get("resuelto"), Mapping):
+                metricas.revision[familia_de_la_revision(str(entrada.get("reason") or ""))] += 1
         metricas.reparos += verificar(pdf.evidencia, pdf.documento)
         filas, resumen = auditar(pdf)
         metricas.auditoria += filas

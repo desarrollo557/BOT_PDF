@@ -492,9 +492,9 @@ class JobRegistry:
         resolutions = sum(
             len(job.report["groups"]) for job in jobs if job.report and "groups" in job.report
         )
-        review = sum(
-            len(job.report["review_queue"]) for job in jobs if job.report and "review_queue" in job.report
-        )
+        from ..domain.resolutor_del_re import avisos_pendientes
+
+        review = sum(len(avisos_pendientes(job.report.get("review_queue"))) for job in jobs if job.report)
         return {
             "id": batch.id,
             "name": batch.name,

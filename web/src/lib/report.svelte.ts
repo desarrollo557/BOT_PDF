@@ -1,3 +1,4 @@
+import { pendientes } from './pendientes';
 import { unitFor } from './format';
 import type { AuditoriaDeCierre, ComparacionDeLaEntrega, Consumo, Job } from './types';
 
@@ -203,7 +204,7 @@ export function summarise(
     const actasDelJob = report.inventario_actas?.length ?? 0;
     resolutions += report.groups?.length || actasDelJob;
     actas += actasDelJob;
-    reviewItems += report.review_queue?.length ?? 0;
+    reviewItems += pendientes(report).length;
     repairs += report.repairs?.length ?? 0;
     quarantine += report.quarantine?.length ?? 0;
     escalated += report.stats?.escalated ?? 0;
@@ -252,7 +253,7 @@ export function summarise(
       pages: job.report?.page_count ?? 0,
       resolutions: job.report?.groups?.length || job.report?.inventario_actas?.length || 0,
       bytes: job.bytes ?? 0,
-      review: job.report?.review_queue?.length ?? 0,
+      review: pendientes(job.report).length,
       error: job.error
     })),
     codes,

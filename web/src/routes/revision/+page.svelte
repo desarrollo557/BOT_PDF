@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { pendientes, resueltos } from '$lib/pendientes';
   import { downloadUrl, fetchNombresGuardados } from '$lib/api';
   import EncabezadoDePagina from '$lib/components/EncabezadoDePagina.svelte';
   import Icono from '$lib/components/Icono.svelte';
@@ -91,7 +92,7 @@
   const items = $derived.by((): Item[] => {
     const out: Item[] = [];
     for (const job of jobStore.reviewable) {
-      for (const entry of job.report?.review_queue ?? []) {
+      for (const entry of pendientes(job.report)) {
         out.push({
           job,
           page: entry.page,
@@ -103,6 +104,17 @@
     }
     return out;
   });
+
+  const resueltosDelAgente = $derived.by(() =>
+    jobStore.reviewable.flatMap((job) =>
+      resueltos(job.report).map((aviso) => ({
+        job,
+        page: aviso.page,
+        accion: aviso.resuelto?.accion ?? '',
+        conclusion: aviso.resuelto?.conclusion ?? ''
+      }))
+    )
+  );
 
   let filter = $state<string>('todas');
   const shown = $derived(filter === 'todas' ? items : items.filter((i) => i.family === filter));
@@ -226,6 +238,26 @@
   </section>
 {/if}
 
+{#if resueltosDelAgente.length}
+  <!-- Lo que el agente resolvió por su cuenta (2026-11-23): sólo se mira, no
+       se confirma. El detalle va también al Excel «Decisiones del agente». -->
+  <details class="panel resueltos">
+    <summary>
+      Resueltos por el agente <b class="tabular">{resueltosDelAgente.length}</b>
+    </summary>
+    <ul class="reasons">
+      {#each resueltosDelAgente as item, index (`${item.job.id}-${item.page}-${index}`)}
+        <li>
+          <span class="page-no tabular">Pág. {item.page}</span>
+          <span class="detail">
+            <span class="why">{item.job.filename} · {item.accion}: {item.conclusion}</span>
+          </span>
+        </li>
+      {/each}
+    </ul>
+  </details>
+{/if}
+
 {#if !items.length && nombres.length}
   <!-- Sólo hay nombres por confirmar: la cola de siempre está vacía. -->
 {:else if !items.length}
@@ -282,7 +314,7 @@
           <!-- El total del documento, no el del filtro: es un hecho del PDF y
                tiene que decir lo mismo se esté mirando el motivo que se esté. -->
           <span class="pill pill-warn tabular count">
-            {bucket.job.report?.review_queue?.length ?? bucket.items.length} de {bucket.job
+            {pendientes(bucket.job.report).length || bucket.items.length} de {bucket.job
               .report?.page_count ?? '?'} páginas
           </span>
           {#if bucket.job.report?.quarantine?.length}

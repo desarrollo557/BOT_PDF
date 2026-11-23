@@ -1,3 +1,4 @@
+import { pendientes } from './pendientes';
 import type { CandidatoDelRe, FilaConPersona, Job, NombreGuardado } from './types';
 
 /**
@@ -137,7 +138,7 @@ export function radicadosPorMirar(jobs: Job[]): RePorMirar[] {
   const salida: RePorMirar[] = [];
   for (const job of jobs) {
     const vistos = new Set<string>();
-    for (const entrada of job.report?.review_queue ?? []) {
+    for (const entrada of pendientes(job.report)) {
       if (!ES_DEL_RE.test(entrada.reason)) continue;
       const { file } = whereItLanded(job, entrada.page);
       const clave = file ?? String(entrada.page);

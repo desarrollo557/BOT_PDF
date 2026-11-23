@@ -1,3 +1,4 @@
+import { pendientes } from './pendientes';
 import { unitFor } from './format';
 import { COUNTED_STAGES, rungForMark, STAGE_LABELS } from './rungs';
 import type { Job } from './types';
@@ -288,7 +289,7 @@ class ConsoleLog {
     // guardado por una versión anterior no tiene por qué traer estas claves, y
     // que falte una nunca puede tumbar la pantalla entera.
     const groups = report.groups ?? [];
-    const review = report.review_queue ?? [];
+    const review = pendientes(report);
     const repairs = report.repairs ?? [];
     // Y se llaman por su nombre: "12 resoluciones" delante de un libro de
     // diplomas es una cifra correcta con la palabra equivocada.

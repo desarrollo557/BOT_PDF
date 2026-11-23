@@ -223,6 +223,19 @@ def ubicar_sello(source, pagina: int) -> tuple[Band, str] | None:
     return banda, cerca
 
 
+#: Cuántas palabras tiene a lo sumo el renglón del rótulo del sello: «OFICINA
+#: SANTA ANA», «OFICINA C BOLIVAR SUR». La prosa «presenté la reclamación en la
+#: oficina de Afinia el cual fue recibida…» no es un rótulo (6834372 pág. 4,
+#: 2026-11-23: partía el recurso de queja por la mitad).
+PALABRAS_DEL_ROTULO = 6
+
+
+def _es_rotulo_de_oficina(texto: str) -> bool:
+    """Si el trozo es el rótulo de la oficina del sello: un renglón corto que empieza por «OFICINA»."""
+    palabras = (texto or "").split()
+    return 0 < len(palabras) <= PALABRAS_DEL_ROTULO and any(_OFICINA.search(p) for p in palabras[:2])
+
+
 def _sello_de_oficina(trozos, ancho: float, alto: float) -> tuple[Band, str] | None:
     """El sello de tinta de una oficina por su rótulo, en cualquier parte de la hoja.
 
@@ -231,7 +244,29 @@ def _sello_de_oficina(trozos, ancho: float, alto: float) -> tuple[Band, str] | N
     «OFICINA / BOLIVAR SUR» sí queda. El recorte incluye el RE que se escribe a
     mano encima del sello (UPD3102756 págs. 8, 23, 39, 45, 49, 57).
     """
-    for rotulo in (t for t in trozos if _OFICINA.search(t.texto)):
+    def es_rotulo(trozo) -> bool:
+        if not _es_rotulo_de_oficina(trozo.texto):
+            return False
+        # Su renglón, cerca: el texto de la carta que va a la misma altura del
+        # sello, al otro lado de la hoja, no cuenta.
+        alto_del_trozo = (trozo.y1 - trozo.y0) or 1
+        renglon = [
+            t
+            for t in trozos
+            if abs(t.y0 - trozo.y0) < alto_del_trozo * 0.6 and abs(t.x0 - trozo.x0) <= ancho * 0.30
+        ]
+        # Una palabra de prosa justo delante -- «en la oficina» --; no el
+        # rótulo de una casilla, «(año) OFICINA MAGANGUE» (6834047 pág. 12).
+        delante = [
+            t
+            for t in renglon
+            if t is not trozo
+            and trozo.x0 - ancho * 0.08 <= t.x1 <= trozo.x0
+            and re.fullmatch(r"[a-záéíóúñ]+", t.texto.strip())
+        ]
+        return not delante
+
+    for rotulo in (t for t in trozos if es_rotulo(t)):
         cerca = [
             t
             for t in trozos

@@ -419,6 +419,12 @@ _RENGLON_QUE_CITA = re.compile(
     r"\b(?:ASUNTO|REF|REFERENCIA|MEDIANTE|CITE|CITA|CITAD[OA]S?|CONSECUTIVO|RESPUESTA|RECURSO|RECLAMO"
     r"|RECLAMACION|NOTIFICAD[OA]|DECISION|RESOLUCION|ANTERIOR)\b"
 )
+#: Cuánto texto delante de un RE se mira para saber si lo cita: el renglón de
+#: antes también -- «…reclamo radicado / RE-2310202404804 por concepto…»
+#: (6834372 pág. 1, 2026-11-23: con el salto de renglón el citado pasaba por propio).
+ANTES_DEL_RE_QUE_CITA = 80
+#: Un RE en una lectura, por roto que venga: para borrar el que se cita.
+_RE_SUELTO = re.compile(r"(?<![A-Z0-9])" + _PREFIJO_DEL_RE + r"\W{0,2}[\dDOQIL|/ .\-]{10,22}", re.IGNORECASE)
 
 
 def _plano_del_renglon(renglon: str) -> str:
@@ -429,12 +435,46 @@ def _plano_del_renglon(renglon: str) -> str:
     )
 
 
+def _cita_el_re(texto: str, inicio: int, fin: int) -> bool:
+    """Si el RE de ``texto[inicio:fin]`` se cita: por lo que lleva delante, aunque sea en el renglón de antes.
+
+    En la respuesta de la visión del barrido -- «RE… | dónde | lo que dice el
+    renglón» -- se mira el renglón entero: el RE va primero.
+    """
+    renglon_inicio = texto.rfind("\n", 0, inicio) + 1
+    renglon_fin = texto.find("\n", fin)
+    renglon = texto[renglon_inicio : renglon_fin if renglon_fin >= 0 else len(texto)]
+    # Su renglón entero, como siempre: «Consecutivo No. RE…», «RE… de la
+    # reclamación…», y el de la visión «RE… | texto | reclamo radicado».
+    if _RENGLON_QUE_CITA.search(_plano_del_renglon(renglon)):
+        return True
+    if "|" in renglon:
+        return False
+    # El renglón de antes, sólo si el RE abre el suyo: «reclamo radicado /
+    # RE-…» (6834372). No el «CONSTANCIA… RECLAMACION / N° PQR: RE…» de la
+    # constancia, donde el RE va detrás de su rótulo.
+    if texto[renglon_inicio:inicio].strip(" \t-:.,;"):
+        return False
+    antes = texto[max(0, inicio - ANTES_DEL_RE_QUE_CITA) : renglon_inicio]
+    return bool(_RENGLON_QUE_CITA.search(_plano_del_renglon(antes)))
+
+
 def lecturas_sin_citas(lecturas: Iterable[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
-    """Cada lectura sin los renglones que citan un RE ajeno: lo que queda puede ser el RE propio de la hoja."""
+    """Cada lectura sin los RE que se citan: lo que queda puede ser el RE propio de la hoja.
+
+    Se borra cada RE que lleva delante -- en su renglón o en el de antes -- la
+    palabra que lo cita: «radicado», «reclamo», «consecutivo», «asunto»…
+    """
     limpias = []
     for lector, texto in lecturas:
-        renglones = [r for r in (texto or "").splitlines() if not _RENGLON_QUE_CITA.search(_plano_del_renglon(r))]
-        if limpio := "\n".join(renglones).strip():
+        texto = texto or ""
+        partes, desde = [], 0
+        for hallado in _RE_SUELTO.finditer(texto):
+            if _cita_el_re(texto, hallado.start(), hallado.end()):
+                partes.append(texto[desde : hallado.start()])
+                desde = hallado.end()
+        partes.append(texto[desde:])
+        if limpio := "".join(partes).strip():
             limpias.append((lector, limpio))
     return tuple(limpias)
 

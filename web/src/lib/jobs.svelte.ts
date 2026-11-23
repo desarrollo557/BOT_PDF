@@ -1,3 +1,4 @@
+import { pendientes } from './pendientes';
 import {
   clearScreen,
   deleteJob,
@@ -36,7 +37,7 @@ import type { FolderRun, Job, RetomarChoice, SourceDisposition, TaskKind } from 
  */
 export function pendingReview(jobs: Job[]): Job[] {
   return jobs.filter(
-    (job) => job.state === 'failed' || (job.report?.review_queue?.length ?? 0) > 0
+    (job) => job.state === 'failed' || pendientes(job.report).length > 0
   );
 }
 

@@ -328,9 +328,19 @@ def _anio_corto(hallazgo: re.Match[str]) -> str:
     return f"{dia}/{mes}/{anio}"
 
 
+#: «Cicuco, 13/Agosto de 2021», «13-Agosto-2021»: el día y el mes en letra
+#: separados por una barra o un guion (1047446492, el acta de verificación de
+#: predio desocupado, 2026-11-23). Que la palabra sea un mes lo comprueba
+#: ``MESES`` al leerla.
+_DIA_BARRA_MES = re.compile(
+    r"\b(\d{1,2})\s*[/\-]\s*([a-záéíóúñ]{3,})\s*(?:del?\s+|[/\-]\s*)(\d{4})\b", re.IGNORECASE
+)
+
+
 def _todas_las_formas(plano: str) -> str:
     """Las formas raras de una fecha, llevadas a una que `fechas_de` reconoce."""
     plano = _O_POR_CERO.sub("0", plano)
+    plano = _DIA_BARRA_MES.sub(r"\1 de \2 de \3", plano)
     plano = _ANIO_EN_LETRA.sub(_anio_en_letra, plano)
     plano = _DIA_CON_CIFRA.sub(r"\1", plano)
     plano = _DIA_EN_LETRA.sub(_dia_en_letra, plano)

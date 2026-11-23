@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { pendientes } from '$lib/pendientes';
   import { actasDelInforme } from '$lib/actas';
   import { documentInventoryUrl, downloadUrl } from '$lib/api';
   import GroupsChart from '$lib/components/GroupsChart.svelte';
@@ -38,7 +39,7 @@
    * terminar un libro de diplomas, y con ella la pantalla entera.
    */
   const groups = $derived(report?.groups ?? []);
-  const review = $derived(report?.review_queue ?? []);
+  const review = $derived(pendientes(report));
   const repairs = $derived(report?.repairs ?? []);
   const quarantine = $derived(report?.quarantine ?? []);
   const stats = $derived(report?.stats ?? null);

@@ -1051,6 +1051,7 @@ def _poner_el_re_en_el_nombre(
     evidencias: dict[str, dict] | None = None,
     barrido: dict[int, tuple[tuple[str, str], ...]] | None = None,
     lectores_del_barrido: list[str] | None = None,
+    decisiones: list[dict] | None = None,
 ):
     """El RE de cada documento para su nombre, sólo con la evidencia de sus propias hojas.
 
@@ -1094,15 +1095,24 @@ def _poner_el_re_en_el_nombre(
         FUENTES_IMPRESAS,
         Estado,
         EvidenciaDeRE,
+        Hallazgo,
         candidatos_legibles,
         decidir_el_re,
         evidencias_del_barrido,
         familia,
         oficina_confirmada,
         re_impreso_que_casa,
+        res_en_la_lectura,
     )
     from ...domain.fechas import fecha_de_la_pagina
     from ...domain.nombre_oficial import es_re, lleva_re_en_el_nombre
+    from ...domain.resolutor_del_re import (
+        VERIFICADA,
+        ContextoDelRe,
+        auditar_la_decision,
+        nombre_de_la_oficina,
+        resolver_sin_certeza,
+    )
     from ...domain.sello import (
         OFICINAS_QUE_RADICAN,
         leer_sello,
@@ -1112,6 +1122,27 @@ def _poner_el_re_en_el_nombre(
     from ...domain.tramites import radicado_de
 
     impresos_de_la_caja = set().union(*(radicados_impresos(t or "") for t in textos.values())) if textos else set()
+    # Para el agente (2026-11-23): cada RE que algún lector leyó tal cual en la
+    # caja, con sus hojas -- la capa, los sellos y el barrido --, y los RE de
+    # los trámites de la caja.
+    hojas_de_cada_re: dict[str, set[int]] = {}
+    # Sin las copias aportadas como prueba ni el acuerdo (``sin_re``): no son
+    # de ningún trámite de la caja.
+    lecturas_de_la_caja = [(p, t) for p, t in (textos or {}).items() if p not in sin_re]
+    lecturas_de_la_caja += [
+        (p, leido) for p, s in sellos.items() if p not in sin_re for _, leido in (getattr(s, "lecturas", ()) or ())
+    ]
+    lecturas_de_la_caja += [
+        (p, leido) for p, de_la_hoja in (barrido or {}).items() if p not in sin_re for _, leido in de_la_hoja
+    ]
+    for pagina_leida, leido in lecturas_de_la_caja:
+        for valor in res_en_la_lectura(leido or ""):
+            hojas_de_cada_re.setdefault(valor, set()).add(pagina_leida)
+    leidos_en_la_caja = {valor: frozenset(hojas) for valor, hojas in hojas_de_cada_re.items()}
+    tramites_de_la_caja = {
+        pieza.upper() for g in grupos.groups for pieza in g.code.value.split()[1:] if es_re(pieza)
+    }
+    sin_decidir: set[int] = set()
     # Para el cruce de la letra a mano (2026-11-20): cada RE impreso de la caja,
     # con las hojas que lo imprimen y su fecha. Sin las copias aportadas como
     # prueba ni el acuerdo, que no son de ningún trámite de la caja.
@@ -1276,6 +1307,85 @@ def _poner_el_re_en_el_nombre(
                     valido=valido,
                     buscado=buscado,
                 )
+        if (
+            not hallazgo.se_cree
+            and decisiones is not None
+            and primera not in sellos_sin_re
+            and (hallazgo.candidatos or (del_tramite and con_re))
+        ):
+            # El agente decide lo que la evidencia no dejó creer, y su auditor lo
+            # revisa (el operador, 2026-11-23: «que se corrijan solos»).
+            sello_del_documento = next((sellos[p] for p in propias if p in sellos), None)
+            contexto = ContextoDelRe(
+                paginas=frozenset(grupo.page_numbers),
+                leidos=leidos_en_la_caja,
+                # Lo impreso en OTRAS hojas de la caja, sin las copias aportadas
+                # como prueba ni el acuerdo: la cita de su propia carta no cuenta.
+                impresos=frozenset(impresos_fuera_de(set(grupo.page_numbers))),
+                oficinas_que_radican=frozenset(validas),
+                # La oficina, de lo leído en el sello y, si no, del rótulo
+                # impreso al principio de un renglón; nunca de la prosa.
+                oficina_del_sello=next(
+                    (
+                        o
+                        for p in propias
+                        if p in sellos
+                        and (
+                            o := nombre_de_la_oficina("\n".join(t for _, t in sellos[p].lecturas or ()))
+                            or nombre_de_la_oficina(textos.get(p, "") or "")
+                        )
+                    ),
+                    None,
+                ),
+                del_tramite=del_tramite,
+                lleva_el_del_tramite=con_re and not es_reclamo,
+                anio=(
+                    sello_del_documento.fecha.year
+                    if sello_del_documento is not None and sello_del_documento.fecha
+                    else getattr(fecha_de_la_pagina(textos.get(primera, "") or ""), "year", None)
+                ),
+                de_otros_tramites=frozenset(r for r in tramites_de_la_caja if r != (del_tramite or "")),
+            )
+            antes = f"{RE_POR_CONFIRMAR}: {candidatos_legibles(hallazgo)}" if hallazgo.candidatos else "sin RE"
+            decision = resolver_sin_certeza(hallazgo.candidatos, contexto)
+            if decision is not None:
+                reparo = auditar_la_decision(decision, contexto)
+                decisiones.append(
+                    {
+                        "page": primera,
+                        "paginas": list(grupo.page_numbers),
+                        "parametro": "re",
+                        "antes": antes,
+                        "valor": None if reparo else decision.valor,
+                        "propuesto": decision.valor,
+                        "regla": decision.regla,
+                        "confianza": decision.confianza,
+                        "por_que": decision.por_que,
+                        "auditor": f"no la sostiene: {reparo}" if reparo else VERIFICADA,
+                    }
+                )
+                if reparo is None:
+                    hallazgo = Hallazgo(
+                        parametro="re",
+                        estado=Estado.ENCONTRADO,
+                        valor=decision.valor,
+                        pagina=primera,
+                        metodo=f"decidido por el agente: {decision.regla}",
+                        lectores=("agente",),
+                        confianza=decision.confianza,
+                        candidatos=tuple(c for c in hallazgo.candidatos if c.valor != decision.valor),
+                        motivo=decision.por_que,
+                    )
+                else:
+                    # Revertida: el nombre va sin RE, y no queda nada por confirmar.
+                    hallazgo = Hallazgo(
+                        parametro="re",
+                        estado=Estado.NO_ENCONTRADO,
+                        candidatos=hallazgo.candidatos,
+                        buscado=hallazgo.buscado,
+                        motivo=f"el agente propuso {decision.valor}; el auditor no la sostiene: {reparo}",
+                    )
+                    sin_decidir.add(primera)
         if evidencias is not None:
             evidencias[str(primera)] = hallazgo.as_dict()
         if hallazgo.se_cree:
@@ -1292,6 +1402,8 @@ def _poner_el_re_en_el_nombre(
             continue
         if primera in sellos_sin_re:
             hallados[str(primera)] = "sin RE: su sello trae la fecha y el radicado, y ningún RE"
+        elif primera in sin_decidir:
+            hallados[str(primera)] = f"sin RE: {hallazgo.motivo}"
         elif hallazgo.estado is Estado.REQUIERE_VALIDACION:
             hallados[str(primera)] = f"sin RE en el nombre, por confirmar: {candidatos_legibles(hallazgo)}"
             if rechazados is not None:
@@ -3568,6 +3680,8 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     re_rechazados: list[dict] = []
     #: El hallazgo del RE de cada documento, con su evidencia (2026-11-18).
     evidencia_del_re: dict[str, dict] = {}
+    #: Lo que el agente decidió por su cuenta, con el veredicto de su auditor (2026-11-23).
+    decisiones_del_agente: list[dict] = []
     # El sello al pie de una copia aportada como prueba no es del documento que
     # la trae: su RE no se pide (7975593, UPD3126960 p43).
     re_al_pie_que_importa = [p for p in re_al_pie_sin_validar if p not in cartas.copias and p not in de_prueba]
@@ -3582,6 +3696,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         def nombrar(barrido=None, lectores_del_barrido=None):
             evidencia_del_re.clear()
             re_rechazados.clear()
+            decisiones_del_agente.clear()
             return _poner_el_re_en_el_nombre(
                 grupos_por_nombrar,
                 anexos_por_nombrar,
@@ -3596,6 +3711,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 sellos_sin_re=sellos_sin_re,
                 barrido=barrido,
                 lectores_del_barrido=lectores_del_barrido,
+                decisiones=decisiones_del_agente,
             )
 
         grupos, anexos, re_en_el_nombre = _poner_el_re_en_el_nombre(
@@ -3621,6 +3737,8 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             sin_re=set(cartas.copias) | set(de_prueba) | set(del_acuerdo) | set(foliacion.continua),
             abren=set(sellos_que_abren),
             sellos_sin_re=sellos_sin_re,
+            # Sin el agente: lo que no se cree tiene que quedar sin RE para que
+            # el barrido lo relea. El agente decide en la última pasada.
         )
         # F6c. El barrido de la hoja (el operador, 2026-11-23): el documento que
         # debía llevar RE y salió sin él se relee entero -- la primera hoja, la
@@ -3639,6 +3757,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             barridas, lectores_del_barrido = _barrer_las_hojas(
                 tmp_path, hojas[:HOJAS_DEL_BARRIDO_POR_CAJA], textos, taller
             )
+            # La última pasada, con lo barrido y con el agente.
             grupos, anexos, re_en_el_nombre = nombrar(barridas, lectores_del_barrido)
             from ...domain.nombre_oficial import es_re as _es_re_barrido
 
@@ -3658,6 +3777,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 for primera in por_barrer
                 if primera not in con_re_ahora and primera not in ya_en_revision and primera not in sellos_sin_re
             ]
+        else:
+            # Sin nada que barrer, el agente decide en la única pasada que queda.
+            grupos, anexos, re_en_el_nombre = nombrar()
         if taller.con_ia():
             from ...domain.nombre_oficial import es_re as _es_re
 
@@ -4031,6 +4153,38 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     from .fechas_aseguradas import pasar_al_informe
 
     pasar_al_informe(report, fechas_revisadas)
+    # El cierre de la Revisión (el operador, 2026-11-23: «que se corrijan solos…
+    # el bot haga absolutamente todo»): cada aviso lleva lo que hizo el agente,
+    # y lo que decidió del RE va aparte, con el veredicto de su auditor.
+    from ...domain.resolutor_del_re import cerrar_la_revision
+    from ...domain.sello import radicados_impresos as _impresos
+
+    report["review_queue"] = cerrar_la_revision(
+        report.get("review_queue") or [],
+        decisiones_del_agente,
+        impresos=frozenset().union(*(_impresos(t or "") for t in textos.values())) if textos else frozenset(),
+    )
+    report["decisiones_del_agente"] = list(decisiones_del_agente)
+    # Y el detalle del revisor de cortes, alineado con lo que el agente cerró:
+    # su panel en la pantalla dejaba «En revisión» lo que ya estaba resuelto.
+    revision_de_cortes = report.get("revision_de_cortes")
+    if isinstance(revision_de_cortes, dict) and revision_de_cortes.get("en_revision"):
+        cerradas = {
+            aviso["page"]: aviso["resuelto"]
+            for aviso in report["review_queue"]
+            if str(aviso.get("reason") or "").startswith("revisor de cortes:") and aviso.get("resuelto")
+        }
+        hojas = [
+            {**hoja, "resuelto": cerradas.get(hoja.get("page"))} if isinstance(hoja, dict) else hoja
+            for hoja in revision_de_cortes["en_revision"]
+        ]
+        if all(isinstance(hoja, dict) and hoja.get("resuelto") for hoja in hojas):
+            revision_de_cortes["cerradas_por_el_agente"] = hojas
+            revision_de_cortes["en_revision"] = []
+            if revision_de_cortes.get("estado") == "en revisión":
+                revision_de_cortes["estado"] = "validado"
+        else:
+            revision_de_cortes["en_revision"] = hojas
     # 4. El Índice Electrónico del cliente, junto a los PDF de la caja y sin
     #    que nadie lo pida. Es el inventario de toda caja de correspondencia y
     #    ocupa el lugar de la planilla de las otras rutas: el archivo recibe un

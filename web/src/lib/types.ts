@@ -34,6 +34,8 @@ export interface ReviewItem {
   reason: string;
   /** Los candidatos de un RE por confirmar (2026-11-18), con su porqué. */
   candidatos?: CandidatoDelRe[];
+  /** Lo que hizo el agente con el aviso (2026-11-23): ya no espera a nadie. */
+  resuelto?: { accion: string; conclusion: string };
 }
 
 /** Un RE que la máquina propone y no pone: lo confirma el operador. */

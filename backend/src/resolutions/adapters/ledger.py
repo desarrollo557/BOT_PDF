@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..application.inventory import rows_of
+from ..domain.resolutor_del_re import avisos_pendientes
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +211,7 @@ class InventoryLedger(InventoryReads):
         # shows a card per document and would otherwise have blanks where the
         # size and the review count should be.
         source_pages = int(inventory.get("source_pages") or report.get("page_count") or 0)
-        review = len(report.get("review_queue") or [])
+        review = len(avisos_pendientes(report.get("review_queue")))
         nic = report.get("nic") or None
         origen = _origen_de(report)
         lines = [
