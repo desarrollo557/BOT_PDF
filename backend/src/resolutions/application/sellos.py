@@ -648,9 +648,24 @@ _SENALES_DEL_SELLO = (
     re.compile(r"RADICACI|N\W{0,3}D[EF]\s+F[O0]LI", re.IGNORECASE),
 )
 SENALES_PARA_CREER = 2
-#: La hoja de firma: la del escrito que la ventanilla sella.
+#: La hoja de firma: la del escrito que la ventanilla sella. Y la cédula del
+#: que firma aunque la capa rompa el «C.C.» -- «<;.C. N° 13.706.657» -- o con
+#: su lugar de expedición, «13.706.657 de Bolívar»: el derecho de petición de
+#: 7741429 (UPD2457979, 2026-11-23) no se miraba al pie y su sello, con su RE y
+#: su fecha, nunca se leía. No la cifra de un valor: «$1.234.567 de la factura».
 _FIRMA = re.compile(
-    r"\bC\W{0,2}C\W{0,3}\s*(?:N|No|N°|Nº|N®)|ATENTAMENTE|CORDIALMENTE|EN\s+CONSTANCIA\s+FIRM|\bFIRMA\b",
+    r"\bC\W{0,2}C\W{0,3}\s*(?:N|No|N°|Nº|N®)|ATENTAMENTE|CORDIALMENTE|EN\s+CONSTANCIA\s+FIRM|\bFIRMA\b"
+    r"|\bC\W{0,3}\s*N[°ºo®]\W{0,2}\s*\d{1,3}[.,]\d{3}"
+    r"|(?<!\$)(?<!\$\s)\b\d{1,3}[.,]\d{3}[.,]\d{3}\s+de\s+[A-ZÁÉÍÓÚ]",
+    re.IGNORECASE,
+)
+#: Los campos del sello de tinta que la capa deja leer aunque rotos: «No DE
+#: FOLIOS», «…ACEPTACÓN», «FECHA uE RECeiOO» (7741429). La hoja que los trae
+#: se mira al pie aunque no parezca de firma: el documento con sello toma de él
+#: su RE y su fecha (el operador, 2026-11-23: «siempre y cuando un documento
+#: tenga sello, la fecha será tomada del sello, como primera opción»).
+_CAMPOS_DEL_SELLO_EN_LA_CAPA = re.compile(
+    r"\bN[O0o°º]\W{0,3}\s*D[EF]\s+F[O0]L[I1l]|ACEPTAC|FECHA\s+\S{1,3}\s+REC[EI]",
     re.IGNORECASE,
 )
 
@@ -692,6 +707,11 @@ def es_hoja_de_firma(texto: str) -> bool:
     return _FIRMA.search(texto or "") is not None
 
 
+def se_mira_al_pie(texto: str) -> bool:
+    """Si vale la pena leer realzada la zona de la firma: la hoja de firma, o la que deja ver un sello."""
+    return es_hoja_de_firma(texto) or _CAMPOS_DEL_SELLO_EN_LA_CAPA.search(texto or "") is not None
+
+
 def sellos_al_pie(
     source,
     textos: Mapping[int, str],
@@ -720,9 +740,10 @@ def sellos_al_pie(
     cualquier área de la página… agarra el RE para colocarlo en el nombre, así
     sea manuscrito o digital».
 
-    Sólo en las hojas de firma que no traen sello (``ya``), la zona de la firma
-    con la tinta realzada (``lector_realzado``): dos de sus señales y el sello
-    está. Su RE y su fecha, a mano, sólo los lee la IA (``de_pago``, con «OCR +
+    Sólo en las hojas que no traen sello (``ya``) y que son de firma o dejan
+    ver en la capa los campos del sello (``se_mira_al_pie``, 2026-11-23), la
+    zona de la firma con la tinta realzada (``lector_realzado``): dos de sus
+    señales y el sello está. Su RE y su fecha, a mano, sólo los lee la IA (``de_pago``, con «OCR +
     IA»), del sello recortado alrededor de esas señales -- la zona entera la IA
     la toma por una imagen y no la transcribe --. Lo leído va tal cual: el
     agente lo valida al ponerlo en el nombre (``domain.sello.validar_el_re_a_mano``).
@@ -734,7 +755,7 @@ def sellos_al_pie(
     control = control or NullRunControl()
     hallados: dict[int, Sello] = {}
     for pagina, texto in sorted(textos.items()):
-        if pagina in ya or not es_hoja_de_firma(texto or ""):
+        if pagina in ya or not se_mira_al_pie(texto or ""):
             continue
         control.check()
         try:
@@ -895,6 +916,8 @@ def releer_la_zona_del_sello(
     ``domain.evidencia``: una lectura válida que ningún otro lector contradiga
     se cree; dos RE válidos distintos van a Revisión. Devuelve sólo los sellos
     releídos y, si sus lecturas dejan un único RE válido, ése por su radicado.
+    Y el sello que llegó sin fecha toma la que traiga la relectura derecha
+    (``fecha_del_sello_de_tinta``, 2026-11-23): la fecha del sello manda.
     Sin el OCR de pago (``Solo OCR``), nada.
     """
     if de_pago is None:
@@ -958,6 +981,17 @@ def releer_la_zona_del_sello(
                 continue
             sello = sellos[pagina]
             con_lo_nuevo = replace(sello, lecturas=(*sello.lecturas, *nuevas))
+            if sello.fecha is None:
+                # Y su fecha, si la primera lectura no la dio: el documento con
+                # sello toma del sello su fecha, como primera opción (el
+                # operador, 2026-11-23, ante 7741429). Nunca de la girada, que
+                # puede leer la prosa de lado.
+                fecha = next(
+                    (f for lector, texto in nuevas if lector != LECTOR_GIRADO and (f := fecha_del_sello_de_tinta(texto))),
+                    None,
+                )
+                if fecha is not None:
+                    con_lo_nuevo = replace(con_lo_nuevo, fecha=fecha)
             creido = re_que_se_cree(con_lo_nuevo, oficinas)
             if creido is not None:
                 con_lo_nuevo = replace(con_lo_nuevo, radicado=creido, correccion=None)

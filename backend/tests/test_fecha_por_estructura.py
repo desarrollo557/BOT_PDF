@@ -405,6 +405,16 @@ class TestElSelloManda:
         )
         assert (r.fecha, r.fuente) == (date(2021, 4, 12), "sello de radicación")
 
+    def test_el_derecho_de_peticion_con_sello_lleva_la_fecha_del_sello(self) -> None:
+        # 7741429 (2026-11-23), con datos inventados: la carta del 25 de mayo,
+        # radicada el 3 de junio. El operador: «siempre y cuando un documento
+        # tenga sello, la fecha será tomada del sello, como primera opción».
+        carta = "Mompox, Bolívar. 25 de mayo del 2021.\nSeñores AFINIA\nRef. DERECHO DE PETICION"
+        r = fecha_por_estructura([1], _paginas(carta), sellos={1: date(2021, 6, 3)}, hoy=HOY)
+        assert (r.fecha, r.fuente) == (date(2021, 6, 3), "sello de radicación")
+        # Sin sello, la de la carta: lo normal.
+        assert fecha_por_estructura([1], _paginas(carta), hoy=HOY).fecha == date(2021, 5, 25)
+
     def test_el_sello_de_tinta_que_la_capa_deja_leer(self) -> None:
         escrito = "Señores CARIBEMAR REF: recurso contra la factura del 05/10/2021 RECIBIDO NO IMPLICA ACEPTACIÓN FECHA DE RECIBIDO: 21-02-2022"
         assert fecha_por_estructura([1], _paginas(escrito), hoy=HOY).fecha == date(

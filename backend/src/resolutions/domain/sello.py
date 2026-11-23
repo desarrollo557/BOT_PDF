@@ -715,9 +715,14 @@ def fecha_del_sello_de_tinta(texto: str, *, hoy: date | None = None) -> date | N
     manda (el operador, 2026-11-10). La más cercana al rótulo «FECHA DE
     RECIBIDO»; sin rótulo legible, la única fecha del recorte -- si hay dos,
     no se sabe cuál es --.
+
+    La IA transcribe el rótulo a su manera: «FECHA DE RECIBO: 03-06-2021», sin
+    el «RECIBIDO NO IMPLICA…». Ese rótulo basta como prueba de que lee el sello
+    (7741429, 2026-11-23): con sólo ``_TINTA`` el sello quedaba sin su fecha y
+    el documento con la de la carta.
     """
     plano = _plano(texto or "")
-    if not _TINTA.search(plano):
+    if not (_TINTA.search(plano) or _RECIBIDO.search(plano)):
         return None
     hoy = hoy or date.today()
 

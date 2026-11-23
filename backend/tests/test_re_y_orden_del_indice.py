@@ -497,6 +497,39 @@ class TestElSelloAlPie:
         )
         assert hallados[2].zona is not None
 
+    # 7741429 (2026-11-23), con datos inventados: el derecho de petición de una
+    # hoja cuya capa rompe el «C.C.» del que firma y deja los campos del sello
+    # a medias. No se miraba al pie, y su sello -- con su RE y su fecha -- no
+    # se leía: el documento salía con la fecha de la carta.
+    CAPA_ROTA = (
+        "Solicito una visita de parte de sus funcionarios.\nAnexo\n"
+        "rSSmpUCAACEPTACÓN Grupcep^j\nFECHA uE RECeiOO;\nNo DE FOLIOS:\n"
+        "^PEDRO PEREZ PAEZ^\n<;.C. N° 12.345.678 de Mompox\nCel: 300 000 00 00"
+    )
+
+    def test_la_cedula_rota_del_que_firma_es_hoja_de_firma(self):
+        from resolutions.application.sellos import es_hoja_de_firma
+
+        assert es_hoja_de_firma("<;.C. N° 12.345.678 de Mompox")
+        assert es_hoja_de_firma("Atte.\nPEDRO PEREZ\n12.345.678 de Mompox")
+        # La cifra de un valor no es la cédula de nadie.
+        assert not es_hoja_de_firma("me cobran $1.234.567 de la factura de abril")
+        assert not es_hoja_de_firma("hoja del cuerpo de la carta")
+
+    def test_la_hoja_que_deja_ver_los_campos_del_sello_se_mira_al_pie(self):
+        from resolutions.application.sellos import se_mira_al_pie, sellos_al_pie
+
+        campos = "Solicito la refacturación.\nFECHA uE RECeiOO;\nNo DE FOLIOS:"
+        assert se_mira_al_pie(campos) and se_mira_al_pie(self.CAPA_ROTA)
+        assert not se_mira_al_pie("hoja del cuerpo de la carta")
+        pago = self._Pago("OFICINA SANTA ROSA DEL SUR\nFECHA DE RECIBO: 03-06-2021\nRE2311202100160")
+        hallados = sellos_al_pie(
+            self._Fuente(), {1: self.CAPA_ROTA, 2: campos, 3: "hoja del cuerpo de la carta"}, set(),
+            lector_realzado=self._Realzado(self.SELLO), de_pago=pago,
+        )
+        assert list(hallados) == [1, 2] and pago.leidas == 2
+        assert (hallados[1].radicado, hallados[1].fecha) == ("RE2311202100160", date(2021, 6, 3))
+
 
 class TestLaZonaDelSello:
     """4100974, UPD2985240 pág. 2 (2026-11-18): el RE a mano fuera del recuadro, releído en toda la zona del sello.
@@ -610,6 +643,35 @@ class TestLaZonaDelSello:
             vision=lambda imagen: "RE: RE2320202301449",
         )
         assert releidos[2].radicado == "RE2320202301449" and releidos[2].lecturas[-1][0] == "visión"
+
+    def test_el_sello_sin_fecha_toma_la_de_la_relectura(self):
+        """2026-11-23: el documento con sello toma del sello su fecha; si la primera lectura no la dio, la relectura."""
+        from resolutions.application.sellos import releer_la_zona_del_sello
+
+        sin_fecha = Sello("tinta", None, None, None, lecturas=self.PRIMERAS, zona=self.ZONA)
+        releidos = releer_la_zona_del_sello(
+            self._Fuente(), {2: sin_fecha},
+            de_pago=self._Lector("RECIBIDO NO IMPLICA ACEPTACION\nFECHA DE RECIBIDO 13-02-2023\nRE2320202301449"),
+            vision=lambda imagen: "RE: RE2320202301449",
+        )
+        assert (releidos[2].radicado, releidos[2].fecha) == ("RE2320202301449", date(2023, 2, 13))
+        # La que ya traía la suya la conserva.
+        con_fecha = self._sello()
+        releidos = releer_la_zona_del_sello(
+            self._Fuente(), {2: con_fecha},
+            de_pago=self._Lector("RECIBIDO NO IMPLICA ACEPTACION\nFECHA DE RECIBIDO 20-02-2023\nRE2320202301449"),
+        )
+        assert releidos[2].fecha == date(2023, 2, 13)
+
+    def test_la_girada_no_le_pone_fecha_al_sello(self):
+        from resolutions.application.sellos import releer_la_zona_del_sello
+
+        sin_fecha = Sello("tinta", None, None, None, lecturas=self.PRIMERAS, zona=self.ZONA)
+        releidos = releer_la_zona_del_sello(
+            self._Fuente(), {2: sin_fecha}, de_pago=self._Lector("ilegible"),
+            vision_girada=lambda imagen: "RECIBIDO NO IMPLICA ACEPTACION FECHA DE RECIBIDO 13-02-2023",
+        )
+        assert releidos[2].fecha is None
 
     def test_no_relee_el_que_ya_se_cree_ni_sin_zona_ni_sin_ia(self):
         from resolutions.application.sellos import releer_la_zona_del_sello

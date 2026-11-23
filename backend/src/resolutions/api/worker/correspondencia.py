@@ -174,9 +174,10 @@ def hojas_del_barrido(grupos, *, sellos: dict, escritos: set[int], sin_re: set[i
     Lo debía llevar si lo lleva por su tipo (``CON_RE_EN_EL_NOMBRE``), si es un
     escrito del usuario -- se radica siempre con su sello -- o si alguna hoja
     suya trae un sello. Se barren la primera, las del sello y las de firma
-    (donde la ventanilla estampa el sello al pie), hasta tres.
+    o que dejan ver un sello en la capa (donde la ventanilla estampa el sello
+    al pie, ``se_mira_al_pie``), hasta tres.
     """
-    from ...application.sellos import es_hoja_de_firma
+    from ...application.sellos import se_mira_al_pie
     from ...domain.nombre_oficial import es_re, le_falta_su_re
 
     salida: dict[int, list[int]] = {}
@@ -193,7 +194,7 @@ def hojas_del_barrido(grupos, *, sellos: dict, escritos: set[int], sin_re: set[i
         por_su_tipo = le_falta_su_re(grupo.kind, [textos.get(p) or "" for p in grupo.page_numbers])
         if not (por_su_tipo or primera in escritos or any(p in sellos for p in propias)):
             continue
-        hojas = [primera, *(p for p in propias if p in sellos), *(p for p in propias if es_hoja_de_firma(textos.get(p) or ""))]
+        hojas = [primera, *(p for p in propias if p in sellos), *(p for p in propias if se_mira_al_pie(textos.get(p) or ""))]
         salida[primera] = list(dict.fromkeys(hojas))[:HOJAS_DEL_BARRIDO_POR_DOCUMENTO]
     return salida
 
