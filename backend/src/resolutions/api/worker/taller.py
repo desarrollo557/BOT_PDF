@@ -514,6 +514,32 @@ class Taller:
             antes_de_pedir=self.control.check,
         )
 
+    def buscador_de_re(self):
+        """Quien busca con visión cada RE de una hoja entera, para el documento que salió sin RE, si se pidió la IA.
+
+        El barrido de la hoja (el operador, 2026-11-23: «cuando no exista el
+        RE, que de verdad el bot se asegure muy bien»). Lo que dice es un
+        lector más: se cree con otro lector o casado con un impreso de la caja.
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_resumen import MistralResumenConfig, MistralResumidor
+        from ...domain.sello import INSTRUCCIONES_PARA_BUSCAR_EL_RE
+
+        return MistralResumidor(
+            api_key=llave,
+            config=MistralResumenConfig(model="mistral-medium-latest", max_tokens=320, temperatura=0.0),
+            consumo=self.consumo,
+            turnos=self.turnos_de_ia,
+            instrucciones=INSTRUCCIONES_PARA_BUSCAR_EL_RE,
+            encabezado="Lo que el OCR leyó de la hoja",
+            antes_de_pedir=self.control.check,
+        )
+
     def lector_de_fechas_a_la_vista(self):
         """Quien copia con visión las fechas de la hoja principal de un documento sin fecha, si se pidió la IA.
 

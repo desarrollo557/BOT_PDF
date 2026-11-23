@@ -399,6 +399,94 @@ def re_impreso_que_casa(
     return Cruce(impreso, porque, se_cree=True)
 
 
+# -- el barrido de la hoja (2026-11-23) ------------------------------------------
+#
+# El operador, ante 1000186 (el recurso con el RE a mano en la casilla de los
+# folios del sello al pie): «cuando no se encuentre el RE, que se busque en
+# toda la página las letras RE con números seguido»; «cuando no exista el RE,
+# que de verdad el bot se asegure muy bien». Lo que se halla así se cree sólo
+# si lo leen igual dos lectores o si es el RE que la caja trae impreso en otra
+# hoja; si no, es un candidato. Nunca el RE que la hoja sólo cita.
+
+BARRIDO = "barrido de la hoja"
+#: El del reclamo: el RE que su texto trae es el de otra reclamación que cita
+#: (2026-11-18), así que lo hallado sólo se propone.
+BARRIDO_SOLO_CANDIDATO = "barrido de la hoja, sólo candidato"
+FUENTES_DEL_BARRIDO = frozenset({BARRIDO, BARRIDO_SOLO_CANDIDATO})
+#: El renglón que cita un RE en vez de traer el suyo: el asunto, la referencia,
+#: «mediante…», «Consecutivo No.» de la decisión que se recurre.
+_RENGLON_QUE_CITA = re.compile(
+    r"\b(?:ASUNTO|REF|REFERENCIA|MEDIANTE|CITE|CITA|CITAD[OA]S?|CONSECUTIVO|RESPUESTA|RECURSO|RECLAMO"
+    r"|RECLAMACION|NOTIFICAD[OA]|DECISION|RESOLUCION|ANTERIOR)\b"
+)
+
+
+def _plano_del_renglon(renglon: str) -> str:
+    import unicodedata
+
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", renglon.upper()) if not unicodedata.combining(c)
+    )
+
+
+def lecturas_sin_citas(lecturas: Iterable[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
+    """Cada lectura sin los renglones que citan un RE ajeno: lo que queda puede ser el RE propio de la hoja."""
+    limpias = []
+    for lector, texto in lecturas:
+        renglones = [r for r in (texto or "").splitlines() if not _RENGLON_QUE_CITA.search(_plano_del_renglon(r))]
+        if limpio := "\n".join(renglones).strip():
+            limpias.append((lector, limpio))
+    return tuple(limpias)
+
+
+def evidencias_del_barrido(
+    pagina: int,
+    lecturas: Iterable[tuple[str, str]],
+    impresos: Mapping[str, Sequence[tuple[int, date | None]]],
+    *,
+    fecha: date | None = None,
+    valido: Callable[[str], str | None] | None = None,
+    solo_candidato: bool = False,
+) -> list[EvidenciaDeRE]:
+    """Lo que el barrido de una hoja entera ofrece como su RE, para ``decidir_el_re``.
+
+    ``lecturas``: cada lector sobre la hoja entera (la capa, Tesseract con la
+    tinta realzada, el OCR de pago, la visión). ``impresos``: los RE que la
+    caja trae impresos en otras hojas, con su hoja y su fecha. Lo leído tal
+    cual en un renglón que no cita se cree con dos lectores; con uno, si es un
+    impreso de la caja; la letra a mano mal leída, si casa sin duda con uno
+    (``re_impreso_que_casa``).
+    """
+    fuente = BARRIDO_SOLO_CANDIDATO if solo_candidato else BARRIDO
+    limpias = lecturas_sin_citas(lecturas)
+    if not limpias:
+        return []
+    evidencias: list[EvidenciaDeRE] = []
+    if not solo_candidato:
+        for valor in dict.fromkeys(v for _, texto in limpias for v in res_en_la_lectura(texto)):
+            if valor in impresos:
+                donde = ", ".join(f"pág. {p}" for p, _ in impresos[valor])
+                evidencias.append(
+                    EvidenciaDeRE(
+                        pagina, fuente, valor, limpias, cruce=f"leído {valor} en la hoja; es el RE impreso en la {donde}"
+                    )
+                )
+        cruce = re_impreso_que_casa(limpias, impresos, fecha_del_sello=fecha, valido=valido)
+        if cruce is not None and not any(e.propuesto == cruce.valor for e in evidencias):
+            evidencias.append(
+                EvidenciaDeRE(
+                    pagina,
+                    fuente,
+                    cruce.valor,
+                    limpias,
+                    correccion=None if cruce.se_cree else cruce.porque,
+                    cruce=cruce.porque if cruce.se_cree else None,
+                )
+            )
+    evidencias.append(EvidenciaDeRE(pagina, fuente, None, limpias))
+    return evidencias
+
+
 @dataclass(frozen=True, slots=True)
 class _Visto:
     valor: str
@@ -491,6 +579,23 @@ def decidir_el_re(
                 proponer(propuesto, str(por_que_no[propuesto]), evidencia.pagina)
                 if corregido := _SERIA.search(str(por_que_no[propuesto])):
                     proponer(corregido.group(1), f"leído {propuesto}: {por_que_no[propuesto]}", evidencia.pagina)
+                continue
+            if evidencia.fuente in FUENTES_DEL_BARRIDO and (
+                evidencia.fuente == BARRIDO_SOLO_CANDIDATO
+                or (len(lectores) < LECTORES_PARA_LA_LETRA_A_MANO and not evidencia.cruce)
+            ):
+                # Lo hallado barriendo la hoja entera se cree con dos lectores o
+                # casado con un impreso de la caja; si no, se propone (2026-11-23).
+                proponer(
+                    propuesto,
+                    "hallado en el barrido de la hoja"
+                    + (
+                        ": el reclamo cita RE de otras reclamaciones"
+                        if evidencia.fuente == BARRIDO_SOLO_CANDIDATO
+                        else f", lo lee un solo lector ({', '.join(lectores)})"
+                    ),
+                    evidencia.pagina,
+                )
                 continue
             if not impresa and len(lectores) < LECTORES_PARA_LA_LETRA_A_MANO:
                 # La letra a mano con un solo lector se cree si ningún otro lector

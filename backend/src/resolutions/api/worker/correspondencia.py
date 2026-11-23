@@ -150,6 +150,111 @@ def documentos_sin_su_re(grupos, ya_avisadas, textos: dict | None = None) -> lis
     return avisos
 
 
+#: El barrido de la hoja (el operador, 2026-11-23: «cuando no se encuentre el
+#: RE, que se busque en toda la página las letras RE con números seguido»;
+#: «que de verdad el bot se asegure muy bien»). Cuántas hojas por documento --
+#: la primera, las del sello y las de firma -- y por caja, como mucho: cada
+#: una es una lectura local y, con la IA, una página de OCR de pago y una
+#: consulta de visión, que se guardan en la caché.
+HOJAS_DEL_BARRIDO_POR_DOCUMENTO = 3
+HOJAS_DEL_BARRIDO_POR_CAJA = 40
+DPI_DEL_BARRIDO = 300
+#: Cuántas hojas se barren a la vez.
+HOJAS_A_LA_VEZ_EN_EL_BARRIDO = 4
+#: Por qué va a Revisión el documento que debía llevar RE y ni el barrido lo halló.
+RE_NO_HALLADO_EN_LA_HOJA = (
+    "{tipo} sin RE: se buscó en toda la hoja (sello, casillas, márgenes y texto; {lectores}) y no se "
+    "halló ninguno que se pueda creer; escríbalo a mano si el papel lo trae"
+)
+
+
+def hojas_del_barrido(grupos, *, sellos: dict, escritos: set[int], sin_re: set[int], textos: dict) -> dict[int, list[int]]:
+    """Por la primera hoja de cada documento que debía llevar RE y salió sin él, las hojas que se barren.
+
+    Lo debía llevar si lo lleva por su tipo (``CON_RE_EN_EL_NOMBRE``), si es un
+    escrito del usuario -- se radica siempre con su sello -- o si alguna hoja
+    suya trae un sello. Se barren la primera, las del sello y las de firma
+    (donde la ventanilla estampa el sello al pie), hasta tres.
+    """
+    from ...application.sellos import es_hoja_de_firma
+    from ...domain.nombre_oficial import es_re, le_falta_su_re
+
+    salida: dict[int, list[int]] = {}
+    for grupo in grupos.groups:
+        numero = grupo.code.value.partition(" ")[0]
+        if not grupo.page_numbers or not numero.isdigit() or any(es_re(p) for p in grupo.code.value.split()):
+            continue
+        propias = [p for p in grupo.page_numbers if p not in sin_re]
+        if not propias or grupo.page_numbers[0] in sin_re:
+            continue
+        primera = grupo.page_numbers[0]
+        # Por su tipo, con la regla de siempre: la notificación que no cita
+        # ningún radicado no lo lleva (``le_falta_su_re``).
+        por_su_tipo = le_falta_su_re(grupo.kind, [textos.get(p) or "" for p in grupo.page_numbers])
+        if not (por_su_tipo or primera in escritos or any(p in sellos for p in propias)):
+            continue
+        hojas = [primera, *(p for p in propias if p in sellos), *(p for p in propias if es_hoja_de_firma(textos.get(p) or ""))]
+        salida[primera] = list(dict.fromkeys(hojas))[:HOJAS_DEL_BARRIDO_POR_DOCUMENTO]
+    return salida
+
+
+def _barrer_las_hojas(ruta_pdf, paginas: list[int], textos: dict, taller) -> tuple[dict[int, tuple], list[str]]:
+    """Cada hoja leída entera por todos los lectores que hay, para el barrido del RE, y quiénes leyeron.
+
+    La capa; Tesseract con la tinta realzada y sin suponer renglones, que deja
+    ver el sello tenue y la letra suelta; y con «OCR + IA», el OCR de pago y la
+    visión que busca cada «RE» de la hoja. Una hoja que no se deja leer no
+    para la caja.
+    """
+    from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...adapters.tesseract_ocr import TesseractConfig, TesseractOcr
+
+    lector_local = TesseractOcr(
+        TesseractConfig(min_word_confidence=0, psm=11, umbral=UMBRAL_DE_LA_TINTA_CLARA, timeout_seconds=SEGUNDOS_PARA_UNA_HOJA)
+    )
+    de_pago = taller.lector_de_pago()
+    buscador = taller.buscador_de_re()
+    lectores = ["la capa", "Tesseract con la tinta realzada"]
+    lectores += [nombre for nombre, hay in (("el OCR de pago", de_pago), ("la visión", buscador)) if hay is not None]
+    salida: dict[int, tuple] = {}
+    # Cada hoja con su propia fuente: las hojas se leen a la vez (la lectura
+    # local y las consultas a la IA de hojas distintas no se esperan).
+    def barrer(pagina: int) -> tuple[int, tuple]:
+        taller.control.check()
+        fuente = PyMuPDFPageSource(ruta_pdf, taller.name)
+        try:
+            lecturas: list[tuple[str, str]] = [("capa", textos.get(pagina) or "")]
+            try:
+                lecturas.append(("tesseract", lector_local.read(fuente.render(pagina, None, DPI_DEL_BARRIDO)).text))
+            except Exception:  # noqa: BLE001 - sin la lectura local, las demás
+                logger.debug("el barrido local de la pág. %s falló", pagina, exc_info=True)
+            if de_pago is not None or buscador is not None:
+                try:
+                    imagen = fuente.render(pagina, None, DPI_DEL_BARRIDO, "jpeg")
+                except Exception:  # noqa: BLE001 - sin imagen, sin la IA
+                    imagen = None
+                if imagen is not None and de_pago is not None:
+                    try:
+                        lecturas.append(("ocr de pago", de_pago.read(imagen).text))
+                    except Exception:  # noqa: BLE001 - sin el OCR de pago, los demás
+                        logger.debug("el OCR de pago del barrido de la pág. %s falló", pagina, exc_info=True)
+                if imagen is not None and buscador is not None:
+                    try:
+                        lecturas.append(("visión", buscador.resumir(f"La hoja {pagina}: cada RE que trae.", imagen=imagen) or ""))
+                    except Exception:  # noqa: BLE001 - sin la visión, los demás
+                        logger.debug("la visión del barrido de la pág. %s falló", pagina, exc_info=True)
+            return pagina, tuple((lector, texto) for lector, texto in lecturas if (texto or "").strip())
+        finally:
+            fuente.close()
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=max(1, min(HOJAS_A_LA_VEZ_EN_EL_BARRIDO, len(paginas)))) as pool:
+        for pagina, lecturas in pool.map(barrer, paginas):
+            salida[pagina] = lecturas
+    return salida, lectores
+
+
 def _titulo_del_encabezado(fuente, pagina: int, lector, de_pago=None) -> str | None:
     """El título impreso de una hoja, leído en su franja de arriba.
 
@@ -944,8 +1049,15 @@ def _poner_el_re_en_el_nombre(
     sellos_sin_re: set[int] | frozenset[int] = frozenset(),
     releidas_del_pqr: dict[int, tuple[str, str]] | None = None,
     evidencias: dict[str, dict] | None = None,
+    barrido: dict[int, tuple[tuple[str, str], ...]] | None = None,
+    lectores_del_barrido: list[str] | None = None,
 ):
     """El RE de cada documento para su nombre, sólo con la evidencia de sus propias hojas.
+
+    ``barrido``: por hoja, cada lector sobre la hoja entera, para el documento
+    que salió sin RE (``hojas_del_barrido``, 2026-11-23). Lo hallado así va
+    detrás de lo demás y se cree sólo con dos lectores o casado con un impreso
+    de la caja (``domain.evidencia.evidencias_del_barrido``).
 
     Lo decidió el operador el 2026-11-18 («NUNCA INVENTAR INFORMACIÓN»), y lo
     decide ``domain.evidencia.decidir_el_re``:
@@ -978,11 +1090,13 @@ def _poner_el_re_en_el_nombre(
     from dataclasses import replace
 
     from ...domain.evidencia import (
+        BARRIDO,
         FUENTES_IMPRESAS,
         Estado,
         EvidenciaDeRE,
         candidatos_legibles,
         decidir_el_re,
+        evidencias_del_barrido,
         familia,
         oficina_confirmada,
         re_impreso_que_casa,
@@ -1101,6 +1215,21 @@ def _poner_el_re_en_el_nombre(
             f"sello y etiqueta de radicación{', PQR o RE citado' if con_re and not es_reclamo else ''}"
             f" en las hojas {', '.join(map(str, propias)) or 'ninguna propia'}"
         )
+        barridas = [p for p in propias if p in (barrido or {})]
+        for pagina in barridas:
+            evidencias_del_documento += evidencias_del_barrido(
+                pagina,
+                barrido[pagina],
+                impresos_fuera_de(set(grupo.page_numbers)),
+                fecha=fecha_de_la_pagina(textos.get(pagina, "") or ""),
+                valido=lambda valor, pagina=pagina: valido(valor, EvidenciaDeRE(pagina, BARRIDO, valor)),
+                solo_candidato=es_reclamo,
+            )
+        if barridas:
+            buscado += (
+                f"; y toda la hoja {', '.join(map(str, barridas))} barrida con "
+                f"{', '.join(lectores_del_barrido or ['sus lectores'])}"
+            )
         hallazgo = decidir_el_re(
             evidencias_del_documento,
             # El del trámite se propone sólo a quien lo lleva por su tipo, y no
@@ -3445,7 +3574,30 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     re_del_sello_sin_leer: list[int] = []
     re_del_sello_solo_ocr: list[int] = []
     sin_su_re: list[dict] = []
+    re_no_hallado: list[dict] = []
     if entregado_por is not Agrupacion.MES:
+        grupos_por_nombrar, anexos_por_nombrar = grupos, anexos
+        sin_re_del_nombre = set(cartas.copias) | set(de_prueba) | set(del_acuerdo) | set(foliacion.continua)
+
+        def nombrar(barrido=None, lectores_del_barrido=None):
+            evidencia_del_re.clear()
+            re_rechazados.clear()
+            return _poner_el_re_en_el_nombre(
+                grupos_por_nombrar,
+                anexos_por_nombrar,
+                textos=textos,
+                sellos={**al_pie, **sellos},
+                oficinas={s.radicado[2:6] for s in sellos.values() if s.clase == "impreso" and s.radicado},
+                releidas_del_pqr=releidas_del_pqr,
+                evidencias=evidencia_del_re,
+                rechazados=re_rechazados,
+                sin_re=sin_re_del_nombre,
+                abren=set(sellos_que_abren),
+                sellos_sin_re=sellos_sin_re,
+                barrido=barrido,
+                lectores_del_barrido=lectores_del_barrido,
+            )
+
         grupos, anexos, re_en_el_nombre = _poner_el_re_en_el_nombre(
             grupos,
             anexos,
@@ -3470,6 +3622,42 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             abren=set(sellos_que_abren),
             sellos_sin_re=sellos_sin_re,
         )
+        # F6c. El barrido de la hoja (el operador, 2026-11-23): el documento que
+        # debía llevar RE y salió sin él se relee entero -- la primera hoja, la
+        # del sello y la de firma -- con todos los lectores, y se nombra otra
+        # vez con lo hallado. Lo que ni así sale va a Revisión diciendo dónde
+        # se buscó.
+        escritos_del_usuario = set(cartas.de_tramite) - set(cartas.copias) - set(de_prueba)
+        por_barrer = hojas_del_barrido(
+            grupos, sellos={**al_pie, **sellos}, escritos=escritos_del_usuario, sin_re=sin_re_del_nombre, textos=textos
+        )
+        if por_barrer:
+            hojas = list(dict.fromkeys(p for paginas in por_barrer.values() for p in paginas))
+            if len(hojas) > HOJAS_DEL_BARRIDO_POR_CAJA:
+                logger.info("barrido del RE: %s hojas, se leen %s", len(hojas), HOJAS_DEL_BARRIDO_POR_CAJA)
+            _anunciar(payload, Stage.GROUPING, detail="buscando el RE en toda la hoja", done=0, total=len(por_barrer))
+            barridas, lectores_del_barrido = _barrer_las_hojas(
+                tmp_path, hojas[:HOJAS_DEL_BARRIDO_POR_CAJA], textos, taller
+            )
+            grupos, anexos, re_en_el_nombre = nombrar(barridas, lectores_del_barrido)
+            from ...domain.nombre_oficial import es_re as _es_re_barrido
+
+            con_re_ahora = {
+                g.page_numbers[0] for g in grupos.groups if any(_es_re_barrido(p) for p in g.code.value.split())
+            }
+            ya_en_revision = {rechazado["page"] for rechazado in re_rechazados}
+            re_no_hallado = [
+                {
+                    "page": primera,
+                    "reason": RE_NO_HALLADO_EN_LA_HOJA.format(
+                        tipo=next((g.kind for g in grupos.groups if g.page_numbers[0] == primera), None)
+                        or "El documento",
+                        lectores=", ".join(lectores_del_barrido),
+                    ),
+                }
+                for primera in por_barrer
+                if primera not in con_re_ahora and primera not in ya_en_revision and primera not in sellos_sin_re
+            ]
         if taller.con_ia():
             from ...domain.nombre_oficial import es_re as _es_re
 
@@ -3504,6 +3692,10 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             )
         # Y todo reclamo, constancia, contestación o notificación que salió sin
         # su RE, también con «Solo OCR» (el operador, 2026-11-18).
+        # El aviso del barrido, sólo donde no hay otro más preciso del RE: el
+        # sello a mano sin leer, «Solo OCR», el sello al pie sin validar.
+        ya_avisadas = {*re_del_sello_sin_leer, *re_del_sello_solo_ocr, *re_al_pie_que_importa}
+        re_no_hallado = [aviso for aviso in re_no_hallado if aviso["page"] not in ya_avisadas]
         sin_su_re = documentos_sin_su_re(
             grupos,
             {
@@ -3511,6 +3703,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 *re_del_sello_solo_ocr,
                 *re_al_pie_que_importa,
                 *(rechazado["page"] for rechazado in re_rechazados),
+                *(aviso["page"] for aviso in re_no_hallado),
             },
             textos,
         )
@@ -3627,6 +3820,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         + re_del_sello_sin_leer
         + [rechazado["page"] for rechazado in re_rechazados]
         + [aviso["page"] for aviso in sin_su_re]
+        + [aviso["page"] for aviso in re_no_hallado]
         + re_del_sello_solo_ocr
         + [aviso["page"] for aviso in folios_sin_cuadrar],
         estadisticas=estadisticas,
@@ -3706,6 +3900,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # Y el reclamo, la constancia, la contestación o la notificación que
         # salió sin su RE (2026-11-18).
         + sin_su_re
+        # Y el que debía llevar RE y ni el barrido de la hoja entera lo halló
+        # (2026-11-23).
+        + re_no_hallado
         # Y, con «Solo OCR», el documento con sello de tinta que salió sin RE.
         + [{"page": pagina, "reason": RE_DEL_SELLO_SOLO_OCR} for pagina in re_del_sello_solo_ocr]
         # Y el documento cuyas hojas no cuadran con los folios de su sello.

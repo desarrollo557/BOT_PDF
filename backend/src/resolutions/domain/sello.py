@@ -808,6 +808,20 @@ INSTRUCCIONES_PARA_TRANSCRIBIR_EL_SELLO = (
     "que no lo lleva escrito. Copia las cifras como las ves; lo que no se lea con certeza, escríbelo "
     "«ilegible». No inventes ni completes nada. Si no hay sello, contesta «sin sello»."
 )
+#: Lo que se le pide al modelo con visión en el barrido de una hoja entera
+#: cuyo documento salió sin RE (el operador, 2026-11-23: «que se busque en toda
+#: la página las letras RE con números seguido»). Un renglón por RE, con lo que
+#: dice su renglón: el que sólo cita otro trámite se descarta por él.
+INSTRUCCIONES_PARA_BUSCAR_EL_RE = (
+    "Busca en TODA la hoja cada número que empieza por las letras RE (un radicado: RE y unas trece "
+    "cifras), impreso o escrito a mano, en sellos, recuadros, casillas, márgenes, de lado o en el texto. "
+    "Por cada uno, una línea: «RE<las cifras tal como las ves> | <dónde: sello, margen, casilla o texto> | "
+    "<lo demás que dice ese renglón o esa casilla>». Copia las cifras como las ves, sin completar ni "
+    "corregir; la cifra que no se lea con certeza, escríbela «?». No le pongas «RE» delante a un número "
+    "que no lo lleva escrito. Si no hay ninguno, contesta «RE: no hay»."
+)
+
+
 def sello_sin_transcribir(leido: str) -> bool:
     """Si la lectura del OCR de pago de la cabecera no trae ningún sello reconocible: ni etiqueta, ni fecha ni folios de tinta.
 

@@ -601,7 +601,12 @@ DPI_DE_LA_FIRMA = 300
 #: «OFICINA…», el número de radicación y los folios. Con dos señales distintas,
 #: porque una carta también nombra una oficina o unos folios.
 _SENALES_DEL_SELLO = (
-    re.compile(r"ACE\W?[PCT]?\W?TACI", re.IGNORECASE),
+    # «ASEPTACION» también (1000186, UPD2437815 pág. 1, 2026-11-23).
+    re.compile(r"A[CS]E\W?[PCT]?\W?TACI", re.IGNORECASE),
+    # Los campos que sólo trae el sello de tinta de la oficina: «Dir. Notific»,
+    # «Funcionario Receptan», «CAPMAGANQUE» (1000186: con la tinta realzada sólo
+    # «IMPLICA» casaba de las señales de arriba, y el sello no se leía).
+    re.compile(r"DIR\W{0,3}\s*N[O0]TIFI|FUNCIONARI\w*\s+RECEP|\bCAP\W?MAGA[NÑ]", re.IGNORECASE),
     re.compile(r"\b[GCE]R?[UN]?PO\W?EP", re.IGNORECASE),
     re.compile(r"\b[O0]\W?F\W?I\W?C\W?I\W?N\W?A\b", re.IGNORECASE),
     re.compile(r"IM[PB]\W?LICA|RECIB\W?ID", re.IGNORECASE),
