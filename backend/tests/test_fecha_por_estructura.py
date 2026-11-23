@@ -14,6 +14,7 @@ from datetime import date
 
 from resolutions.domain.fecha_por_estructura import (
     fecha_de_la_hoja,
+    fecha_entre_lectores,
     fecha_por_estructura,
     hoja_principal,
     pieza_de,
@@ -394,6 +395,41 @@ class TestLaFechaVistaPorLaIa:
         assert fecha_de_lo_visto("DOCUMENTO: el __ de 01 del 2022") is None
         assert fecha_de_lo_visto("CASILLAS: 3 22") is None
         assert fecha_de_lo_visto("sin sello") is None
+
+
+class TestLaFechaEntreLectores:
+    """6833660 (2026-11-23): «Fecha: 19-02-2021» a mano; cada lector erró una cifra y salía la de la IA."""
+
+    #: Lo que leyeron de la hoja el OCR de pago y Tesseract.
+    LECTURAS = ("Lugar: Santa Rosa Fecha: 19-02-2027 REFERENCIA: DECLARACION", "Fecha: NA-OT7- 2021 REFERENCIA")
+    VISTA = date(2021, 7, 19)
+
+    def test_se_arma_con_lo_de_cada_lector_y_la_caja_desempata(self) -> None:
+        armada = fecha_entre_lectores(self.VISTA, self.LECTURAS, [date(2021, 2, 19)], hoy=HOY)
+        assert armada == date(2021, 2, 19)
+
+    def test_sin_la_caja_no_se_toca(self) -> None:
+        # Nada desempata entre el 19-07 de la IA y el 19-02 del OCR: queda la vista.
+        assert fecha_entre_lectores(self.VISTA, self.LECTURAS, [], hoy=HOY) is None
+        assert fecha_entre_lectores(self.VISTA, self.LECTURAS, [date(2021, 3, 4)], hoy=HOY) is None
+
+    def test_la_vista_que_trae_la_caja_o_que_nadie_contradice_se_queda(self) -> None:
+        assert fecha_entre_lectores(self.VISTA, self.LECTURAS, [self.VISTA, date(2021, 2, 19)], hoy=HOY) is None
+        assert fecha_entre_lectores(self.VISTA, ["Fecha: 19-07-2021"], [date(2021, 2, 19)], hoy=HOY) is None
+
+    def test_otra_fecha_de_la_hoja_no_es_la_misma_mal_leida(self) -> None:
+        # La factura citada, a más de dos cifras: no arma nada aunque la caja la traiga.
+        citada = ["según la factura del 05/11/2019, Fecha: ilegible"]
+        assert fecha_entre_lectores(self.VISTA, citada, [date(2019, 11, 5)], hoy=HOY) is None
+
+    def test_nunca_una_fecha_que_ningun_lector_leyo(self) -> None:
+        # La caja trae el 20-02-2021, pero el día 20 no lo leyó nadie en esta hoja.
+        assert fecha_entre_lectores(self.VISTA, self.LECTURAS, [date(2021, 2, 20)], hoy=HOY) is None
+
+    def test_si_la_caja_confirma_dos_armadas_no_se_elige(self) -> None:
+        lecturas = ["Fecha: 19-02-2027", "Fecha: 18-07-2021"]
+        caja = [date(2021, 2, 19), date(2021, 7, 18)]
+        assert fecha_entre_lectores(self.VISTA, lecturas, caja, hoy=HOY) is None
 
 
 class TestElSelloManda:

@@ -528,9 +528,12 @@ def _fechas_a_la_vista(piezas: list[dict], textos: dict, fuente, taller, releida
     queda entre lo releído de la hoja: es su evidencia y lo mira el revisor de
     fechas. Lo que no se lee se queda sin fecha (``fecha_de_lo_visto``).
     """
+    from datetime import date
+
     from ...domain.fecha_por_estructura import (
         PEDIDO_DE_LA_FECHA_A_LA_VISTA,
         fecha_de_lo_visto,
+        fecha_entre_lectores,
     )
     from ...domain.tramites import es_cedula
 
@@ -556,14 +559,34 @@ def _fechas_a_la_vista(piezas: list[dict], textos: dict, fuente, taller, releida
             continue
         # Lo que leyeron de la hoja los demás lectores: el año que la IA copió
         # tiene que estar ahí (4100877: copió un «09-02-23» que nadie más leyó).
-        leido = "\n".join([textos.get(principal, "") or "", *(releidas.get(principal) or [])])
+        de_los_demas = [textos.get(principal, "") or "", *(releidas.get(principal) or [])]
+        leido = "\n".join(de_los_demas)
         releidas.setdefault(principal, []).append(visto)
         hallada = fecha_de_lo_visto(visto, leido=leido)
         if hallada is None:
             continue
         fecha, campo = hallada
+        como = f"vista por la IA en la pág. {principal} ({campo})"
+        # Los demás lectores de la hoja la leyeron con otra cifra: la que se
+        # arma entre todos y trae otro documento de la caja (6833660,
+        # 2026-11-23: la IA leyó 19-07-2021, el OCR de pago 19-02-2027, y la
+        # declaración dice 19-02-2021, como la constancia de su trámite).
+        de_la_caja = [
+            date.fromisoformat(str(otra["fecha"])[:10])
+            for otra in piezas
+            if otra is not pieza and otra.get("fecha") and otra.get("fecha_pagina") != principal
+        ]
+        armada = fecha_entre_lectores(fecha, de_los_demas, de_la_caja)
+        if armada is not None:
+            como = (
+                f"armada con lo que leyó cada lector en la pág. {principal} -- la IA vio {fecha:%d-%m-%Y} y otro "
+                f"lector la leyó con otra cifra --, la que trae otro documento de la caja"
+            )
+            fecha = armada
+            # Queda entre lo leído de la hoja: es su evidencia para la auditoría.
+            releidas[principal].append(f"FECHA ARMADA ENTRE LECTORES: {armada:%d/%m/%Y}")
         pieza["fecha"] = fecha.isoformat()
-        pieza["fecha_por"] = f"vista por la IA en la pág. {principal} ({campo})"
+        pieza["fecha_por"] = como
         pieza["fecha_pagina"] = principal
         pieza["fecha_via"] = "visión"
         halladas.append({"pages": pieza["pages"], "fecha": pieza["fecha"], "como": pieza["fecha_por"]})

@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -1145,6 +1145,63 @@ def fecha_de_lo_visto(
     if leido is not None and not _anio_en_lo_leido(fecha.year, leido):
         return None
     return fecha, campo
+
+
+#: Una fecha en cifras tal como la dejó un lector, aunque sea imposible:
+#: «19-02-2027».
+_FECHA_CRUDA = re.compile(r"(?<![\d/.\-])(\d{1,2})\s?[-/.]\s?(\d{1,2})\s?[-/.]\s?((?:19|20)\d{2})(?![\d/\-])")
+#: Cuántas cifras puede errar un lector para que su fecha sea la misma, mal
+#: leída: el 2 del mes por un 7, y el 1 del año por un 7.
+CIFRAS_DE_UNA_MALA_LECTURA = 2
+
+
+def _cifras_distintas(una: tuple[int, int, int], otra: tuple[int, int, int]) -> int:
+    a, b = (f"{d:02d}{m:02d}{y:04d}" for d, m, y in (una, otra))
+    return sum(1 for x, y in zip(a, b, strict=True) if x != y)
+
+
+def fecha_entre_lectores(
+    vista: date, lecturas: Iterable[str], de_la_caja: Iterable[date], *, hoy: date | None = None
+) -> date | None:
+    """La fecha a mano que los lectores de la hoja no leyeron igual, armada entre ellos y confirmada por la caja.
+
+    6833660 (UPD2453183 pág. 7, 2026-11-23): la declaración dice a mano
+    «Fecha: 19-02-2021». La IA con visión leyó 19-07-2021 -- el 2 del mes por
+    un 7 --; el OCR de pago, 19-02-2027 -- el 1 del año por un 7, imposible --;
+    Tesseract, «NA-OT7- 2021». Cada uno erró una cifra, y salía la de la IA.
+
+    ``vista`` es la que copió la IA; ``lecturas``, lo que leyeron de la misma
+    hoja los demás lectores. La que lee otro lector a ``CIFRAS_DE_UNA_MALA_LECTURA``
+    cifras o menos es la misma fecha mal leída: con el día, el mes y el año de
+    cada una se arman las fechas posibles, y vale la única que además trae otro
+    documento de la caja (``de_la_caja``). Nunca se copia la fecha de otro
+    documento: cada parte la leyó un lector en esta hoja, y la caja sólo
+    desempata. ``None`` si los lectores no se contradicen, si la vista ya es de
+    la caja o si nada desempata.
+    """
+    hoy = hoy or date.today()
+    caja = set(de_la_caja)
+    if vista in caja:
+        return None
+    propia = (vista.day, vista.month, vista.year)
+    otras = {
+        leida
+        for texto in lecturas
+        for d, m, a in _FECHA_CRUDA.findall(texto or "")
+        if (leida := (int(d), int(m), int(a))) != propia and _cifras_distintas(leida, propia) <= CIFRAS_DE_UNA_MALA_LECTURA
+    }
+    posibles: set[date] = set()
+    for dia_leido, mes_leido, anio_leido in otras:
+        for dia in {vista.day, dia_leido}:
+            for mes in {vista.month, mes_leido}:
+                for anio in {vista.year, anio_leido}:
+                    try:
+                        armada = date(anio, mes, dia)
+                    except ValueError:
+                        continue
+                    if armada != vista and date(2000, 1, 1) <= armada <= hoy and armada in caja:
+                        posibles.add(armada)
+    return posibles.pop() if len(posibles) == 1 else None
 
 
 # -- las fechas de la caja contra sí mismas ----------------------------------------

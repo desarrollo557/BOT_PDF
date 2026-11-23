@@ -673,3 +673,38 @@ class TestLasFechasDeLaCajaContraSiMismas:
         assert fechas_dudosas([date(2022, 3, 1), date(2022, 3, 2), None]) == {}
         # Una contra una: las dos se releen.
         assert set(fechas_dudosas([date(2022, 3, 1), date(2023, 3, 1)])) == {0, 1}
+
+
+class TestLaFechaArmadaEntreLectores:
+    """6833660 (UPD2453183 pág. 7, 2026-11-23): «Fecha: 19-02-2021» a mano; la IA leyó 19-07-2021."""
+
+    class _Fuente:
+        def render(self, *args, **kwargs):
+            return b"imagen"
+
+    @staticmethod
+    def _piezas():
+        return [
+            {"pages": [1], "fecha": "2021-02-19", "fecha_pagina": 1, "archivo": "01", "fecha_via": "texto"},
+            {"pages": [7], "fecha": None, "archivo": "02"},
+        ]
+
+    def _ver(self, releidas):
+        from resolutions.api.worker.correspondencia import _fechas_a_la_vista
+
+        piezas = self._piezas()
+        taller = TestLasFechasDeLaCajaContraSiMismas._Taller("SELLO: no hay\nCASILLAS: no hay\nDOCUMENTO: 19-07-2021")
+        _fechas_a_la_vista(piezas, {7: "REFERENCIA: DECLARACION"}, self._Fuente(), taller, releidas)
+        return piezas[1]
+
+    def test_la_arman_los_lectores_y_la_confirma_la_caja(self):
+        releidas = {7: ["Fecha: NA-OT7- 2021", "Lugar: Santa Rosa Fecha: 19-02-2027"]}
+        declaracion = self._ver(releidas)
+        assert declaracion["fecha"] == "2021-02-19" and declaracion["fecha_via"] == "visión"
+        assert declaracion["fecha_por"].startswith("armada con lo que leyó cada lector en la pág. 7")
+        # Lo que la sostiene queda entre lo leído de la hoja, para la auditoría.
+        assert releidas[7][-1] == "FECHA ARMADA ENTRE LECTORES: 19/02/2021"
+
+    def test_si_nadie_la_contradice_queda_la_vista(self):
+        declaracion = self._ver({7: ["Fecha: NA-OT7- 2021"]})
+        assert declaracion["fecha"] == "2021-07-19" and declaracion["fecha_por"].startswith("vista por la IA")
