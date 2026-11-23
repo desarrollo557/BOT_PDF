@@ -224,3 +224,42 @@ class TestElFuidNoSeBarre:
         assert plan is not None
         assert huerfana in plan.outputs
         assert not huerfana.exists()
+
+
+class TestElDiscoEnUnHilo:
+    """2026-11-23: el plan leía el disco en el bucle y lo paraba 50 s con ~1.000 carpetas de salida."""
+
+    def test_el_bucle_sigue_contestando_mientras_se_lee_el_disco(self, workspace):
+        registry = JobRegistry()
+        janitor = IdleJanitor(registry, workspace)
+        hilos = []
+
+        def plan_lento(live_jobs, ribbons):
+            import threading
+
+            hilos.append(threading.current_thread())
+            return IdleJanitor._plan_del_disco(janitor, live_jobs, ribbons)
+
+        janitor._plan_del_disco = plan_lento
+        outputs(workspace, "huerfana")
+        sweep(janitor, force=True)
+        import threading
+
+        assert hilos and hilos[0] is not threading.main_thread()
+
+    def test_si_el_registro_cambia_mientras_tanto_no_se_borra_nada(self, workspace):
+        registry = JobRegistry()
+        janitor = IdleJanitor(registry, workspace)
+        carpeta = outputs(workspace, "de-un-trabajo-que-acaba-de-empezar")
+        original = janitor._plan_del_disco
+
+        def mientras_tanto(live_jobs, ribbons):
+            plan = original(live_jobs, ribbons)
+            # Un trabajo entra mientras se lee el disco: su carpeta parecía huérfana.
+            registry.create("nuevo.pdf", workspace.upload_dir / "nuevo.pdf")
+            return plan
+
+        janitor._plan_del_disco = mientras_tanto
+        resultado = sweep(janitor, force=True)
+        assert carpeta.is_dir()
+        assert not resultado.outputs

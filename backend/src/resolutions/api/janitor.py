@@ -124,12 +124,22 @@ class IdleJanitor:
         if not force and not self.should_sweep():
             return None
 
-        # The plan is computed synchronously, so it is atomic against anything
-        # else on the loop: a clear that lands mid-sweep can only add orphans,
-        # never take back one already listed. The deletions then go to a thread,
-        # because rmtree over a large output directory would stall the stream.
-        plan = self.plan()
-        self._swept_revision = self._registry.revision
+        # The disk is read in a thread (2026-11-23): with ~1.000 output
+        # directories on Docker's Windows volume, listing them and looking for
+        # a FUID in each one held the loop for 50 s, and every request -- the
+        # screen, the installation test -- timed out behind it. What the loop
+        # must see atomically is taken here, before the thread: the snapshot
+        # and the revision. When the thread comes back, a registry that changed
+        # meanwhile means a job may have started whose output directory the
+        # listing took for an orphan, so nothing is deleted and the next tick
+        # tries again.
+        revision = self._registry.revision
+        live_jobs = self._registry.snapshot()
+        ribbons = self._compact_ribbons(live_jobs)
+        plan = await asyncio.to_thread(self._plan_del_disco, live_jobs, ribbons)
+        if self._registry.pending or self._registry.revision != revision:
+            return SweepResult(ribbons=ribbons)
+        self._swept_revision = revision
         if plan.empty:
             return plan
 
@@ -148,6 +158,10 @@ class IdleJanitor:
 
     def plan(self) -> SweepResult:
         live_jobs = self._registry.snapshot()
+        return self._plan_del_disco(live_jobs, self._compact_ribbons(live_jobs))
+
+    def _plan_del_disco(self, live_jobs: list, ribbons: int) -> SweepResult:
+        """What the disk has to give back, for the jobs in ``live_jobs``. Only reads: safe in a thread."""
         known_ids = {job.id for job in live_jobs}
         known_sources = {job.source.name for job in live_jobs}
         referenced_ids = known_ids | self._referenced_ids()
@@ -155,7 +169,7 @@ class IdleJanitor:
         return SweepResult(
             uploads=self._orphaned(self._settings.upload_dir, known_sources, files=True),
             outputs=self._orphaned(self._settings.output_dir, referenced_ids, files=False),
-            ribbons=self._compact_ribbons(live_jobs),
+            ribbons=ribbons,
         )
 
     def _referenced_ids(self) -> set[str]:
