@@ -93,11 +93,22 @@ _DE_LA_CEDULA = re.compile(
 )
 #: Cuánto texto alrededor se mira para decidir si la fecha es de una cédula.
 CONTEXTO_DE_CEDULA = 45
+#: La fecha de la edición o la versión del formato impreso, al pie: «Edición
+#: 24/01/22». Es la del molde, no la del papel que se llenó con él: fechaba el
+#: recurso de 6834047 (UPD2453186 pág. 7, 2026-11-23) el 24-01-2022 y lo sacaba
+#: de su trámite del 15-12-2022. No la «Fecha edición: 09/11/2021» del estado
+#: de cuenta, que es el día en que se generó: ésa sí es la suya.
+_DEL_FORMATO = re.compile(r"(?<![a-z])(fecha\s+(?:de\s+)?)?(?:edici[oó]n|versi[oó]n)\W{0,3}$", re.IGNORECASE)
+#: Cuánto se mira detrás de la fecha para ver si es la del formato.
+CONTEXTO_DEL_FORMATO = 25
 
 
 def _citada(texto: str, inicio: int) -> bool:
-    """Si lo que hay justo antes de la fecha la convierte en una cita, o es la de una cédula."""
+    """Si lo que hay justo antes de la fecha la convierte en una cita, es la de una cédula o la del formato."""
     if _CITA.search(texto[max(0, inicio - CONTEXTO_DE_CITA) : inicio]):
+        return True
+    del_formato = _DEL_FORMATO.search(texto[max(0, inicio - CONTEXTO_DEL_FORMATO) : inicio])
+    if del_formato is not None and not del_formato.group(1):
         return True
     alrededor = texto[max(0, inicio - CONTEXTO_DE_CEDULA) : inicio + CONTEXTO_DE_CEDULA + 25]
     return bool(_DE_LA_CEDULA.search(alrededor))

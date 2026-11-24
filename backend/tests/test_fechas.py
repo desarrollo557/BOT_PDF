@@ -207,6 +207,20 @@ class TestLoQueSeCitaNoFechaNada:
         assert fechas_de(texto) == [date(2022, 2, 8)]
 
 
+class TestLaEdicionDelFormato:
+    """6834047 (2026-11-23): «Edición 24/01/22» al pie del formato de recurso fechaba el recurso y lo sacaba de su trámite."""
+
+    def test_la_edicion_del_formato_no_fecha_el_papel(self):
+        pie = "en el Código de Procedimiento Administrativo y de lo Contencioso Administrativo. Edición 24/01/22"
+        assert fecha_de_la_pagina(pie) is None
+        assert fechas_de("Formato de recurso. Versión: 12/05/2019") == []
+
+    def test_la_fecha_de_edicion_de_un_reporte_si_es_la_suya(self):
+        # El estado de cuenta se generó ese día.
+        reporte = "Fecha edición: 09/11/2021 Página: 1 de 1 ESTADO DE CUENTA POR IDENTIFICADOR DE COBROS"
+        assert fecha_de_la_pagina(reporte) == date(2021, 11, 9)
+
+
 class TestLoQueNoEsUnaFecha:
     def test_una_fecha_imposible_no_es_una_fecha(self):
         """El OCR produce "31/02/2022" más veces de lo que parece."""

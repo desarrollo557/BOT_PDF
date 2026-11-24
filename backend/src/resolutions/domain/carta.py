@@ -103,6 +103,18 @@ def _renglones(texto: str) -> list[str]:
     return [r.strip() for r in (texto or "").splitlines() if r.strip()][:RENGLONES_DEL_ENCABEZADO]
 
 
+#: Cuántas letras lleva un renglón para contar en el encabezado cuando el ruido
+#: del escáner lo llena: «■■», «j», «/p» no son nada.
+LETRAS_DE_UN_RENGLON = 2
+
+
+def _renglones_con_letras(texto: str) -> list[str]:
+    """Los renglones del encabezado sin los que el escáner dejó sin letras."""
+    return [
+        r.strip() for r in (texto or "").splitlines() if _letras(r.strip()) >= LETRAS_DE_UN_RENGLON
+    ][:RENGLONES_DEL_ENCABEZADO]
+
+
 def _letras(renglon: str) -> int:
     return sum(c.isalpha() for c in renglon)
 
@@ -143,6 +155,15 @@ def abre_carta(texto: str) -> bool:
     """
     renglones = _renglones(texto)
     hallado = _renglon_del_asunto(renglones)
+    if hallado is None:
+        # El sello tenue y la letra a mano de la cabecera llenan la capa de
+        # renglones sin letras -- «■■», «j», «/p» -- y el asunto queda fuera
+        # del encabezado: el recurso de 6834047 (UPD2453186 pág. 7,
+        # 2026-11-23) lo traía en el renglón 32, no abría carta y su sello
+        # nunca se leyó. Se busca otra vez sin ellos; la hoja que ya abría no
+        # cambia.
+        renglones = _renglones_con_letras(texto)
+        hallado = _renglon_del_asunto(renglones)
     if hallado is None:
         return False
     antes = renglones[: hallado[0]]

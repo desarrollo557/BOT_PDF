@@ -67,6 +67,22 @@ class TestLaCartaAbre:
         """UPD3102756 pág. 15: la primera hoja se imprimió casi en blanco."""
         assert not abre_carta("Magangue Bolivar, Noviembre 14 del 2023.\nSeñores\nCARIBEMAR S.A. E. S.P.\n")
 
+    #: El formato de recurso con el sello tenue y la letra a mano en la cabeza:
+    #: la capa deja renglones sin letras delante del saludo (6834047, pág. 7).
+    RUIDO = "\n".join(["/p", "afinia", "■■", "j", "i", "3^-", ":•", "'", "I", "■■"] * 3)
+    RECURSO = (
+        "Señores\nCARIBEMAR DE LA COSTA S.A.S. E.S.P.\nOFICINA DE PETICIONES, QUEJAS Y RECLAMOS\nCIUDAD.\n"
+        "□ Reposición\nReposición y subsidiariamente apelación ante la SSPD\n"
+        "Asunto: Interposición de recurso(s) de\nPEDRO PEREZ PAEZ\n"
+    )
+
+    def test_el_ruido_del_sello_no_saca_al_asunto_del_encabezado(self):
+        """6834047 (2026-11-23): el asunto quedaba en el renglón 32 y el recurso no abría carta ni se leía su sello."""
+        assert abre_carta(f"{self.RUIDO}\n{self.RECURSO}")
+
+    def test_sin_el_saludo_ni_la_fecha_el_ruido_no_abre_nada(self):
+        assert not abre_carta(f"{self.RUIDO}\nAsunto: Interposición de recurso(s) de\nPEDRO PEREZ PAEZ\n")
+
 
 class TestLaHojaQueSigue:
     def test_las_peticiones_la_frase_en_minuscula_y_el_numeral(self):
