@@ -2969,7 +2969,40 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # F2b. Los folios del sello: lo que la oficina recibió como un escrito
     # -- «Folios: 19» -- no lo parte la continuidad. Sólo otro sello o la
     # etiqueta de LECTA abren algo dentro de esas hojas.
-    grupos, anexos, por_folios = retener_los_folios(grupos, sellos_que_abren, abren, anexos)
+    # También los del sello al pie, contados desde la primera hoja de su
+    # escrito (el operador, 2026-11-24, ante 1000186: el recurso a mano con
+    # «03 FOLIO» en su sello al pie salía solo, sin la factura ni la copia de
+    # la constancia que lo siguen).
+    folios_al_pie: dict = {}
+    for grupo in grupos.groups:
+        primera = grupo.page_numbers[0]
+        if primera in sellos_que_abren:
+            continue
+        for pagina in grupo.page_numbers:
+            sello_al_pie = al_pie.get(pagina)
+            if (
+                sello_al_pie is not None
+                and sello_al_pie.folios
+                and pagina not in cartas.no_abren
+                and pagina not in foliacion.continua
+            ):
+                folios_al_pie[primera] = sello_al_pie
+                break
+    from ...domain.sello import FOLIOS_DE_UN_ESCRITO
+
+    sellos_de_los_folios = {**folios_al_pie, **sellos_que_abren}
+    grupos, anexos, por_folios = retener_los_folios(grupos, sellos_de_los_folios, abren, anexos)
+    # Las hojas que cubren los folios de cada sello, en el documento de su
+    # escrito: F5g no las mueve, ni por la persona ni por la IA (1000186: la
+    # factura de la hoja 2 se iba al pagaré).
+    del_documento = {p: k for k, g in enumerate(grupos.groups) for p in g.page_numbers}
+    hojas_de_los_folios = {
+        q
+        for primera, sello_de_folios in sellos_de_los_folios.items()
+        if sello_de_folios.folios and 1 < sello_de_folios.folios <= FOLIOS_DE_UN_ESCRITO
+        for q in range(primera, primera + sello_de_folios.folios)
+        if primera in del_documento and del_documento.get(q) == del_documento[primera]
+    }
     # F2d. La carta abre su trámite aunque no traiga sello -- salvo dentro de
     # los folios de un sello, que son de ese escrito --; la hoja que la
     # continúa y la prueba que trae van con ella.
@@ -3057,6 +3090,15 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     intocables = set(por_folios) | {
         p for p in de_prueba if formularios.get(p, ("", None))[0] != _HABEAS
     } | set(foliacion.continua)
+    # Todas las hojas que cubren los folios, no sólo las que F2b tuvo que unir:
+    # la copia de la constancia que el recurso de 1000186 trae como su tercer
+    # folio ya iba con él y F2e la volvía a separar (2026-11-24). La Habeas Data
+    # no: es de su acuerdo.
+    intocables |= {
+        p
+        for p in hojas_de_los_folios - set(sellos_de_los_folios)
+        if formularios.get(p, ("", None))[0] != _HABEAS
+    }
     # Detrás de la constancia y la notificación sólo sigue el anexo evidente:
     # la cédula, la factura, la hoja muda o la foto, que traen poco texto. Una
     # hoja con texto propio es otro documento (1000224 pág. 2, una carta que la
@@ -3856,6 +3898,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 | set(foliacion.abre)
                 | set(retencion.retenidas)
                 | set(por_folios)
+                # Y lo que cubren los folios de un sello, de arriba o al pie:
+                # es de su escrito (1000186, 2026-11-24).
+                | hojas_de_los_folios
                 | set(cartas.copias)
                 | set(de_prueba)
                 | {g.page_numbers[0] for g in grupos.groups if g.page_numbers and g.page_numbers[0] in formularios_solos}
@@ -4327,7 +4372,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # F8c. Los folios del sello contra las hojas de cada documento (el
     # operador, 2026-11-18: «contrasta la cantidad de folios indicada en los
     # sellos con las páginas reales»). Sólo avisa, a Revisión.
-    folios_sin_cuadrar = folios_contra_hojas(piezas, sellos)
+    # También con los folios del sello al pie, desde la primera hoja de su
+    # escrito (1000186, 2026-11-24).
+    folios_sin_cuadrar = folios_contra_hojas(piezas, {**folios_al_pie, **sellos})
     # F8b. Las hojas del acuerdo de pago en su orden: el reconocimiento primero
     # si está fechado, si no al final; los pagarés, la Habeas Data y los anexos
     # (lo dictó el operador el 2026-11-12). Sólo el orden del PDF escrito: el

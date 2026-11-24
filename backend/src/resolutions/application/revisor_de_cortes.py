@@ -76,6 +76,8 @@ REGLAS_DE_LA_CORRESPONDENCIA = (
     "La notificación por aviso que dice adjuntar la copia del acto va con la portada «ANEXO» y esa copia. "
     "Un sello de recibido con otra fecha, otro RE o fuera de los folios que declara el sello de delante es otro "
     "escrito, aunque esté al pie de una hoja escrita a mano. "
+    "Las hojas que cubren los folios que declara un sello, también uno al pie, son de su escrito aunque sean una "
+    "factura o la copia de una constancia. "
     "Cada acta de suspensión es su documento. "
     "Dos sellos de radicación con RE distinto en un PDF suelen ser dos trámites: el escrito del segundo "
     "abre el suyo; la copia aportada como prueba trae el sello de otro trámite y va con el escrito que la aporta."

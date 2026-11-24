@@ -1375,3 +1375,54 @@ class TestElPaqueteSinCaratula:
             {1: CONSTANCIA, 2: DECLARACION_DE_ANA},
         )
         assert not any("declaración juramentada" in d for d in tras_la_constancia.dudas)
+
+
+# -- los folios del sello al pie (el operador, 2026-11-24, ante 1000186) ----------------
+
+
+class TestLosFoliosDelSelloAlPie:
+    """1000186 (UPD2437815): el recurso a mano con su sello al pie «03 FOLIO» salía solo; la factura (2) se iba al
+    pagaré y la copia de la constancia (3) quedaba suelta. «Solo hay un PDF donde deberían ir 3»."""
+
+    SELLO = (
+        "CAP MAGANGUE BOLIVAR SUR\nRECIBIDO NO IMPLICA ACEPTACION\nFecha de recibo: 13-11-2020\n"
+        "N° de radicación: 2020600200054\nN° de folios: RE2310202299905\nDir. Notific.: 03-FOLIO\n"
+        "Funcionario Receptor:"
+    )
+
+    def test_el_03_folio_con_guion_se_lee(self):
+        from resolutions.domain.sello import folios_del_sello_de_tinta
+
+        assert folios_del_sello_de_tinta(self.SELLO) == 3
+        # El RE en la casilla de los folios no son folios, ni un año pegado a la palabra.
+        assert folios_del_sello_de_tinta(self.SELLO.replace("03-FOLIO", "Boston")) is None
+        assert folios_del_sello_de_tinta(self.SELLO.replace("03-FOLIO", "2020-FOLIO")) is None
+
+    def test_el_sello_al_pie_retiene_sus_folios(self):
+        from resolutions.application.sellos import retener_los_folios
+        from resolutions.domain.sello import Sello
+
+        sello = Sello("tinta", "RE2310202299905", None, 3)
+        grupos, _, unidas = retener_los_folios(_grupos([1, 2], [3], [4, 5, 6, 7]), {1: sello}, set(), {})
+        assert [g.page_numbers for g in grupos.groups] == [[1, 2, 3], [4, 5, 6, 7]] and unidas == [3]
+
+    def test_lo_que_cubren_los_folios_no_lo_mueve_ni_la_ia(self):
+        """El juez de la IA elegía el pagaré para la factura de la hoja 2; dentro de los folios, se queda."""
+        textos = {1: CARTA_DE_PEDRO, 2: FACTURA_DE_PEDRO, 3: CONSTANCIA, 4: SEGUNDA_HOJA}
+
+        def al_otro(_pagina, opciones):
+            return len(opciones) - 1
+
+        movida = asignar_por_secuencia(
+            _grupos([1, 2, 3], [4]), textos, {}, identidad_de=lambda p, c: (None, None), juez=al_otro
+        )
+        assert _hojas(movida) == [[1, 3], [2, 4]]
+        fija = asignar_por_secuencia(
+            _grupos([1, 2, 3], [4]),
+            textos,
+            {},
+            fijas=frozenset({1, 2, 3}),
+            identidad_de=lambda p, c: (None, None),
+            juez=al_otro,
+        )
+        assert _hojas(fija) == [[1, 2, 3], [4]]

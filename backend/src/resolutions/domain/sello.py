@@ -791,8 +791,10 @@ def folios_del_sello_de_tinta(texto: str) -> int | None:
 
 #: «(5) CINCO FOLIOS».
 _CIFRA_Y_PALABRA = re.compile(r"\(\s*(\d{1,2})\s*\)\s*([A-Z]{2,12})")
-#: «8 FOLIOS».
-_CIFRA_Y_FOLIOS = re.compile(r"(?<![\d.,/-])(\d{1,2})\s*F[O0]L[I1L][O0]S?\b")
+#: «8 FOLIOS», y «03-FOLIO» con su guion: el funcionario de 1000186 escribió el
+#: RE en la casilla de los folios y «03-FOLIO» en la de abajo (UPD2437815 pág.
+#: 1, 2026-11-24).
+_CIFRA_Y_FOLIOS = re.compile(r"(?<![\d.,/-])(\d{1,2})\s*[-–]?\s*F[O0]L[I1L][O0]S?\b")
 #: «No DE FOLIOS: 10».
 _FOLIOS_Y_CIFRA = re.compile(r"D[EF]\s+F[O0]L[I1L][O0]S\W{0,3}\s*(\d{1,2})(?![\d.,/-])")
 #: Más folios que éstos no los declara un escrito de la caja: es una lectura mala.

@@ -822,7 +822,8 @@ def sellos_al_pie(
                     "tinta",
                     radicado,
                     fecha,
-                    folios_del_sello_de_tinta(del_pago),
+                    # Y si el OCR de pago no los da, los que lee la visión.
+                    folios_del_sello_de_tinta(del_pago) or folios_del_sello_de_tinta(visto),
                     lecturas=lecturas,
                     correccion=correccion,
                     zona=(recorte.x0, recorte.y0, recorte.x1, recorte.y1),
