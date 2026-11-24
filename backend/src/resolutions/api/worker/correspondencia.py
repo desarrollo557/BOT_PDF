@@ -3963,6 +3963,11 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 # Y lo que cubren los folios de un sello, de arriba o al pie:
                 # es de su escrito (1000186, 2026-11-24).
                 | hojas_de_los_folios
+                # Ni las del acuerdo de pago, que F4b ya armó con sus pagarés,
+                # sus cartas y sus cédulas: el juez de la IA mandaba las dos
+                # cédulas del acuerdo a la declaración juramentada de detrás,
+                # de la misma persona (4263077, UPD2447035, 2026-11-24).
+                | set(del_acuerdo)
                 | set(cartas.copias)
                 | set(de_prueba)
                 | {g.page_numbers[0] for g in grupos.groups if g.page_numbers and g.page_numbers[0] in formularios_solos}
@@ -4035,7 +4040,12 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         """
         if entregado_por is Agrupacion.MES:
             return g
-        if g.page_numbers[0] in del_acuerdo:
+        # El acuerdo de pago se llama así sólo si trae su reconocimiento: el PDF
+        # de la declaración juramentada que empezaba por una cédula del acuerdo
+        # salía «RECONOCIMIENTO DE DEUDA…» (4263077, 2026-11-24).
+        if g.page_numbers[0] in del_acuerdo and any(
+            titulo_del_documento(textos.get(p, "") or "") == ACUERDO_DE_PAGO for p in g.page_numbers
+        ):
             return replace(g, kind=nombre_oficial(ACUERDO_DE_PAGO))
         # La carta, no la guía que la precede ni la autorización que se le unió
         # por delante.

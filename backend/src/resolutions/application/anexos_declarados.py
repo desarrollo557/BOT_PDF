@@ -697,16 +697,20 @@ def asignar_por_secuencia(
       «que el bot sepa razonar con la ayuda de la IA cuándo una cédula
       pertenece a un grupo de páginas y cuándo no» (2026-11-24).
     """
+    from ..domain.fecha_por_estructura import fecha_por_estructura
+    from ..domain.fechas import fecha_de_la_pagina
     from ..domain.secuencia_de_anexos import (
         AL_INICIO,
         CON_SU_PRINCIPAL,
         CONFIRMADO_POR_LA_IA,
+        LA_IA_SIN_PRUEBA,
         NO_SE_CONFIRMO,
         POR_LA_IA,
         Dueno,
         dueno_razonado,
         dueno_tras_la_constancia,
         duenos_por_secuencia,
+        la_ia_puede_moverlo,
         opciones_para_el_juez,
     )
 
@@ -835,12 +839,25 @@ def asignar_por_secuencia(
                 elegida = None
             if elegida is not None and 0 <= elegida < len(candidatos):
                 elegido = candidatos[elegida]
-                dueno = (
-                    Dueno(dueno.documento, dueno.ancla, f"{dueno.regla}, {CONFIRMADO_POR_LA_IA}", dueno.pruebas,
-                          confianza="media")
-                    if elegido == dueno.documento
-                    else Dueno(elegido, anclas.get(elegido), POR_LA_IA, confianza="baja")
-                )  # fmt: skip
+                if elegido == dueno.documento:
+                    dueno = Dueno(dueno.documento, dueno.ancla, f"{dueno.regla}, {CONFIRMADO_POR_LA_IA}", dueno.pruebas,
+                                  confianza="media")  # fmt: skip
+                elif la_ia_puede_moverlo(
+                    identidad,
+                    principales,
+                    dueno.documento,
+                    elegido,
+                    fecha_del_anexo=fecha_de_la_pagina(textos.get(pagina, "") or ""),
+                    fecha_del_elegido=fecha_por_estructura(
+                        [p for p in documentos[elegido] if not clases[p] and p not in mudas], textos
+                    ).fecha,
+                ):
+                    dueno = Dueno(elegido, anclas.get(elegido), POR_LA_IA, confianza="baja")
+                else:
+                    # Sabiendo de quién es el anexo, sin prueba de que sea de
+                    # otro documento, sigue su secuencia (2026-11-24).
+                    dueno = Dueno(dueno.documento, dueno.ancla, dueno.regla, dueno.pruebas, aviso=LA_IA_SIN_PRUEBA,
+                                  confianza=dueno.confianza)  # fmt: skip
             elif dueno.dudoso and not dueno.aviso:
                 dueno = Dueno(dueno.documento, dueno.ancla, dueno.regla, dueno.pruebas, aviso=NO_SE_CONFIRMO,
                               confianza=dueno.confianza)  # fmt: skip

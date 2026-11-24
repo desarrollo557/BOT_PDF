@@ -36,6 +36,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 
 from .tramites import donde_aparece_la_persona, prueba_suficiente
 
@@ -199,6 +200,51 @@ def dueno_razonado(
         return Dueno(elegido, anclas.get(elegido), DE_SU_PERSONA, tuple(fuertes[elegido]), confianza="media")
     # Su principal nombra a otra persona y ningún documento a la suya.
     return Dueno(documento, ancla, regla_de_la_secuencia, aviso=NADIE_LO_NOMBRA, confianza="media", dudoso=True)
+
+
+#: Lo que se anota cuando la IA quería sacar el anexo de su secuencia sin prueba.
+LA_IA_SIN_PRUEBA = "la IA propuso otro documento, pero nada prueba que el anexo sea de otra persona; va con su principal anterior"
+
+
+def la_ia_puede_moverlo(
+    identidad: str | None,
+    principales: Mapping[int, str],
+    secuencia: int,
+    elegido: int,
+    *,
+    fecha_del_anexo: date | None = None,
+    fecha_del_elegido: date | None = None,
+) -> bool:
+    """Si el juez de la IA puede llevar el anexo de su secuencia al documento ``elegido``.
+
+    El operador, 2026-11-24, ante tres anexos que la IA movió con confianza
+    baja y sin razón: la factura del recurso de 1000186 al pagaré, las cédulas
+    del acuerdo de 4263077 a la declaración, la factura y la cédula de la
+    declaración de 4266640 al acuerdo y a la notificación. «Analiza que esté
+    cada página con su trámite respectivo, asegúrate de eso».
+
+    Sin saber de quién es el anexo, decide la IA, que mira la imagen. Sabiéndolo,
+    sólo con una prueba de que es de otro documento: su principal anterior
+    nombra con su cédula a otra persona, o el elegido es el único documento de
+    la caja que nombra a la suya. Lo que nombran varios -- el titular del NIC --
+    no distingue a ninguno.
+
+    Y nunca a un documento fechado antes que el anexo: la respuesta de la
+    empresa del 04-02-2022 no lleva anexo el estado de cuenta del 09-02-2022,
+    que es del recurso radicado ese día (6833800, UPD2453184 pág. 7).
+    """
+    if fecha_del_anexo and fecha_del_elegido and fecha_del_anexo > fecha_del_elegido:
+        return False
+    if identidad is None or not identidad.strip():
+        return True
+    if nombra_a_otra_persona(identidad, principales.get(secuencia, "")):
+        return True
+    la_nombran = [
+        d
+        for d, texto in principales.items()
+        if d != secuencia and prueba_suficiente(donde_aparece_la_persona(identidad, {d: texto}).get(d, []))
+    ]
+    return la_nombran == [elegido]
 
 
 def nombra_a_otra_persona(identidad: str, principal: str) -> bool:

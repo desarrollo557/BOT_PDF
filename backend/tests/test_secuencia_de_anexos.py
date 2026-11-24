@@ -1552,3 +1552,122 @@ class TestLaSolicitudPorSuAsunto:
         assert not es_solicitud_por_su_asunto("SOLICITUD DE RESPUESTA 9")
         assert not es_solicitud_por_su_asunto("SOLICITUD")
         assert not es_solicitud_por_su_asunto("CAMBIO DE TITULAR")
+
+
+class TestLaRelacionDePagosRecibidos:
+    """4251481 (UPD2990364, el operador, 2026-11-24): «de ahora en adelante le colocarás este título, RELACIÓN DE
+    PAGOS RECIBIDOS»; salía «SOPORTE»."""
+
+    CAPA = (
+        "Elertocarib^ RELACIÓM DE PAGOS nECiOIDOS /.-.V siar\nResponsaKff PEDRO PEREZ PAEZ Fecha 25/10/2019\n"
+        "a. Oíiciales Propios b. Oriciatcs GDEL | X TP c. Liberalizado\n2. Sopoiledcpago"
+    )
+
+    def test_su_formato_le_da_el_nombre(self):
+        from resolutions.domain.asunto_del_documento import (
+            NOMBRE_POR_SU_FORMATO,
+            NOMBRES_DEL_OPERADOR,
+            RELACION_DE_PAGOS,
+            titulo_del_documento,
+        )
+        from resolutions.domain.catalogo import POR_NOMBRE
+        from resolutions.domain.nombre_oficial import SOLO_POR_SU_FORMATO, nombre_oficial
+
+        assert titulo_del_documento(self.CAPA) == RELACION_DE_PAGOS == "RELACION DE PAGOS RECIBIDOS"
+        assert nombre_oficial(RELACION_DE_PAGOS) == RELACION_DE_PAGOS and RELACION_DE_PAGOS in POR_NOMBRE
+        # Ni la IA ni el catálogo se lo discuten, y la auditoría avisa si sale con otro nombre.
+        assert RELACION_DE_PAGOS in NOMBRES_DEL_OPERADOR and RELACION_DE_PAGOS in SOLO_POR_SU_FORMATO
+        assert NOMBRE_POR_SU_FORMATO[RELACION_DE_PAGOS] == RELACION_DE_PAGOS
+
+
+class TestLaDeclaracionSinCasillaMarcada:
+    """4263077 (UPD2447035 pág. 10, 2026-11-24): ninguna casilla marcada y, a mano en «Otro Proceso, ¿Cuál?»,
+    «cambio titular de pago», que la IA leyó «peso». «Cuando no tenga seleccionada ninguna casilla, agregar lo que
+    esté escrito»."""
+
+    def test_lo_escrito_con_su_forma_conocida(self):
+        from resolutions.domain.asunto_del_documento import (
+            nombre_de_la_declaracion,
+            proceso_de_la_declaracion,
+        )
+
+        leido = (
+            "REFERENCIA: DECLARACION BAJO GRAVEDAD DE JURAMENTO\nPROCESO (Marcar con una x)\n"
+            "Reconocimiento de Activos ☐\nCambio de Titular de Contrato ☐\nSolicitud de Contratación Nuevo Suministro ☐\n"
+            "Baja de Contrato ☐\nOtro Proceso, ¿Cuál? cambio titular de peso\nMediante la presente, el suscrito"
+        )
+        assert nombre_de_la_declaracion(proceso_de_la_declaracion(leido)) == "DECLARACION BGDJ - CAMBIO TITULAR DE PAGO"
+        # Lo que no se parece a ningún proceso conocido queda como se escribió.
+        otro = leido.replace("cambio titular de peso", "traslado del medidor")
+        assert proceso_de_la_declaracion(otro) == "TRASLADO DEL MEDIDOR"
+
+
+class TestLaIaNoMueveSinPrueba:
+    """El operador, 2026-11-24: «analiza que esté cada página con su trámite respectivo, asegúrate de eso». La IA
+    movía con confianza baja anexos de la persona de todo el expediente: la cédula del acuerdo de 4263077 a la
+    declaración, la cédula de la declaración de 4266640 a la notificación."""
+
+    def test_lo_que_nombran_varios_no_distingue(self):
+        """Declaración llenada a mano (1), cédula de PEDRO detrás (2); la carta (3) y la constancia (4) lo nombran."""
+        from resolutions.domain.secuencia_de_anexos import LA_IA_SIN_PRUEBA
+
+        a_mano = "REFERENCIA: DECLARACION BAJO GRAVEDAD DE JURAMENTO Mediante la presente, el suscrito ____ declaro"
+        textos = {1: a_mano, 2: CEDULA_DE_PEDRO, 3: CARTA_DE_PEDRO, 4: CONSTANCIA}
+
+        def a_la_carta(_pagina, opciones):
+            return 1
+
+        resultado = asignar_por_secuencia(
+            _grupos([1, 2], [3], [4]), textos, {}, identidad_de=_de_la_capa(textos), juez=a_la_carta
+        )
+        assert _hojas(resultado) == [[1, 2], [3], [4]]
+        assert resultado.decisiones[0]["aviso"] == LA_IA_SIN_PRUEBA
+
+    def test_sin_saber_de_quien_es_decide_la_ia(self):
+        from resolutions.domain.secuencia_de_anexos import la_ia_puede_moverlo
+
+        assert la_ia_puede_moverlo(None, {0: "a mano", 1: CARTA_DE_PEDRO}, 0, 1)
+        # Sabiéndolo: el único que la nombra, sí; si la nombran dos, no.
+        assert la_ia_puede_moverlo("C.C. 12.345.678 PEREZ PAEZ PEDRO PABLO", {0: "a mano", 1: CARTA_DE_PEDRO}, 0, 1)
+        assert not la_ia_puede_moverlo(
+            "C.C. 12.345.678 PEREZ PAEZ PEDRO PABLO", {0: "a mano", 1: CARTA_DE_PEDRO, 2: CONSTANCIA}, 0, 1
+        )
+
+    def test_nunca_a_un_documento_anterior_al_anexo(self):
+        """6833800 (UPD2453184 pág. 7): el estado de cuenta del 09-02-2022 no es anexo de la respuesta del 04-02."""
+        from datetime import date
+
+        from resolutions.domain.secuencia_de_anexos import la_ia_puede_moverlo
+
+        principales = {0: "a mano", 1: CARTA_DE_PEDRO}
+        antes = {"fecha_del_anexo": date(2022, 2, 9), "fecha_del_elegido": date(2022, 2, 4)}
+        assert not la_ia_puede_moverlo(None, principales, 0, 1, **antes)
+        despues = {"fecha_del_anexo": date(2022, 2, 1), "fecha_del_elegido": date(2022, 2, 4)}
+        assert la_ia_puede_moverlo(None, principales, 0, 1, **despues)
+
+
+class TestLaEtiquetaImpresaRota:
+    """6833800 (UPD2453184 pág. 5, el operador, 2026-11-24): «que el bot tenga la habilidad y se le haga muy fácil
+    escanear también estos sellos». La capa deja «NUMERORE23102Cn201335» y «Fecha: 09/02^022»."""
+
+    CAPA = (
+        "Caribemar de la Costa S.A.S. ESP 202260099999 AL CONTESTAR CITE ESTE NUMERORE23102Cn299999 "
+        "Asunto: 06 REC_REPOSiaON EN SUBSIDIO DE APELACION Oficina: Majangue-Bolivar Sur Folios: 2 "
+        "Fecha: 09/02^022 17:13:06.0"
+    )
+
+    def test_se_lee_entera_sin_la_ia(self):
+        from datetime import date
+
+        from resolutions.domain.sello import leer_sello
+
+        sello = leer_sello(self.CAPA)
+        assert (sello.clase, sello.radicado, sello.fecha, sello.folios) == (
+            "impreso",
+            "RE2310202299999",
+            date(2022, 2, 9),
+            2,
+        )
+        # El año manda: con otro año en el número interno y sin fecha legible, no se rehace.
+        sin_fecha = self.CAPA.replace("202260099999", "202160099999").replace("09/02^022", "09/02 ??")
+        assert leer_sello(sin_fecha).radicado is None

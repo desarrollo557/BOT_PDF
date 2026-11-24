@@ -66,6 +66,12 @@ _FECHA_CON_HORA = re.compile(r"(\d{1,2})\s?/\s?(\d{1,2})\s?/\s?(\d{4})\s+\d{1,2}
 _FECHA_DEL_SELLO = re.compile(
     r"F\w?CH[AI1]\W{0,3}(\d{1,3})\s?[/,.]\s?(\d{1,2})\s?[/,. ]\s?(20\d{2})\W{0,2}\s+\d{1,2}\W?\d{2}"
 )
+#: Y con el «2» del año hecho «^» o «Z», o la barra y el «2» en un solo «^»:
+#: «Fecha: 09/02^022 17:13:06.0» (6833800, UPD2453184 pág. 5, 2026-11-24). El
+#: año es «2» y lo que sigue.
+_FECHA_CON_EL_ANIO_ROTO = re.compile(
+    r"F\w?CH[AI1]\W{0,3}(\d{1,3})\s?[/,.]\s?(\d{1,2})\s?(?:[/,. ]\s?[Z\^?]|\^)\s?(0[12]\d)\W{0,2}\s+\d{1,2}\W?\d{2}"
+)
 #: «Folios: 3», «lolios:2», «Tollos:3».
 _FOLIOS = re.compile(r"[FTIL]?\w?L[IL]?OS\s*[:;.]\s*(\d{1,2})\b")
 #: Y como la deja en la caja 108C000033: «Tolios: 4», «Volios: 2»,
@@ -140,6 +146,11 @@ _CIFRAS_PARECIDAS: dict[str, str] = {
     "Z": "2",
     "G": "6",
     "?": "37",
+    # «NUMERORE23102Cn201335» por RE2310202201335: el «02» del año hecho
+    # «Cn» (6833800, UPD2453184 pág. 5, 2026-11-24). Lo guarda que el año
+    # tenga que ser el del sello.
+    "C": "0",
+    "N": "2",
 }
 #: Detrás de qué se busca: «NUMERO», como lo deja la OCR («NUMF.NORK»,
 #: «NUMERORF»).
@@ -916,6 +927,11 @@ def _fecha(plano: str) -> date | None:
         try:
             # «002/07» es el 02: el día son sus dos últimas cifras.
             return date(int(hallado.group(3)), int(hallado.group(2)), int(hallado.group(1)[-2:]))
+        except ValueError:
+            continue
+    for hallado in _FECHA_CON_EL_ANIO_ROTO.finditer(plano):
+        try:
+            return date(int("2" + hallado.group(3)), int(hallado.group(2)), int(hallado.group(1)[-2:]))
         except ValueError:
             continue
     return None

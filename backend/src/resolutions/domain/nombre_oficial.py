@@ -38,6 +38,7 @@ from .asunto_del_documento import (
     NOTA_CREDITO_DEL_ASEO,
     NOTIFICACION_POR_AVISO,
     PUBLICACION_DEL_AVISO,
+    RELACION_DE_PAGOS,
     es_constancia_de_recepcion,
 )
 from .catalogo import CATALOGO, FRASES
@@ -69,7 +70,7 @@ def tipo_unificado(nombre: str | None) -> str | None:
     """El nombre del tipo, con el de su par si el catálogo trae dos para el mismo documento."""
     return MISMO_TIPO.get(_plano(nombre or ""), nombre) if nombre else nombre
 #: Los tipos del catálogo que sólo pone el formato del papel, nunca la IA.
-SOLO_POR_SU_FORMATO = frozenset({"RECLAMACION", NOTA_CREDITO_DEL_ASEO})
+SOLO_POR_SU_FORMATO = frozenset({"RECLAMACION", NOTA_CREDITO_DEL_ASEO, RELACION_DE_PAGOS})
 #: El reclamo por consumo estimado, como lo escribe el cliente en su asunto:
 #: «RECLAMO POR COBRO DE SERVICIO ENERGIA POR ESTIMADO» (UPD3102756 pág. 8).
 _POR_ESTIMADO = re.compile(r"\bESTIMAD[OA]S?\b")

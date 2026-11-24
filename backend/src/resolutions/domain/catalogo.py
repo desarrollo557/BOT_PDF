@@ -191,6 +191,10 @@ CATALOGO: tuple[TipoDocumental, ...] = (
     # del operador (2026-11-24). Sin frases ni IA: sólo la pone su formato
     # (``asunto_del_documento.AUTORIZACION_DEL_ASEO``).
     TipoDocumental("AUTORIZACION DESCUENTO/NOTA DE CREDITO"),
+    # El formulario de Electricaribe «RELACIÓN DE PAGOS RECIBIDOS», por dictado
+    # del operador (2026-11-24, 4251481). Sólo lo pone su formato
+    # (``asunto_del_documento.RELACION_DE_PAGOS``).
+    TipoDocumental("RELACION DE PAGOS RECIBIDOS"),
     TipoDocumental(
         "DECLARACION BAJO GRAVEDAD DE JURAMENTO",
         (

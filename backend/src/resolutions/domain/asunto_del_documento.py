@@ -377,11 +377,17 @@ AUTORIZACION_DEL_ASEO = "AUTORIZACION DE NOTA CREDITO DEL ASEO"
 #: admite, queda en guion: «01_AUTORIZACION-DESCUENTO-NOTA-DE-CREDITO.pdf»; la
 #: fila del índice la lleva tal cual.
 NOTA_CREDITO_DEL_ASEO = "AUTORIZACION DESCUENTO/NOTA DE CREDITO"
+#: El formulario de Electricaribe «RELACIÓN DE PAGOS RECIBIDOS» (oficiales,
+#: transferencia, la tabla de NIC pagados). Lo dictó el operador el 2026-11-24
+#: ante 4251481 (UPD2990364), que salía «SOPORTE»: «de ahora en adelante le
+#: colocarás este título». El escáner lo deja «RELACIÓM DE PAGOS nECiOIDOS».
+RELACION_DE_PAGOS = "RELACION DE PAGOS RECIBIDOS"
 _POR_LO_QUE_DICEN: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         AUTORIZACION_DEL_ASEO,
         re.compile(r"\bAUT\W?\d{3,5}\W?ASEO\b|APLICAR\s+DESCUENTO\W{0,3}S?\W{0,3}\s*O\s+NOTAS?\s+CREDITO"),
     ),
+    (RELACION_DE_PAGOS, re.compile(r"\bRELACI[O0][NM]\s+DE\s+PAG[O0]S\b")),
     (
         "NOTIFICACION POR AVISO",
         re.compile(r"POR\s+INTERMEDIO\s+DE\s+ESTE\s+AVISO|SE\s+CONSIDERARA\s+SURTIDA\s+AL\s+FINALIZAR"),
@@ -534,6 +540,18 @@ _OTRO_PROCESO = re.compile(r"OTRO\s+PROCESO\W{0,4}\s*\W?CUAL\W{0,3}\s*(?P<cual>.
 SIGLA_DE_LA_DECLARACION = "DECLARACION BGDJ"
 #: Lo más largo que se deja ser al proceso escrito a mano.
 LARGO_DEL_OTRO_PROCESO = 50
+#: Los procesos que se escriben a mano en «Otro Proceso, ¿Cuál?», con su forma:
+#: lo que la IA lea casi igual se lleva a ella. En 4263077 (UPD2447035 pág.
+#: 10, 2026-11-24) «cambio titular de pago» se leyó «CAMBIO TITULAR DE PESO».
+PROCESOS_ESCRITOS_A_MANO: tuple[str, ...] = (
+    "CAMBIO TITULAR DE PAGO",
+    "CAMBIO DE TITULAR DE PAGO",
+    "AUMENTO DE POTENCIA",
+    "AUMENTO DE CARGA",
+    *(nombre for nombre, _ in PROCESOS_DE_LA_DECLARACION),
+)
+#: Cuánto se tiene que parecer lo leído a un proceso conocido para llevarlo a él.
+PARECIDO_DEL_PROCESO = 0.85
 
 
 def _sin_tildes(texto: str) -> str:
@@ -563,7 +581,24 @@ def proceso_de_la_declaracion(texto: str) -> str | None:
     palabras = [p for p in cual.split() if len(p) >= 2]
     if sum(len(p) for p in palabras) < 6 or not any(len(p) >= 4 for p in palabras):
         return None
-    return " ".join(palabras)[:LARGO_DEL_OTRO_PROCESO].strip()
+    leido = " ".join(palabras)[:LARGO_DEL_OTRO_PROCESO].strip()
+    return proceso_conocido(leido) or leido
+
+
+def proceso_conocido(leido: str) -> str | None:
+    """El proceso conocido que lo leído a mano casi dice: «CAMBIO TITULAR DE PESO» es CAMBIO TITULAR DE PAGO.
+
+    Sólo si se parece en ``PARECIDO_DEL_PROCESO`` o más, y a uno solo más que a
+    los demás; si no, ``None`` y queda lo leído.
+    """
+    from difflib import SequenceMatcher
+
+    parecidos = sorted(
+        ((SequenceMatcher(None, leido, conocido).ratio(), conocido) for conocido in PROCESOS_ESCRITOS_A_MANO),
+        reverse=True,
+    )
+    mejor, conocido = parecidos[0]
+    return conocido if mejor >= PARECIDO_DEL_PROCESO else None
 
 
 def nombre_de_la_declaracion(proceso: str | None) -> str:
@@ -748,12 +783,15 @@ _CONSECUTIVO_MESUC = re.compile(r"\bM\W?E\W?S\W?U\W?C\W{0,3}\s*\d{3,6}\b")
 _CARTA_AL_USUARIO = re.compile(r"\bESTIMAD[OA]S?\s+USUARI|\bOFICINA\s+COMERCIAL\b")
 #: Los nombres que dictó el operador para un papel por su formato: el nombrado
 #: no se los discute a la IA ni al catálogo.
-NOMBRES_DEL_OPERADOR = frozenset({CONTESTACION_A_RECLAMACION, RESPUESTA_A_USUARIO, NOTA_CREDITO_DEL_ASEO})
+NOMBRES_DEL_OPERADOR = frozenset(
+    {CONTESTACION_A_RECLAMACION, RESPUESTA_A_USUARIO, NOTA_CREDITO_DEL_ASEO, RELACION_DE_PAGOS}
+)
 #: El formato que reconoce ``titulo_del_documento`` y el nombre que lleva por
 #: él: la auditoría de la entrega avisa si el PDF se llama de otro modo.
 NOMBRE_POR_SU_FORMATO: dict[str, str] = {
     RESPUESTA_A_USUARIO: RESPUESTA_A_USUARIO,
     AUTORIZACION_DEL_ASEO: NOTA_CREDITO_DEL_ASEO,
+    RELACION_DE_PAGOS: RELACION_DE_PAGOS,
 }
 
 
