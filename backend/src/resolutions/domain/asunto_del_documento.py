@@ -369,13 +369,14 @@ _PUBLICACION_DEL_AVISO = re.compile(r"^\W*PUBLICACION\s+DEL?\s+AVISO\W*$")
 #: reclamación («AUT-5073-ASEO»). Su título interno sigue empezando por
 #: «AUTORIZACION»: no toma el RE de ningún trámite.
 AUTORIZACION_DEL_ASEO = "AUTORIZACION DE NOTA CREDITO DEL ASEO"
-#: Cómo se llama, sin RE: «DESCUENTO/NOTA DE CREDITO ASEOPRONTO ESP», así, en
-#: mayúsculas (el operador, 2026-11-24, ante 1000501: «estos documentos que
-#: tengan este formato de ahora en adelante se llamarán…»). Del 2026-11-20 al
-#: 24 se llamó RECLAMACION. En el nombre del archivo la barra, que Windows no
-#: admite, queda en guion: «01_DESCUENTO-NOTA-DE-CREDITO-ASEOPRONTO-ESP.pdf»;
-#: la fila del índice la lleva tal cual.
-NOTA_CREDITO_DEL_ASEO = "DESCUENTO/NOTA DE CREDITO ASEOPRONTO ESP"
+#: Cómo se llama, sin RE: «AUTORIZACION DESCUENTO/NOTA DE CREDITO», en
+#: mayúsculas (el operador, 2026-11-24, ante 1000501: «RECLAMO -> DESCUENTO/NOTA
+#: DE CREDITO ASEOPRONTO ESP -> AUTORIZACION DESCUENTO/NOTA DE CREDITO»). Del
+#: 2026-11-20 al 24 se llamó RECLAMACION, y unas horas del 24, DESCUENTO/NOTA DE
+#: CREDITO ASEOPRONTO ESP. En el nombre del archivo la barra, que Windows no
+#: admite, queda en guion: «01_AUTORIZACION-DESCUENTO-NOTA-DE-CREDITO.pdf»; la
+#: fila del índice la lleva tal cual.
+NOTA_CREDITO_DEL_ASEO = "AUTORIZACION DESCUENTO/NOTA DE CREDITO"
 _POR_LO_QUE_DICEN: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         AUTORIZACION_DEL_ASEO,

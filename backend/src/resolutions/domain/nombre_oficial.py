@@ -53,7 +53,7 @@ AL_CATALOGO: dict[str, str] = {
     "CONSTANCIA DE RECLAMACION": "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION",
     # La autorización de la nota crédito del aseo («AUT-5073-ASEO»): el
     # operador, 2026-11-20, «a estos documentos colócale reclamación», y el
-    # 2026-11-24, «se llamarán DESCUENTO/NOTA DE CRÉDITO ASEOPRONTO ESP». Sin
+    # 2026-11-24, «AUTORIZACION DESCUENTO/NOTA DE CREDITO». Sin
     # RE: no es el reclamo del usuario ni trae uno de Afinia.
     AUTORIZACION_DEL_ASEO: NOTA_CREDITO_DEL_ASEO,
 }

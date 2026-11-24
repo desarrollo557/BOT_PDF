@@ -190,7 +190,7 @@ CATALOGO: tuple[TipoDocumental, ...] = (
     # La autorización de la nota crédito del aseo («AUT-5827-ASEO»), por dictado
     # del operador (2026-11-24). Sin frases ni IA: sólo la pone su formato
     # (``asunto_del_documento.AUTORIZACION_DEL_ASEO``).
-    TipoDocumental("DESCUENTO/NOTA DE CREDITO ASEOPRONTO ESP"),
+    TipoDocumental("AUTORIZACION DESCUENTO/NOTA DE CREDITO"),
     TipoDocumental(
         "DECLARACION BAJO GRAVEDAD DE JURAMENTO",
         (
@@ -323,7 +323,7 @@ CATALOGO: tuple[TipoDocumental, ...] = (
     TipoDocumental("RECLAMO", ("RECLAMO",)),
     # Fue el nombre de la autorización de la nota crédito del aseo
     # («AUT-5073-ASEO») del 2026-11-20 al 24; desde entonces se llama
-    # «DESCUENTO/NOTA DE CREDITO ASEOPRONTO ESP» (``asunto_del_documento``).
+    # «AUTORIZACION DESCUENTO/NOTA DE CREDITO» (``asunto_del_documento``).
     # Sin frases ni IA (``SOLO_POR_SU_FORMATO``): ninguna palabra suelta la
     # pone -- la reclamación del usuario es RECLAMO --.
     TipoDocumental("RECLAMACION"),

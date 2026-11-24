@@ -713,7 +713,7 @@ class TestLosCasosDelVeinticuatro:
     )
 
     def test_la_nota_credito_del_aseo_se_llama_por_su_formato(self):
-        """1000501 (el operador, 2026-11-24): «se llamarán DESCUENTO/NOTA DE CRÉDITO ASEOPRONTO ESP»."""
+        """1000501 (el operador, 2026-11-24): «RECLAMO -> DESCUENTO/NOTA DE CREDITO ASEOPRONTO ESP -> AUTORIZACION DESCUENTO/NOTA DE CREDITO»."""
         from resolutions.domain.asunto_del_documento import (
             AUTORIZACION_DEL_ASEO,
             NOMBRES_DEL_OPERADOR,
@@ -728,12 +728,12 @@ class TestLosCasosDelVeinticuatro:
 
         assert titulo_del_documento(self.CARTA_ASEO) == AUTORIZACION_DEL_ASEO
         nombre = nombre_oficial(AUTORIZACION_DEL_ASEO)
-        assert nombre == "DESCUENTO/NOTA DE CREDITO ASEOPRONTO ESP"
+        assert nombre == "AUTORIZACION DESCUENTO/NOTA DE CREDITO"
         # Ni el catálogo ni la IA se lo cambian, y no lleva RE.
         assert estandarizar(nombre) == nombre and nombre in NOMBRES_DEL_OPERADOR
         assert not le_falta_su_re(nombre, [self.CARTA_ASEO])
         # En el disco, la barra que Windows no admite es un guion.
-        assert kind_fragment(nombre) == "DESCUENTO-NOTA-DE-CREDITO-ASEOPRONTO-ESP"
+        assert kind_fragment(nombre) == "AUTORIZACION-DESCUENTO-NOTA-DE-CREDITO"
 
     def test_la_auditoria_avisa_la_nota_credito_mal_nombrada(self):
         from resolutions.application.auditoria_de_la_entrega import auditar_los_radicados
@@ -741,9 +741,14 @@ class TestLosCasosDelVeinticuatro:
 
         textos = {1: self.CARTA_ASEO}
         viejo = auditar_los_radicados([ArchivoEntregado("01_RECLAMACION.pdf", (1,))], textos)
-        assert any("DESCUENTO/NOTA DE CREDITO ASEOPRONTO ESP y se llama RECLAMACION" in d for d in viejo.dudas)
-        nuevo = auditar_los_radicados(
+        assert any("AUTORIZACION DESCUENTO/NOTA DE CREDITO y se llama RECLAMACION" in d for d in viejo.dudas)
+        # El nombre de unas horas del 24 también es viejo.
+        intermedio = auditar_los_radicados(
             [ArchivoEntregado("01_DESCUENTO-NOTA-DE-CREDITO-ASEOPRONTO-ESP.pdf", (1,))], textos
+        )
+        assert any("su formato es" in d for d in intermedio.dudas)
+        nuevo = auditar_los_radicados(
+            [ArchivoEntregado("01_AUTORIZACION-DESCUENTO-NOTA-DE-CREDITO.pdf", (1,))], textos
         )
         assert not any("su formato es" in d for d in nuevo.dudas)
 
