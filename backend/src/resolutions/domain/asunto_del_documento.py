@@ -299,6 +299,12 @@ _TITULOS_DEL_ESCRITO: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"REC\w*\W{0,3}(?:DE\s+)?REPOSICION\s+(?:Y\s+)?(?:EN\s+)?SUBSIDI\w*\s+(?:EL\s+)?(?:DE\s+)?APELACION"
         ),
     ),
+    (
+        "RECURSO DE REPOSICION EN SUBSIDIO DE APELACION",
+        # Y como lo rompe el escáner: «RECURSO OE REPOCISIOtsl EN SUBSIDIO DE
+        # APEtACION» (7740476, UPD2457970 pág. 12, 2026-11-24).
+        re.compile(r"\bRECURSO\s+[DO0][EF]\s+REPO[SC]\w{2,9}\s+EN\s+SUBSIDI\w*\s+(?:EL\s+)?(?:D[EF]\s+)?APE\w{3,7}\b"),
+    ),
     ("RECURSO DE APELACION", re.compile(r"RECURSO\s+DE\s+APELACION")),
     ("RECURSO DE REPOSICION", re.compile(r"REC\w*\W{0,3}(?:DE\s+)?REPOSICION")),
     ("RECURSO DE QUEJA", re.compile(r"RECURSO\s+DE\s+QUEJA")),
@@ -314,7 +320,10 @@ _TITULOS_DEL_ESCRITO: tuple[tuple[str, re.Pattern[str]], ...] = (
 #: le da a llenar -- la solicitud de servicio de UPD2555087 pág. 4 --.
 ESCRITOS_DEL_TRAMITE = frozenset(nombre for nombre, _ in _TITULOS_DEL_ESCRITO) - {"SOLICITUD"}
 #: Lo que imprime la empresa en una carta suya.
-_DE_LA_EMPRESA = re.compile(r"\bCONSECUTIVO\s+N[O0°º]?\W")
+#: No el que cita el usuario: «RECURSO… CONTRA CONSECUTIVO N° 202170149272»
+#: es su escrito, no la carta de la empresa (7740476, UPD2457970 pág. 12,
+#: 2026-11-24: salía dentro de la respuesta que recurría).
+_DE_LA_EMPRESA = re.compile(r"(?<!CONTRA )(?<!\bAL )(?<!DEL )\bCONSECUTIVO\s+N[O0°º]?\W")
 #: La constancia que firma el usuario al radicar en la oficina. Con lo que la
 #: OCR hace de sus palabras: «Recibí Constanza del contenido» (UPD3102729 pág.
 #: 2), y por su formulario si el renglón no se lee: «PARA LA EMPRESA», «N° PQR»

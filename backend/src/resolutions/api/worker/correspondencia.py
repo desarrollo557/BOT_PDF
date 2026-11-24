@@ -3877,6 +3877,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         avisos_con_su_acto = el_aviso_con_su_acto(grupos, textos, anexos)
         grupos, anexos = avisos_con_su_acto.grupos, avisos_con_su_acto.anexos
     paquetes_de_la_empresa = None
+    paquetes_sin_caratula = None
     caratulas: set[int] = set()
     if entregado_por is not Agrupacion.MES:
         from ...application.anexos_declarados import unir_el_paquete_de_la_empresa
@@ -3931,6 +3932,21 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 paradas=cierran_el_paquete | caratulas | contratos,
             )
             grupos, anexos = paquetes_sin_caratula.grupos, paquetes_sin_caratula.anexos
+    # Las hojas de cada paquete de la empresa, con carátula o sin ella: F5g no
+    # las saca, ni por la persona ni por la IA. La IA llevaba la factura del
+    # paquete de 6833917 al acuerdo y la de 4251565 al paquete siguiente
+    # (2026-11-24).
+    del_paquete: set[int] = set()
+    if paquetes_de_la_empresa is not None:
+        juntadas = set(paquetes_de_la_empresa.movidas)
+        if paquetes_sin_caratula is not None:
+            juntadas |= set(paquetes_sin_caratula.movidas)
+        del_paquete = {
+            p
+            for g in grupos.groups
+            if any(q in caratulas or q in juntadas for q in g.page_numbers)
+            for p in g.page_numbers
+        }
     # F5g. Cada anexo con su documento (el operador, 2026-11-23): la secuencia
     # del PDF -- con su página principal anterior --, salvo que su persona lo
     # haga de otro documento de la caja. La constancia no recibe ninguno: lo
@@ -3968,6 +3984,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 # cédulas del acuerdo a la declaración juramentada de detrás,
                 # de la misma persona (4263077, UPD2447035, 2026-11-24).
                 | set(del_acuerdo)
+                | del_paquete
                 | set(cartas.copias)
                 | set(de_prueba)
                 | {g.page_numbers[0] for g in grupos.groups if g.page_numbers and g.page_numbers[0] in formularios_solos}
@@ -4043,7 +4060,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # El acuerdo de pago se llama así sólo si trae su reconocimiento: el PDF
         # de la declaración juramentada que empezaba por una cédula del acuerdo
         # salía «RECONOCIMIENTO DE DEUDA…» (4263077, 2026-11-24).
-        if g.page_numbers[0] in del_acuerdo and any(
+        # Y empiece por la hoja que empiece: el de 6833917 abría con una factura
+        # y salía «LEY HABEAS DATA».
+        if any(p in del_acuerdo for p in g.page_numbers) and any(
             titulo_del_documento(textos.get(p, "") or "") == ACUERDO_DE_PAGO for p in g.page_numbers
         ):
             return replace(g, kind=nombre_oficial(ACUERDO_DE_PAGO))

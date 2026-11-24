@@ -1671,3 +1671,26 @@ class TestLaEtiquetaImpresaRota:
         # El año manda: con otro año en el número interno y sin fecha legible, no se rehace.
         sin_fecha = self.CAPA.replace("202260099999", "202160099999").replace("09/02^022", "09/02 ??")
         assert leer_sello(sin_fecha).radicado is None
+
+
+class TestElRecursoQueCitaElConsecutivo:
+    """7740476 (UPD2457970 pág. 12, 2026-11-24): el recurso del usuario «CONTRA CONSECUTIVO N° 202170149272» se
+    tomaba por una carta de la empresa y salía dentro de la respuesta que recurría."""
+
+    RECURSO = (
+        "San Sebastián de Buenavista Magdalena 15 de Junio 2021\n"
+        "RECURSO OE REPOCISIOtsl EN SUBSIDIO DE APEtACION CONTRA\nCONSECUTIVO N° 202170000001 DEL 8 /06/2021\n"
+        "Yo Pedro Perez Paez titular de la C.C 12.345.678 y propietario del predio"
+    )
+
+    def test_es_el_escrito_del_usuario(self):
+        from resolutions.domain.asunto_del_documento import (
+            RESPUESTA_DE_LA_EMPRESA,
+            formulario_que_abre,
+            titulo_del_documento,
+        )
+
+        assert formulario_que_abre(self.RECURSO) is None
+        assert titulo_del_documento(self.RECURSO) == "RECURSO DE REPOSICION EN SUBSIDIO DE APELACION"
+        # La carta de la empresa con su consecutivo sigue siendo la respuesta.
+        assert formulario_que_abre(RESPUESTA_AL_RECLAMO) == RESPUESTA_DE_LA_EMPRESA
