@@ -194,7 +194,11 @@ def hojas_del_barrido(grupos, *, sellos: dict, escritos: set[int], sin_re: set[i
         por_su_tipo = le_falta_su_re(grupo.kind, [textos.get(p) or "" for p in grupo.page_numbers])
         if not (por_su_tipo or primera in escritos or any(p in sellos for p in propias)):
             continue
-        hojas = [primera, *(p for p in propias if p in sellos), *(p for p in propias if se_mira_al_pie(textos.get(p) or ""))]
+        hojas = [
+            primera,
+            *(p for p in propias if p in sellos),
+            *(p for p in propias if se_mira_al_pie(textos.get(p) or "", mudas=False)),
+        ]
         salida[primera] = list(dict.fromkeys(hojas))[:HOJAS_DEL_BARRIDO_POR_DOCUMENTO]
     return salida
 
@@ -2255,6 +2259,14 @@ def _ordenar_los_acuerdos(grupos, piezas: list[dict], textos: dict, del_acuerdo:
             and (pieza.get("fecha_pagina") is None or pieza.get("fecha_pagina") in reconocimiento)
             for pieza in del_archivo
         )
+        # Y el reconocimiento cuya fecha escrita a mano ningún lector leyó --
+        # ilegible, o en tinta casi blanca --, si el acuerdo tiene la suya por
+        # sus respaldos: tiene fecha y va primero. Sin fecha es sólo el renglón
+        # en blanco (el operador, 2026-11-24, 4251530 y 4251531).
+        if not fechado and any(pieza.get("fecha") for pieza in del_archivo):
+            from ...domain.fecha_por_estructura import fecha_en_blanco
+
+            fechado = not any(fecha_en_blanco(textos.get(p, "") or "") for p in reconocimiento)
         # La fecha de cada reconocimiento, por su primera hoja: con dos, el más
         # reciente va primero (2026-11-20). La del acuerdo -- que pudo corregir
         # el revisor de fechas -- es la del reconocimiento de su hoja.
@@ -2924,6 +2936,19 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # copia «Recibido» de otro radicado que el escrito trae anexa (2026-11-12,
     # «el folio manda»; 7975593 partía así doce escritos).
     sellos_que_abren = {p: s for p, s in sellos.items() if p not in cartas.no_abren and p not in foliacion.continua}
+    # Y el sello al pie de otra radicación -- otra fecha de recibido, otro RE,
+    # o fuera de los folios del sello de delante --: es otro escrito, y abre
+    # (4251461, UPD2447021 pág. 8, 2026-11-24: la reclamación manuscrita de
+    # enero de 2021 salía pegada al recurso de noviembre de 2020).
+    from ...domain.sello import al_pie_de_otra_radicacion
+
+    sellos_que_abren.update(
+        {
+            p: s
+            for p, s in al_pie_de_otra_radicacion(sellos, al_pie).items()
+            if p not in cartas.no_abren and p not in foliacion.continua
+        }
+    )
     grupos, anexos, cortes_por_sello = cortar_por_sellos(
         grupos,
         sellos_que_abren,
@@ -3109,6 +3134,16 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # referencia»). Y desde el 2026-10-26 tampoco la constancia, la
     # notificación ni la respuesta: cada una va sola.
     abren_el_tramite = abren | cartas.escritos(que_abren) | formularios_solos | foliacion.abre
+    # El reconocimiento de deuda que abre como carta -- «Magangué, 16 de julio
+    # de 2024. Señores: CARIBEMAR…» -- o por el folio 1 de su esquina sigue
+    # siendo la pieza que hace el acuerdo: empieza el suyo. Sin esto el acuerdo
+    # no se formaba y sus pagarés y su Habeas Data quedaban sin él (7740523,
+    # UPD3128421 pág. 11, 2026-11-24). El sello y la etiqueta sí lo cortan.
+    from ...domain.asunto_del_documento import titulo_del_documento as _titulo_de_la_pieza
+
+    reconocimientos_que_abren = {
+        p for p in (que_abren | foliacion.abre) - abren if _titulo_de_la_pieza(textos.get(p, "") or "") == _ACUERDO
+    }
     abren = abren | que_abren | formularios_solos | foliacion.abre
     # F3. Lista de ANEXOS.
     retencion = retener_anexos(grupos, textos, anexos, abren=abren)
@@ -3131,6 +3166,7 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             anexos,
             abren=abren,
             cruzan=formularios_solos,
+            reconocimientos_que_abren=reconocimientos_que_abren,
             persona_de=personas,
             fecha_de=personas.fecha_de,
         )
@@ -3194,6 +3230,12 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         cuerpo --; y el tipo del catálogo, ``tipo``.
         """
         texto = textos.get(pagina, "") or ""
+        # La carátula con membrete, por el título que imprime: CONSTANCIA DE
+        # CONTRATACION DE SERVICIO, EXPEDIENTE (el operador, 2026-11-24).
+        from ...domain.asunto_del_documento import titulo_de_la_caratula
+
+        if caratula := titulo_de_la_caratula(texto):
+            return caratula
         asunto = asunto_de_la_carta(texto)
         titulo = titulo_del_documento(texto, None)
         if titulo == _CONSTANCIA:
@@ -3637,6 +3679,15 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # que movió en F2f, para el informe.
     final_por_el_folio = aplicar_la_foliacion(grupos, anexos, foliacion)
     grupos, anexos = final_por_el_folio.grupos, final_por_el_folio.anexos
+    # Lo que el folio separó del acuerdo sin su reconocimiento de deuda ya no es
+    # el acuerdo: el pagaré con sus cartas se llama PAGARE, no RECONOCIMIENTO
+    # (7740523, UPD3128421 págs. 5-10, 2026-11-24: el folio 1 de la hoja 11
+    # abre el acuerdo, y lo de delante es otro documento).
+    for grupo in grupos.groups:
+        if set(grupo.page_numbers) & del_acuerdo and not any(
+            _titulo_de_la_pieza(textos.get(p, "") or "") == _ACUERDO for p in grupo.page_numbers
+        ):
+            del_acuerdo = del_acuerdo - set(grupo.page_numbers)
     # F5e. El revisor de cortes (lo pidió el operador el 2026-11-05 ante
     # 1004569, donde el acuerdo de pago se llevó la última hoja del contrato de
     # transacción saltando una constancia): cada costura de lo que va a salir,
@@ -3703,6 +3754,52 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             },
         )
         grupos, anexos = constancias_sueltas.grupos, constancias_sueltas.anexos
+    # F5f2. El paquete de la empresa (el operador, 2026-11-24, ante 4251482:
+    # «de la página 1 a la 7, y el otro grupo de la 8 a la 18»): la carátula
+    # con membrete -- la CONSTANCIA DE CONTRATACIÓN DE SERVICIO, el EXPEDIENTE
+    # -- abre un documento con todo lo que la sigue: la carta que pide el
+    # servicio, la cédula, la declaración juramentada, la solicitud, la
+    # factura, el certificado de tradición, el RETIE. Lo cierra la siguiente
+    # carátula, la constancia de reclamación, la notificación, la respuesta de
+    # la empresa, el acuerdo de pago, un sello, una etiqueta, el folio 1 o el
+    # escrito de un trámite. Antes de F5g, para que los anexos se repartan
+    # sobre los paquetes.
+    # Y el aviso que adjunta la copia del acto que notifica se la lleva, con su
+    # portada «ANEXO» (el operador, 2026-11-24, ante 4251461).
+    avisos_con_su_acto = None
+    if entregado_por is not Agrupacion.MES:
+        from ...application.anexos_declarados import el_aviso_con_su_acto
+
+        avisos_con_su_acto = el_aviso_con_su_acto(grupos, textos, anexos)
+        grupos, anexos = avisos_con_su_acto.grupos, avisos_con_su_acto.anexos
+    paquetes_de_la_empresa = None
+    caratulas: set[int] = set()
+    if entregado_por is not Agrupacion.MES:
+        from ...application.anexos_declarados import unir_el_paquete_de_la_empresa
+        from ...application.cartas import _es_escrito_del_tramite
+        from ...domain.asunto_del_documento import (
+            formulario_que_abre as _que_formulario_abre,
+        )
+
+        clase_de_la_hoja_que_abre = {p: _que_formulario_abre(textos.get(p, "") or "") for p in textos}
+        no_son_caratula = (
+            set(foliacion.continua) | set(cartas.copias) | set(de_prueba) | set(por_folios) | set(del_acuerdo)
+        )
+        caratulas = {p for p, clase in clase_de_la_hoja_que_abre.items() if clase == _FORMATO and p not in no_son_caratula}
+        cierran_el_paquete = (
+            set(sellos_que_abren)
+            | etiquetas
+            | guias
+            | set(foliacion.abre)
+            | set(actas)
+            | set(del_acuerdo)
+            | {p for p in que_abren if _es_escrito_del_tramite(textos.get(p, "") or "")}
+            | {p for p, clase in clase_de_la_hoja_que_abre.items() if clase not in (None, _DECLARACION, _FORMATO)}
+        )
+        paquetes_de_la_empresa = unir_el_paquete_de_la_empresa(
+            grupos, anexos, abren_paquete=caratulas, paradas=cierran_el_paquete
+        )
+        grupos, anexos = paquetes_de_la_empresa.grupos, paquetes_de_la_empresa.anexos
     # F5g. Cada anexo con su documento (el operador, 2026-11-23): la secuencia
     # del PDF -- con su página principal anterior --, salvo que su persona lo
     # haga de otro documento de la caja. La constancia no recibe ninguno: lo
@@ -3891,9 +3988,13 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         if entregado_por is Agrupacion.MES:
             return nombrado
         nombre = estandarizar(nombrado.kind)
-        # El nombre que dio el operador a la contestación no se le discute a la IA.
-        if nombre in POR_NOMBRE or nombre == CONTESTACION_A_RECLAMACION or nombrador is None:
-            return replace(nombrado, kind=nombre)
+        # El nombre que dio el operador a la contestación no se le discute a la
+        # IA, ni el de la carta «MESUC» al usuario: la IA la llamaba RECURSO DE
+        # QUEJA (920933, 2026-11-24).
+        if nombre in POR_NOMBRE or nombre in NOMBRES_DEL_OPERADOR or nombrador is None:
+            from ...domain.nombre_oficial import tipo_unificado as _unificado
+
+            return replace(nombrado, kind=_unificado(nombre))
         if not fuente_de_encabezados:
             fuente_de_encabezados.append(PyMuPDFPageSource(tmp_path, taller.name))
         # Todo el documento, no sólo su primera hoja: lo que dice ser puede
@@ -3912,6 +4013,10 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             and clase_de_soporte(textos.get(p, "") or "") is None
             and not _es_cedula_de_la_ia(textos.get(p, "") or "")
         ]
+        # El paquete de la empresa se llama por su carátula, no por la carta o
+        # la solicitud que lleva dentro (2026-11-24, 4251482).
+        if g.page_numbers and g.page_numbers[0] in caratulas:
+            sin_anexos = [g.page_numbers[0]]
         de_la_ia = _nombre_con_la_ia(
             fuente_de_encabezados[0],
             sin_anexos or propias or list(g.page_numbers),
@@ -3922,15 +4027,20 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         sin_nombre = g.page_numbers[0] in sin_titulo or next(
             (x for x in g.page_numbers if x not in guias and x not in delanteras), g.page_numbers[0]
         ) in sin_titulo
+        # El mismo documento con un solo nombre: PETICION es DERECHO DE
+        # PETICION (2026-11-24, 4251556).
+        from ...domain.nombre_oficial import tipo_unificado
+
         if de_la_ia and (de_la_ia in POR_NOMBRE or sin_nombre):
             for pagina in g.page_numbers:
                 if pagina in sin_titulo:
                     sin_titulo.remove(pagina)
-            return replace(nombrado, kind=de_la_ia)
-        return replace(nombrado, kind=nombre)
+            return replace(nombrado, kind=tipo_unificado(de_la_ia))
+        return replace(nombrado, kind=tipo_unificado(nombre))
 
     from ...domain.asunto_del_documento import (
         CONTESTACION_A_RECLAMACION,
+        NOMBRES_DEL_OPERADOR,
         es_contestacion_a_reclamacion,
     )
     from ...domain.catalogo import POR_NOMBRE

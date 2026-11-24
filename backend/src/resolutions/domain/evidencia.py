@@ -200,7 +200,10 @@ def familia(lector: str) -> str:
 #: UPD2985240 pág. 2, 2026-11-18) --: el prefijo es el mismo en todo RE y las
 #: cifras siguen siendo las leídas.
 #: Y la E sin trazar: «R2810202402908» (1005122).
-_PREFIJO_DEL_RE = r"R(?:\W?E|[$€£&§])?"
+#: Y como deja la letra a mano su «RE»: «Rt», «R+», o la R leída P: «Pit», «Pt»
+#: (4251555, UPD2447029 pág. 1, 2026-11-24: la visión leyó «Rt 2311202107751»
+#: y no se tomaba). Las trece cifras, su oficina y su año los valida la evidencia.
+_PREFIJO_DEL_RE = r"(?:R(?:\W?[EeTtFf]|[$€£&§+])?|P\W?(?:[iI]\W?)?[tT])"
 _RE_EN_LA_LECTURA = re.compile(
     r"(?<![A-Z0-9])" + _PREFIJO_DEL_RE + r"\W{0,2}((?:\d" + _SEPARADOR + r"){12}\d)(?!" + _SEPARADOR + r"\d)"
 )

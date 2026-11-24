@@ -733,8 +733,15 @@ def asignar_por_secuencia(
     # documento, sigue su secuencia (6833917 hoja 9, el reverso de la cédula
     # detrás de la Habeas Data, 2026-11-23). Si trae un anexo, la hoja muda
     # puede ser su carta llenada a mano, con la capa rota: se queda.
+    # Salvo que alguna de sus hojas diga qué es: la notificación por aviso de
+    # poco texto también cuenta como hoja muda, y se iba con la respuesta de
+    # delante (test_segment_task, desde f8b1fb8; 2026-11-24).
+    from ..domain.asunto_del_documento import titulo_del_documento as _titulo_de
+
     for hojas in documentos:
-        if all(not clases[p] and clase_de_la_hoja(textos.get(p, "") or "") == HOJA_MUDA for p in hojas):
+        if all(not clases[p] and clase_de_la_hoja(textos.get(p, "") or "") == HOJA_MUDA for p in hojas) and all(
+            _titulo_de(textos.get(p, "") or "") == "DOCUMENTO" for p in hojas
+        ):
             mudas.update(hojas)
     movibles = {p for p in orden if (clases[p] or p in mudas) and p not in fijas}
     if not movibles:
@@ -896,6 +903,166 @@ def asignar_por_secuencia(
         anexos=anexos,
         movidas=movidas,
         decisiones=decisiones,
+    )
+
+
+def unir_el_paquete_de_la_empresa(
+    grupos: GroupingResult,
+    anexos: dict[str, list[int]] | None = None,
+    *,
+    abren_paquete: set[int] | frozenset[int],
+    paradas: set[int] | frozenset[int],
+) -> SoportesUnidos:
+    """El formato con membrete de la empresa abre un paquete con todo lo que lo sigue (el operador, 2026-11-24).
+
+    La CONSTANCIA DE CONTRATACIÓN DE SERVICIO y el EXPEDIENTE de una solicitud
+    son la carátula de un trámite de servicio: detrás van la carta del usuario
+    que lo pide, su cédula, la declaración juramentada, la solicitud de
+    servicio, la factura, el certificado de tradición, el RETIE con la cédula
+    y la matrícula del electricista. Todo eso es UN documento, hasta la
+    siguiente carátula. En 4251482 (UPD2447022) el operador lo dictó así: «de
+    la página 1 a la 7, y el otro grupo de la 8 a la 18»; salía en siete PDF,
+    porque la carta, la declaración y la solicitud abrían cada una el suyo.
+
+    ``abren_paquete`` son las hojas de la carátula; ``paradas``, las que cierran
+    un paquete: otra carátula, la constancia de reclamación, la notificación,
+    la respuesta de la empresa, el acuerdo de pago, un sello o una etiqueta,
+    el folio 1, el escrito de un trámite (reclamo, recurso, petición). Un
+    documento entra en el paquete si todas sus hojas caen dentro y no empieza
+    en una parada; el que cruza la parada se queda como está.
+    """
+    anexos = {codigo: list(paginas) for codigo, paginas in (anexos or {}).items()}
+    lista = list(grupos.groups)
+    todas = sorted({p for g in lista for p in g.page_numbers})
+    cierran = set(paradas) | set(abren_paquete)
+    destino_de: dict[int, int] = {}
+    for caratula in sorted(abren_paquete):
+        if caratula not in todas:
+            continue
+        fin = next((p for p in todas if p > caratula and p in cierran), todas[-1] + 1)
+        dentro = {p for p in todas if caratula <= p < fin}
+        suyo = next((k for k, g in enumerate(lista) if caratula in g.page_numbers), None)
+        if suyo is None:
+            continue
+        for k, grupo in enumerate(lista):
+            if k == suyo or k in destino_de or not grupo.page_numbers:
+                continue
+            if grupo.page_numbers[0] in cierran or not set(grupo.page_numbers) <= dentro:
+                continue
+            destino_de[k] = suyo
+    if not destino_de:
+        return SoportesUnidos(grupos=grupos, anexos=anexos)
+    movidas: dict[int, int] = {}
+    juntos: dict[int, list[int]] = {}
+    for origen, destino in destino_de.items():
+        juntos.setdefault(destino, []).append(origen)
+    salida: list[PageGroup] = []
+    for k, grupo in enumerate(lista):
+        if k in destino_de:
+            continue
+        if k not in juntos:
+            salida.append(grupo)
+            continue
+        miembros = [lista[o] for o in juntos[k]]
+        paginas = sorted({*grupo.page_numbers, *(p for g in miembros for p in g.page_numbers)})
+        propios = anexos.pop(grupo.code.value, []) + [p for g in miembros for p in anexos.pop(g.code.value, [])]
+        for g in miembros:
+            for pagina in g.page_numbers:
+                movidas[pagina] = grupo.page_numbers[0]
+        # En el orden del papel: la carátula delante y lo demás como viene.
+        unido = replace(grupo, page_numbers=paginas, orden=None)
+        salida.append(unido)
+        if propios:
+            anexos[unido.code.value] = sorted(set(propios))
+    salida, anexos = _renumerar(salida, anexos)
+    return SoportesUnidos(
+        grupos=GroupingResult(groups=salida, quarantine=list(grupos.quarantine), repairs=list(grupos.repairs)),
+        anexos=anexos,
+        movidas=movidas,
+    )
+
+
+def el_aviso_con_su_acto(
+    grupos: GroupingResult,
+    textos: Mapping[int, str],
+    anexos: dict[str, list[int]] | None = None,
+) -> SoportesUnidos:
+    """La notificación por aviso que adjunta la copia del acto se la lleva, con su portada (el operador, 2026-11-24).
+
+    En 4251461 (UPD2447021) el aviso de la hoja 2 dice que la copia íntegra del
+    acto «Consecutivo No. 202070083927» «se adjunta al presente Aviso»; la hoja
+    3 es la portada «ANEXO: Copia del acto administrativo…» y las 4-5 son la
+    copia. Salían tres PDF: el aviso, «ANEXOS» con la portada sola, y la
+    respuesta. El operador eligió el aviso con su anexo, como el reconocimiento
+    de deuda se lleva sus anexos.
+
+    Se une lo que va justo detrás del aviso: la portada del anexo y la carta
+    cuyo consecutivo es el del acto que el aviso nombra (sin número, la que va
+    tras la portada). La notificación que no dice adjuntar nada sigue sola, y
+    la respuesta, aparte (2026-10-26).
+    """
+    from ..domain.asunto_del_documento import (
+        acto_que_adjunta,
+        consecutivo_de,
+        portada_del_anexo,
+    )
+
+    anexos = {codigo: list(paginas) for codigo, paginas in (anexos or {}).items()}
+    lista = sorted(grupos.groups, key=lambda g: min(g.page_numbers) if g.page_numbers else 0)
+    del_grupo = {p: k for k, g in enumerate(lista) for p in g.page_numbers}
+    destino_de: dict[int, int] = {}
+    for k, grupo in enumerate(lista):
+        if not grupo.page_numbers or k in destino_de:
+            continue
+        acto = acto_que_adjunta(textos.get(grupo.page_numbers[0], "") or "")
+        if acto is None:
+            continue
+        ultima, tras_la_portada = max(grupo.page_numbers), False
+        while (siguiente := del_grupo.get(ultima + 1)) is not None and siguiente != k and siguiente not in destino_de:
+            otra = lista[siguiente]
+            primera = otra.page_numbers[0]
+            if primera != ultima + 1:
+                break
+            texto = textos.get(primera, "") or ""
+            portada = portada_del_anexo(texto)
+            es_su_portada = portada is not None and (not acto or not portada or portada == acto)
+            # La portada también trae el consecutivo: el acto es la hoja que no es portada.
+            es_su_acto = portada is None and (consecutivo_de(texto) == acto if acto else tras_la_portada)
+            if not (es_su_portada or es_su_acto):
+                break
+            destino_de[siguiente] = k
+            tras_la_portada = es_su_portada
+            ultima = max(otra.page_numbers)
+            if es_su_acto:
+                break
+    if not destino_de:
+        return SoportesUnidos(grupos=grupos, anexos=anexos)
+    movidas: dict[int, int] = {}
+    salida: list[PageGroup] = []
+    en_la_lista = {id(g): k for k, g in enumerate(lista)}
+    # En el orden en que venían los documentos, no en el del papel.
+    for grupo in grupos.groups:
+        k = en_la_lista[id(grupo)]
+        if k in destino_de:
+            continue
+        suyos = [lista[o] for o, d in destino_de.items() if d == k]
+        if not suyos:
+            salida.append(grupo)
+            continue
+        paginas = sorted({*grupo.page_numbers, *(p for g in suyos for p in g.page_numbers)})
+        propios = anexos.pop(grupo.code.value, []) + [p for g in suyos for p in anexos.pop(g.code.value, [])]
+        propios += [p for g in suyos for p in g.page_numbers]
+        for g in suyos:
+            for pagina in g.page_numbers:
+                movidas[pagina] = grupo.page_numbers[0]
+        unido = replace(grupo, page_numbers=paginas, orden=None)
+        salida.append(unido)
+        anexos[unido.code.value] = sorted(set(propios))
+    salida, anexos = _renumerar(salida, anexos)
+    return SoportesUnidos(
+        grupos=GroupingResult(groups=salida, quarantine=list(grupos.quarantine), repairs=list(grupos.repairs)),
+        anexos=anexos,
+        movidas=movidas,
     )
 
 
@@ -1076,6 +1243,7 @@ def unir_el_acuerdo_de_pago(
     cruzan: set[int] | frozenset[int] = frozenset(),
     persona_de=None,
     fecha_de=None,
+    reconocimientos_que_abren: set[int] | frozenset[int] = frozenset(),
 ) -> tuple[GroupingResult, dict[str, list[int]], set[int]]:
     """Junta en un documento las piezas seguidas de un acuerdo de pago.
 
@@ -1123,6 +1291,12 @@ def unir_el_acuerdo_de_pago(
     va con el único acuerdo cuyo reconocimiento lleva su fecha (``fecha_de``);
     la persona la valida y, si la contradice o la fecha no decide, manda ella.
 
+    ``reconocimientos_que_abren`` son las hojas del reconocimiento de deuda que
+    abren su documento como carta o por el folio 1 de su esquina, sin sello ni
+    etiqueta: siguen siendo la pieza que hace el acuerdo, y empiezan el suyo
+    (7740523, UPD3128421 pág. 11, 2026-11-24: sin él, sus pagarés y su Habeas
+    Data se quedaban sin acuerdo).
+
     Devuelve los documentos, sus anexos y las hojas del acuerdo.
     """
     from ..domain.asunto_del_documento import (
@@ -1137,7 +1311,9 @@ def unir_el_acuerdo_de_pago(
 
     def es_pieza(grupo: PageGroup) -> bool:
         primera = grupo.page_numbers[0]
-        return primera not in abren and titulo_del_documento(textos.get(primera, "") or "") in PIEZAS_DEL_ACUERDO
+        return (primera not in abren or primera in reconocimientos_que_abren) and titulo_del_documento(
+            textos.get(primera, "") or ""
+        ) in PIEZAS_DEL_ACUERDO
 
     def es_habeas(grupo: PageGroup) -> bool:
         primera = grupo.page_numbers[0]
@@ -1184,6 +1360,11 @@ def unir_el_acuerdo_de_pago(
 
     for grupo in grupos.groups:
         if es_pieza(grupo):
+            # El reconocimiento que abre su documento empieza su acuerdo: lo de
+            # delante no se le une por estar al lado (sí, más abajo, por ser el
+            # único reconocimiento del PDF).
+            if grupo.page_numbers[0] in reconocimientos_que_abren:
+                cerrar()
             racha.append(grupo)
         else:
             cerrar()
@@ -1259,8 +1440,19 @@ def unir_el_acuerdo_de_pago(
         else:
 
             def mas_cercano(k: int) -> int:
+                """El acuerdo más cercano; para el pagaré, el más cercano que ningún escrito radicado le corta.
+
+                En 6833800 (UPD2994692, 2026-11-24) el pagaré de 2023 quedaba a
+                dos hojas del acuerdo de 2022, con un recurso con sello en medio,
+                y a cinco del de 2023, con sólo una constancia en medio: se
+                quedaba sin ninguno. La Habeas Data cruza lo que sea: la reparten
+                su persona y su fecha.
+                """
                 centro = salida[k].page_numbers[0]
-                return min(con_reconocimiento, key=lambda a: min(abs(p - centro) for p in salida[a].page_numbers))
+                posibles = con_reconocimiento
+                if not es_habeas(salida[k]):
+                    posibles = [a for a in con_reconocimiento if not cortado(k, a)] or con_reconocimiento
+                return min(posibles, key=lambda a: min(abs(p - centro) for p in salida[a].page_numbers))
 
             from ..domain.persona_de_la_hoja import de_quien_es, la_persona_del_grupo
 
@@ -1330,29 +1522,26 @@ def unir_el_acuerdo_de_pago(
             salida = nueva
     # Ninguna pieza suelta (lo dictó el operador el 2026-10-22: «ningún pagaré
     # puede ir suelto, siempre anexado a un reconocimiento de deuda»): el pagaré
-    # o la carta de instrucciones sola va con el acuerdo de al lado y, si no hay
-    # ninguno, con el documento de antes -- o el de después, si es el primero --.
+    # o la carta de instrucciones sola va con el acuerdo de al lado, el
+    # siguiente primero. Sin un acuerdo al lado no se pega a ningún otro
+    # documento: va solo, con sus cartas y la cédula de detrás, y se llama por
+    # lo que es, «PAGARE» (1000186 págs. 4-7). Hasta el 2026-11-24 iba con el
+    # documento de antes, y el operador lo encontró pegado a un contrato de
+    # transacción (1000478, UPD2437820: «pegaste unos pagarés a donde no
+    # corresponde»); en la misma corrida, a un recurso (6833800) y a la
+    # constancia de contratación (7740523).
     i = 0
     while len(salida) > 1 and i < len(salida):
         suelta = salida[i]
         if suelta.kind == ACUERDO_DE_PAGO or not es_pieza(suelta):
             i += 1
             continue
-        siguiente = salida[i + 1] if i + 1 < len(salida) else None
-        con_el_siguiente = i == 0 or (siguiente is not None and siguiente.kind == ACUERDO_DE_PAGO)
-        j = i + 1 if con_el_siguiente else i - 1
-        # Nunca con un formulario que va solo -- la constancia, la notificación,
-        # la respuesta --: con el otro vecino, o se queda como su acuerdo
-        # (1000186: el pagaré sin reconocimiento detrás de una constancia).
-        if salida[j].page_numbers[0] in cruzan:
-            otro = i - 1 if j == i + 1 else i + 1
-            if 0 <= otro < len(salida) and salida[otro].page_numbers[0] not in cruzan:
-                j, con_el_siguiente = otro, otro == i + 1
-            else:
-                # Sin reconocimiento no es el acuerdo: va solo y se llama
-                # por lo que es, «PAGARE» (1000186 págs. 4-7).
-                i += 1
-                continue
+        al_lado = [j for j in (i + 1, i - 1) if 0 <= j < len(salida) and salida[j].kind == ACUERDO_DE_PAGO]
+        if not al_lado:
+            i += 1
+            continue
+        j = al_lado[0]
+        con_el_siguiente = j == i + 1
         destino = salida[j]
         paginas = (
             list(suelta.page_numbers) + list(destino.page_numbers)

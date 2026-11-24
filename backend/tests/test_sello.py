@@ -420,10 +420,11 @@ class TestElAcuerdoDePago:
         from resolutions.application.anexos_declarados import unir_el_acuerdo_de_pago
 
         grupos, _, _ = unir_el_acuerdo_de_pago(_grupos([1], [2, 3], [4], [5], [6]), self.TEXTOS, abren={4})
-        # La hoja con sello abre su documento: no es del acuerdo. Y el pagaré que
-        # queda antes del sello no va suelto: se une al documento anterior
-        # (regla del operador del 2026-10-22, «ningún pagaré puede ir solo»).
-        assert [g.page_numbers for g in grupos.groups] == [[1, 2, 3], [4], [5, 6]]
+        # La hoja con sello abre su documento: no es del acuerdo. El pagaré que
+        # queda antes del sello no es de ese acuerdo, y tampoco del derecho de
+        # petición de delante: va solo, PAGARE (2026-11-24, 1000478: «pegaste
+        # unos pagarés a donde no corresponde»; antes se unía al de antes).
+        assert [g.page_numbers for g in grupos.groups] == [[1], [2, 3], [4], [5, 6]]
 
 
 class TestLaHojaDeLaListaCierraSuEscrito:

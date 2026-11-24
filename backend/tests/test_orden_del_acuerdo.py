@@ -79,9 +79,16 @@ class TestElPdfEscrito:
         grupos = GroupingResult(groups=[self._grupo()])
         fechada = {"archivo": 0, "pages": [1, 2, 3, 4, 5, 6], "fecha": "2021-03-08", "fecha_pagina": 4}
         assert _ordenar_los_acuerdos(grupos, [fechada], TEXTOS, set(range(1, 7))).groups[0].en_el_pdf[0] == 4
-        # La fecha que salió del pagaré no es la del reconocimiento.
+        # La fecha que salió de un respaldo no es la del reconocimiento, pero el reconocimiento
+        # que trae su renglón de fecha llenado -- aunque ningún lector lo lea -- está fechado y va
+        # primero (el operador, 2026-11-24, 4251530 y 4251531).
         del_pagare = {**fechada, "fecha_pagina": 1}
-        assert _ordenar_los_acuerdos(grupos, [del_pagare], TEXTOS, set(range(1, 7))).groups[0].en_el_pdf[-1] == 4
+        assert _ordenar_los_acuerdos(grupos, [del_pagare], TEXTOS, set(range(1, 7))).groups[0].en_el_pdf[0] == 4
+        a_mano = {**TEXTOS, 4: RECONOCIMIENTO_FECHADO.replace("Magangué 8 de marzo de 2021", "t'oso-N OZ de 9iWi:vode 2o2-n")}
+        assert _ordenar_los_acuerdos(grupos, [del_pagare], a_mano, set(range(1, 7))).groups[0].en_el_pdf[0] == 4
+        # Sólo el renglón en blanco del formato es «sin fecha»: al final.
+        en_blanco = {**TEXTOS, 4: RECONOCIMIENTO_FECHADO.replace("Magangué 8 de marzo de 2021", "________, ___ de ________ de 20___")}
+        assert _ordenar_los_acuerdos(grupos, [del_pagare], en_blanco, set(range(1, 7))).groups[0].en_el_pdf[-1] == 4
         sin_fecha = {**fechada, "fecha": None}
         assert _ordenar_los_acuerdos(grupos, [sin_fecha], TEXTOS, set(range(1, 7))).groups[0].en_el_pdf[-1] == 4
         # Lo que no es del acuerdo no se toca.

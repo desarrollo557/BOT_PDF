@@ -187,6 +187,10 @@ CATALOGO: tuple[TipoDocumental, ...] = (
     TipoDocumental("CONTRATO DE TRANSACCION", ("CONTRATO DE TRANSACCION",)),
     TipoDocumental("CONVENIO DE PAGO", ("CONVENIO DE PAGO", "ACUERDO DE PAGO")),
     TipoDocumental("DAÑO MEDIDOR", ("DANO MEDIDOR", "DANO EN EL MEDIDOR")),
+    # La autorización de la nota crédito del aseo («AUT-5827-ASEO»), por dictado
+    # del operador (2026-11-24). Sin frases ni IA: sólo la pone su formato
+    # (``asunto_del_documento.AUTORIZACION_DEL_ASEO``).
+    TipoDocumental("DESCUENTO/NOTA DE CREDITO ASEOPRONTO ESP"),
     TipoDocumental(
         "DECLARACION BAJO GRAVEDAD DE JURAMENTO",
         (
@@ -317,10 +321,11 @@ CATALOGO: tuple[TipoDocumental, ...] = (
     #: contestan. Es el mismo modo de fallo que el código de caso -- nombra el
     #: asunto del que se habla, no el papel que se tiene delante.
     TipoDocumental("RECLAMO", ("RECLAMO",)),
-    # La autorización de la nota crédito que el operador de aseo da por una
-    # reclamación («AUT-5073-ASEO»), por dictado del operador (2026-11-20). Sin
-    # frases: sólo la pone su formato (``asunto_del_documento``), nunca una
-    # palabra suelta -- la reclamación del usuario es RECLAMO --.
+    # Fue el nombre de la autorización de la nota crédito del aseo
+    # («AUT-5073-ASEO») del 2026-11-20 al 24; desde entonces se llama
+    # «DESCUENTO/NOTA DE CREDITO ASEOPRONTO ESP» (``asunto_del_documento``).
+    # Sin frases ni IA (``SOLO_POR_SU_FORMATO``): ninguna palabra suelta la
+    # pone -- la reclamación del usuario es RECLAMO --.
     TipoDocumental("RECLAMACION"),
     TipoDocumental(
         "RECLAMO POR CONSUMO ESTIMADO",

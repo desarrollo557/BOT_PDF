@@ -574,7 +574,10 @@ def radicado_por_la_cola(texto: str, conocidos: Iterable[str]) -> str | None:
 #: y como la IA lee la letra a mano: «RE23102023214Y3», «RE 23/0 2024 003 48».
 #: Sin pasar de renglón: lo de debajo -- el «DIR.» de «DIR. NOTIFICACIÓN» --
 #: no es parte del número (UPD3102756 pág. 42 daba RE…00301 con ese «DI»).
-_RE_ESCRITO = re.compile(r"R[ \t]?[EF£][ \t]?[-.:]?[ \t]?((?:[0-9OILYSZBGQTD|/](?:[ \t]|[.-](?=\d))?){11,16})")
+#: Con su «RE» roto también: «RT», «R+», «PIT», «PT» (4251555, 2026-11-24).
+_RE_ESCRITO = re.compile(
+    r"(?:R[ \t]?[EF£T+]|P[ \t]?I?[ \t]?T)[ \t]?[-.:]?[ \t]?((?:[0-9OILYSZBGQTD|/](?:[ \t]|[.-](?=\d))?){11,16})"
+)
 #: Lo que la letra a mano hace de cada cifra al leerla (UPD3102756, sellos de
 #: Bolívar Sur leídos por la IA): la Y es un 4, la D un 0.
 _LETRA_POR_CIFRA = {
@@ -1072,3 +1075,45 @@ def numero_del_acta_de_suspension(texto: str) -> str | None:
         return None
     hallado = _NUMERO_DEL_ACTA.search(plano)
     return f"S-{hallado.group(1)}{hallado.group(2)}" if hallado else None
+
+
+#: Cuántas cifras distintas hacen falta para que dos RE sean dos radicaciones y
+#: no la misma mal leída.
+CIFRAS_DE_OTRA_RADICACION = 3
+
+
+def al_pie_de_otra_radicacion(arriba: Mapping[int, Sello], al_pie: Mapping[int, Sello]) -> dict[int, Sello]:
+    """Los sellos al pie que radican otro escrito, y por eso abren su documento (2026-11-24).
+
+    El sello al pie radica el escrito que tiene encima y no abre documento: va
+    en la hoja de la firma. Pero si es de otra radicación que el sello de
+    delante, la hoja es otro escrito. En 4251461 (UPD2447021) el recurso de la
+    hoja 6 lleva su sello del 30-11-2020, de «02 folios» (las hojas 6 y 7), y la
+    hoja 8 es una reclamación manuscrita con su sello del 18-01-2021, de «01
+    folio» y RE2311202100109: salía pegada al recurso. Es de otra radicación si,
+    frente al sello más cercano de delante:
+
+    - su fecha de recibido es otra (las dos leídas);
+    - su RE difiere en ``CIFRAS_DE_OTRA_RADICACION`` cifras o más (los dos leídos);
+    - o la hoja cae fuera de los folios que declara el de delante.
+    """
+    todos = {**al_pie, **arriba}
+    salida: dict[int, Sello] = {}
+    for pagina, sello in sorted(al_pie.items()):
+        if pagina in arriba:
+            continue
+        anterior = max((p for p in todos if p < pagina), default=None)
+        if anterior is None:
+            continue
+        previo = todos[anterior]
+        otra_fecha = sello.fecha is not None and previo.fecha is not None and sello.fecha != previo.fecha
+        otro_re = (
+            bool(sello.radicado)
+            and bool(previo.radicado)
+            and len(sello.radicado) == len(previo.radicado)
+            and sum(a != b for a, b in zip(sello.radicado, previo.radicado, strict=True)) >= CIFRAS_DE_OTRA_RADICACION
+        )
+        fuera_de_sus_folios = previo.folios is not None and previo.folios > 0 and pagina >= anterior + previo.folios
+        if otra_fecha or otro_re or fuera_de_sus_folios:
+            salida[pagina] = sello
+    return salida

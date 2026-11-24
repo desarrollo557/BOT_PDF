@@ -169,7 +169,8 @@ class TestLaConstanciaQueElEscanerRompe:
         )
         assert formulario_que_abre(texto) == CONSTANCIA_DE_RECLAMACION
 
-    def test_la_autorizacion_del_aseo_se_llama_reclamacion_sin_re(self):
+    def test_la_autorizacion_del_aseo_se_llama_por_su_nota_credito_sin_re(self):
+        """Del 2026-11-20 al 24 se llamó RECLAMACION; desde el 24, «DESCUENTO/NOTA DE CREDITO ASEOPRONTO ESP»."""
         from resolutions.domain.asunto_del_documento import titulo_del_documento
         from resolutions.domain.nombre_oficial import (
             instrucciones_para_nombrar,
@@ -182,7 +183,7 @@ class TestLaConstanciaQueElEscanerRompe:
             "Esta autorización se otorga porque el usuario presentó una Reclamación"
         )
         nombre = nombre_oficial(titulo_del_documento(texto))
-        assert nombre == "RECLAMACION" and not lleva_re_en_el_nombre(nombre)
+        assert nombre == "DESCUENTO/NOTA DE CREDITO ASEOPRONTO ESP" and not lleva_re_en_el_nombre(nombre)
         # La reclamación del usuario sigue siendo RECLAMO, y la IA no elige RECLAMACION.
         assert nombre_oficial("RECLAMACION") == "RECLAMO"
         assert "- RECLAMACION\n" not in instrucciones_para_nombrar()

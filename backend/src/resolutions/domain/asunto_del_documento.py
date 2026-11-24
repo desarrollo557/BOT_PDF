@@ -366,10 +366,16 @@ _PUBLICACION_DEL_AVISO = re.compile(r"^\W*PUBLICACION\s+DEL?\s+AVISO\W*$")
 #: REPOSICION» por los recursos que ofrece) y el formulario de la visita de
 #: cobro (887305, salía «PAGO NO APLICADO» por una casilla sin marcar).
 #: La carta del operador de aseo que autoriza la nota crédito de una
-#: reclamación («AUT-5073-ASEO»): se nombra RECLAMACION, sin RE
-#: (``nombre_oficial``; el operador, 2026-11-20). Su título interno sigue
-#: empezando por «AUTORIZACION»: no toma el RE de ningún trámite.
+#: reclamación («AUT-5073-ASEO»). Su título interno sigue empezando por
+#: «AUTORIZACION»: no toma el RE de ningún trámite.
 AUTORIZACION_DEL_ASEO = "AUTORIZACION DE NOTA CREDITO DEL ASEO"
+#: Cómo se llama, sin RE: «DESCUENTO/NOTA DE CREDITO ASEOPRONTO ESP», así, en
+#: mayúsculas (el operador, 2026-11-24, ante 1000501: «estos documentos que
+#: tengan este formato de ahora en adelante se llamarán…»). Del 2026-11-20 al
+#: 24 se llamó RECLAMACION. En el nombre del archivo la barra, que Windows no
+#: admite, queda en guion: «01_DESCUENTO-NOTA-DE-CREDITO-ASEOPRONTO-ESP.pdf»;
+#: la fila del índice la lleva tal cual.
+NOTA_CREDITO_DEL_ASEO = "DESCUENTO/NOTA DE CREDITO ASEOPRONTO ESP"
 _POR_LO_QUE_DICEN: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         AUTORIZACION_DEL_ASEO,
@@ -673,6 +679,10 @@ def formulario_que_abre(texto: str) -> str | None:
     renglones = [r for r in (texto or "").splitlines() if r.strip()][:RENGLONES_DEL_CONSECUTIVO]
     if _DE_LA_EMPRESA.search(" ".join(_plano(r) for r in renglones) + " "):
         return RESPUESTA_DE_LA_EMPRESA
+    # La carta de Electricaribe con su «MESUC» es la misma clase de carta: la
+    # respuesta de la empresa, con sus reglas para abrir (2026-11-24).
+    if titulo == RESPUESTA_A_USUARIO:
+        return RESPUESTA_DE_LA_EMPRESA
     # La declaración juramentada y los formatos con el membrete de la empresa
     # van solos, con su anexo (el operador, 2026-11-23). No el estado de
     # cuenta ni la factura, que traen el membrete y son anexos.
@@ -721,11 +731,128 @@ _A_LA_EMPRESA = re.compile(r"\bSE\W?N?ORES\W{0,3}\s*(?:CARIBE\s?MAR|AFINIA|ELECT
 #: Hasta dónde se busca su asunto: va bajo el destinatario y su dirección.
 CABEZA_DE_LA_CONTESTACION = 900
 
+#: La carta que Electricaribe le manda al usuario desde su oficina comercial:
+#: «MESUC 2818» en el encabezado, «Oficina Comercial: Electricaribe S.A. ESP –
+#: Mercados Especiales», «Señor(a): …», «Estimado usuario:». Se llama así por
+#: su formato (el operador, 2026-11-24, ante 920933, UPD2998261 pág. 2: «ya no
+#: se llamará recurso de queja sino RESPUESTA A USUARIO»). La IA la llamaba
+#: RECURSO DE QUEJA por el recurso que el cuerpo le explica al usuario. No es un
+#: tipo del catálogo del cliente ni lleva RE: es su nombre, como la respuesta a
+#: la reclamación. El aviso que notifica esa misma carta trae el mismo «MESUC»
+#: y sigue siendo la NOTIFICACION POR AVISO: su título se reconoce antes.
+RESPUESTA_A_USUARIO = "RESPUESTA A USUARIO"
+#: «MESUC 2818», con lo que el escáner le haga a sus letras: «MES UC», «MESUC2818».
+_CONSECUTIVO_MESUC = re.compile(r"\bM\W?E\W?S\W?U\W?C\W{0,3}\s*\d{3,6}\b")
+#: Que la carta va al usuario: su saludo, o la oficina comercial que la firma.
+_CARTA_AL_USUARIO = re.compile(r"\bESTIMAD[OA]S?\s+USUARI|\bOFICINA\s+COMERCIAL\b")
+#: Los nombres que dictó el operador para un papel por su formato: el nombrado
+#: no se los discute a la IA ni al catálogo.
+NOMBRES_DEL_OPERADOR = frozenset({CONTESTACION_A_RECLAMACION, RESPUESTA_A_USUARIO, NOTA_CREDITO_DEL_ASEO})
+#: El formato que reconoce ``titulo_del_documento`` y el nombre que lleva por
+#: él: la auditoría de la entrega avisa si el PDF se llama de otro modo.
+NOMBRE_POR_SU_FORMATO: dict[str, str] = {
+    RESPUESTA_A_USUARIO: RESPUESTA_A_USUARIO,
+    AUTORIZACION_DEL_ASEO: NOTA_CREDITO_DEL_ASEO,
+}
+
+
+def es_respuesta_a_usuario(texto: str) -> bool:
+    """Si la hoja tiene el formato de la carta de Electricaribe al usuario: «MESUC NNNN» en su encabezado.
+
+    El «MESUC» tiene que ir en los primeros renglones, donde la empresa numera
+    su carta: el escrito del usuario que cita «la comunicación MESUC 2808» lo
+    hace en su cuerpo. Y la carta va al usuario -- «Estimado usuario», «Oficina
+    Comercial» --, no a la empresa. No mira si es un aviso:
+    :func:`titulo_del_documento` reconoce el aviso antes.
+    """
+    renglones = [r for r in (texto or "").splitlines() if r.strip()]
+    encabezado = " ".join(_plano(r) for r in renglones[:RENGLONES_DEL_CONSECUTIVO])
+    if not _CONSECUTIVO_MESUC.search(encabezado):
+        return False
+    cabeza = " ".join(_plano(r) for r in renglones[:RENGLONES_DE_CABECERA])
+    return bool(_CARTA_AL_USUARIO.search(cabeza)) and _A_LA_EMPRESA.search(cabeza) is None
+
 
 #: El número de la carta de la empresa en su encabezado: «Consecutivo
 #: No.202270208732», «Consecutivo NO.A202270231268», «Consecutivo No. PA
 #: 202270254853».
 _NUMERO_DEL_CONSECUTIVO = re.compile(r"\bCONSECUTIVO\s+N[O0°º]?\W{0,3}\s*((?:[A-Z]{1,2}\s?)?\d{9,16})")
+
+
+#: La notificación por aviso que adjunta la copia del acto que notifica: «el
+#: acto administrativo Consecutivo No. 202070083927 de fecha 14-12-2020, cuya
+#: copia íntegra se adjunta al presente Aviso» (4251461, UPD2447021 pág. 2).
+_ADJUNTA_EL_ACTO = re.compile(
+    r"COPIA\s+INTEGRA\s+SE\s+ADJUNTA|SE\s+ADJUNTA\s+(?:LA\s+)?COPIA|ADJUNT[OA]\s+(?:LA\s+)?COPIA\s+(?:INTEGRA\s+)?DEL\s+ACTO"
+)
+#: El acto que notifica, por su consecutivo: «acto administrativo Consecutivo No. 202070083927».
+_ACTO_QUE_NOTIFICA = re.compile(r"ACTO\s+ADMINISTRATIVO\s+(?:CONSECUTIVO\s+)?N[O0°º]?\W{0,3}\s*(\d{9,16})")
+#: La hoja que sólo anuncia el anexo del aviso: «ANEXO: Copia del acto
+#: administrativo Consecutivo No. 202070083927 de fecha 14-12-2020» (pág. 3).
+_PORTADA_DEL_ANEXO = re.compile(
+    r"\bANEXO\W{0,3}\s*COPIA\s+DEL\s+ACTO\s+ADMINISTRATIVO(?:\s+CONSECUTIVO\s+N[O0°º]?\W{0,3}\s*(\d{9,16}))?"
+)
+#: Cuántos renglones con algo puede tener la portada: es una hoja casi en blanco.
+RENGLONES_DE_LA_PORTADA = 8
+
+
+#: El título que imprime la carátula con membrete, en su propio renglón (el
+#: operador, 2026-11-24, ante 4251482: «la idea es aplicarle el título que está
+#: allí», el subrayado). El EXPEDIENTE salía «AUMENTO DE CARGA» por su casilla
+#: «Tipo de Solicitud: Aumentos de potencia». No el campo «No. Expediente:» ni
+#: «Número de Expediente:», que trae también la constancia de contratación.
+_TITULOS_DE_LA_CARATULA: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "CONSTANCIA DE CONTRATACION DE SERVICIO",
+        re.compile(r"^\W*" + _CONSTAN + r"\s+DE\s+CONTRATACI\w{1,3}(?:\s+DEL?\s+SERVICIOS?)?\W*$"),
+    ),
+    ("EXPEDIENTE", re.compile(r"^\W*EXPEDIENTE\W*$")),
+)
+#: Hasta qué renglón con algo se busca: el título va en la cabecera.
+RENGLONES_DEL_TITULO_DE_LA_CARATULA = 20
+
+
+def titulo_de_la_caratula(texto: str) -> str | None:
+    """El título impreso de la carátula con membrete: CONSTANCIA DE CONTRATACION DE SERVICIO o EXPEDIENTE; ``None`` si no.
+
+    Nombra el paquete de la empresa que la carátula abre
+    (``application.anexos_declarados.unir_el_paquete_de_la_empresa``), y su
+    fila del índice.
+    """
+    if formulario_que_abre(texto or "") != FORMATO_DE_LA_EMPRESA:
+        return None
+    renglones = [_plano(r) for r in (texto or "").splitlines() if r.strip()][:RENGLONES_DEL_TITULO_DE_LA_CARATULA]
+    for nombre, patron in _TITULOS_DE_LA_CARATULA:
+        if any(patron.match(renglon) for renglon in renglones):
+            return nombre
+    return None
+
+
+def acto_que_adjunta(texto: str) -> str | None:
+    """El consecutivo del acto que la notificación por aviso dice adjuntar; «» si no lo da; ``None`` si no adjunta.
+
+    El aviso que adjunta la copia íntegra del acto se la lleva, con la portada
+    «ANEXO»: el operador, 2026-11-24, ante 4251461, como el reconocimiento de
+    deuda se lleva sus anexos.
+    """
+    if not titulo_del_documento(texto or "").startswith(NOTIFICACION_POR_AVISO):
+        return None
+    plano = _plano(" ".join((texto or "").split()))
+    if not _ADJUNTA_EL_ACTO.search(plano):
+        return None
+    hallado = _ACTO_QUE_NOTIFICA.search(plano)
+    return hallado.group(1) if hallado else ""
+
+
+def portada_del_anexo(texto: str) -> str | None:
+    """El consecutivo que anuncia la portada «ANEXO: Copia del acto administrativo…»; «» sin él; ``None`` si no es."""
+    renglones = [r for r in (texto or "").splitlines() if r.strip()]
+    if len(renglones) > RENGLONES_DE_LA_PORTADA:
+        return None
+    hallado = _PORTADA_DEL_ANEXO.search(_plano(" ".join(renglones)))
+    if hallado is None:
+        return None
+    return hallado.group(1) or ""
 
 
 def consecutivo_de(texto: str) -> str | None:
@@ -757,6 +884,9 @@ def es_contestacion_a_reclamacion(texto: str) -> bool:
     """
     formulario = formulario_que_abre(texto or "")
     if formulario not in (RESPUESTA_DE_LA_EMPRESA, None):
+        return False
+    # La carta «MESUC» tiene su propio nombre por su formato (2026-11-24).
+    if titulo_del_documento(texto or "") == RESPUESTA_A_USUARIO:
         return False
     cabeza = _plano(" ".join((texto or "").split())[:CABEZA_DE_LA_CONTESTACION])
     cita_la_reclamacion = _ASUNTO_DE_RECLAMACION.search(cabeza) is not None
@@ -868,6 +998,10 @@ def titulo_del_documento(primera_pagina: str, tipo: str | None = None) -> str:
         for nombre, patron in _TITULOS_DE_LA_EMPRESA:
             if patron.search(renglon) and len(renglon) <= 60:
                 return nombre
+    # La carta de Electricaribe al usuario, por su formato: «MESUC 2818»
+    # (el operador, 2026-11-24). Después del aviso, que trae el mismo MESUC.
+    if es_respuesta_a_usuario(primera_pagina):
+        return RESPUESTA_A_USUARIO
     for nombre, patron in _FORMATOS:
         en_la_cabeza = patron.search(cabeza[:CABEZA_DEL_FORMATO])
         if en_la_cabeza or patron.search(cabeza_util[:CABEZA_DEL_FORMATO]):

@@ -1204,6 +1204,26 @@ def fecha_entre_lectores(
     return posibles.pop() if len(posibles) == 1 else None
 
 
+#: El renglón de la fecha del formato en blanco, con sus rayas: «____, __ de
+#: ______ de 20___».
+_RENGLON_DE_FECHA_EN_BLANCO = re.compile(r"_{2,}\W*\s*(?:DE|DEL)\s*_{2,}", re.IGNORECASE)
+#: Cuántos renglones de arriba son la cabeza donde va esa fecha.
+RENGLONES_DE_LA_CABEZA_DE_LA_FECHA = 8
+
+
+def fecha_en_blanco(texto: str) -> bool:
+    """Si la cabeza de la hoja trae el renglón de la fecha sin llenar: sus rayas a la vista.
+
+    El operador, 2026-11-24, ante 4251530 y 4251531: el reconocimiento de deuda
+    tenía su fecha a mano -- ilegible en la capa, o en tinta tan tenue que casi
+    no se ve -- y, como ningún lector la leyó, se tomó por «sin fecha» y fue al
+    final del acuerdo. Que no se lea no es que no la tenga: sin fecha es sólo el
+    renglón en blanco.
+    """
+    renglones = [r for r in (texto or "").splitlines() if r.strip()][:RENGLONES_DE_LA_CABEZA_DE_LA_FECHA]
+    return any(_RENGLON_DE_FECHA_EN_BLANCO.search(r) for r in renglones)
+
+
 # -- las fechas de la caja contra sí mismas ----------------------------------------
 
 #: Cuántos años pueden separar dos fechas de la caja con el mismo día y mes para

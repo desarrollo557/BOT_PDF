@@ -636,15 +636,17 @@ DPI_DE_LA_FIRMA = 300
 #: «OFICINA…», el número de radicación y los folios. Con dos señales distintas,
 #: porque una carta también nombra una oficina o unos folios.
 _SENALES_DEL_SELLO = (
-    # «ASEPTACION» también (1000186, UPD2437815 pág. 1, 2026-11-23).
-    re.compile(r"A[CS]E\W?[PCT]?\W?TACI", re.IGNORECASE),
+    # «ASEPTACION» también (1000186, UPD2437815 pág. 1, 2026-11-23), y
+    # «ACESTACIÓN» (4251555, UPD2447029 pág. 1, 2026-11-24).
+    re.compile(r"A[CS]E\W?[PCTS]?\W?TACI", re.IGNORECASE),
     # Los campos que sólo trae el sello de tinta de la oficina: «Dir. Notific»,
     # «Funcionario Receptan», «CAPMAGANQUE» (1000186: con la tinta realzada sólo
     # «IMPLICA» casaba de las señales de arriba, y el sello no se leía).
     re.compile(r"DIR\W{0,3}\s*N[O0]TIFI|FUNCIONARI\w*\s+RECEP|\bCAP\W?MAGA[NÑ]", re.IGNORECASE),
     re.compile(r"\b[GCE]R?[UN]?PO\W?EP", re.IGNORECASE),
     re.compile(r"\b[O0]\W?F\W?I\W?C\W?I\W?N\W?A\b", re.IGNORECASE),
-    re.compile(r"IM[PB]\W?LICA|RECIB\W?ID", re.IGNORECASE),
+    # Y la I que el OCR deja en «¡», «!» o «1»: «¡MPLICA» (4251555).
+    re.compile(r"[I¡!1|]M[PB]\W?LICA|RECIB\W?ID", re.IGNORECASE),
     re.compile(r"RADICACI|N\W{0,3}D[EF]\s+F[O0]LI", re.IGNORECASE),
 )
 SENALES_PARA_CREER = 2
@@ -707,9 +709,22 @@ def es_hoja_de_firma(texto: str) -> bool:
     return _FIRMA.search(texto or "") is not None
 
 
-def se_mira_al_pie(texto: str) -> bool:
-    """Si vale la pena leer realzada la zona de la firma: la hoja de firma, o la que deja ver un sello."""
-    return es_hoja_de_firma(texto) or _CAMPOS_DEL_SELLO_EN_LA_CAPA.search(texto or "") is not None
+def se_mira_al_pie(texto: str, *, mudas: bool = True) -> bool:
+    """Si vale la pena leer realzada la zona de la firma: la hoja de firma, la que deja ver un sello, o la muda.
+
+    ``mudas=False`` para el barrido del RE, que es de pago: ahí no entran.
+
+    La hoja muda es la carta escrita a mano, cuya capa no se lee: su sello al
+    pie no se buscaba (4251461, UPD2447021 pág. 8, 2026-11-24: la reclamación
+    manuscrita de enero de 2021, con su sello de 1 folio y RE2311202100109,
+    salía pegada al recurso de noviembre de 2020). Sobre «procesados afinia»
+    son 63 de 913 hojas más, leídas por Tesseract; la IA sólo si hay sello.
+    """
+    return (
+        es_hoja_de_firma(texto)
+        or _CAMPOS_DEL_SELLO_EN_LA_CAPA.search(texto or "") is not None
+        or (mudas and clase_de_la_hoja(texto or "") == HOJA_MUDA)
+    )
 
 
 def sellos_al_pie(

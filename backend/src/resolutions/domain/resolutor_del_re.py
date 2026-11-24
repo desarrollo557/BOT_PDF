@@ -116,7 +116,24 @@ def _validos(candidatos: Sequence[Candidato], contexto: ContextoDelRe) -> list[C
         if es_re_entero(c.valor)
         and _LO_QUE_EL_RECLAMO_CITA not in (c.motivo or "")
         and (contexto.lleva_el_del_tramite or not (c.motivo or "").startswith(_EL_DE_SU_TRAMITE))
+        and _anio_que_admite_el_auditor(_destino(c), contexto)
     ]
+
+
+def _anio_que_admite_el_auditor(valor: str, contexto: ContextoDelRe, *, hoy: date | None = None) -> bool:
+    """Si el año del RE es uno que el auditor sostendría: posible y el de la hoja (o impreso en la caja).
+
+    El agente elegía el más votado aunque su año fuera imposible, el auditor lo
+    revertía y el documento se quedaba sin RE teniendo otro candidato bueno:
+    4251555 (UPD2447029, 2026-11-24), «RE2311202707751» del OCR de pago frente
+    a RE2311202107751 de la visión, con el sello del 23-06-2021.
+    """
+    if not es_re_entero(valor):
+        return True
+    anio = int(valor.upper()[6:10])
+    if not 1990 <= anio <= (hoy or date.today()).year:
+        return False
+    return not (contexto.anio and not (contexto.anio - 1 <= anio <= contexto.anio) and valor.upper() not in contexto.impresos)
 
 
 def destinos_de(candidatos: Sequence[Candidato], contexto: ContextoDelRe | None = None) -> list[str]:

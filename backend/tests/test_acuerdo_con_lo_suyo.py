@@ -273,17 +273,77 @@ class TestLaFranjaDelTitulo:
 class TestNingunPagareSuelto:
     """«Ningún pagaré puede ir suelto, siempre anexado a un reconocimiento de deuda» (2026-10-22)."""
 
-    def test_el_pagare_suelto_va_con_el_documento_de_antes(self):
+    def test_el_pagare_sin_reconocimiento_no_se_pega_al_documento_de_antes(self):
+        """Hasta el 2026-11-24 iba con el de antes: el operador lo encontró pegado a un contrato (1000478)."""
         textos = {1: DERECHO_DE_PETICION, 2: PAGARE, 3: DERECHO_DE_PETICION.replace("3 de mayo", "9 de junio")}
         grupos, _, del_acuerdo = unir_el_acuerdo_de_pago(_grupos([1], [2], [3]), textos)
-        assert [g.page_numbers for g in grupos.groups] == [[1, 2], [3]]
-        # Con un documento que no es el acuerdo, no se llama acuerdo.
+        assert [g.page_numbers for g in grupos.groups] == [[1], [2], [3]]
+        # Sin reconocimiento no es el acuerdo: se llama por lo que es, PAGARE.
         assert 2 not in del_acuerdo
 
-    def test_el_pagare_suelto_al_principio_va_con_el_siguiente(self):
+    def test_el_pagare_sin_reconocimiento_al_principio_tampoco_se_pega_al_siguiente(self):
         textos = {1: PAGARE, 2: DERECHO_DE_PETICION}
         grupos, _, _ = unir_el_acuerdo_de_pago(_grupos([1], [2]), textos)
-        assert [g.page_numbers for g in grupos.groups] == [[1, 2]]
+        assert [g.page_numbers for g in grupos.groups] == [[1], [2]]
+
+    def test_1000478_el_pagare_no_es_del_contrato_de_transaccion(self):
+        """1000478 (UPD2437820, 2026-11-24): el contrato nombra «un pagaré en blanco con carta de
+        instrucciones» en su cláusula TERCERO, pero el pagaré, sus cartas y la cédula van aparte."""
+        contrato = "aFinia\nCONTRATO DE TRANSACCIÓN\nEntre las siguientes partes a saber: la AFINIA\n"
+        clausulas = "TERCERO: Para garantizar el pago EL CLIENTE suscribe un pagaré en blanco con carta de instrucciones.\n"
+        firmas = "En constancia se suscribe este documento en dos ejemplares de idéntico tenor\n"
+        cedula = "REPUBLICA DE COLOMBIA\nIDENTIFICACION PERSONAL\nCEDULA DE CIUDADANIA\nNUMERO 11.111.111\n"
+        textos = {1: contrato, 2: clausulas, 3: firmas, 4: PAGARE, 5: CARTA, 6: CARTA, 7: cedula, 8: cedula}
+        grupos, _, del_acuerdo = unir_el_acuerdo_de_pago(_grupos([1, 2, 3], [4, 5, 6, 7, 8]), textos)
+        assert [g.page_numbers for g in grupos.groups] == [[1, 2, 3], [4, 5, 6, 7, 8]]
+        assert del_acuerdo == set()
+
+    def test_el_reconocimiento_que_abre_por_carta_o_folio_hace_su_acuerdo(self):
+        """7740523 (UPD3128421 pág. 11, 2026-11-24): el reconocimiento escrito como carta, con el folio 1
+        en su esquina, abría su documento y dejaba de ser pieza: sus pagarés y su Habeas Data quedaban sin él."""
+        cedula = "REPUBLICA DE COLOMBIA\nIDENTIFICACION PERSONAL\nCEDULA DE CIUDADANIA\nNUMERO 11.111.111\n"
+        textos = {1: RECONOCIMIENTO, 2: cedula, 3: PAGARE, 4: CARTA, 5: HABEAS}
+        sin, _, _ = unir_el_acuerdo_de_pago(_grupos([1], [2], [3], [4], [5]), textos, abren={1})
+        assert not any(g.kind == "RECONOCIMIENTO DE DEUDA Y ACUERDO DE PAGO" for g in sin.groups)
+        con, _, del_acuerdo = unir_el_acuerdo_de_pago(
+            _grupos([1], [2], [3], [4], [5]), textos, abren={1}, reconocimientos_que_abren={1}
+        )
+        assert [g.page_numbers for g in con.groups] == [[1, 3, 4, 5], [2]]
+        assert del_acuerdo == {1, 3, 4, 5}
+
+    def test_el_reconocimiento_que_abre_empieza_su_propio_acuerdo(self):
+        """Dos reconocimientos seguidos con sus pagarés: el que abre no se funde con el de delante."""
+        textos = {1: RECONOCIMIENTO, 2: PAGARE, 3: RECONOCIMIENTO.replace("2 de abril", "9 de mayo"), 4: PAGARE}
+        grupos, _, _ = unir_el_acuerdo_de_pago(
+            _grupos([1], [2], [3], [4]), textos, abren={3}, reconocimientos_que_abren={3}
+        )
+        assert [g.page_numbers for g in grupos.groups] == [[1, 2], [3, 4]]
+
+    def test_el_pagare_entre_dos_acuerdos_va_con_el_que_no_le_corta_un_escrito(self):
+        """6833800 (UPD2994692, 2026-11-24): el pagaré quedaba más cerca del acuerdo de 2022, con un recurso
+        con sello en medio, que del de 2023, con sólo una constancia en medio: se quedaba sin ninguno."""
+        recurso = "Magangué, 3 de febrero de 2022\nSeñores AFINIA\nREF: RECURSO DE REPOSICION\n"
+        constancia = _constancia("10/08/2023", "Facilidades de pago")
+        textos = {
+            1: RECONOCIMIENTO,
+            2: recurso,
+            3: PAGARE,
+            4: constancia,
+            5: HABEAS,
+            6: PAGARE,
+            7: RECONOCIMIENTO.replace("2 de abril de 2024", "10 de agosto de 2023"),
+        }
+        grupos, _, _ = unir_el_acuerdo_de_pago(
+            _grupos([1], [2], [3], [4], [5], [6], [7]), textos, abren={2, 4}, cruzan={4}
+        )
+        assert [3, 5, 6, 7] in [sorted(g.page_numbers) for g in grupos.groups]
+
+    def test_el_pagare_cortado_de_su_acuerdo_va_solo(self):
+        """El pagaré que una carta del cliente separa del reconocimiento no es de ese acuerdo ni de la carta."""
+        carta = "Santa Rosa del Sur-Bolívar, Enero 28 de 2021\nSeñores Funcionarios\nCARIBEMAR\n"
+        textos = {1: RECONOCIMIENTO, 2: carta, 3: PAGARE}
+        grupos, _, _ = unir_el_acuerdo_de_pago(_grupos([1], [2], [3]), textos, abren={2})
+        assert [g.page_numbers for g in grupos.groups] == [[1], [2], [3]]
 
     def test_el_pagare_con_su_carta_y_su_reconocimiento_es_el_acuerdo(self):
         textos = {1: DERECHO_DE_PETICION, 2: PAGARE, 3: CARTA, 4: RECONOCIMIENTO}

@@ -35,6 +35,7 @@ from .asunto_del_documento import (
     CONSTANCIA_DE_RECEPCION,
     CONSTANCIA_DE_RECLAMACION,
     CONTESTACION_A_RECLAMACION,
+    NOTA_CREDITO_DEL_ASEO,
     NOTIFICACION_POR_AVISO,
     PUBLICACION_DEL_AVISO,
     es_constancia_de_recepcion,
@@ -51,12 +52,24 @@ AL_CATALOGO: dict[str, str] = {
     # PETICIONES por su formato (``nombre_de_la_constancia``, 2026-11-20).
     "CONSTANCIA DE RECLAMACION": "CONSTANCIA DEL CONTENIDO DE LA RECLAMACION",
     # La autorización de la nota crédito del aseo («AUT-5073-ASEO»): el
-    # operador, 2026-11-20, «a estos documentos colócale reclamación». Sin RE:
-    # no es el reclamo del usuario ni trae uno de Afinia.
-    AUTORIZACION_DEL_ASEO: "RECLAMACION",
+    # operador, 2026-11-20, «a estos documentos colócale reclamación», y el
+    # 2026-11-24, «se llamarán DESCUENTO/NOTA DE CRÉDITO ASEOPRONTO ESP». Sin
+    # RE: no es el reclamo del usuario ni trae uno de Afinia.
+    AUTORIZACION_DEL_ASEO: NOTA_CREDITO_DEL_ASEO,
 }
+#: Los tipos del catálogo del cliente que son el mismo documento: la petición
+#: que no trae su asunto la nombraba la IA PETICION y la de al lado, que lo
+#: trae, salía DERECHO DE PETICION (4251556, 2026-11-24: «por qué a uno le
+#: colocaste derecho de petición y a otro petición»).
+MISMO_TIPO: dict[str, str] = {"PETICION": "DERECHO DE PETICION"}
+AL_CATALOGO.update(MISMO_TIPO)
+
+
+def tipo_unificado(nombre: str | None) -> str | None:
+    """El nombre del tipo, con el de su par si el catálogo trae dos para el mismo documento."""
+    return MISMO_TIPO.get(_plano(nombre or ""), nombre) if nombre else nombre
 #: Los tipos del catálogo que sólo pone el formato del papel, nunca la IA.
-SOLO_POR_SU_FORMATO = frozenset({"RECLAMACION"})
+SOLO_POR_SU_FORMATO = frozenset({"RECLAMACION", NOTA_CREDITO_DEL_ASEO})
 #: El reclamo por consumo estimado, como lo escribe el cliente en su asunto:
 #: «RECLAMO POR COBRO DE SERVICIO ENERGIA POR ESTIMADO» (UPD3102756 pág. 8).
 _POR_ESTIMADO = re.compile(r"\bESTIMAD[OA]S?\b")

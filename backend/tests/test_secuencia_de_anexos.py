@@ -558,3 +558,415 @@ class TestLoQueEnsenoLaRepeticion:
         textos = {1: CONSTANCIA, 2: CARTA_DE_PEDRO, 3: MUDA}
         resultado = asignar_por_secuencia(_grupos([1], [2], [3]), textos, {})
         assert _hojas(resultado) == [[1], [2, 3]]
+
+
+# -- los casos del 2026-11-24: 4251555, 4251556 -------------------------------------------------
+
+
+class TestLosCasosDelVeinticuatro:
+    def test_el_re_escrito_con_su_re_roto(self):
+        """4251555: la visión leyó «Rt 2311202107751» y el OCR de pago «Pit 2311…»; el RE se descartaba."""
+        from resolutions.domain.evidencia import res_en_la_lectura
+        from resolutions.domain.sello import radicado_escrito
+
+        assert res_en_la_lectura("sello | Rt 2311202107751") == ["RE2311202107751"]
+        assert res_en_la_lectura("Pit 2311202107751") == ["RE2311202107751"]
+        assert res_en_la_lectura("R+ 2311202107751") == ["RE2311202107751"]
+        # Una palabra cualquiera seguida de cifras no es un RE.
+        assert res_en_la_lectura("Parte 2311202107751") == []
+        assert radicado_escrito("PIT 2311202107751", 2021) == "RE2311202107751"
+
+    def test_el_sello_con_sus_rotulos_rotos(self):
+        """4251555: «ACESTACIÓN» y «¡MPLICA» con la tinta realzada; el sello al pie no se veía."""
+        from resolutions.application.sellos import parece_un_sello
+
+        assert parece_un_sello("OFICINA SANTA ROSA DEL SUR FECBoo NO ¡MPLICA ACESTACIÓN")
+
+    def test_la_peticion_es_derecho_de_peticion(self):
+        """4251556: una carta salía PETICION y la de al lado DERECHO DE PETICION."""
+        from resolutions.domain.nombre_oficial import nombre_oficial
+
+        assert nombre_oficial("PETICION") == nombre_oficial("DERECHO DE PETICION") == "DERECHO DE PETICION"
+
+    def test_la_fecha_en_blanco_del_formato(self):
+        from resolutions.domain.fecha_por_estructura import fecha_en_blanco
+
+        assert fecha_en_blanco("________, ___ de ________ de 20___\nSeñores:")
+        assert not fecha_en_blanco("t'oso-N OZ de 9iWi:vode 2o2-n\nSeñores:")
+        assert not fecha_en_blanco("Magangué 8 de marzo de 2021\nSeñores:")
+
+    def test_el_nombrador_de_la_ia_tambien_unifica_la_peticion(self):
+        from resolutions.domain.nombre_oficial import tipo_unificado
+
+        assert tipo_unificado("PETICION") == "DERECHO DE PETICION"
+        assert tipo_unificado("RECLAMO") == "RECLAMO" and tipo_unificado(None) is None
+
+    def test_el_agente_no_elige_un_ano_que_su_auditor_rechaza(self):
+        """4251555: elegía RE2311202707751 (año 2027), el auditor lo revertía y quedaba sin RE."""
+        from resolutions.domain.evidencia import Candidato
+        from resolutions.domain.resolutor_del_re import (
+            ContextoDelRe,
+            resolver_sin_certeza,
+        )
+
+        candidatos = [
+            Candidato("RE2311202707751", "hallado en el barrido de la hoja, lo lee un solo lector (ocr de pago)", 1),
+            Candidato("RE2311202107751", "hallado en el barrido de la hoja, lo lee un solo lector (visión)", 1),
+        ]
+        decision = resolver_sin_certeza(candidatos, ContextoDelRe(anio=2021))
+        assert decision is not None and decision.valor == "RE2311202107751"
+
+    # La carta de Electricaribe al usuario, con datos inventados en el formato de
+    # 920933 (UPD2998261 pág. 2): «MESUC» en el encabezado y «Estimado usuario».
+    CARTA_MESUC = (
+        "Electricarihe\nMESUC 1234\nOficina Comercial: Electricaribe S.A. ESP - Mercados Especiales\n"
+        "Sincelejo, marzo 03 de 2020\nSenor(a):\nPEDRO PEREZ GOMEZ\nCALLE 1 SECTOR 2\n"
+        "Código de usuario: 111111\nEstimado usuario:\nComo se le informo en la comunicación MESUC 1200 "
+        "de febrero 06 de 2020, «contra la presente decisión procede el recurso de queja», el cual debe "
+        "interponerse directamente ante la Superintendencia de Servicios Públicos Domiciliarios."
+    )
+
+    def test_la_carta_mesuc_es_respuesta_a_usuario(self):
+        """920933: la IA la llamaba RECURSO DE QUEJA por el recurso que el cuerpo explica (el operador, 2026-11-24)."""
+        from resolutions.domain.asunto_del_documento import (
+            NOMBRES_DEL_OPERADOR,
+            RESPUESTA_A_USUARIO,
+            RESPUESTA_DE_LA_EMPRESA,
+            es_carta_de_la_empresa,
+            es_contestacion_a_reclamacion,
+            formulario_que_abre,
+            titulo_del_documento,
+        )
+        from resolutions.domain.nombre_oficial import (
+            estandarizar,
+            le_falta_su_re,
+            nombre_oficial,
+        )
+
+        assert titulo_del_documento(self.CARTA_MESUC) == RESPUESTA_A_USUARIO == "RESPUESTA A USUARIO"
+        # El catálogo y la IA no se lo cambian, y no lleva RE.
+        assert nombre_oficial(RESPUESTA_A_USUARIO) == estandarizar(RESPUESTA_A_USUARIO) == RESPUESTA_A_USUARIO
+        assert RESPUESTA_A_USUARIO in NOMBRES_DEL_OPERADOR
+        assert not le_falta_su_re(RESPUESTA_A_USUARIO, [self.CARTA_MESUC])
+        # Es carta de la empresa: abre como su respuesta, pero no es la respuesta a la reclamación.
+        assert es_carta_de_la_empresa(self.CARTA_MESUC)
+        assert formulario_que_abre(self.CARTA_MESUC) == RESPUESTA_DE_LA_EMPRESA
+        assert not es_contestacion_a_reclamacion(self.CARTA_MESUC + "\nEn atención a su petición")
+
+    def test_el_aviso_con_el_mismo_mesuc_sigue_siendo_aviso(self):
+        """920933 pág. 1: el aviso que notifica la carta trae el mismo «MESUC» en el encabezado."""
+        from resolutions.domain.asunto_del_documento import titulo_del_documento
+
+        aviso = (
+            "Electricaribe\nMESUC 1234\nSincelejo, marzo 11 de 2020.\nSenor(a):\nPEDRO PEREZ GOMEZ\n"
+            "Estimado usuario:\npor intermedio de este AVISO nos permitimos notificarlo del acto administrativo"
+        )
+        assert titulo_del_documento(aviso) == "NOTIFICACION POR AVISO"
+
+    def test_el_escrito_que_cita_un_mesuc_no_es_la_carta(self):
+        """El «MESUC» citado en el cuerpo, o en la carta dirigida a la empresa, no es su formato."""
+        from resolutions.domain.asunto_del_documento import es_respuesta_a_usuario
+
+        cuerpo = "Magangué, 10 de marzo de 2020\nSeñores\nELECTRICARIBE\nAsunto: recurso\nRespetados señores:\n"
+        assert not es_respuesta_a_usuario(cuerpo + "contra la comunicación MESUC 1234 interpongo recurso de queja")
+        a_la_empresa = "MESUC 1234\nSeñores ELECTRICARIBE S.A. E.S.P.\nOficina Comercial\nyo PEDRO PEREZ"
+        assert not es_respuesta_a_usuario(a_la_empresa)
+        # Con lo que el escáner hace del rótulo.
+        assert es_respuesta_a_usuario(self.CARTA_MESUC.replace("MESUC 1234", "MES UC1234"))
+
+    def test_la_auditoria_avisa_la_carta_mesuc_mal_nombrada(self):
+        from resolutions.application.auditoria_de_la_entrega import auditar_los_radicados
+        from resolutions.domain.conciliacion import ArchivoEntregado
+
+        mal = auditar_los_radicados([ArchivoEntregado("01_RECURSO-DE-QUEJA.pdf", (1,))], {1: self.CARTA_MESUC})
+        assert any("RESPUESTA A USUARIO y se llama" in d for d in mal.dudas)
+        bien = auditar_los_radicados([ArchivoEntregado("01_RESPUESTA-A-USUARIO.pdf", (1,))], {1: self.CARTA_MESUC})
+        assert not any("su formato es" in d for d in bien.dudas)
+
+    def test_la_auditoria_vigila_el_reconocimiento_y_el_nombre_con_par(self):
+        """Lo que se saltó el 24 queda vigilado en cada entrega: el reconocimiento escrito al final y PETICION."""
+        from resolutions.application.auditoria_de_la_entrega import auditar_los_radicados
+        from resolutions.domain.conciliacion import ArchivoEntregado
+
+        acuerdo = "01_RECONOCIMIENTO-DE-DEUDA-Y-PROPUESTA-DE-ACUERDO-DE-PAGO.pdf"
+        pagare = "PAGARE No. 123\nYo PEDRO PEREZ pagaré incondicionalmente"
+        escrito = "RECONOCIMIENTO DE DEUDA Y ACUERDO DE PAGO\nt'oso-N OZ de 9iWi:vode 2o2-n\nSeñores"
+        en_blanco = "RECONOCIMIENTO DE DEUDA Y ACUERDO DE PAGO\n________, ___ de ________ de 20___\nSeñores"
+        al_final = auditar_los_radicados([ArchivoEntregado(acuerdo, (1, 2))], {1: pagare, 2: escrito})
+        assert any("renglón de su fecha" in d for d in al_final.dudas)
+        sin_fecha = auditar_los_radicados([ArchivoEntregado(acuerdo, (1, 2))], {1: pagare, 2: en_blanco})
+        assert not any("renglón de su fecha" in d for d in sin_fecha.dudas)
+        primero = auditar_los_radicados([ArchivoEntregado(acuerdo, (2, 1))], {1: pagare, 2: escrito})
+        assert not any("renglón de su fecha" in d for d in primero.dudas)
+
+        peticion = auditar_los_radicados([ArchivoEntregado("02_PETICION.pdf", (1,))], {1: "Señores AFINIA"})
+        assert any("DERECHO DE PETICION" in d for d in peticion.dudas)
+        derecho = auditar_los_radicados([ArchivoEntregado("02_DERECHO-DE-PETICION.pdf", (1,))], {1: "Señores AFINIA"})
+        assert not any("ese documento es" in d for d in derecho.dudas)
+
+    # La nota crédito de Aseopronto, con datos inventados en el formato de 1000501.
+    CARTA_ASEO = (
+        "ASEOPRONTO SAS ESP\nNIT 901.380.755-1 Vigilada por la S.S.P.D.\nAUT- 1234 -ASEO\n"
+        "Magangue, 10 de abril del 2024\nSeñor(a):\nJefe Oficina Comercial\nCARIBEMAR S.A.S\nCordial saludo,\n"
+        "A Continuación relaciono usuario para aplicar descuento(s) o Notas Creditos.\n"
+        "Esta autorización se otorga porque el usuario presentó una Reclamacion"
+    )
+
+    def test_la_nota_credito_del_aseo_se_llama_por_su_formato(self):
+        """1000501 (el operador, 2026-11-24): «se llamarán DESCUENTO/NOTA DE CRÉDITO ASEOPRONTO ESP»."""
+        from resolutions.domain.asunto_del_documento import (
+            AUTORIZACION_DEL_ASEO,
+            NOMBRES_DEL_OPERADOR,
+            titulo_del_documento,
+        )
+        from resolutions.domain.naming import kind_fragment
+        from resolutions.domain.nombre_oficial import (
+            estandarizar,
+            le_falta_su_re,
+            nombre_oficial,
+        )
+
+        assert titulo_del_documento(self.CARTA_ASEO) == AUTORIZACION_DEL_ASEO
+        nombre = nombre_oficial(AUTORIZACION_DEL_ASEO)
+        assert nombre == "DESCUENTO/NOTA DE CREDITO ASEOPRONTO ESP"
+        # Ni el catálogo ni la IA se lo cambian, y no lleva RE.
+        assert estandarizar(nombre) == nombre and nombre in NOMBRES_DEL_OPERADOR
+        assert not le_falta_su_re(nombre, [self.CARTA_ASEO])
+        # En el disco, la barra que Windows no admite es un guion.
+        assert kind_fragment(nombre) == "DESCUENTO-NOTA-DE-CREDITO-ASEOPRONTO-ESP"
+
+    def test_la_auditoria_avisa_la_nota_credito_mal_nombrada(self):
+        from resolutions.application.auditoria_de_la_entrega import auditar_los_radicados
+        from resolutions.domain.conciliacion import ArchivoEntregado
+
+        textos = {1: self.CARTA_ASEO}
+        viejo = auditar_los_radicados([ArchivoEntregado("01_RECLAMACION.pdf", (1,))], textos)
+        assert any("DESCUENTO/NOTA DE CREDITO ASEOPRONTO ESP y se llama RECLAMACION" in d for d in viejo.dudas)
+        nuevo = auditar_los_radicados(
+            [ArchivoEntregado("01_DESCUENTO-NOTA-DE-CREDITO-ASEOPRONTO-ESP.pdf", (1,))], textos
+        )
+        assert not any("su formato es" in d for d in nuevo.dudas)
+
+    def test_la_auditoria_avisa_el_pagare_fuera_de_su_sitio(self):
+        """1000478, 6833800, 7740523: el pagaré pegado a un contrato, un recurso o una constancia de contratación."""
+        from resolutions.application.auditoria_de_la_entrega import auditar_los_radicados
+        from resolutions.domain.conciliacion import ArchivoEntregado
+
+        contrato = "aFinia\nCONTRATO DE TRANSACCIÓN\nEntre las siguientes partes\n"
+        pagare = "CARIBEMAR DE LA COSTA S.A.S. ESP\nPAGARE No. 1000265 -2\n"
+        carta = "CARIBEMAR DE LA COSTA S.A.S. ESP\nCARTA DE INSTRUCCIONES ANEXA A PAGARE No. 1000265 2\n"
+        textos = {1: contrato, 2: pagare, 3: carta}
+        pegado = auditar_los_radicados([ArchivoEntregado("01_CONTRATO-DE-TRANSACCION.pdf", (1, 2, 3))], textos)
+        assert any("lleva un pagaré" in e and "hoja 2 de 3" in e for e in pegado.errores)
+        aparte = auditar_los_radicados(
+            [ArchivoEntregado("01_CONTRATO-DE-TRANSACCION.pdf", (1,)), ArchivoEntregado("02_PAGARE.pdf", (2, 3))], textos
+        )
+        assert not any("lleva un pagaré" in e for e in aparte.errores)
+
+
+class TestElPaqueteDeLaEmpresa:
+    """4251482 (UPD2447022, el operador, 2026-11-24): «de la página 1 a la 7, y el otro grupo de la 8 a la 18».
+
+    Hoja 1 la CONSTANCIA DE CONTRATACIÓN DE SERVICIO y hoja 8 el EXPEDIENTE, cada una con lo que la sigue: la
+    carta que pide el servicio, la cédula, la declaración juramentada, la factura, el certificado de tradición, la
+    solicitud de servicio y el RETIE. Salía en siete PDF.
+    """
+
+    def test_4251482_dos_paquetes(self):
+        from resolutions.application.anexos_declarados import (
+            unir_el_paquete_de_la_empresa,
+        )
+
+        cortado = _grupos([1], [2, 3], [4, 5, 6, 7], [8], [9, 10], [11], [12, 13, 14, 15, 16, 17, 18])
+        unido = unir_el_paquete_de_la_empresa(cortado, {}, abren_paquete={1, 8}, paradas=set())
+        assert [g.page_numbers for g in unido.grupos.groups] == [list(range(1, 8)), list(range(8, 19))]
+        assert unido.movidas[2] == 1 and unido.movidas[11] == 8
+
+    def test_lo_cierra_la_constancia_de_reclamacion(self):
+        from resolutions.application.anexos_declarados import (
+            unir_el_paquete_de_la_empresa,
+        )
+
+        unido = unir_el_paquete_de_la_empresa(_grupos([1], [2], [3], [4]), {}, abren_paquete={1}, paradas={3})
+        assert [g.page_numbers for g in unido.grupos.groups] == [[1, 2], [3], [4]]
+
+    def test_el_documento_que_cruza_la_parada_se_queda(self):
+        from resolutions.application.anexos_declarados import (
+            unir_el_paquete_de_la_empresa,
+        )
+
+        unido = unir_el_paquete_de_la_empresa(_grupos([1], [2, 3, 4]), {}, abren_paquete={1}, paradas={3})
+        assert [g.page_numbers for g in unido.grupos.groups] == [[1], [2, 3, 4]]
+
+    def test_sin_caratula_no_cambia_nada(self):
+        from resolutions.application.anexos_declarados import (
+            unir_el_paquete_de_la_empresa,
+        )
+
+        cortado = _grupos([1], [2, 3], [4])
+        unido = unir_el_paquete_de_la_empresa(cortado, {"02": [3]}, abren_paquete=set(), paradas=set())
+        assert [g.page_numbers for g in unido.grupos.groups] == [[1], [2, 3], [4]]
+        assert unido.anexos == {"02": [3]} and not unido.movidas
+
+    def test_lo_de_delante_de_la_caratula_no_entra(self):
+        """La declaración de antes de la carátula es de otro trámite: el paquete empieza en la carátula."""
+        from resolutions.application.anexos_declarados import (
+            unir_el_paquete_de_la_empresa,
+        )
+
+        unido = unir_el_paquete_de_la_empresa(_grupos([1, 2], [3], [4]), {}, abren_paquete={3}, paradas=set())
+        assert [g.page_numbers for g in unido.grupos.groups] == [[1, 2], [3, 4]]
+
+
+class TestElAvisoConSuActo:
+    """4251461 (UPD2447021, el operador, 2026-11-24): la notificación por aviso que adjunta la copia del acto va
+    con la portada «ANEXO» y la copia, como el reconocimiento con sus anexos."""
+
+    AVISO = (
+        "Consecutivo No.A202070000001\nFECHA: 23/12/2020\nNOTIFICACIÓN POR AVISO\nSeñor(a): PEDRO PEREZ\n"
+        "por intermedio de este AVISO nos permitimos notificarlo del acto administrativo Consecutivo No. "
+        "202070000002 de fecha 14-12-2020. El acto administrativo Consecutivo No. 202070000002, cuya copia "
+        "íntegra se adjunta al presente Aviso."
+    )
+    PORTADA = "Grupo epm\nANEXO: Copia del acto administrativo Consecutivo No. 202070000002 de fecha 14-12-2020\n"
+    ACTO = (
+        "Consecutivo No. 202070000002\nSANTA ROSA DEL SUR, 2020/12/14\nSeñor PEDRO PEREZ\n"
+        "ASUNTO: Recurso de Reposición en subsidio el de apelación No.RE2311202000001\n"
+    )
+    SEGUNDA = "Por lo anterior, le informamos que Caribe Mar modifica la decisión inicial.\n"
+    RECURSO = "Santa Rosa del Sur, noviembre 30 de 2020\nSeñores CARIBEMAR\nRECURSO DE REPOSICIÓN\n"
+
+    def test_reconoce_el_aviso_la_portada_y_el_acto(self):
+        from resolutions.domain.asunto_del_documento import (
+            acto_que_adjunta,
+            consecutivo_de,
+            portada_del_anexo,
+        )
+
+        assert acto_que_adjunta(self.AVISO) == "202070000002"
+        assert portada_del_anexo(self.PORTADA) == "202070000002"
+        assert consecutivo_de(self.ACTO) == "202070000002"
+        # La notificación que no adjunta nada no se lleva la respuesta.
+        assert acto_que_adjunta(self.AVISO.replace("cuya copia íntegra se adjunta al presente Aviso", "")) is None
+        assert portada_del_anexo(self.RECURSO) is None
+
+    def test_4251461_el_aviso_se_lleva_su_portada_y_su_acto(self):
+        from resolutions.application.anexos_declarados import el_aviso_con_su_acto
+
+        textos = {1: self.AVISO, 2: self.PORTADA, 3: self.ACTO, 4: self.SEGUNDA, 5: self.RECURSO}
+        unido = el_aviso_con_su_acto(_grupos([1], [2], [3, 4], [5]), textos, {})
+        assert [g.page_numbers for g in unido.grupos.groups] == [[1, 2, 3, 4], [5]]
+
+    def test_sin_portada_el_acto_del_mismo_consecutivo(self):
+        from resolutions.application.anexos_declarados import el_aviso_con_su_acto
+
+        textos = {1: self.AVISO, 2: self.ACTO, 3: self.SEGUNDA}
+        unido = el_aviso_con_su_acto(_grupos([1], [2, 3]), textos, {})
+        assert [g.page_numbers for g in unido.grupos.groups] == [[1, 2, 3]]
+
+    def test_la_respuesta_de_otro_consecutivo_sigue_aparte(self):
+        from resolutions.application.anexos_declarados import el_aviso_con_su_acto
+
+        textos = {1: self.AVISO, 2: self.ACTO.replace("202070000002", "202170000009")}
+        unido = el_aviso_con_su_acto(_grupos([1], [2]), textos, {})
+        assert [g.page_numbers for g in unido.grupos.groups] == [[1], [2]]
+
+    def test_la_auditoria_avisa_el_acto_fuera_de_su_aviso_y_la_portada_sola(self):
+        from resolutions.application.auditoria_de_la_entrega import auditar_los_radicados
+        from resolutions.domain.conciliacion import ArchivoEntregado
+
+        textos = {1: self.AVISO, 2: self.PORTADA, 3: self.ACTO}
+        partido = auditar_los_radicados(
+            [
+                ArchivoEntregado("01_NOTIFICACION-POR-AVISO.pdf", (1,)),
+                ArchivoEntregado("02_ANEXOS.pdf", (2,)),
+                ArchivoEntregado("03_RESPUESTA-A-LA-RECLAMACION.pdf", (3,)),
+            ],
+            textos,
+        )
+        assert any("la copia salió" in e for e in partido.errores)
+        assert any("sólo la portada" in e for e in partido.errores)
+        junto = auditar_los_radicados([ArchivoEntregado("01_NOTIFICACION-POR-AVISO.pdf", (1, 2, 3))], textos)
+        assert not any("portada" in e or "la copia salió" in e for e in junto.errores)
+
+
+class TestElSelloAlPieDeOtraRadicacion:
+    """4251461 pág. 8: la reclamación manuscrita con su sello al pie del 18-01-2021 («01 folio») iba pegada al
+    recurso de la pág. 6, con su sello del 30-11-2020 («02 folios»)."""
+
+    def test_otra_fecha_otro_re_o_fuera_de_los_folios_abre(self):
+        from datetime import date
+
+        from resolutions.domain.sello import Sello, al_pie_de_otra_radicacion
+
+        recurso = Sello("tinta", radicado="RE2311202001912", fecha=date(2020, 11, 30), folios=2)
+        reclamo = Sello("tinta", radicado="RE2311202100109", fecha=date(2021, 1, 18), folios=1)
+        assert set(al_pie_de_otra_radicacion({}, {6: recurso, 8: reclamo})) == {8}
+        # Sólo por los folios, sin leer la fecha ni el RE del de detrás.
+        assert set(al_pie_de_otra_radicacion({}, {6: recurso, 8: Sello("tinta")})) == {8}
+        # Dentro de sus folios, la misma fecha y el mismo RE: el mismo escrito.
+        mismo = Sello("tinta", radicado="RE2311202001912", fecha=date(2020, 11, 30))
+        assert al_pie_de_otra_radicacion({}, {6: recurso, 7: mismo}) == {}
+        # Una cifra mal leída no es otra radicación.
+        casi = Sello("tinta", radicado="RE2311202001913")
+        assert al_pie_de_otra_radicacion({6: recurso}, {7: casi}) == {}
+
+    def test_la_hoja_muda_se_mira_al_pie_pero_no_en_el_barrido(self):
+        from resolutions.application.sellos import se_mira_al_pie
+
+        manuscrita = "^ fA \ § I Z- ^ ^ ¿s^ev 0, t 'H AQ_"
+        assert se_mira_al_pie(manuscrita)
+        assert not se_mira_al_pie(manuscrita, mudas=False)
+
+
+class TestLaCaratulaEnLaAuditoria:
+    def test_lo_que_sigue_a_la_caratula_y_salio_aparte_es_duda(self):
+        from resolutions.application.auditoria_de_la_entrega import auditar_los_radicados
+        from resolutions.domain.conciliacion import ArchivoEntregado
+
+        caratula = (
+            "CARIBEMAR DE LA COSTA S.A.S. ESP Numero : 1111111 Fecha 11/11/2020\nNit: 901.380.949-1\n"
+            "DISTRITO: Sector Bolívar Sur\nCONSTANCIA DE CONTRATACIÓN DE SERVICIO\nDATOS DE LA OFICINA COMERCIAL\n"
+        )
+        carta = "Santa Rosa del Sur, 9 de noviembre del 2020\nSeñor: CARIBEMAR\nAsunto: Solicitud de cambio de titular.\n"
+        textos = {1: caratula, 2: carta}
+        partido = auditar_los_radicados(
+            [ArchivoEntregado("01_CONSTANCIA.pdf", (1,)), ArchivoEntregado("02_CAMBIO-DE-TITULAR.pdf", (2,))], textos
+        )
+        assert any("detrás de la carátula" in d for d in partido.dudas)
+        junto = auditar_los_radicados([ArchivoEntregado("01_CONSTANCIA.pdf", (1, 2))], textos)
+        assert not any("detrás de la carátula" in d for d in junto.dudas)
+
+
+class TestElTituloDeLaCaratula:
+    """4251482 (el operador, 2026-11-24): «la idea es aplicarle el título que está allí», el subrayado del formato."""
+
+    CONSTANCIA = (
+        "CARIBEMAR DE LA COSTA S.A.S. ESP\nNumero ; 1111111\nFecha 11/11/2020\nNit: 901.380.949-1\n"
+        "DISTRITO: Sector Bolívar Sur\nCONSTANCIA DE CONTRATACIÓN DE SERVICIO\nDATOS DE LA OFICINA COMERCIAL\n"
+        "DATOS DE LOS SERVICIOS CONTRATADOS\nNúmero de Expediente:\n"
+    )
+    EXPEDIENTE = (
+        "CARIBEMAR DE LA COSTA S.A.S. ESP\nNit: 901.380.949-1\nDISTRITO: Sector Bolívar Sur\n"
+        "No. Expediente; P00000000000001\nEXPEDIENTE\nFecha de solicitud del Servicio: 11/11/2020\n"
+        "Tipo de Solicitud: Aumentos de potencia\n"
+    )
+
+    def test_cada_caratula_por_su_titulo_impreso(self):
+        from resolutions.domain.asunto_del_documento import titulo_de_la_caratula
+        from resolutions.domain.catalogo import POR_NOMBRE
+
+        assert titulo_de_la_caratula(self.CONSTANCIA) == "CONSTANCIA DE CONTRATACION DE SERVICIO"
+        # No «AUMENTO DE CARGA» por su casilla, ni el campo «No. Expediente».
+        assert titulo_de_la_caratula(self.EXPEDIENTE) == "EXPEDIENTE"
+        assert {"CONSTANCIA DE CONTRATACION DE SERVICIO", "EXPEDIENTE"} <= set(POR_NOMBRE)
+        assert titulo_de_la_caratula("Santa Rosa, 9 de noviembre\nSeñores CARIBEMAR\nEXPEDIENTE\n") is None
+
+    def test_la_auditoria_avisa_la_caratula_mal_nombrada(self):
+        from resolutions.application.auditoria_de_la_entrega import auditar_los_radicados
+        from resolutions.domain.conciliacion import ArchivoEntregado
+
+        mal = auditar_los_radicados([ArchivoEntregado("05_AUMENTO-DE-CARGA.pdf", (1,))], {1: self.EXPEDIENTE})
+        assert any("EXPEDIENTE y se llama AUMENTO DE CARGA" in d for d in mal.dudas)
+        bien = auditar_los_radicados([ArchivoEntregado("05_EXPEDIENTE.pdf", (1,))], {1: self.EXPEDIENTE})
+        assert not any("su formato es" in d for d in bien.dudas)

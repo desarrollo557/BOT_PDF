@@ -487,6 +487,15 @@ def _escrito_del_usuario(texto: str) -> bool:
     return abre_carta(texto) and _es_escrito_del_tramite(texto) and not es_carta_de_la_empresa(texto)
 
 
+#: Los nombres de PDF que pueden llevar un pagaré: el suyo y los del acuerdo de pago.
+TITULOS_DEL_PAGARE = frozenset({"PAGARE", "CARTA DE INSTRUCCIONES"})
+
+
+def _comparable(nombre: str) -> str:
+    """Un nombre sin lo que el archivo no puede llevar: «DESCUENTO/NOTA…» es «DESCUENTO-NOTA…» en el disco."""
+    return " ".join(re.sub(r"[^A-Z0-9]+", " ", nombre.upper()).split())
+
+
 def auditar_los_radicados(archivos: Sequence[ArchivoEntregado], textos: Mapping[int, str]) -> RadicadosAuditados:
     """Las reglas del operador para Afinia (2026-11-18), otra vez sobre lo entregado: lo que se puede comprobar sin IA.
 
@@ -495,19 +504,32 @@ def auditar_los_radicados(archivos: Sequence[ArchivoEntregado], textos: Mapping[
       en el sello (sólo se cuenta). Si su hoja trae la etiqueta impresa con
       otro RE, es duda: el del nombre puede ser el de otro papel.
     - **La contestación**: la carta de la empresa que abre el PDF y que es una
-      contestación, con otro nombre, es duda.
+      contestación, con otro nombre, es duda. Lo mismo el papel que se llama
+      por su formato (``NOMBRE_POR_SU_FORMATO``) con otro nombre: la carta
+      «MESUC» de Electricaribe, la nota crédito de Aseopronto (2026-11-24).
     - **Los folios de la etiqueta**: menos hojas de las que declara es duda
       (por trámite un PDF junta varios escritos: más hojas no prueba nada).
     - **El orden del acuerdo**: el reconocimiento de deuda va primero (con
-      fecha) o al final (sin ella); en medio es un error.
+      fecha) o al final (sin ella); en medio es un error, y al final con el
+      renglón de su fecha escrito es duda (2026-11-24).
+    - **El nombre de un tipo con par**: PETICION, que es DERECHO DE PETICION,
+      es duda (2026-11-24).
+    - **El pagaré fuera de su sitio**: un pagaré o su carta de instrucciones
+      dentro de un PDF que no es el acuerdo ni el PAGARE es un error
+      (1000478, 2026-11-24).
     """
     from ..domain.asunto_del_documento import (
         CONTESTACION_A_RECLAMACION,
+        NOMBRE_POR_SU_FORMATO,
         es_contestacion_a_reclamacion,
+        titulo_de_la_caratula,
+        titulo_del_documento,
     )
+    from ..domain.fecha_por_estructura import fecha_en_blanco
     from ..domain.nombre_oficial import (
         le_falta_su_re,
         re_del_archivo,
+        tipo_unificado,
     )
     from ..domain.sello import folios_que_no_cuadran, leer_sello, radicados_impresos
     from ..domain.tramites import radicados_de
@@ -546,6 +568,11 @@ def auditar_los_radicados(archivos: Sequence[ArchivoEntregado], textos: Mapping[
                 )
         if es_contestacion_a_reclamacion(primera) and titulo.upper() != CONTESTACION_A_RECLAMACION:
             resultado.dudas.append(f"«{archivo.nombre}»: abre con una contestación de la empresa y se llama {titulo}")
+        # Lo que se llama por su formato (2026-11-24): la carta «MESUC» de
+        # Electricaribe al usuario, la nota crédito de Aseopronto.
+        esperado = NOMBRE_POR_SU_FORMATO.get(titulo_del_documento(primera)) or titulo_de_la_caratula(primera)
+        if esperado and _comparable(titulo) != _comparable(esperado):
+            resultado.dudas.append(f"«{archivo.nombre}»: su formato es el de {esperado} y se llama {titulo}")
         motivo = folios_que_no_cuadran(len(hojas), etiqueta.folios) if etiqueta is not None else None
         if motivo and "faltarle" in motivo:
             resultado.dudas.append(f"«{archivo.nombre}»: {motivo}")
@@ -560,7 +587,99 @@ def auditar_los_radicados(archivos: Sequence[ArchivoEntregado], textos: Mapping[
                         f"«{archivo.nombre}»: el reconocimiento de deuda está en medio del acuerdo (hoja "
                         f"{donde[0] + 1} de {len(hojas)}); va primero si está fechado, si no al final"
                     )
+                # Al final sólo va el que tiene el renglón de su fecha en blanco
+                # (4251530, 2026-11-24): si está escrito, aunque no se leyera, es duda.
+                elif al_final and not al_principio and not any(
+                    fecha_en_blanco(textos.get(p, "") or "") for p in reconocimiento
+                ):
+                    resultado.dudas.append(
+                        f"«{archivo.nombre}»: el reconocimiento de deuda va al final y el renglón de su fecha "
+                        "no está en blanco; va primero si el acuerdo tiene fecha"
+                    )
+        # El pagaré va con su reconocimiento de deuda o solo, nunca con otro
+        # documento (1000478, 2026-11-24: se pegaba al contrato de transacción).
+        elif titulo.upper() not in TITULOS_DEL_PAGARE:
+            con_pagare = [
+                i + 1
+                for i, p in enumerate(hojas)
+                if titulo_del_documento(textos.get(p, "") or "") in ("PAGARE", "CARTA DE INSTRUCCIONES")
+            ]
+            if con_pagare:
+                resultado.errores.append(
+                    f"«{archivo.nombre}»: lleva un pagaré o su carta de instrucciones (hoja {con_pagare[0]} de "
+                    f"{len(hojas)}) y no es el acuerdo de pago; sin reconocimiento de deuda, el pagaré va solo"
+                )
+        # El mismo documento con un solo nombre: PETICION es DERECHO DE PETICION (4251556, 2026-11-24).
+        unificado = tipo_unificado(titulo.upper())
+        if unificado and unificado != titulo.upper():
+            resultado.dudas.append(f"«{archivo.nombre}»: se llama {titulo} y ese documento es {unificado}")
+    _auditar_lo_que_va_con_su_documento(archivos, textos, resultado)
     return resultado
+
+
+def _auditar_lo_que_va_con_su_documento(
+    archivos: Sequence[ArchivoEntregado], textos: Mapping[int, str], resultado: RadicadosAuditados
+) -> None:
+    """Lo que el operador dictó el 2026-11-24 que va con su documento, otra vez sobre lo entregado.
+
+    - **El aviso con su acto** (4251461): la notificación por aviso que adjunta
+      la copia del acto y la deja en otro PDF, o el PDF que es sólo la portada
+      «ANEXO», son errores.
+    - **El paquete de la empresa** (4251482): el documento que va justo detrás
+      de una carátula con membrete (CONSTANCIA DE CONTRATACIÓN, EXPEDIENTE) sin
+      ser algo que lo cierre -- un formulario que va solo, un escrito de
+      trámite, un sello visible -- y que salió aparte, es duda.
+    """
+    from ..domain.asunto_del_documento import (
+        DECLARACION_JURAMENTADA,
+        FORMATO_DE_LA_EMPRESA,
+        acto_que_adjunta,
+        consecutivo_de,
+        formulario_que_abre,
+        portada_del_anexo,
+    )
+    from ..domain.sello import leer_sello
+    from .cartas import _es_escrito_del_tramite
+
+    archivo_de = {p: a.nombre for a in archivos for p in a.paginas if p is not None}
+
+    def texto(pagina: int) -> str:
+        return textos.get(pagina, "") or ""
+
+    for archivo in archivos:
+        hojas = [p for p in archivo.paginas if p is not None]
+        if not hojas:
+            continue
+        primera = min(hojas)
+        if portada_del_anexo(texto(primera)) is not None and all(
+            portada_del_anexo(texto(p)) is not None for p in hojas
+        ):
+            resultado.errores.append(
+                f"«{archivo.nombre}»: es sólo la portada «ANEXO» de un acto; va con la notificación por aviso que lo adjunta"
+            )
+        acto = acto_que_adjunta(texto(primera))
+        siguiente = max(hojas) + 1
+        if acto and siguiente in archivo_de and archivo_de[siguiente] != archivo.nombre:
+            de_su_acto = portada_del_anexo(texto(siguiente)) is not None or consecutivo_de(texto(siguiente)) == acto
+            if de_su_acto:
+                resultado.errores.append(
+                    f"«{archivo.nombre}»: la notificación por aviso adjunta la copia del acto {acto} y la copia salió "
+                    f"en «{archivo_de[siguiente]}»"
+                )
+        anterior = primera - 1
+        if anterior in archivo_de and archivo_de[anterior] != archivo.nombre:
+            otro = next(a for a in archivos if a.nombre == archivo_de[anterior])
+            caratula = min(p for p in otro.paginas if p is not None)
+            cierra = (
+                formulario_que_abre(texto(primera)) not in (None, DECLARACION_JURAMENTADA)
+                or _es_escrito_del_tramite(texto(primera))
+                or leer_sello(texto(primera)) is not None
+            )
+            if formulario_que_abre(texto(caratula)) == FORMATO_DE_LA_EMPRESA and not cierra:
+                resultado.dudas.append(
+                    f"«{archivo.nombre}»: va justo detrás de la carátula de «{otro.nombre}» (hoja {caratula}) y "
+                    "salió aparte; la carátula se lleva lo que la sigue"
+                )
 
 
 # -- los nombres de lo entregado (2026-11-17) -------------------------------------------------
