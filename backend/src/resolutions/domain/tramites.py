@@ -413,6 +413,60 @@ def donde_aparece_la_persona(
     return {clave: sorted(suyos) for clave, suyos in rasgos.items() if suyos}
 
 
+
+#: El número de la tarjeta antes de sus nombres: «NUMERO 33.198.498 PUERTA MEZA
+#: APELLIDOS», «MussERo 3.877.736 PEREZ AGUAS APES.UDOS» -- con el rótulo roto --.
+_NUMERO_DE_LA_TARJETA = re.compile(r"(?<![\d.,])(\d{1,3}(?:\W{1,2}\d{3}){2,3}|\d{7,10})(?![\d])")
+#: Los rótulos de la tarjeta como los deja el OCR: «APELLIDOS», «yPELLIOOS»,
+#: «APES.UDOS»; «NOMBRES», «'WM^RES».
+_APELLIDOS = re.compile(r"\b\w?P[EO]?\W?[LSI]{1,2}\W?[UIL1]?\W?[DO0]{1,2}S\b")
+_NOMBRES = re.compile(r"\b\w{0,2}M\W{0,2}[B8]?\W?RES\b")
+#: Cuánto antes del rótulo de los apellidos va el número.
+ANTES_DE_LOS_APELLIDOS = 90
+
+
+def identidad_de_la_cedula(texto: str) -> str | None:
+    """De quién es una cédula: «C.C. 33198498 PUERTA MEZA MARIA», o ``None`` si no se lee.
+
+    Sólo su número -- el que va antes de los apellidos en la cara, o el del
+    código de barras en el reverso -- y sus apellidos y nombres. Nunca los
+    demás números de la tarjeta, que son fechas y códigos: con ellos una
+    cédula ilegible «casaba» con un número cualquiera de otro documento
+    (7740578 hoja 6, 2026-11-23).
+    """
+    plano = _plano(texto or "")
+    numero = apellidos = nombres = ""
+    rotulo = _APELLIDOS.search(plano)
+    if rotulo is not None:
+        antes = plano[max(0, rotulo.start() - ANTES_DE_LOS_APELLIDOS) : rotulo.start()]
+        hallados = list(_NUMERO_DE_LA_TARJETA.finditer(antes))
+        if hallados:
+            numero = re.sub(r"\D", "", hallados[-1].group(1)).lstrip("0")
+            apellidos = antes[hallados[-1].end() :]
+        de_los_nombres = _NOMBRES.search(plano, rotulo.end())
+        if de_los_nombres is not None and de_los_nombres.start() - rotulo.end() < ANTES_DE_LOS_APELLIDOS:
+            nombres = plano[rotulo.end() : de_los_nombres.start()]
+    if not numero and (barras := _CODIGO_DE_BARRAS.search(plano)):
+        numero = barras.group(1).lstrip("0")
+    if not 6 <= len(numero) <= 10:
+        numero = ""
+
+    def palabras(trozo: str) -> str:
+        return " ".join(p for p in re.findall(r"[A-Z]{3,}", trozo) if p not in _PALABRAS_DE_ROTULO)
+
+    persona = " ".join(x for x in (palabras(apellidos), palabras(nombres)) if x)
+    if not numero and len(persona.split()) < 2:
+        return None
+    return " ".join(x for x in (f"C.C. {numero}" if numero else "", persona) if x)
+
+def prueba_suficiente(pruebas: list[str]) -> bool:
+    """Si lo que nombra a la persona de una cédula alcanza para llevarla a ese documento.
+
+    Su número, o dos pares de palabras de su nombre -- apellidos y nombres --:
+    un par suelto puede ser el lugar de nacimiento impreso en la tarjeta.
+    """
+    return any(prueba.startswith("n.º") for prueba in pruebas) or len(pruebas) >= 2
+
 # -- el remitente de una hoja -------------------------------------------------
 #
 # Lo usa la continuidad (``segmentation``): dos hojas seguidas con el mismo NIC

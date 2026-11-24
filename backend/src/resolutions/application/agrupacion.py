@@ -1105,12 +1105,10 @@ def _validar_tramites(
 
 
 def _prueba_suficiente(pruebas: list[str]) -> bool:
-    """Si lo que nombra a la persona de una cédula alcanza para mover la hoja.
+    """Si lo que nombra a la persona de una cédula alcanza para mover la hoja (``domain.tramites.prueba_suficiente``)."""
+    from ..domain.tramites import prueba_suficiente
 
-    Su número, o dos pares de palabras de su nombre -- apellidos y nombres --:
-    un par suelto puede ser el lugar de nacimiento impreso en la tarjeta.
-    """
-    return any(prueba.startswith("n.º") for prueba in pruebas) or len(pruebas) >= 2
+    return prueba_suficiente(pruebas)
 
 
 def _radicado_mas_cercano(

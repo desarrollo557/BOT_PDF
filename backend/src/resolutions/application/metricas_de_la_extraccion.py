@@ -59,6 +59,8 @@ class PdfEntregado:
     job_id: str = ""
     #: Lo que el agente decidió por su cuenta, con su auditor (2026-11-23).
     decisiones: list[Mapping] = field(default_factory=list)
+    #: Cada anexo y con qué documento quedó (F5g, 2026-11-23).
+    anexos: list[Mapping] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -86,6 +88,8 @@ class Metricas:
     auditoria: list[dict] = field(default_factory=list)
     #: Una fila por PDF de origen, con lo que le falta.
     por_upd: list[dict] = field(default_factory=list)
+    #: Una fila por hoja de anexo: con qué documento quedó y por qué (2026-11-23).
+    anexos: list[dict] = field(default_factory=list)
 
     @property
     def segundos_por_pdf(self) -> float:
@@ -492,6 +496,50 @@ def por_parametro(auditoria: list[Mapping]) -> list[dict]:
     return filas
 
 
+def anexos_del_pdf(pdf: PdfEntregado) -> list[dict]:
+    """Una fila por hoja de anexo del PDF: con qué archivo quedó, por qué regla y con qué pruebas.
+
+    El operador, 2026-11-23: «que cada anexo esté con su respectivo documento
+    dividido», y la auditoría tiene que decirlo hoja por hoja. El archivo se
+    casa por las hojas de cada documento (``Constancia.documentos``).
+    """
+    nic, _, upd = pdf.documento.partition("/")
+    archivo_de: dict[int, str] = {}
+    for i, documento in enumerate(pdf.documentos):
+        archivo = pdf.archivos[i] if i < len(pdf.archivos) else ""
+        for hoja in documento.get("hojas") or []:
+            if str(hoja).isdigit():
+                archivo_de[int(hoja)] = archivo
+    def _hoja(valor: object) -> int | None:
+        return int(valor) if str(valor).isdigit() else None
+
+    filas: list[dict] = []
+    for anexo in pdf.anexos:
+        hoja = _hoja(anexo.get("pagina"))
+        if hoja is None:
+            continue
+        ancla = _hoja(anexo.get("ancla"))
+        desde = _hoja(anexo.get("movida_desde"))
+        filas.append(
+            {
+                "nic": nic,
+                "upd": upd,
+                "archivo": archivo_de.get(hoja, ""),
+                "hoja": hoja,
+                "clase": str(anexo.get("clase") or ""),
+                "de_quien": str(anexo.get("de_quien") or ""),
+                "leido_por": str(anexo.get("leido_por") or ""),
+                "principal": ancla,
+                "regla": str(anexo.get("regla") or ""),
+                "pruebas": ", ".join(str(p) for p in anexo.get("pruebas") or []),
+                "movida_desde": f"documento de la hoja {desde}" if desde is not None else "",
+                "confianza": str(anexo.get("confianza") or ""),
+                "aviso": str(anexo.get("aviso") or ""),
+            }
+        )
+    return filas
+
+
 def decisiones_del_agente(auditoria: Iterable[Mapping]) -> list[dict]:
     """Lo que el agente hizo por su cuenta, documento por documento: el RE que decidió y cada aviso que cerró."""
     filas: list[dict] = []
@@ -571,6 +619,7 @@ def medir(entregados: Iterable[PdfEntregado]) -> Metricas:
         filas, resumen = auditar(pdf)
         metricas.auditoria += filas
         metricas.por_upd.append(resumen)
+        metricas.anexos += anexos_del_pdf(pdf)
         for parametro in PARAMETROS:
             por_hoja = pdf.evidencia.get(parametro) or {}
             if not isinstance(por_hoja, Mapping):

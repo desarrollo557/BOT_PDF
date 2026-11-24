@@ -488,6 +488,87 @@ PUBLICACION_DEL_AVISO = "PUBLICACION DEL AVISO"
 NOTIFICACIONES = frozenset({NOTIFICACION_PERSONAL, NOTIFICACION_POR_AVISO, PUBLICACION_DEL_AVISO})
 RESPUESTA_DE_LA_EMPRESA = "RESPUESTA DE LA EMPRESA"
 LEY_HABEAS_DATA = "LEY HABEAS DATA"
+#: Los formatos de la empresa con su membrete -- «Una filial del Grupo EPM ·
+#: CARIBEMAR DE LA COSTA S.A.S. ESP · Nit: 901.380.949-1» --: el EXPEDIENTE, la
+#: CONSTANCIA DE CONTRATACIÓN DE SERVICIO. Lo dictó el operador el 2026-11-23:
+#: «los documentos que tengan esto en primera página siempre irán solos
+#: divididos, con sus respectivas fechas y título». En 4251482 (UPD2447022
+#: pág. 8) el EXPEDIENTE salía dentro de la declaración de delante.
+FORMATO_DE_LA_EMPRESA = "FORMATO DE LA EMPRESA"
+#: Y la declaración bajo gravedad de juramento: «también va sola, con su
+#: respectivo anexo muy bien analizado antes de unirlo» (el mismo día).
+DECLARACION_JURAMENTADA = "DECLARACION BAJO GRAVEDAD DE JURAMENTO"
+#: El membrete en la cabeza de la hoja: el nombre de la empresa y su NIT, como
+#: lo deja el escáner («CARIBEMAR DE LA COSTA S.A.S. ESP», «Nit: 901.380.949-1»).
+_MEMBRETE = re.compile(r"CARIBE\s?MAR\s+DE\s+LA\s+COSTA")
+_NIT_DE_LA_EMPRESA = re.compile(r"N\W?[I1L]\W?T\W{0,3}\s*9\s?[0O]\s?1\W?\s?3\s?8\s?[0O]\W?\s?9\s?4\s?9")
+#: En cuántos renglones del principio va el membrete.
+RENGLONES_DEL_MEMBRETE = 10
+#: Lo que trae el membrete sin ser un formato que va solo: el estado de cuenta
+#: -- el operador, 2026-11-23: «anexo del anterior» -- y la factura.
+_SOPORTE_CON_MEMBRETE = re.compile(r"ESTADO\s+DE\s+CUENTA\s+POR\s+(?:NIC|IDENTIFICADOR)|OPERADOR\s+DE\s+RED")
+
+
+#: Los procesos que la declaración ofrece para marcar con una «x», como los
+#: imprime el formato, con el nombre que toman (el operador, 2026-11-23: «le
+#: colocarás el título dependiendo lo que esté seleccionado»).
+PROCESOS_DE_LA_DECLARACION: tuple[tuple[str, str], ...] = (
+    ("RECONOCIMIENTO DE ACTIVOS", r"RECONOCIMIENTO\s+DE\s+ACTIVOS"),
+    ("CAMBIO DE TITULAR DE CONTRATO", r"CAMBIO\s+DE\s+TITULAR\s+DE\s+CONTRATO"),
+    ("SOLICITUD DE CONTRATACION NUEVO SUMINISTRO", r"SOLICITUD\s+DE\s+CONTRATACION\s+NUEVO\s+SUMINISTRO"),
+    ("BAJA DE CONTRATO", r"BAJA\s+DE\s+CONTRATO"),
+)
+#: La casilla marcada justo detrás de su proceso, como la transcribe el OCR de
+#: pago: «Cambio de Titular de Contrato ☑» (4251482 pág. 4). La vacía, «☐».
+_CASILLA_MARCADA = r"\s*(?:☑|☒|✓|✔|✅|\[\s*X\s*\]|\(\s*X\s*\)|\|\s*X\s*\||X(?![A-Z]))"
+#: Lo escrito en «Otro Proceso, ¿Cuál?», hasta el párrafo que sigue.
+_OTRO_PROCESO = re.compile(r"OTRO\s+PROCESO\W{0,4}\s*\W?CUAL\W{0,3}\s*(?P<cual>.{0,90}?)\s*(?:MEDIANTE\b|$)", re.DOTALL)
+#: Cómo se llama la declaración con su proceso: «DECLARACION BGDJ - CAMBIO DE TITULAR DE CONTRATO».
+SIGLA_DE_LA_DECLARACION = "DECLARACION BGDJ"
+#: Lo más largo que se deja ser al proceso escrito a mano.
+LARGO_DEL_OTRO_PROCESO = 50
+
+
+def _sin_tildes(texto: str) -> str:
+    """En mayúsculas y sin tildes, pero con los símbolos de las casillas (☑, ☐)."""
+    return "".join(c for c in unicodedata.normalize("NFD", texto or "") if not unicodedata.combining(c)).upper()
+
+
+def proceso_de_la_declaracion(texto: str) -> str | None:
+    """El proceso que la declaración trae marcado, o lo escrito en «Otro Proceso, ¿Cuál?»; ``None`` si no se sabe.
+
+    Del texto del OCR de pago, que transcribe las casillas: una sola marcada
+    da su proceso. Sin ninguna marcada, lo que diga «¿Cuál?» -- «Aumento de
+    Potencia» (4251482 pág. 11) --, si son palabras. Dos marcadas, o nada, no
+    dan nada: nunca se adivina. La capa del escáner no sirve: rompe la «x» en
+    «Leo]», «JU]», «XK».
+    """
+    plano = " ".join(_sin_tildes(texto).split())
+    marcadas = [nombre for nombre, proceso in PROCESOS_DE_LA_DECLARACION if re.search(proceso + _CASILLA_MARCADA, plano)]
+    if len(marcadas) == 1:
+        return marcadas[0]
+    if marcadas:
+        return None
+    hallado = _OTRO_PROCESO.search(plano)
+    if hallado is None:
+        return None
+    cual = re.sub(r"[^A-Z ]", " ", hallado.group("cual"))
+    palabras = [p for p in cual.split() if len(p) >= 2]
+    if sum(len(p) for p in palabras) < 6 or not any(len(p) >= 4 for p in palabras):
+        return None
+    return " ".join(palabras)[:LARGO_DEL_OTRO_PROCESO].strip()
+
+
+def nombre_de_la_declaracion(proceso: str | None) -> str:
+    """«DECLARACION BGDJ - <proceso>», o el nombre de siempre si no se sabe el proceso."""
+    return f"{SIGLA_DE_LA_DECLARACION} - {proceso}" if proceso else DECLARACION_JURAMENTADA
+
+
+def trae_el_membrete(texto: str) -> bool:
+    """Si la hoja lleva arriba el membrete de la empresa: su nombre y su NIT en los primeros renglones."""
+    renglones = [r for r in (texto or "").splitlines() if r.strip()][:RENGLONES_DEL_MEMBRETE]
+    cabeza = _plano(" ".join(renglones))
+    return bool(_MEMBRETE.search(cabeza)) and bool(_NIT_DE_LA_EMPRESA.search(cabeza))
 
 #: Cuánto de la cabecera se mira para los formatos.
 CABEZA_DEL_FORMATO = 600
@@ -565,6 +646,9 @@ def formulario_que_abre(texto: str) -> str | None:
       entrega -- van cada una en su documento.
     - La Ley Habeas Data y las piezas del acuerdo de pago también se separan
       de lo que tengan delante; después el acuerdo las junta en el suyo.
+    - La declaración bajo gravedad de juramento y los formatos con el membrete
+      de la empresa -- el EXPEDIENTE, la CONSTANCIA DE CONTRATACIÓN -- van
+      solos, con sus anexos (2026-11-23).
 
     Sólo la primera hoja: la que sigue a la respuesta («Por lo anterior…») no
     trae consecutivo y sigue con ella.
@@ -589,6 +673,13 @@ def formulario_que_abre(texto: str) -> str | None:
     renglones = [r for r in (texto or "").splitlines() if r.strip()][:RENGLONES_DEL_CONSECUTIVO]
     if _DE_LA_EMPRESA.search(" ".join(_plano(r) for r in renglones) + " "):
         return RESPUESTA_DE_LA_EMPRESA
+    # La declaración juramentada y los formatos con el membrete de la empresa
+    # van solos, con su anexo (el operador, 2026-11-23). No el estado de
+    # cuenta ni la factura, que traen el membrete y son anexos.
+    if titulo == DECLARACION_JURAMENTADA:
+        return DECLARACION_JURAMENTADA
+    if trae_el_membrete(texto) and not _SOPORTE_CON_MEMBRETE.search(_plano(" ".join((texto or "").split()))):
+        return FORMATO_DE_LA_EMPRESA
     return None
 
 

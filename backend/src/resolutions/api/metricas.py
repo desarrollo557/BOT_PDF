@@ -54,6 +54,7 @@ def entregados_en(destino: Path) -> Iterator[PdfEntregado]:
             documentos=[d for d in constancia.documentos or [] if isinstance(d, dict)],
             job_id=constancia.job_id or "",
             decisiones=[d for d in constancia.decisiones_del_agente or [] if isinstance(d, dict)],
+            anexos=[d for d in constancia.secuencia_de_anexos or [] if isinstance(d, dict)],
         )
 
 

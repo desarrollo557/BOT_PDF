@@ -1580,6 +1580,120 @@ def _evidencia_de_las_piezas(
 PPP_DE_LA_PERSONA = 200
 
 
+#: Cuántos anexos por caja lee la IA para saber de quién son, como mucho.
+ANEXOS_A_LA_IA_POR_CAJA = 40
+#: Cuántas declaraciones por caja lee la IA para saber qué proceso traen marcado.
+DECLARACIONES_A_LA_IA_POR_CAJA = 40
+
+
+def _procesos_de_las_declaraciones(paginas: list[int], *, taller, ruta_pdf) -> dict[int, str]:
+    """El proceso que cada declaración juramentada trae marcado, por su hoja; sin la IA, ninguno.
+
+    Lo pidió el operador el 2026-11-23: «le colocarás el título dependiendo lo
+    que esté seleccionado», «DECLARACION BGDJ - PROCESO». Lo lee el OCR de pago,
+    que transcribe las casillas («Cambio de Titular de Contrato ☑»), de la hoja
+    entera con la misma imagen que pide el agente de fechas: la caché la sirve
+    una sola vez. La capa del escáner rompe la «x» y no se usa.
+    """
+    from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...domain.asunto_del_documento import proceso_de_la_declaracion
+
+    de_pago = taller.lector_de_pago()
+    if de_pago is None or not paginas:
+        return {}
+    procesos: dict[int, str] = {}
+    fuente = PyMuPDFPageSource(ruta_pdf, taller.name)
+    try:
+        for pagina in paginas[:DECLARACIONES_A_LA_IA_POR_CAJA]:
+            taller.control.check()
+            try:
+                leido = de_pago.read(fuente.render(pagina, None, PPP_PARA_LA_FECHA_CON_IA, "jpeg")).text or ""
+            except Exception:  # noqa: BLE001 - sin la lectura, su nombre de siempre
+                logger.warning("no se pudo leer el proceso de la declaración de la pág. %s", pagina, exc_info=True)
+                continue
+            if proceso := proceso_de_la_declaracion(leido):
+                procesos[pagina] = proceso
+    finally:
+        fuente.close()
+    return procesos
+
+
+def _cada_anexo_con_su_documento(
+    grupos, anexos, *, textos: dict, taller, ruta_pdf, fijas: set, sin_anexos: frozenset = frozenset()
+):
+    """F5g: cada anexo con su documento -- la secuencia, la persona y la IA (el operador, 2026-11-23).
+
+    De quién es cada cédula y cada factura sale de la capa: el número y el
+    nombre de la cédula, el titular de la factura. Si la capa no lo deja leer
+    y se eligió «OCR + IA», el OCR de pago lee la hoja (una vez, con caché, y
+    ``ANEXOS_A_LA_IA_POR_CAJA`` como mucho). Si ni así decide nada, el juez de
+    la IA mira el anexo y elige uno de los documentos de la caja.
+    """
+    from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...application.anexos_declarados import (
+        DOCUMENTO_DE_IDENTIDAD,
+        asignar_por_secuencia,
+    )
+    from ...domain.anexos_declarados import titular_del_recibo
+    from ...domain.secuencia_de_anexos import eleccion_del_juez_de_anexos
+    from ...domain.tramites import identidad_de_la_cedula
+
+    de_pago = taller.lector_de_pago()
+    juez_de_la_ia = taller.juez_de_anexos()
+    fuente = None
+    leidas: dict[int, str] = {}
+
+    def la_fuente():
+        nonlocal fuente
+        if fuente is None:
+            fuente = PyMuPDFPageSource(ruta_pdf, taller.name)
+        return fuente
+
+    def de_quien(texto: str, clase: str) -> str | None:
+        if clase == DOCUMENTO_DE_IDENTIDAD:
+            # Sólo su número y su nombre, no las fechas ni los códigos de la
+            # tarjeta (7740578 hoja 6, 2026-11-23).
+            return identidad_de_la_cedula(texto)
+        return titular_del_recibo(texto)
+
+    def identidad_de(pagina: int, clase: str):
+        propia = de_quien(textos.get(pagina, "") or "", clase)
+        if propia:
+            return propia, "capa"
+        if de_pago is None or (pagina not in leidas and len(leidas) >= ANEXOS_A_LA_IA_POR_CAJA):
+            return None, None
+        if pagina not in leidas:
+            taller.control.check()
+            try:
+                leidas[pagina] = de_pago.read(la_fuente().render(pagina, None, PPP_DE_LA_PERSONA, "jpeg")).text or ""
+            except Exception:  # noqa: BLE001 - sin la IA, la secuencia
+                logger.warning("no se pudo leer de quién es el anexo de la pág. %s", pagina, exc_info=True)
+                leidas[pagina] = ""
+        leida = de_quien(leidas[pagina], clase)
+        return (leida, "ocr de pago") if leida else (None, None)
+
+    def juez(pagina: int, opciones: list[str]) -> int | None:
+        taller.control.check()
+        respuesta = juez_de_la_ia.resumir(
+            "\n".join(opciones), imagen=la_fuente().render(pagina, None, PPP_DE_LA_PERSONA, "jpeg")
+        )
+        return eleccion_del_juez_de_anexos(respuesta, len(opciones))
+
+    try:
+        return asignar_por_secuencia(
+            grupos,
+            textos,
+            anexos,
+            fijas=frozenset(fijas),
+            sin_anexos=sin_anexos,
+            identidad_de=identidad_de,
+            juez=juez if juez_de_la_ia is not None else None,
+        )
+    finally:
+        if fuente is not None:
+            fuente.close()
+
+
 class _PersonasDeLasHojas:
     """La persona que firma cada hoja -- su nombre y su cédula --, para casar la Habeas Data con su acuerdo.
 
@@ -2547,7 +2661,9 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # -- El orden de los filtros --------------------------------------------
     # Lo pidió el operador: «agrégales un orden de ejecución lógico». Cada hoja
     # se lee una sola vez, y los filtros van del indicio más fuerte al más
-    # débil; ninguno deshace lo que decidió uno anterior:
+    # débil. Algunos rehacen lo de otro -- F4 devuelve la cédula que F1 separó,
+    # F5f parte la constancia que otros pegaron --; por eso los anexos los
+    # decide al final F5g, una sola regla (2026-11-23):
     #
     #   LECTURA  L1  el texto de cada hoja: su capa, o la OCR si no la trae.
     #            L2  el sello de radicación, leído aparte y sólo donde puede ir.
@@ -2561,6 +2677,8 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     #                sello ilegible corta hasta el próximo RE o sello; la fecha
     #                reparte las hojas que no traen ninguno.
     #            F5b la última hoja de la caja, si trae sello, va sola.
+    #            F5g cada anexo con su documento: la secuencia del PDF, la
+    #                persona del anexo y, si nada decide, la IA.
     #   NOMBRE   F6  título directo, radicado y fecha.
     source = PyMuPDFPageSource(tmp_path, taller.name)
     workers = int(taller.settings.get("page_workers") or 4)
@@ -2942,12 +3060,19 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         consecutivo = _consecutivo_de(textos.get(pagina, "") or "") if tipo_f == _RESPUESTA else None
         return (tipo_f, f"{radicado_f or ''}#{consecutivo}") if consecutivo else (tipo_f, radicado_f)
 
+    # Y los formatos con el membrete de la empresa -- el EXPEDIENTE, la
+    # CONSTANCIA DE CONTRATACIÓN -- y la declaración juramentada: «siempre irán
+    # solos divididos» (el operador, 2026-11-23, 4251482 pág. 8). Sus anexos los
+    # decide después la secuencia (F5g).
+    from ...domain.asunto_del_documento import DECLARACION_JURAMENTADA as _DECLARACION
+    from ...domain.asunto_del_documento import FORMATO_DE_LA_EMPRESA as _FORMATO
+
     grupos, anexos, _ = separar_los_formularios(
         grupos,
         {p: _clave(p) for p in formularios},
         anexos,
         intocables=intocables,
-        solos=frozenset({_CONSTANCIA, *_NOTIFICACIONES}),
+        solos=frozenset({_CONSTANCIA, *_NOTIFICACIONES, _FORMATO, _DECLARACION}),
         anexo_evidente=_anexo_evidente,
     )
     # Los que van solos abren documento para todo lo que viene después: ni la
@@ -3047,6 +3172,16 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # Hasta dónde se busca el título: el escrito pide en sus primeras hojas, y
     # lo que viene detrás son sus anexos.
     PAGINAS_DEL_TITULO = 6
+    from ...domain.asunto_del_documento import (
+        DECLARACION_JURAMENTADA as _DECLARACION_JURAMENTADA,
+    )
+    from ...domain.asunto_del_documento import (
+        nombre_de_la_declaracion as _nombre_de_la_declaracion,
+    )
+
+    #: El proceso marcado en cada declaración juramentada, por su hoja: se llena
+    #: tras F5g, cuando ya se sabe qué hoja abre cada una.
+    procesos_de_la_declaracion: dict[int, str] = {}
 
     def _oficial_de_la_hoja(pagina: int, tipo: str | None) -> str:
         """El nombre oficial del documento que abre en esa hoja; DOCUMENTO si no dice qué es.
@@ -3064,6 +3199,10 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         if titulo == _CONSTANCIA:
             # Cada formato con su nombre (el operador, 2026-11-20).
             return nombre_de_la_constancia(texto)
+        if titulo == _DECLARACION_JURAMENTADA and pagina in procesos_de_la_declaracion:
+            # Con el proceso que trae marcado: «DECLARACION BGDJ - CAMBIO DE
+            # TITULAR DE CONTRATO» (el operador, 2026-11-23).
+            return _nombre_de_la_declaracion(procesos_de_la_declaracion[pagina])
         if titulo != DOCUMENT_PREFIX:
             return nombre_oficial(titulo, asunto) or titulo
         if abre_carta(texto) and (del_asunto := nombre_oficial(DOCUMENT_PREFIX, asunto)):
@@ -3564,6 +3703,56 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             },
         )
         grupos, anexos = constancias_sueltas.grupos, constancias_sueltas.anexos
+    # F5g. Cada anexo con su documento (el operador, 2026-11-23): la secuencia
+    # del PDF -- con su página principal anterior --, salvo que su persona lo
+    # haga de otro documento de la caja. La constancia no recibe ninguno: lo
+    # de detrás, al siguiente, salvo que sea de la persona del de antes
+    # (2026-11-24). Lo que la regla no prueba lo mira la IA. Es el seguro
+    # final: después de él nada cambia qué hojas van en cada documento.
+    anexos_en_su_documento = None
+    if entregado_por is not Agrupacion.MES:
+        anexos_en_su_documento = _cada_anexo_con_su_documento(
+            grupos,
+            anexos,
+            textos=textos,
+            taller=taller,
+            ruta_pdf=tmp_path,
+            # La constancia de reclamación no recibe ningún anexo (el operador,
+            # 2026-11-24): las mismas hojas que separa F5f.
+            sin_anexos=frozenset(
+                p
+                for p, (tipo_f, _) in formularios.items()
+                if tipo_f == _CONSTANCIA and p not in intocables
+            ),
+            fijas=(
+                set(sellos_que_abren)
+                | etiquetas
+                | guias
+                | set(foliacion.continua)
+                | set(foliacion.abre)
+                | set(retencion.retenidas)
+                | set(por_folios)
+                | set(cartas.copias)
+                | set(de_prueba)
+                | {g.page_numbers[0] for g in grupos.groups if g.page_numbers and g.page_numbers[0] in formularios_solos}
+            ),
+        )
+        grupos, anexos = anexos_en_su_documento.grupos, anexos_en_su_documento.anexos
+    # La declaración juramentada se llama por el proceso que trae marcado (el
+    # operador, 2026-11-23): lo lee el OCR de pago, que transcribe las
+    # casillas, con la misma imagen que pide el agente de fechas -- la caché
+    # la sirve una vez --. Sin la IA, su nombre de siempre.
+    procesos_de_la_declaracion.update(
+        _procesos_de_las_declaraciones(
+            [
+                g.page_numbers[0]
+                for g in grupos.groups
+                if g.page_numbers and formularios.get(g.page_numbers[0], ("", None))[0] == _DECLARACION
+            ],
+            taller=taller,
+            ruta_pdf=tmp_path,
+        )
+    )
     # La lista de ANEXOS de cada escrito, verificada contra su PDF final: los
     # soportes, los folios y lo que no abría nada ya se le unieron.
     escritos = verificar_en_el_documento(retencion.escritos, grupos, textos, abren=abren)
@@ -3980,12 +4169,27 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     grupos = _ordenar_los_acuerdos(
         grupos, piezas, textos, set(del_acuerdo), por_mes=entregado_por is Agrupacion.MES
     )
-    # F8d. Ningún PDF empieza por una cédula: va detrás, como anexo (el
-    # operador, 2026-11-23, 4132540). Por mes no: el archivo es un mes entero.
+    # F8d. Ningún PDF empieza por un anexo: va detrás de su principal (el
+    # operador, 2026-11-23: primero la cédula de 4132540, después todo anexo).
+    # Por mes no: el archivo es un mes entero.
     if entregado_por is not Agrupacion.MES:
-        from ...application.anexos_declarados import la_cedula_detras
+        from ...application.anexos_declarados import los_anexos_detras
+        from ...domain.secuencia_de_anexos import auditar_la_secuencia
 
-        grupos = la_cedula_detras(grupos, textos)
+        grupos = los_anexos_detras(grupos, textos, abren=frozenset(set(sellos_que_abren) | etiquetas))
+        # Y la comprobación del seguro: cada anexo con el ancla con que se
+        # decidió. Debería no quedar ninguno fuera.
+        if anexos_en_su_documento is not None:
+            fuera = auditar_la_secuencia(
+                [list(g.page_numbers) for g in grupos.groups], anexos_en_su_documento.duenos()
+            )
+            if fuera:
+                logger.warning("anexos fuera de su documento tras F5g en %s: %s", taller.name, fuera)
+            report_secuencia_fuera = fuera
+        else:
+            report_secuencia_fuera = []
+    else:
+        report_secuencia_fuera = []
     _anunciar(
         payload,
         Stage.ASSEMBLING,
@@ -4272,6 +4476,16 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         impresos=frozenset().union(*(_impresos(t or "") for t in textos.values())) if textos else frozenset(),
     )
     report["decisiones_del_agente"] = list(decisiones_del_agente)
+    # Cada anexo y con qué documento quedó (F5g), con la hoja de su documento
+    # final, y los que la comprobación encontró fuera (deberían ser ninguno).
+    if anexos_en_su_documento is not None:
+        primera_de = {p: g.page_numbers[0] for g in grupos.groups for p in g.page_numbers}
+        report["secuencia_de_anexos"] = [
+            {**decision, "documento": primera_de.get(int(decision["pagina"]))}
+            for decision in anexos_en_su_documento.decisiones
+        ]
+    report["secuencia_de_anexos_fuera"] = list(report_secuencia_fuera)
+    report["procesos_de_la_declaracion"] = {str(p): proceso for p, proceso in procesos_de_la_declaracion.items()}
     # Y el detalle del revisor de cortes, alineado con lo que el agente cerró:
     # su panel en la pantalla dejaba «En revisión» lo que ya estaba resuelto.
     revision_de_cortes = report.get("revision_de_cortes")

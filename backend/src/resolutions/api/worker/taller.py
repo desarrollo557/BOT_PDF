@@ -566,6 +566,37 @@ class Taller:
             antes_de_pedir=self.control.check,
         )
 
+    def juez_de_anexos(self):
+        """El juez de la IA que mira un anexo y elige a cuál documento de la caja pertenece, si se pidió la IA.
+
+        El operador, 2026-11-23: «aproxima la unión de páginas por razonamiento
+        también, con IA: hay veces que los PDF fuentes vienen con las páginas
+        muy mal organizadas». Sólo cuando ni la secuencia ni la persona
+        deciden, y sólo elige entre los documentos que se le dan
+        (``domain.secuencia_de_anexos.eleccion_del_juez_de_anexos``).
+        """
+        if not self._con_ia():
+            return None
+        llave = self.settings.get("mistral_api_key")
+        if not llave:
+            return None
+
+        from ...adapters.mistral_resumen import MistralResumenConfig, MistralResumidor
+        from ...domain.secuencia_de_anexos import (
+            ENCABEZADO_DE_LAS_OPCIONES,
+            INSTRUCCIONES_PARA_UBICAR_EL_ANEXO,
+        )
+
+        return MistralResumidor(
+            api_key=llave,
+            config=MistralResumenConfig(model="mistral-medium-latest", max_tokens=20, temperatura=0.0),
+            consumo=self.consumo,
+            turnos=self.turnos_de_ia,
+            instrucciones=INSTRUCCIONES_PARA_UBICAR_EL_ANEXO,
+            encabezado=ENCABEZADO_DE_LAS_OPCIONES,
+            antes_de_pedir=self.control.check,
+        )
+
     def lector_de_fechas_a_la_vista(self):
         """Quien copia con visión las fechas de la hoja principal de un documento sin fecha, si se pidió la IA.
 

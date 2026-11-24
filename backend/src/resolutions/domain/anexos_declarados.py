@@ -95,6 +95,9 @@ _CLASES: tuple[tuple[str, re.Pattern[str], re.Pattern[str] | None], ...] = (
             # Y la que se titula así: «FACTURA DE VENTA», «FACTURA ELECTRÓNICA».
             r"|^\W*+(?:\S++\s++){0,2}FACTURA\s+(?:DE\s+VENTA|ELECTRONICA|DE\s+SERVICIOS?|No\b|N\W)"
             r"|NO\.?\s+FACTURAS\s+VENCIDAS|FECHA\s+\S{0,2}LTIMO\s+PA[GQ]O|\bNIU\s*:"
+            # El estado de cuenta del sistema, con el membrete de la empresa: es
+            # el anexo del documento que acompaña (el operador, 2026-11-23).
+            r"|ESTADO\s+DE\s+CUENTA\s+POR\s+(?:NIC|IDENTIFICADOR)"
         ),
     ),
     (
@@ -583,3 +586,44 @@ def corresponde(declarada: str | None, hallada: str | None) -> bool:
         return True
     # La hoja muda puede ser la fotocopia de lo que la lectura no alcanzó.
     return hallada == HOJA_MUDA and declarada in {"documento de identidad", "fotografías"}
+
+
+# -- de quién es un recibo -----------------------------------------------------------
+
+#: El titular que la factura de la empresa imprime: «Titular de Pago SRA.
+#: CONTRERAS PEREZ ALEIDA», «Usuario o suscriptor RIVAS PEREZ JOSE», «Titular:
+#: RAMIREZ PABLO», «CLIENTE: … - JASMIRIS …» (las facturas de 4251546, 1000265
+#: y 4251565). Hasta el siguiente rótulo o la primera cifra.
+_TITULAR_DEL_RECIBO = re.compile(
+    r"(?:TITULAR(?:\s+DE\s+PAGO)?|USUARIO\s+O\s+SUSCRIPTOR|SUSCRIPTOR|CLIENTE)\W{0,3}\s*"
+    r"(?:SR\w{0,2}\W{0,2}\s*)?(?P<nombre>(?:[A-Z]{2,}\s+){1,4}[A-Z]{2,})"
+)
+#: Lo que corta el nombre del titular: el rótulo que sigue en la factura.
+_TRAS_EL_TITULAR = re.compile(
+    r"\s+(?:ESTRATO|SUSPENSION|DIRECCION|USUARIO|NO|FECHA|SALDO|NIC|NIU|ID|TOTAL|SOMOS|TEL|CLASIFICACION)\b.*$"
+)
+#: El documento del titular, si la factura lo trae: «C.C. 36.457.688». Sólo la cédula: el NIT que imprime la factura es el de la empresa, y el OCR
+#: lo deja como «9013807551» (6833800 hoja 17, 2026-11-23).
+_DOCUMENTO_DEL_TITULAR = re.compile(r"(?:\bC\W?C\W?|DOCUMENTO\s+(?:DE\s+)?IDENTIDAD)\W{0,4}\s*(\d[\d.\s]{5,14}\d)")
+
+
+def titular_del_recibo(texto: str) -> str | None:
+    """De quién es una factura o un recibo: el nombre del titular y su documento, como texto, o ``None``.
+
+    Sirve para razonar a qué documento de la caja pertenece (el operador,
+    2026-11-23: «también facturas»). Sin el NIC: todas las hojas del
+    expediente lo comparten y no distingue a nadie. Sin los valores ni los
+    números de la factura, que no son de ninguna persona.
+    """
+    todo = re.sub(r"\s+", " ", plano(texto or ""))
+    nombres: list[str] = []
+    for hallado in _TITULAR_DEL_RECIBO.finditer(todo):
+        nombre = _TRAS_EL_TITULAR.sub("", hallado.group("nombre")).strip()
+        if len(nombre.split()) >= 2 and nombre not in nombres:
+            nombres.append(nombre)
+    documentos = [re.sub(r"\D", "", d) for d in _DOCUMENTO_DEL_TITULAR.findall(todo)]
+    documentos = [d for d in documentos if 6 <= len(d) <= 11 and not d.startswith("90138")]
+    if not nombres and not documentos:
+        return None
+    partes = [*nombres, *(f"C.C. {d}" for d in dict.fromkeys(documentos))]
+    return " · ".join(partes)

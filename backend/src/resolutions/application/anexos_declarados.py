@@ -585,39 +585,318 @@ def unir_soportes(
     )
 
 
-def la_cedula_detras(grupos: GroupingResult, textos: Mapping[int, str]) -> GroupingResult:
-    """Ningún PDF empieza por una cédula: va detrás, como anexo (el operador, 2026-11-23).
+def es_anexo_por_secuencia(texto: str) -> str | None:
+    """La clase de anexo de una hoja para la secuencia, o ``None`` si es una principal.
 
-    «Una cédula siempre será un anexo, nunca debería ir de primero en un PDF».
-    En 4132540 la constancia iba sola y su cédula pasaba al documento siguiente
-    -- la declaración juramentada --, pero delante de él. Sólo cambia el orden
-    en que se escriben las hojas (``PageGroup.orden``); el inventario y la
-    fecha siguen con el del papel. La cédula con su reverso mudo va al final;
-    un PDF que es sólo cédula no se toca.
+    La cédula -- también la que el OCR rompe: «CEBULABÉ ClUDi^DANiA» --, la
+    factura o el recibo, el estado de cuenta, y los soportes de cabecera
+    (certificados, contrato, escritura, fotos, comprobante). La hoja muda no:
+    sólo es anexo detrás de otro anexo, y eso lo decide quien recorre.
+    """
+    texto = texto or ""
+    if es_cedula(texto) or clase_de_la_hoja(texto) == DOCUMENTO_DE_IDENTIDAD:
+        return DOCUMENTO_DE_IDENTIDAD
+    clase = clase_de_soporte(texto)
+    return clase if clase is not None and clase != HOJA_MUDA else None
+
+
+def los_anexos_detras(
+    grupos: GroupingResult, textos: Mapping[int, str], *, abren: set[int] | frozenset[int] = frozenset()
+) -> GroupingResult:
+    """Ningún PDF empieza por un anexo: va detrás de su principal (el operador, 2026-11-23).
+
+    «Una cédula siempre será un anexo, nunca debería ir de primero en un PDF»
+    (4132540), y desde el mismo día todo anexo: la factura, el recibo, el
+    certificado, con sus reversos mudos. Pasa con los anexos con que empieza el
+    PDF -- van con la primera principal -- y con el anexo que la persona llevó
+    al documento siguiente. Sólo cambia el orden en que se escriben las hojas
+    (``PageGroup.orden``); el inventario y la fecha siguen con el del papel. Un
+    PDF que es sólo anexos no se toca, ni la hoja que abre por otra regla
+    (``abren``: el sello, la etiqueta).
     """
     salida: list[PageGroup] = []
     cambio = False
     for grupo in grupos.groups:
         hojas = grupo.en_el_pdf
         delante = 0
-        con_cedula = False
+        con_anexo = False
         while delante < len(hojas):
-            texto = textos.get(hojas[delante], "") or ""
-            clase = clase_de_la_hoja(texto)
-            # Las dos señales: los rótulos de la tarjeta, o la clase de la hoja,
-            # que aguanta el OCR roto («CEBULABÉ ClUDi^DANiA» de 4132540).
-            if es_cedula(texto) or clase == DOCUMENTO_DE_IDENTIDAD:
-                con_cedula = True
-            elif not (con_cedula and clase == HOJA_MUDA):
+            pagina = hojas[delante]
+            texto = textos.get(pagina, "") or ""
+            if pagina not in abren and es_anexo_por_secuencia(texto):
+                con_anexo = True
+            elif not (con_anexo and pagina not in abren and clase_de_la_hoja(texto) == HOJA_MUDA):
                 break
             delante += 1
-        if not con_cedula or delante == len(hojas):
+        if not con_anexo or delante == len(hojas):
             salida.append(grupo)
             continue
         orden = (*hojas[delante:], *hojas[:delante])
         salida.append(replace(grupo, orden=None if list(orden) == sorted(grupo.page_numbers) else orden))
         cambio = True
     return replace(grupos, groups=salida) if cambio else grupos
+
+
+#: El nombre de antes: la cédula fue la primera (4132540).
+la_cedula_detras = los_anexos_detras
+
+
+# -- cada anexo con su documento: la secuencia, la persona y la IA (F5g) ---------------
+
+#: Cuántos anexos por caja se le enseñan al juez de la IA, como mucho.
+ANEXOS_AL_JUEZ_POR_CAJA = 20
+
+
+@dataclass(frozen=True, slots=True)
+class AnexosEnSuDocumento:
+    """Los documentos con cada anexo en el suyo, y por qué está ahí cada uno."""
+
+    grupos: GroupingResult
+    anexos: dict[str, list[int]]
+    #: Las hojas que cambiaron de documento: hoja → ancla del documento al que fueron.
+    movidas: dict[int, int] = field(default_factory=dict)
+    #: Una por hoja de anexo, para la auditoría.
+    decisiones: list[dict] = field(default_factory=list)
+
+    def duenos(self) -> dict[int, int | None]:
+        """Por cada anexo, la hoja principal con que va: lo que comprueba ``auditar_la_secuencia``."""
+        return {int(d["pagina"]): d.get("ancla") for d in self.decisiones}
+
+
+def asignar_por_secuencia(
+    grupos: GroupingResult,
+    textos: Mapping[int, str],
+    anexos: dict[str, list[int]] | None = None,
+    *,
+    fijas: set[int] | frozenset[int] = frozenset(),
+    sin_anexos: set[int] | frozenset[int] = frozenset(),
+    identidad_de=None,
+    juez=None,
+) -> AnexosEnSuDocumento:
+    """F5g: cada anexo en el documento que le toca, después de todos los cortes.
+
+    El seguro final que pidió el operador el 2026-11-23 («que te asegures…
+    para evitar un anexo a una página que no corresponda»): corre después del
+    último filtro que cambia qué hojas van en cada documento, y antes de
+    nombrarlos. La regla la dice :mod:`~resolutions.domain.secuencia_de_anexos`:
+    la secuencia del PDF, salvo que la persona del anexo lo haga de otro
+    documento de la caja; si nada decide y hay IA, la IA elige entre ellos.
+
+    - ``fijas``: hojas que no se mueven aunque parezcan anexo -- las que abren
+      por sello, etiqueta o folio, lo que retuvo la lista de ANEXOS o los
+      folios del sello, las copias aportadas como prueba --. Cuentan como
+      principales para la secuencia.
+    - ``identidad_de(pagina, clase)``: ``(texto que dice de quién es, lector)``
+      o ``(None, None)``; sólo para la cédula y la factura.
+    - ``sin_anexos``: las hojas de los documentos que no reciben ningún anexo
+      -- la constancia de reclamación (el operador, 2026-11-24: «las constancias
+      van solas, no deberían llevar ningún anexo») --. Lo que va detrás de una
+      va con el documento siguiente, salvo que sea de la persona del de antes.
+    - ``juez(pagina, opciones)``: la posición de la opción que eligió la IA, o
+      ``None``. Mira todo anexo que la regla no pudo probar (``Dueno.dudoso``):
+      «que el bot sepa razonar con la ayuda de la IA cuándo una cédula
+      pertenece a un grupo de páginas y cuándo no» (2026-11-24).
+    """
+    from ..domain.secuencia_de_anexos import (
+        AL_INICIO,
+        CON_SU_PRINCIPAL,
+        CONFIRMADO_POR_LA_IA,
+        NO_SE_CONFIRMO,
+        POR_LA_IA,
+        Dueno,
+        dueno_razonado,
+        dueno_tras_la_constancia,
+        duenos_por_secuencia,
+        opciones_para_el_juez,
+    )
+
+    anexos = {codigo: list(paginas) for codigo, paginas in (anexos or {}).items()}
+    documentos = [list(g.page_numbers) for g in grupos.groups]
+    orden = sorted(p for hojas in documentos for p in hojas)
+    if not orden:
+        return AnexosEnSuDocumento(grupos=grupos, anexos=anexos)
+    documento_de = {p: i for i, hojas in enumerate(documentos) for p in hojas}
+    clases = {p: es_anexo_por_secuencia(textos.get(p, "") or "") for p in orden}
+    # El reverso mudo sigue a su anexo, pero sólo el que ya va con él: una hoja
+    # sin texto legible en otro documento puede ser una carta con la capa rota
+    # que otro filtro decidió que abre, y el seguro no se la lleva.
+    mudas: set[int] = set()
+    for pagina in orden:
+        anterior = pagina - 1
+        if (
+            (clases.get(anterior) or anterior in mudas)
+            and documento_de.get(anterior) == documento_de[pagina]
+            and clase_de_la_hoja(textos.get(pagina, "") or "") == HOJA_MUDA
+        ):
+            mudas.add(pagina)
+    # Y el documento hecho sólo de hojas sin texto legible: eso no es un
+    # documento, sigue su secuencia (6833917 hoja 9, el reverso de la cédula
+    # detrás de la Habeas Data, 2026-11-23). Si trae un anexo, la hoja muda
+    # puede ser su carta llenada a mano, con la capa rota: se queda.
+    for hojas in documentos:
+        if all(not clases[p] and clase_de_la_hoja(textos.get(p, "") or "") == HOJA_MUDA for p in hojas):
+            mudas.update(hojas)
+    movibles = {p for p in orden if (clases[p] or p in mudas) and p not in fijas}
+    if not movibles:
+        return AnexosEnSuDocumento(grupos=grupos, anexos=anexos)
+    # Los documentos que no reciben anexos: los de la constancia.
+    documentos_sin_anexos = {documento_de[p] for p in sin_anexos if p in documento_de}
+    por_secuencia = duenos_por_secuencia(orden, movibles, documento_de, documentos_sin_anexos)
+    # Lo que dice cada documento de sí mismo: sus hojas principales, sin anexos.
+    # La constancia no es candidata: nombra al cliente, pero no recibe nada.
+    principales: dict[int, str] = {}
+    anclas: dict[int, int] = {}
+    for i, hojas in enumerate(documentos):
+        propias = [p for p in hojas if not clases[p] and p not in mudas]
+        if propias and i not in documentos_sin_anexos:
+            principales[i] = "\n".join(textos.get(p, "") or "" for p in propias)
+            anclas[i] = propias[0]
+
+    def recibe(q: int) -> bool:
+        return q not in movibles and documento_de[q] not in documentos_sin_anexos
+    al_juez = 0
+    decididos: dict[int, Dueno] = {}
+    decisiones: list[dict] = []
+    for pagina in sorted(movibles):
+        if pagina in mudas and (pagina - 1) in decididos:
+            # El reverso, con su anverso.
+            del_anverso = decididos[pagina - 1]
+            decididos[pagina] = del_anverso
+            decisiones.append(
+                {
+                    "pagina": pagina,
+                    "clase": HOJA_MUDA,
+                    "ancla": del_anverso.ancla,
+                    "regla": "el reverso, con su anverso",
+                    "confianza": del_anverso.confianza,
+                    "movida_desde": None,
+                    "documento_antes": documento_de[pagina],
+                    "documento": del_anverso.documento,
+                }
+            )
+            continue
+        documento, ancla = por_secuencia[pagina]
+        regla = AL_INICIO if ancla is not None and ancla > pagina else CON_SU_PRINCIPAL
+        clase = clases[pagina] or HOJA_MUDA
+        identidad = lector = None
+        de_antes = next((q for q in reversed(orden) if q < pagina and q not in movibles), None)
+        tras_la_constancia = de_antes is not None and documento_de[de_antes] in documentos_sin_anexos
+        if tras_la_constancia:
+            # La constancia no lleva anexos: el siguiente, salvo que sea de la
+            # persona del de antes.
+            siguiente_que_recibe = next((q for q in orden if q > pagina and recibe(q)), None)
+            anterior_que_recibe = next((q for q in reversed(orden) if q < pagina and recibe(q)), None)
+            if clase in (DOCUMENTO_DE_IDENTIDAD, "factura") and identidad_de is not None:
+                identidad, lector = identidad_de(pagina, clase)
+            if siguiente_que_recibe is None and anterior_que_recibe is None:
+                dueno = Dueno(documento, ancla, regla)
+            else:
+                dueno = dueno_tras_la_constancia(
+                    (documento_de[siguiente_que_recibe], siguiente_que_recibe) if siguiente_que_recibe else None,
+                    (documento_de[anterior_que_recibe], anterior_que_recibe) if anterior_que_recibe else None,
+                    identidad if clase in (DOCUMENTO_DE_IDENTIDAD, "factura") else None,
+                    principales,
+                )
+        elif clase in (DOCUMENTO_DE_IDENTIDAD, "factura") and identidad_de is not None and len(principales) >= 2:
+            identidad, lector = identidad_de(pagina, clase)
+            siguiente = next((documento_de[q] for q in orden if q > pagina and q not in movibles), None)
+            distancia = {
+                i: min(abs(p - pagina) for p in hojas if not clases[p] and p not in mudas)
+                for i, hojas in enumerate(documentos)
+                if i in principales
+            }
+            dueno = dueno_razonado(
+                (documento, ancla), regla, identidad, principales, anclas, siguiente=siguiente, distancia=distancia
+            )
+        else:
+            dueno = Dueno(documento, ancla, regla)
+        if (
+            (dueno.dudoso or dueno.aviso)
+            and juez is not None
+            and len(principales) >= 2
+            and al_juez < ANEXOS_AL_JUEZ_POR_CAJA
+        ):
+            al_juez += 1
+            candidatos = sorted(principales)
+            opciones = opciones_para_el_juez(
+                [(documentos[i], principales[i]) for i in candidatos],
+                antes=candidatos.index(dueno.documento) if dueno.documento in candidatos else None,
+            )
+            try:
+                elegida = juez(pagina, opciones)
+            except Exception:  # noqa: BLE001 - sin el juez, la secuencia
+                elegida = None
+            if elegida is not None and 0 <= elegida < len(candidatos):
+                elegido = candidatos[elegida]
+                dueno = (
+                    Dueno(dueno.documento, dueno.ancla, f"{dueno.regla}, {CONFIRMADO_POR_LA_IA}", dueno.pruebas,
+                          confianza="media")
+                    if elegido == dueno.documento
+                    else Dueno(elegido, anclas.get(elegido), POR_LA_IA, confianza="baja")
+                )  # fmt: skip
+            elif dueno.dudoso and not dueno.aviso:
+                dueno = Dueno(dueno.documento, dueno.ancla, dueno.regla, dueno.pruebas, aviso=NO_SE_CONFIRMO,
+                              confianza=dueno.confianza)  # fmt: skip
+        decididos[pagina] = dueno
+        decisiones.append(
+            {
+                "pagina": pagina,
+                "clase": clase,
+                "de_quien": " ".join((identidad or "").split())[:160] or None,
+                "leido_por": lector,
+                "ancla": dueno.ancla,
+                "regla": dueno.regla,
+                "pruebas": list(dueno.pruebas),
+                "aviso": dueno.aviso,
+                "confianza": dueno.confianza,
+                "documento_antes": documento_de[pagina],
+                "documento": dueno.documento,
+            }
+        )
+    # Rehacer los documentos: lo principal donde estaba, cada anexo con su dueño.
+    nuevas: list[list[int]] = [[p for p in hojas if p not in movibles] for hojas in documentos]
+    for pagina, dueno in decididos.items():
+        nuevas[dueno.documento].append(pagina)
+    movidas = {
+        pagina: dueno.ancla
+        for pagina, dueno in decididos.items()
+        if dueno.documento != documento_de[pagina] and dueno.ancla is not None
+    }
+    for decision in decisiones:
+        antes = decision.pop("documento_antes")
+        despues = decision.pop("documento")
+        decision["movida_desde"] = documentos[antes][0] if antes != despues else None
+    if not movidas:
+        return AnexosEnSuDocumento(grupos=grupos, anexos=anexos, decisiones=decisiones)
+    salida: list[PageGroup] = []
+    for grupo, hojas in zip(grupos.groups, nuevas, strict=True):
+        if not hojas:
+            anexos.pop(grupo.code.value, None)
+            continue
+        hojas = sorted(hojas)
+        if hojas == list(grupo.page_numbers):
+            salida.append(grupo)
+            continue
+        suyos = [p for p in anexos.get(grupo.code.value, []) if p in hojas]
+        suyos += [p for p in hojas if p in movidas and p not in grupo.page_numbers]
+        if suyos:
+            anexos[grupo.code.value] = sorted(set(suyos))
+        else:
+            anexos.pop(grupo.code.value, None)
+        if hojas[0] == grupo.page_numbers[0]:
+            # Conserva su primera hoja: conserva su nombre.
+            salida.append(replace(grupo, page_numbers=hojas, orden=None))
+        else:
+            # Empieza por otra hoja: se nombra después (F6), como las piezas nuevas.
+            salida.append(PageGroup(code=grupo.code, page_numbers=hojas))
+    if len(salida) < len(grupos.groups):
+        salida, anexos = _renumerar(salida, anexos)
+    return AnexosEnSuDocumento(
+        grupos=GroupingResult(groups=salida, quarantine=list(grupos.quarantine), repairs=list(grupos.repairs)),
+        anexos=anexos,
+        movidas=movidas,
+        decisiones=decisiones,
+    )
 
 
 def constancias_solas(
@@ -640,6 +919,12 @@ def constancias_solas(
     documento se queda aparte, y si es sólo soporte -- la cédula, la factura,
     el reverso mudo -- va con el documento siguiente, que es del mismo cliente;
     si no hay, con el anterior. Nunca con otra constancia.
+
+    El operador lo confirmó el 2026-11-24: «las constancias van solas, no
+    deberían llevar ningún anexo». Es el único documento que va sin anexos; el
+    EXPEDIENTE, la constancia de contratación y la declaración van solos con
+    los suyos. Si la cédula es de la persona del documento de antes y no del
+    siguiente, F5g (``asignar_por_secuencia``) la lleva a ése.
     """
     anexos = {codigo: list(paginas) for codigo, paginas in (anexos or {}).items()}
     if not any(p in constancias for g in grupos.groups for p in g.page_numbers):

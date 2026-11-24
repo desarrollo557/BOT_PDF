@@ -4223,6 +4223,7 @@ class FolderRunner:
             evidencia=dict(informe.get("evidencia") or {}),
             revision=[r for r in informe.get("review_queue") or [] if isinstance(r, dict)],
             decisiones_del_agente=[d for d in informe.get("decisiones_del_agente") or [] if isinstance(d, dict)],
+            secuencia_de_anexos=[d for d in informe.get("secuencia_de_anexos") or [] if isinstance(d, dict)],
             # Las hojas de cada documento, para la auditoría (2026-11-20).
             documentos=[
                 {"hojas": list(grupo.get("pages") or [])}

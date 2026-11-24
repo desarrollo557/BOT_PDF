@@ -118,6 +118,9 @@ class Constancia:
     #: creer --, con la regla, la confianza y el veredicto de su auditor
     #: (``domain.resolutor_del_re``, 2026-11-23).
     decisiones_del_agente: list[dict] = field(default_factory=list)
+    #: Cada anexo y con qué documento quedó -- la secuencia, la persona o la
+    #: IA --, con sus pruebas y su aviso (F5g, 2026-11-23).
+    secuencia_de_anexos: list[dict] = field(default_factory=list)
     #: El principio y el final del PDF de origen (``firma_del_origen``): dice si
     #: es el mismo aunque se haya copiado y tenga otra fecha.
     firma: str | None = None
@@ -176,6 +179,7 @@ def leer(ruta: Path) -> Constancia | None:
         or not isinstance(constancia.evidencia, dict)
         or not isinstance(constancia.revision, list)
         or not isinstance(constancia.decisiones_del_agente, list)
+        or not isinstance(constancia.secuencia_de_anexos, list)
         or (constancia.firma is not None and not isinstance(constancia.firma, str))
         or type(constancia.version) is not int
     ):

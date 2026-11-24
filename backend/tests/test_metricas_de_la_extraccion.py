@@ -180,7 +180,9 @@ class TestLaAuditoria:
         )
         escribir_las_metricas(tmp_path)
         libro = load_workbook(tmp_path / NOMBRE_DE_LAS_METRICAS)
-        assert libro.sheetnames[:6] == ["Faltantes", "Avisos de Revisión", "Decisiones del agente", "Documentos", "Por UPD", "Por NIC"]
+        assert libro.sheetnames[:7] == [
+            "Faltantes", "Avisos de Revisión", "Decisiones del agente", "Anexos", "Documentos", "Por UPD", "Por NIC"
+        ]
         documentos = libro["Documentos"]
         assert documentos.auto_filter.ref and documentos.freeze_panes == "A2"
         assert documentos["I2"].value == "No" and documentos["I2"].fill.start_color.rgb.endswith("F8CBAD")
@@ -248,3 +250,41 @@ class TestLaAuditoriaDeLaCorrida:
         assert "Por parámetro" in libro.sheetnames
         faltan = list(libro["Faltantes"].iter_rows(min_row=2, values_only=True))
         assert [(f[1], f[5]) for f in faltan] == [("UPD1", "Fecha"), ("UPD1", "RE")]
+
+
+class TestLaHojaDeLosAnexos:
+    """2026-11-23: cada anexo y con qué documento quedó, hoja por hoja (F5g)."""
+
+    def test_cada_anexo_con_su_archivo_su_regla_y_su_aviso(self):
+        from resolutions.application.metricas_de_la_extraccion import (
+            PdfEntregado,
+            anexos_del_pdf,
+        )
+
+        pdf = PdfEntregado(
+            documento="7700001/UPD1",
+            estado="completa",
+            archivos=["01_RECLAMO.pdf", "02_DECLARACION-BGDJ-CAMBIO-DE-TITULAR-DE-CONTRATO.pdf"],
+            evidencia={},
+            revision=[],
+            proceso={},
+            filas=[],
+            documentos=[{"hojas": [1, 2]}, {"hojas": [3, 4]}],
+            anexos=[
+                {"pagina": 2, "clase": "documento de identidad", "ancla": 1, "regla": "con su principal anterior",
+                 "pruebas": ["n.º 12345678"], "confianza": "alta"},
+                {"pagina": 4, "clase": "documento de identidad", "ancla": 3,
+                 "regla": "es de la persona que nombra ese documento", "pruebas": ["n.º 98765432"],
+                 "movida_desde": 1, "confianza": "media"},
+                {"pagina": 5, "clase": "factura", "ancla": None, "regla": "con su principal anterior",
+                 "aviso": "no se pudo leer de quién es; va con su principal anterior"},
+            ],
+        )  # fmt: skip
+        filas = anexos_del_pdf(pdf)
+        assert [(f["hoja"], f["archivo"], f["principal"]) for f in filas] == [
+            (2, "01_RECLAMO.pdf", 1),
+            (4, "02_DECLARACION-BGDJ-CAMBIO-DE-TITULAR-DE-CONTRATO.pdf", 3),
+            (5, "", None),
+        ]
+        assert filas[1]["movida_desde"] == "documento de la hoja 1" and filas[1]["pruebas"] == "n.º 98765432"
+        assert filas[2]["aviso"].startswith("no se pudo leer")

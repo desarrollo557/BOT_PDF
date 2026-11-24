@@ -198,6 +198,26 @@ def _escribir_los_faltantes(libro, metricas: Metricas, fallidos: Mapping[str, st
         ),
         colores={6: _accion, 9: lambda v: _FONDO_DE_LO_QUE_SE_MIRA if v == "baja" else None},
     )  # fmt: skip
+    # Cada anexo y con qué documento quedó (F5g, el operador, 2026-11-23: «que
+    # cada anexo esté con su respectivo documento dividido»).
+    _hoja(
+        libro,
+        "Anexos",
+        (
+            ("NIC", 11), ("UPD", 13), ("Archivo", 50), ("Hoja del anexo", 9), ("Clase", 22), ("De quién es", 40),
+            ("Leído por", 12), ("Va con la hoja principal", 11), ("Regla", 44), ("Pruebas", 36),
+            ("Movido desde", 26), ("Confianza", 10), ("Aviso", 60),
+        ),
+        (
+            [x["nic"], x["upd"], x["archivo"], x["hoja"], x["clase"], x["de_quien"], x["leido_por"], x["principal"],
+             x["regla"], x["pruebas"], x["movida_desde"], x["confianza"], x["aviso"]]
+            for x in metricas.anexos
+        ),
+        colores={
+            11: lambda v: _FONDO_DE_LO_QUE_SE_MIRA if v == "baja" else None,
+            12: lambda v: _FONDO_DE_LO_QUE_SE_MIRA if v else None,
+        },
+    )  # fmt: skip
 
 
 def _escribir_la_auditoria(libro, metricas: Metricas, fallidos: Mapping[str, str] | None = None) -> None:
@@ -422,6 +442,12 @@ def escribir_la_auditoria_de_la_corrida(destino: Path, corrida: LaCorrida, metri
             ("RE decididos con confianza baja (para auditar por muestreo)",
              sum(1 for f in documentos if (f.get("decision") or {}).get("confianza") == "baja"
                  and (f.get("decision") or {}).get("valor"))),
+            ("Anexos (cédulas, facturas, soportes)", len(metricas.anexos)),
+            ("Anexos con su principal anterior (secuencia)",
+             sum(1 for x in metricas.anexos if not x["movida_desde"])),
+            ("Anexos llevados al documento de su persona o por la IA (ver «Anexos»)",
+             sum(1 for x in metricas.anexos if x["movida_desde"])),
+            ("Anexos con aviso (no se supo de quién es)", sum(1 for x in metricas.anexos if x["aviso"])),
             ("Páginas", metricas.paginas),
             ("Páginas pagadas a la IA", metricas.paginas_pagadas),
             ("Auditoría de cierre", corrida.dictamen or "no se hizo"),
