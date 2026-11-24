@@ -447,3 +447,98 @@ def re_citado_en_el_expediente(
     numero = posibles.pop()
     fragmento, fuente = citas[numero]
     return CitaDelExpediente(radicado=f"RE{numero}", fragmento=fragmento, fuente=fuente)
+
+
+# -- el RE del sello por la fecha que cita la empresa (2026-11-24) ------------------------
+
+#: La publicación del aviso: «la petición presentada el día 18/01/2021 15:48:59,
+#: radicada bajo el número RE2311202100109».
+_PRESENTADA_Y_RADICADA = re.compile(
+    r"PRESENTAD[AO]\s+EL\s+D[IÍ]A\s+(\d{1,2})/(\d{1,2})/(\d{4}).{0,40}?RADICAD[AO]\s+BAJO\s+EL\s+N[UÚ]MERO\s*:?\s*"
+    r"R\W?E\W?\s?(\d{13})(?!\d)"
+)
+#: La respuesta de la empresa: «ASUNTO: Reclamación No. RE2311202100109 … su
+#: escrito presentado en nuestro centro de atención presencial el 18 de enero de
+#: 2021», o el recurso «Interpuesto … el día 30 de noviembre del 2020».
+_ASUNTO_CON_SU_RE = re.compile(r"ASUNTO\s*[:;]\s*[^\n]{0,80}?N[O0]\W{0,3}\s*R\W?E\W?\s?(\d{13})(?!\d)")
+_PRESENTADO_EL = re.compile(
+    r"(?:PRESENTAD[AO]|INTERPUEST[AO])\s+EN\s+NUESTRO\s+CENTRO\s+DE\s+ATENCI[OÓ]N\s+\w+\s+EL\s+(?:D[IÍ]A\s+)?"
+    r"(\d{1,2})\s+DE\s+([A-ZÁÉÍÓÚ]+)\s+DE(?:L)?\s+(\d{4})"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CruceConLaFecha:
+    """El RE de un sello que nadie leyó, por la fecha de radicación que la empresa cita con él."""
+
+    valor: str
+    pagina: int
+    porque: str
+
+
+def citas_de_la_radicacion(texto: str) -> list[tuple[date, str]]:
+    """Las fechas de radicación que un papel de la empresa cita con su RE: [(fecha, «RE…»)]."""
+    from .fechas import MESES
+
+    plano = " ".join((texto or "").upper().split())
+    citas: list[tuple[date, str]] = []
+    for hallado in _PRESENTADA_Y_RADICADA.finditer(plano):
+        dia, mes, anio, numero = hallado.groups()
+        try:
+            citas.append((date(int(anio), int(mes), int(dia)), f"RE{numero}"))
+        except ValueError:
+            continue
+    asunto = _ASUNTO_CON_SU_RE.search(plano)
+    presentado = _PRESENTADO_EL.search(plano)
+    if asunto and presentado:
+        dia, mes, anio = presentado.groups()
+        numero_del_mes = MESES.get(mes.lower().translate(str.maketrans("áéíóú", "aeiou")))
+        if numero_del_mes:
+            try:
+                citas.append((date(int(anio), numero_del_mes, int(dia)), f"RE{asunto.group(1)}"))
+            except ValueError:
+                pass
+    return citas
+
+
+def re_por_la_fecha_citada(
+    fecha_del_sello: date | None,
+    textos: Mapping[int, str],
+    lecturas: Sequence[tuple[str, str]] = (),
+) -> CruceConLaFecha | None:
+    """El RE del sello cuyo número la IA no leyó, por la fecha de radicación que la empresa cita con él.
+
+    El operador, 2026-11-24, ante 4251461 (UPD2447021 pág. 8): la reclamación
+    a mano lleva al pie su sello del 18-01-2021 con el RE escrito debajo, que la
+    IA no leyó. La publicación del aviso dice «la petición presentada el día
+    18/01/2021 15:48:59, radicada bajo el número RE2311202100109», y la
+    respuesta «ASUNTO: Reclamación No. RE2311202100109… su escrito presentado…
+    el 18 de enero de 2021». Es la misma radicación: la fecha del sello y la
+    que la empresa cita coinciden al día.
+
+    ``textos`` son los de las otras hojas de la caja, sin las del documento ni
+    las copias aportadas como prueba. Se cree sólo si todas las citas de esa
+    fecha dan el mismo RE y ninguna lectura del sello trae entero otro RE.
+    """
+    if fecha_del_sello is None:
+        return None
+    por_el_re: dict[str, list[int]] = {}
+    for pagina, texto in sorted(textos.items()):
+        for fecha, valor in citas_de_la_radicacion(texto):
+            if fecha == fecha_del_sello:
+                por_el_re.setdefault(valor, []).append(pagina)
+    if len(por_el_re) != 1:
+        return None
+    valor, paginas = next(iter(por_el_re.items()))
+    leidos = {f"RE{m}" for _, leido in lecturas for m in re.findall(r"R\W?E\W?\s?(\d{13})(?!\d)", (leido or "").upper())}
+    if leidos - {valor}:
+        return None
+    hojas = ", ".join(map(str, paginas))
+    return CruceConLaFecha(
+        valor=valor,
+        pagina=paginas[0],
+        porque=(
+            f"su sello es del {fecha_del_sello:%d/%m/%Y} y la empresa cita la radicación de ese día con "
+            f"{valor} (pág. {hojas})"
+        ),
+    )

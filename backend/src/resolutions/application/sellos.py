@@ -26,6 +26,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
+from datetime import date
 
 from ..domain.anexos_declarados import HOJA_MUDA, clase_de_la_hoja
 from ..domain.evidencia import LECTOR_GIRADO, oficina_confirmada, res_en_la_lectura
@@ -1145,6 +1146,8 @@ def retener_los_folios(
     sellos: Mapping[int, Sello],
     abren: set[int] | frozenset[int],
     anexos: dict[str, list[int]] | None = None,
+    *,
+    posteriores: Mapping[int, date] | None = None,
 ) -> tuple[GroupingResult, dict[str, list[int]], list[int]]:
     """Lo que cae dentro de los «Folios: N» de un sello es de ese escrito.
 
@@ -1155,15 +1158,31 @@ def retener_los_folios(
     (``abren``). Folios cuenta hojas físicas: una factura a dos caras es un
     folio y dos páginas, así que N es un mínimo, nunca un tope donde cortar.
 
+    ``posteriores`` son los papeles de la empresa -- la respuesta, la
+    notificación, la publicación del aviso, la constancia -- con la fecha de su
+    estructura. Lo radicado un día no puede llevar dentro un papel fechado
+    después: el que lo está cierra los folios (el operador, 2026-11-24, ante
+    4251461: el «01 folio» de la reclamación del 18-01-2021 leído «07» se
+    llevaba la respuesta del 28-01, el aviso del 09-02 y la publicación del
+    19-02). La copia de una respuesta anterior que el recurso aporta sigue
+    entrando.
+
     Devuelve los grupos, los anexos y las hojas que dejaron de abrir documento.
     """
     anexos = {codigo: list(paginas) for codigo, paginas in (anexos or {}).items()}
+    posteriores = posteriores or {}
     salida: list[PageGroup] = []
     hasta = 0  # última página que cubre el sello del documento abierto
+    fecha_del_sello: date | None = None
     unidas: list[int] = []
     for grupo in grupos.groups:
         primera = grupo.page_numbers[0]
-        if salida and primera <= hasta and primera not in abren:
+        despues_del_sello = (
+            fecha_del_sello is not None
+            and (fecha := posteriores.get(primera)) is not None
+            and fecha > fecha_del_sello
+        )
+        if salida and primera <= hasta and primera not in abren and not despues_del_sello:
             anterior = salida[-1]
             salida[-1] = PageGroup(
                 code=anterior.code,
@@ -1181,6 +1200,7 @@ def retener_los_folios(
         salida.append(grupo)
         sello = sellos.get(primera)
         hasta = primera + sello.folios - 1 if sello and sello.folios and sello.folios > 1 else 0
+        fecha_del_sello = sello.fecha if sello and hasta else None
     if not unidas:
         return grupos, anexos, []
     return replace(grupos, groups=salida), anexos, unidas

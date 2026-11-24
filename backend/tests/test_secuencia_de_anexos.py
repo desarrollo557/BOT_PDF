@@ -1441,3 +1441,114 @@ class TestLosFoliosDelSelloAlPie:
             juez=al_otro,
         )
         assert _hojas(fija) == [[1, 2, 3], [4]]
+
+
+# -- dos trámites desordenados en un PDF (el operador, 2026-11-24, ante 4251461) ----------
+
+RE_DEL_RECLAMO = "RE2311202199109"
+PUBLICACION_DEL_RECLAMO = (
+    "Grupo-epm\nConsecutivo No. PA 202170000001\nPUBLICACIÓN DEL AVISO\nTeniendo en cuenta que: a) El usuario "
+    "PEDRO PEREZ PAEZ reportó como dirección de notificación para la respuesta a la petición presentada el día "
+    f"18/01/2021 15:48:59, radicada bajo el número {RE_DEL_RECLAMO}, la siguiente dirección: CARRERA 1\n"
+    "El presente aviso se publica el día 19/02/2021 09:49:35.0"
+)
+RESPUESTA_DEL_RECLAMO = (
+    "Grupo-epm\nConsecutivo No.202170000002\nSANTA ROSA DEL SUR, 2021/01/28\nSeñor: PEDRO PEREZ PAEZ\n"
+    f"NIC: 1111111\nASUNTO: Reclamación No. {RE_DEL_RECLAMO}\nEstimado Señor Perez:\nEn atención a su escrito "
+    "presentado en nuestro centro de atención presencial el 18 de enero de 2021, por el cobro de reconexión"
+)
+
+
+class TestDosTramitesDesordenados:
+    """4251461 (UPD2447021): la reclamación a mano del 18-01-2021 (hoja 8) con su sello «01 folio», que la IA leyó
+    «07», se llevaba la publicación (9), el aviso (10) y la respuesta (11-12), todos posteriores; y su RE escrito a
+    mano bajo el sello no lo leyó nadie, aunque la publicación y la respuesta lo citan con la fecha del sello."""
+
+    def test_la_empresa_cita_la_radicacion_con_su_fecha(self):
+        from datetime import date
+
+        from resolutions.domain.resolutor_del_re import citas_de_la_radicacion
+
+        assert citas_de_la_radicacion(PUBLICACION_DEL_RECLAMO) == [(date(2021, 1, 18), RE_DEL_RECLAMO)]
+        assert citas_de_la_radicacion(RESPUESTA_DEL_RECLAMO) == [(date(2021, 1, 18), RE_DEL_RECLAMO)]
+        assert citas_de_la_radicacion(CARTA_DE_PEDRO) == []
+
+    def test_el_re_del_sello_por_la_fecha_citada(self):
+        from datetime import date
+
+        from resolutions.domain.resolutor_del_re import re_por_la_fecha_citada
+
+        otras = {9: PUBLICACION_DEL_RECLAMO, 11: RESPUESTA_DEL_RECLAMO}
+        cruce = re_por_la_fecha_citada(date(2021, 1, 18), otras)
+        assert cruce.valor == RE_DEL_RECLAMO and "18/01/2021" in cruce.porque and "pág. 9, 11" in cruce.porque
+        # Otra fecha, sin fecha, dos RE con la misma fecha o una lectura que trae entero otro RE: nada.
+        assert re_por_la_fecha_citada(date(2021, 1, 19), otras) is None
+        assert re_por_la_fecha_citada(None, otras) is None
+        dos = {**otras, 12: PUBLICACION_DEL_RECLAMO.replace(RE_DEL_RECLAMO, "RE2311202199999")}
+        assert re_por_la_fecha_citada(date(2021, 1, 18), dos) is None
+        assert re_por_la_fecha_citada(date(2021, 1, 18), otras, [("ocr de pago", "RE: RE2311202199999")]) is None
+
+    def test_los_folios_no_se_llevan_lo_posterior(self):
+        from datetime import date
+
+        from resolutions.application.sellos import retener_los_folios
+        from resolutions.domain.sello import Sello
+
+        sello = Sello("tinta", None, date(2021, 1, 18), 7)
+        cortado = _grupos([8], [9], [10], [11, 12])
+        posteriores = {9: date(2021, 2, 19), 10: date(2021, 2, 9), 11: date(2021, 1, 28)}
+        grupos, _, unidas = retener_los_folios(cortado, {8: sello}, set(), {}, posteriores=posteriores)
+        assert [g.page_numbers for g in grupos.groups] == [[8], [9], [10], [11, 12]] and unidas == []
+        # La copia de una respuesta anterior que el escrito aporta sí entra.
+        grupos, _, _ = retener_los_folios(cortado, {8: sello}, set(), {}, posteriores={9: date(2021, 1, 5)})
+        assert [g.page_numbers for g in grupos.groups][0] == [8, 9, 10, 11, 12]
+
+    def test_el_sello_sin_re_toma_el_de_la_fecha_al_nombrarse(self):
+        from datetime import date
+
+        from resolutions.api.worker.correspondencia import _poner_el_re_en_el_nombre
+        from resolutions.domain.sello import Sello
+
+        manuscrita = "Santa Rosa del Sur enero 18 2021\nSrs Caribe Mar\nhago reclamacion por la reconexion"
+        cortado = _nombrados(
+            ([8], "RECLAMO", None),
+            ([9], "PUBLICACION DEL AVISO", RE_DEL_RECLAMO),
+            ([11], "RESPUESTA A LA RECLAMACION", RE_DEL_RECLAMO),
+        )
+        sello = Sello("tinta", None, date(2021, 1, 18), 1, lecturas=(("ocr de pago", "FECHA DE RECIBIDO: 18-01-2021"),))
+        grupos, _, hallados = _poner_el_re_en_el_nombre(
+            cortado,
+            {},
+            textos={8: manuscrita, 9: PUBLICACION_DEL_RECLAMO, 11: RESPUESTA_DEL_RECLAMO},
+            sellos={8: sello},
+            sin_re=set(),
+            abren={8},
+        )
+        assert grupos.groups[0].code.value == f"01 {RE_DEL_RECLAMO}"
+        assert "cruzado con la fecha" in hallados["8"]
+
+
+class TestLaSolicitudPorSuAsunto:
+    """7741435 (UPD2457980, el operador, 2026-11-24): «el título debería ser Solicitud para suspensión del servicio»;
+    salía ACTA DECLARACION CON FINES EXTRAPROCESALES, el nombre de su anexo."""
+
+    def test_lo_que_pide_tras_para_es_su_nombre(self):
+        from resolutions.domain.nombre_oficial import nombre_oficial
+
+        assert nombre_oficial("SOLICITUD", "Solicitud para suspensión del servicio.") == (
+            "SOLICITUD PARA SUSPENSION DEL SERVICIO"
+        )
+        # Lo que pide, si es un tipo del catálogo, por el catálogo.
+        assert nombre_oficial("SOLICITUD", "SOLICITUD CAMBIO DE TITULAR.") == "CAMBIO DE TITULAR"
+        # «SOLICITUD.» a secas sigue siendo SOLICITUD, y el motivo del reclamo se sigue cortando.
+        assert nombre_oficial("SOLICITUD", "SOLICITUD.") == "SOLICITUD"
+        assert nombre_oficial("RECLAMACION", "RECLAMO POR COBRO") == "RECLAMO"
+
+    def test_la_ia_no_la_llama_por_su_anexo(self):
+        from resolutions.domain.nombre_oficial import es_solicitud_por_su_asunto
+
+        assert es_solicitud_por_su_asunto("SOLICITUD PARA SUSPENSION DEL SERVICIO")
+        # Con la capa rota, la IA sigue mirando; y lo genérico o del catálogo no es esto.
+        assert not es_solicitud_por_su_asunto("SOLICITUD DE RESPUESTA 9")
+        assert not es_solicitud_por_su_asunto("SOLICITUD")
+        assert not es_solicitud_por_su_asunto("CAMBIO DE TITULAR")

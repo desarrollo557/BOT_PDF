@@ -215,6 +215,12 @@ def nombre_del_asunto(asunto: str | None) -> str | None:
     if not plano:
         return None
     cortado = _MOTIVO.search(plano)
+    # En la solicitud, lo que sigue a «PARA» es lo que pide, no su motivo:
+    # «Solicitud para suspensión del servicio» se quedaba en «SOLICITUD» y la
+    # IA la llamaba por su anexo, la declaración extraprocesal (7741435,
+    # UPD2457980, el operador, 2026-11-24).
+    if cortado and plano[: cortado.start()] == "SOLICITUD" and plano[cortado.start() :].lstrip().startswith("PARA "):
+        cortado = _MOTIVO.search(plano, cortado.end())
     nombre = plano[: cortado.start()] if cortado else plano
     palabras = [p for p in nombre.split() if p]
     while palabras and palabras[-1] in _COLGANDO:
@@ -226,6 +232,21 @@ def nombre_del_asunto(asunto: str | None) -> str | None:
     if len(nombre) > MAX_NOMBRE:
         nombre = nombre[:MAX_NOMBRE].rsplit(" ", 1)[0]
     return nombre
+
+
+def es_solicitud_por_su_asunto(nombre: str | None) -> bool:
+    """Si el nombre es lo que pide una solicitud en su asunto, leído limpio: «SOLICITUD PARA SUSPENSION DEL SERVICIO».
+
+    Ése no se lo discute la IA, que llamaba a la de 7741435 por su anexo, la
+    declaración extraprocesal (el operador, 2026-11-24: «el título debería ser
+    Solicitud para suspensión del servicio»). Sólo si cada palabra se lee: con
+    cifras o letras sueltas -- «SOLICITUD DE RESPUESTA 9» -- la capa está rota
+    y la IA sigue mirando.
+    """
+    palabras = (nombre or "").split()
+    if len(palabras) < 3 or palabras[0] != "SOLICITUD":
+        return False
+    return all(p.isalpha() and (len(p) >= 2 or p in _COLGANDO) for p in palabras)
 
 
 def estandarizar(nombre: str | None) -> str | None:
@@ -338,7 +359,13 @@ def nombre_oficial(titulo: str | None, asunto: str | None = None) -> str | None:
             if del_catalogo:
                 return del_catalogo
             # La solicitud se llama por lo que solicita; el documento sin
-            # título, por lo que su asunto dice ser.
+            # título, por lo que su asunto dice ser. Si lo que solicita es un
+            # tipo del catálogo, ése: «Solicitud cambio de titular» es CAMBIO
+            # DE TITULAR (6835194, 2026-11-24).
+            if del_asunto and nombre == "SOLICITUD" and del_asunto.startswith("SOLICITUD "):
+                pedido = re.sub(r"^SOLICITUD\s+(?:DE\s+|PARA\s+)?", "", del_asunto)
+                if (tipo := estandarizar(pedido)) in {t.nombre for t in CATALOGO}:
+                    return tipo
             if del_asunto and (nombre == "DOCUMENTO" or del_asunto.startswith(nombre)):
                 return del_asunto
         return None if nombre == "DOCUMENTO" else nombre

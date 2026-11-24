@@ -1190,6 +1190,7 @@ def _poner_el_re_en_el_nombre(
         auditar_la_decision,
         destinos_de,
         nombre_de_la_oficina,
+        re_por_la_fecha_citada,
         resolver_sin_certeza,
     )
     from ...domain.sello import (
@@ -1382,6 +1383,39 @@ def _poner_el_re_en_el_nombre(
             if cruzadas:
                 hallazgo = decidir_el_re(
                     [*cruzadas, *evidencias_del_documento],
+                    del_tramite=del_tramite if con_re and primera not in sellos_sin_re else None,
+                    valido=valido,
+                    buscado=buscado,
+                )
+        if not hallazgo.se_cree:
+            # Y el sello cuyo número ningún lector leyó, por la fecha de
+            # radicación que la empresa cita con su RE (el operador, 2026-11-24,
+            # 4251461 pág. 8: el sello del 18-01-2021 y «la petición presentada
+            # el día 18/01/2021… radicada bajo el número RE2311202100109»).
+            citas_de_la_caja = {
+                p: t for p, t in (textos or {}).items() if p not in grupo.page_numbers and p not in sin_re
+            }
+            por_la_fecha = []
+            for evidencia in evidencias_del_documento:
+                sello_del_cruce = sellos.get(evidencia.pagina)
+                if evidencia.fuente != "sello de tinta" or sello_del_cruce is None:
+                    continue
+                cruce_por_la_fecha = re_por_la_fecha_citada(
+                    sello_del_cruce.fecha, citas_de_la_caja, evidencia.lecturas
+                )
+                if cruce_por_la_fecha is not None:
+                    por_la_fecha.append(
+                        replace(
+                            evidencia,
+                            fuente="sello de tinta cruzado con la fecha que cita la empresa",
+                            propuesto=cruce_por_la_fecha.valor,
+                            cruce=cruce_por_la_fecha.porque,
+                            correccion=None,
+                        )
+                    )
+            if por_la_fecha:
+                hallazgo = decidir_el_re(
+                    [*por_la_fecha, *evidencias_del_documento],
                     del_tramite=del_tramite if con_re and primera not in sellos_sin_re else None,
                     valido=valido,
                     buscado=buscado,
@@ -2988,21 +3022,49 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             ):
                 folios_al_pie[primera] = sello_al_pie
                 break
+    from ...domain.asunto_del_documento import (
+        CONSTANCIA_DE_RECLAMACION as _CONSTANCIA_DE_LA_EMPRESA,
+    )
+    from ...domain.asunto_del_documento import NOTIFICACIONES as _NOTIFICACIONES
+    from ...domain.asunto_del_documento import (
+        RESPUESTA_DE_LA_EMPRESA as _RESPUESTA_DE_LA_EMPRESA,
+    )
+    from ...domain.asunto_del_documento import formulario_que_abre as _formulario_de
+    from ...domain.fecha_por_estructura import (
+        fecha_por_estructura as _fecha_de_la_estructura,
+    )
     from ...domain.sello import FOLIOS_DE_UN_ESCRITO
 
     sellos_de_los_folios = {**folios_al_pie, **sellos_que_abren}
-    grupos, anexos, por_folios = retener_los_folios(grupos, sellos_de_los_folios, abren, anexos)
+    # Los papeles de la empresa con su fecha: lo radicado un día no lleva dentro
+    # nada fechado después (4251461, 2026-11-24: el «01 folio» leído «07»).
+    papeles_de_la_empresa = {_RESPUESTA_DE_LA_EMPRESA, _CONSTANCIA_DE_LA_EMPRESA, *_NOTIFICACIONES}
+    posteriores = {
+        p: fecha
+        for p, t in textos.items()
+        if _formulario_de(t or "") in papeles_de_la_empresa
+        and (fecha := _fecha_de_la_estructura([p], textos).fecha) is not None
+    }
+    grupos, anexos, por_folios = retener_los_folios(
+        grupos, sellos_de_los_folios, abren, anexos, posteriores=posteriores
+    )
     # Las hojas que cubren los folios de cada sello, en el documento de su
     # escrito: F5g no las mueve, ni por la persona ni por la IA (1000186: la
-    # factura de la hoja 2 se iba al pagaré).
+    # factura de la hoja 2 se iba al pagaré). Hasta el primer papel de la
+    # empresa fechado después del sello, que no es de lo radicado (4251461).
     del_documento = {p: k for k, g in enumerate(grupos.groups) for p in g.page_numbers}
-    hojas_de_los_folios = {
-        q
-        for primera, sello_de_folios in sellos_de_los_folios.items()
-        if sello_de_folios.folios and 1 < sello_de_folios.folios <= FOLIOS_DE_UN_ESCRITO
-        for q in range(primera, primera + sello_de_folios.folios)
-        if primera in del_documento and del_documento.get(q) == del_documento[primera]
-    }
+    hojas_de_los_folios: set[int] = set()
+    for primera, sello_de_folios in sellos_de_los_folios.items():
+        if not (sello_de_folios.folios and 1 < sello_de_folios.folios <= FOLIOS_DE_UN_ESCRITO):
+            continue
+        if primera not in del_documento:
+            continue
+        for q in range(primera, primera + sello_de_folios.folios):
+            posterior = posteriores.get(q)
+            if q != primera and posterior and sello_de_folios.fecha and posterior > sello_de_folios.fecha:
+                break
+            if del_documento.get(q) == del_documento[primera]:
+                hojas_de_los_folios.add(q)
     # F2d. La carta abre su trámite aunque no traiga sello -- salvo dentro de
     # los folios de un sello, que son de ese escrito --; la hoja que la
     # continúa y la prueba que trae van con ella.
@@ -4063,7 +4125,16 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # El nombre que dio el operador a la contestación no se le discute a la
         # IA, ni el de la carta «MESUC» al usuario: la IA la llamaba RECURSO DE
         # QUEJA (920933, 2026-11-24).
-        if nombre in POR_NOMBRE or nombre in NOMBRES_DEL_OPERADOR or nombrador is None:
+        # Ni la solicitud que se llama por lo que pide su asunto: la IA llamaba
+        # a la de 7741435 por su anexo, la declaración extraprocesal (2026-11-24).
+        from ...domain.nombre_oficial import es_solicitud_por_su_asunto
+
+        if (
+            nombre in POR_NOMBRE
+            or nombre in NOMBRES_DEL_OPERADOR
+            or nombrador is None
+            or es_solicitud_por_su_asunto(nombre)
+        ):
             from ...domain.nombre_oficial import tipo_unificado as _unificado
 
             return replace(nombrado, kind=_unificado(nombre))
