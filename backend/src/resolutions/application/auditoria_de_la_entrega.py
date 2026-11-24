@@ -517,11 +517,15 @@ def auditar_los_radicados(archivos: Sequence[ArchivoEntregado], textos: Mapping[
     - **El pagaré fuera de su sitio**: un pagaré o su carta de instrucciones
       dentro de un PDF que no es el acuerdo ni el PAGARE es un error
       (1000478, 2026-11-24).
+    - **La notificación personal y su respuesta**: con el mismo RE en dos PDF
+      es un error; van en uno, con el nombre de la notificación (2026-11-24).
     """
     from ..domain.asunto_del_documento import (
         CONTESTACION_A_RECLAMACION,
         NOMBRE_POR_SU_FORMATO,
+        NOTIFICACION_PERSONAL,
         es_contestacion_a_reclamacion,
+        formulario_que_abre,
         titulo_de_la_caratula,
         titulo_del_documento,
     )
@@ -566,7 +570,16 @@ def auditar_los_radicados(archivos: Sequence[ArchivoEntregado], textos: Mapping[
                 resultado.dudas.append(
                     f"«{archivo.nombre}»: su etiqueta de radicación dice {etiqueta.radicado} y el nombre lleva {radicado}"
                 )
-        if es_contestacion_a_reclamacion(primera) and titulo.upper() != CONTESTACION_A_RECLAMACION:
+        # La notificación personal unida a su respuesta lleva su nombre aunque
+        # en el papel la respuesta vaya delante (7740246, 2026-11-24).
+        con_su_notificacion = titulo.upper().startswith(NOTIFICACION_PERSONAL) and any(
+            formulario_que_abre(textos.get(p, "") or "") == NOTIFICACION_PERSONAL for p in hojas
+        )
+        if (
+            es_contestacion_a_reclamacion(primera)
+            and titulo.upper() != CONTESTACION_A_RECLAMACION
+            and not con_su_notificacion
+        ):
             resultado.dudas.append(f"«{archivo.nombre}»: abre con una contestación de la empresa y se llama {titulo}")
         # Lo que se llama por su formato (2026-11-24): la carta «MESUC» de
         # Electricaribe al usuario, la nota crédito de Aseopronto.
@@ -613,6 +626,20 @@ def auditar_los_radicados(archivos: Sequence[ArchivoEntregado], textos: Mapping[
         unificado = tipo_unificado(titulo.upper())
         if unificado and unificado != titulo.upper():
             resultado.dudas.append(f"«{archivo.nombre}»: se llama {titulo} y ese documento es {unificado}")
+    # La notificación personal y la respuesta de su mismo RE van en un PDF (el
+    # operador, 2026-11-24): en dos es un error.
+    notificaciones = {
+        re_del_archivo(a.nombre): a.nombre
+        for a in archivos
+        if _titulo_del_nombre(a.nombre).upper().startswith(NOTIFICACION_PERSONAL) and re_del_archivo(a.nombre)
+    }
+    for archivo in archivos:
+        radicado = re_del_archivo(archivo.nombre)
+        if _titulo_del_nombre(archivo.nombre).upper() == CONTESTACION_A_RECLAMACION and radicado in notificaciones:
+            resultado.errores.append(
+                f"«{archivo.nombre}»: la respuesta a la reclamación salió aparte de su notificación personal "
+                f"«{notificaciones[radicado]}»; con el mismo RE van en un PDF"
+            )
     _auditar_lo_que_va_con_su_documento(archivos, textos, resultado)
     return resultado
 
@@ -628,7 +655,9 @@ def _auditar_lo_que_va_con_su_documento(
     - **El paquete de la empresa** (4251482): el documento que va justo detrás
       de una carátula con membrete (CONSTANCIA DE CONTRATACIÓN, EXPEDIENTE) sin
       ser algo que lo cierre -- un formulario que va solo, un escrito de
-      trámite, un sello visible -- y que salió aparte, es duda.
+      trámite, un sello visible -- y que salió aparte, es duda. Sin carátula, la
+      declaración juramentada que salió aparte justo detrás de un documento que
+      no la corta también es duda (6831824).
     """
     from ..domain.asunto_del_documento import (
         DECLARACION_JURAMENTADA,
@@ -679,6 +708,21 @@ def _auditar_lo_que_va_con_su_documento(
                 resultado.dudas.append(
                     f"«{archivo.nombre}»: va justo detrás de la carátula de «{otro.nombre}» (hoja {caratula}) y "
                     "salió aparte; la carátula se lleva lo que la sigue"
+                )
+            # Sin carátula, la declaración juramentada va con las piezas de su
+            # paquete que la preceden (2026-11-24, 6831824).
+            elif formulario_que_abre(texto(primera)) == DECLARACION_JURAMENTADA and not (
+                formulario_que_abre(texto(caratula)) is not None
+                or _es_escrito_del_tramite(texto(caratula))
+                or leer_sello(texto(caratula)) is not None
+                or any(
+                    palabra in _titulo_del_nombre(otro.nombre).upper()
+                    for palabra in ("ACUERDO", "RECONOCIMIENTO", "PAGARE", "CONTRATO")
+                )
+            ):
+                resultado.dudas.append(
+                    f"«{archivo.nombre}»: la declaración juramentada salió aparte, justo detrás de «{otro.nombre}»; "
+                    "sin carátula va con las piezas de su paquete"
                 )
 
 

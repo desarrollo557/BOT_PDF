@@ -919,7 +919,7 @@ class TestElSelloAlPieDeOtraRadicacion:
     def test_la_hoja_muda_se_mira_al_pie_pero_no_en_el_barrido(self):
         from resolutions.application.sellos import se_mira_al_pie
 
-        manuscrita = "^ fA \ § I Z- ^ ^ ¿s^ev 0, t 'H AQ_"
+        manuscrita = r"^ fA \ § I Z- ^ ^ ¿s^ev 0, t 'H AQ_"
         assert se_mira_al_pie(manuscrita)
         assert not se_mira_al_pie(manuscrita, mudas=False)
 
@@ -975,3 +975,403 @@ class TestElTituloDeLaCaratula:
         assert any("EXPEDIENTE y se llama AUMENTO DE CARGA" in d for d in mal.dudas)
         bien = auditar_los_radicados([ArchivoEntregado("05_EXPEDIENTE.pdf", (1,))], {1: self.EXPEDIENTE})
         assert not any("su formato es" in d for d in bien.dudas)
+
+
+class TestElReQueCitaElExpediente:
+    """4251556 (el operador, 2026-11-24): la petición de 2022 salió RE2311202207568 -- el «1» a mano leído «7» -- y la
+    de 2023, en otro UPD del mismo NIC, cita «Derecho de Petición numerado según oficio 2311202201568»."""
+
+    CITA = "Solicitud de Cumplimiento acorde a Derecho de Petición numerado según oficio 2311202201568. Quedamos atentos"
+
+    def test_el_candidato_citado_corrige_lo_leido_a_mano(self):
+        from resolutions.domain.resolutor_del_re import re_citado_en_el_expediente
+
+        candidatos = ["RE2371202201568", "RE2311202201568", "RE2371202207568"]
+        cita = re_citado_en_el_expediente("RE2311202207568", candidatos, {"02_DERECHO-DE-PETICION.pdf": self.CITA})
+        assert cita is not None and cita.radicado == "RE2311202201568"
+        assert "oficio 2311202201568" in cita.fragmento and cita.fuente == "02_DERECHO-DE-PETICION.pdf"
+
+    def test_lo_que_no_cambia(self):
+        from resolutions.domain.resolutor_del_re import re_citado_en_el_expediente
+
+        # Lo leído ya está citado: se queda.
+        assert re_citado_en_el_expediente("RE2311202201568", [], {"a": self.CITA}) is None
+        # Nadie cita nada parecido.
+        assert re_citado_en_el_expediente("RE2311202207568", [], {"a": "sin números"}) is None
+        # A dos cifras y sin ser candidato: no basta.
+        assert re_citado_en_el_expediente("RE2311202207560", [], {"a": self.CITA}) is None
+        # A una cifra, aunque no sea candidato: sí.
+        assert re_citado_en_el_expediente("RE2311202207568", [], {"a": self.CITA}).radicado == "RE2311202201568"
+        # Dos números posibles: no se adivina.
+        dos = self.CITA + " y el oficio 2311202209568"
+        assert re_citado_en_el_expediente("RE2311202207568", [], {"a": dos}) is None
+
+    def test_se_corrige_en_lo_entregado(self, tmp_path):
+        import pymupdf
+
+        from resolutions.api import constancia as constancias
+        from resolutions.api.correccion_del_re import (
+            CITADO_EN_EL_EXPEDIENTE,
+            corregir_con_el_expediente,
+        )
+
+        def pdf(nombre: str, texto: str) -> None:
+            documento = pymupdf.open()
+            documento.new_page().insert_textbox(pymupdf.Rect(40, 40, 560, 800), texto, fontsize=10)
+            documento.save(tmp_path / nombre)
+            documento.close()
+
+        pdf("01_DERECHO-DE-PETICION-RE2311202207568.pdf", "Señores AFINIA. Derecho de petición de 2022.")
+        pdf("02_DERECHO-DE-PETICION-RE2311202300704.pdf", self.CITA)
+        for upd, ruta, hojas, evidencia in (
+            (
+                "UPD1",
+                "01_DERECHO-DE-PETICION-RE2311202207568.pdf",
+                [1, 2],
+                {
+                    "estado": "encontrado",
+                    "valor": "RE2311202207568",
+                    "metodo": "decidido por el agente: el juez de la IA, mirando el sello, eligió entre lo leído",
+                    "candidatos": [{"valor": "RE2311202201568"}, {"valor": "RE2371202207568"}],
+                },
+            ),
+            (
+                "UPD2",
+                "02_DERECHO-DE-PETICION-RE2311202300704.pdf",
+                [1],
+                {"estado": "encontrado", "valor": "RE2311202300704", "metodo": "etiqueta impresa"},
+            ),
+        ):
+            constancias.escribir(
+                tmp_path / f".bot-entrega-{upd}.json",
+                constancias.Constancia(
+                    origen=f"1111111/{upd}.pdf",
+                    tamano=1,
+                    modificado_ns=1,
+                    estado=constancias.EstadoDeEntrega.COMPLETA,
+                    archivos=[{"ruta": ruta, "bytes": 1}],
+                    indice={"filas": [{"nombre": ruta[3:-4].replace("-", " ")}]},
+                    evidencia={"re": {"1": evidencia}},
+                    documentos=[{"hojas": hojas}],
+                ),
+            )
+        hechos = corregir_con_el_expediente(tmp_path)
+        assert len(hechos) == 1 and "RE2311202201568" in hechos[0]
+        assert (tmp_path / "01_DERECHO-DE-PETICION-RE2311202201568.pdf").exists()
+        assert not (tmp_path / "01_DERECHO-DE-PETICION-RE2311202207568.pdf").exists()
+        corregida = constancias.leer(tmp_path / ".bot-entrega-UPD1.json")
+        assert corregida.archivos[0]["ruta"] == "01_DERECHO-DE-PETICION-RE2311202201568.pdf"
+        assert corregida.evidencia["re"]["1"]["metodo"].startswith(CITADO_EN_EL_EXPEDIENTE)
+        assert "oficio 2311202201568" in corregida.evidencia["re"]["1"]["fragmento"]
+        # Lo impreso no se toca, y una segunda pasada no cambia nada.
+        assert (tmp_path / "02_DERECHO-DE-PETICION-RE2311202300704.pdf").exists()
+        assert corregir_con_el_expediente(tmp_path) == []
+
+
+# -- la notificación personal con su respuesta (el operador, 2026-11-24) ----------------
+
+RE_DE_PEDRO = "RE2310202299901"
+NOTIFICACION_DEL_RECLAMO = (
+    "Grupo-epm\nNOTIFICACIÓN PERSONAL RECLAMOS\nEn la fecha 12 de octubre de 2022 compareció a las oficinas de "
+    "CARIBEMAR DE LA COSTA S.A.S. E.S.P., el (la) señor (a) PEDRO PEREZ PAEZ quien actúa en su nombre propio, a "
+    f"notificarse de la respuesta a:\nNúmero de la PQR: {RE_DE_PEDRO}\nTipo de PQR: Reclamo\n"
+    "Se entrega copia de la respuesta y para constancia firma:"
+)
+NOTIFICACION_DEL_RECURSO = (
+    "Grupo-epm\nNOTIFICACIÓN PERSONAL\nEn la fecha 23-02-2023 compareció a las oficinas de Caribe Mar, el (la) "
+    f"señor (a) PEDRO PEREZ PAEZ a notificarse de la respuesta a:\nNúmero de la POR: {RE_DE_PEDRO}\n"
+    "Tipo de POR o Asunto;REC_REPOSICION EN SUBSIDIO DE APELACION\nSe entrega copia de la respuesta"
+)
+RESPUESTA_AL_RECLAMO = (
+    "Grupo-epm\nConsecutivo No.202270000001\nMAGANGUE, 10/10/2022\nSeñor: PEDRO PEREZ PAEZ\nNIC: 1111111\n"
+    f"ASUNTO: Reclamación No. {RE_DE_PEDRO}\nEn atención a su escrito presentado, le indicamos lo siguiente:"
+)
+RESPUESTA_AL_RECURSO = (
+    "Grupo-epm\nConsecutivo No. 202370000002\nMAGANGUE, 08/02/2023\nSeñor: PEDRO PEREZ PAEZ\nNIC: 1111111\n"
+    f"ASUNTO: Recurso de Reposición en subsidio el de apelación No. {RE_DE_PEDRO}\nEn atención al recurso:"
+)
+SIGUE_LA_RESPUESTA = "Por lo cual le explicamos la relación de sus consumos anteriores del suministro."
+
+
+def _nombrados(*documentos: tuple[list[int], str, str | None]) -> GroupingResult:
+    """Documentos ya nombrados, con su RE en el código como los deja F6b."""
+    return GroupingResult(
+        groups=[
+            PageGroup(
+                code=ResolutionCode(value=f"{i:02d}" + (f" {re_}" if re_ else ""), raw=re_ or f"{i:02d}"),
+                page_numbers=list(hojas),
+                kind=nombre,
+                re_en_el_nombre=bool(re_),
+            )
+            for i, (hojas, nombre, re_) in enumerate(documentos, start=1)
+        ]
+    )
+
+
+class TestLaNotificacionConSuRespuesta:
+    """«Si encuentras una notificación personal y una respuesta a la reclamación dentro de un mismo NIC con un RE
+    igual, únelos, sólo para esos casos». El PDF se llama como la notificación, con las hojas como en el papel."""
+
+    def test_la_instancia_de_cada_hoja(self):
+        from resolutions.domain.asunto_del_documento import (
+            INSTANCIA_DEL_RECLAMO,
+            INSTANCIA_DEL_RECURSO,
+            instancia_de_la_pqr,
+        )
+
+        assert instancia_de_la_pqr(NOTIFICACION_DEL_RECLAMO) == INSTANCIA_DEL_RECLAMO
+        assert instancia_de_la_pqr(NOTIFICACION_DEL_RECURSO) == INSTANCIA_DEL_RECURSO
+        assert instancia_de_la_pqr(RESPUESTA_AL_RECLAMO) == INSTANCIA_DEL_RECLAMO
+        assert instancia_de_la_pqr(RESPUESTA_AL_RECURSO) == INSTANCIA_DEL_RECURSO
+        assert instancia_de_la_pqr(SIGUE_LA_RESPUESTA) is None
+
+    def test_la_respuesta_de_detras_va_con_su_notificacion(self):
+        from resolutions.application.anexos_declarados import (
+            la_notificacion_con_su_respuesta,
+        )
+
+        textos = {1: CONSTANCIA, 2: NOTIFICACION_DEL_RECLAMO, 3: RESPUESTA_AL_RECLAMO, 4: SIGUE_LA_RESPUESTA}
+        cortado = _nombrados(
+            ([1], "CONSTANCIA DE RECEPCION DE PETICIONES", "RE2310202200001"),
+            ([2], "NOTIFICACION PERSONAL RECLAMOS", RE_DE_PEDRO),
+            ([3, 4], "RESPUESTA A LA RECLAMACION", RE_DE_PEDRO),
+        )
+        unido = la_notificacion_con_su_respuesta(cortado, textos, {f"03 {RE_DE_PEDRO}": [4]})
+        assert [g.page_numbers for g in unido.grupos.groups] == [[1], [2, 3, 4]]
+        junto = unido.grupos.groups[1]
+        assert junto.kind == "NOTIFICACION PERSONAL RECLAMOS" and junto.code.value == f"02 {RE_DE_PEDRO}"
+        assert junto.orden is None and unido.anexos == {f"02 {RE_DE_PEDRO}": [4]}
+        assert unido.parejas[0]["re"] == RE_DE_PEDRO and "justo detrás" in unido.parejas[0]["porque"]
+        assert unido.aviso()
+
+    def test_con_la_respuesta_delante_va_como_en_el_papel(self):
+        """7740246: la respuesta en las hojas 1-2 y la notificación en la 3; sale con el nombre de la notificación."""
+        from resolutions.application.anexos_declarados import (
+            la_notificacion_con_su_respuesta,
+        )
+
+        textos = {1: RESPUESTA_AL_RECLAMO, 2: SIGUE_LA_RESPUESTA, 3: NOTIFICACION_DEL_RECLAMO}
+        cortado = _nombrados(
+            ([1, 2], "RESPUESTA A LA RECLAMACION", RE_DE_PEDRO), ([3], "NOTIFICACION PERSONAL RECLAMOS", RE_DE_PEDRO)
+        )
+        unido = la_notificacion_con_su_respuesta(cortado, textos)
+        assert [g.page_numbers for g in unido.grupos.groups] == [[1, 2, 3]]
+        assert unido.grupos.groups[0].kind == "NOTIFICACION PERSONAL RECLAMOS"
+        assert unido.grupos.groups[0].code.value == f"01 {RE_DE_PEDRO}"
+
+    def test_el_reclamo_y_el_recurso_cada_uno_con_la_suya(self):
+        """6834699: notificación del reclamo (1), su respuesta (2-3), el recurso (4), notificación del recurso (5)
+        y su respuesta (6). Dos PDF, no uno."""
+        from resolutions.application.anexos_declarados import (
+            la_notificacion_con_su_respuesta,
+        )
+
+        textos = {
+            1: NOTIFICACION_DEL_RECLAMO,
+            2: RESPUESTA_AL_RECLAMO,
+            3: SIGUE_LA_RESPUESTA,
+            4: CARTA_DE_PEDRO,
+            5: NOTIFICACION_DEL_RECURSO,
+            6: RESPUESTA_AL_RECURSO,
+        }
+        cortado = _nombrados(
+            ([1], "NOTIFICACION PERSONAL RECLAMOS", RE_DE_PEDRO),
+            ([2, 3], "RESPUESTA A LA RECLAMACION", RE_DE_PEDRO),
+            ([4], "RECURSO DE REPOSICION EN SUBSIDIO DE APELACION", RE_DE_PEDRO),
+            ([5], "NOTIFICACION PERSONAL", RE_DE_PEDRO),
+            ([6], "RESPUESTA A LA RECLAMACION", RE_DE_PEDRO),
+        )
+        unido = la_notificacion_con_su_respuesta(cortado, textos)
+        assert [g.page_numbers for g in unido.grupos.groups] == [[1, 2, 3], [4], [5, 6]]
+        assert [g.kind for g in unido.grupos.groups] == [
+            "NOTIFICACION PERSONAL RECLAMOS",
+            "RECURSO DE REPOSICION EN SUBSIDIO DE APELACION",
+            "NOTIFICACION PERSONAL",
+        ]
+
+    def test_la_instancia_manda_sobre_estar_al_lado(self):
+        """7740476: la notificación del reclamo va lejos de su respuesta, y la del recurso pegada a ella."""
+        from resolutions.application.anexos_declarados import (
+            la_notificacion_con_su_respuesta,
+        )
+
+        textos = {
+            1: RESPUESTA_AL_RECLAMO,
+            2: CARTA_DE_PEDRO,
+            3: NOTIFICACION_DEL_RECLAMO,
+            4: NOTIFICACION_DEL_RECURSO,
+            5: RESPUESTA_AL_RECURSO,
+        }
+        cortado = _nombrados(
+            ([1], "RESPUESTA A LA RECLAMACION", RE_DE_PEDRO),
+            ([2], "RECLAMO", "RE2310202299902"),
+            ([3], "NOTIFICACION PERSONAL", RE_DE_PEDRO),
+            ([4], "NOTIFICACION PERSONAL", RE_DE_PEDRO),
+            ([5], "RESPUESTA A LA RECLAMACION", RE_DE_PEDRO),
+        )
+        unido = la_notificacion_con_su_respuesta(cortado, textos)
+        assert [g.page_numbers for g in unido.grupos.groups] == [[1, 3], [2], [4, 5]]
+
+    @pytest.mark.parametrize(
+        "otro",
+        [
+            ([2], "NOTIFICACION PERSONAL RECLAMOS", "RE2310202299999"),
+            ([2], "NOTIFICACION PERSONAL RECLAMOS", None),
+            ([2], "NOTIFICACION POR AVISO", RE_DE_PEDRO),
+            ([2], "CITACION PARA NOTIFICACION PERSONAL", RE_DE_PEDRO),
+        ],
+    )
+    def test_solo_la_personal_con_el_mismo_re(self, otro):
+        from resolutions.application.anexos_declarados import (
+            la_notificacion_con_su_respuesta,
+        )
+
+        textos = {1: RESPUESTA_AL_RECLAMO, 2: NOTIFICACION_DEL_RECLAMO}
+        cortado = _nombrados(([1], "RESPUESTA A LA RECLAMACION", RE_DE_PEDRO), otro)
+        unido = la_notificacion_con_su_respuesta(cortado, textos)
+        assert [g.page_numbers for g in unido.grupos.groups] == [[1], [2]] and not unido.parejas
+
+    def test_la_fila_lleva_la_fecha_de_la_notificacion(self):
+        from resolutions.application.anexos_declarados import la_notificacion_primero
+
+        piezas = [
+            {"pages": [1], "archivo": 0, "fecha": "2022-10-01"},
+            {"pages": [2, 3], "archivo": 1, "fecha": "2022-10-10"},
+            {"pages": [4], "archivo": 1, "fecha": "2022-10-12"},
+            {"pages": [5], "archivo": 2, "fecha": "2022-11-01"},
+        ]
+        ordenadas = la_notificacion_primero(piezas, {4})
+        assert [p["pages"] for p in ordenadas] == [[1], [4], [2, 3], [5]]
+        assert la_notificacion_primero(piezas, set()) is piezas
+
+    def test_la_auditoria_avisa_la_pareja_partida_y_no_la_unida(self):
+        from resolutions.application.auditoria_de_la_entrega import auditar_los_radicados
+        from resolutions.domain.conciliacion import ArchivoEntregado
+
+        textos = {1: RESPUESTA_AL_RECLAMO, 2: NOTIFICACION_DEL_RECLAMO}
+        partido = auditar_los_radicados(
+            [
+                ArchivoEntregado(f"01_RESPUESTA-A-LA-RECLAMACION-{RE_DE_PEDRO}.pdf", (1,)),
+                ArchivoEntregado(f"02_NOTIFICACION-PERSONAL-RECLAMOS-{RE_DE_PEDRO}.pdf", (2,)),
+            ],
+            textos,
+        )
+        assert any("salió aparte de su notificación personal" in e for e in partido.errores)
+        junto = auditar_los_radicados(
+            [ArchivoEntregado(f"01_NOTIFICACION-PERSONAL-RECLAMOS-{RE_DE_PEDRO}.pdf", (1, 2))], textos
+        )
+        assert not any("notificación personal" in e for e in junto.errores)
+        assert not any("abre con una contestación" in d for d in junto.dudas)
+
+
+# -- el contrato de transacción nunca lleva pagaré (el operador, 2026-11-24) ------------
+
+CONTRATO = "Grupo-epm\nCONTRATO DE TRANSACCIÓN\nEntre las siguientes partes a saber: CARIBEMAR DE LA COSTA S.A.S."
+CLAUSULA_TERCERA = (
+    "TERCERO: Para garantizar el pago de las cuotas mensuales de que trata la cláusula segunda, EL CLIENTE "
+    "suscribe a favor de CARIBEMAR DE LA COSTA S.A.S E.S.P. un pagaré en blanco con carta de instrucciones."
+)
+PAGARE = "CARIBEMAR DE LA COSTA S.A.S. ESP\nPAGARE No. 1111111 -2\nFECHA VENCIMIENTO"
+CARTA_DE_INSTRUCCIONES = "CARIBEMAR DE LA COSTA S.A.S. ESP\nCARTA DE INSTRUCCIONES ANEXA A PAGARE No. 1111111 2"
+
+
+class TestElContratoSinPagare:
+    def test_el_pagare_sale_del_contrato_con_sus_cartas_y_su_cedula(self):
+        """1000478 en la entrega de antes: el contrato (1-3) con pagaré, dos cartas y la cédula (4-7)."""
+        from resolutions.application.anexos_declarados import el_contrato_sin_pagare
+
+        textos = {
+            1: CONTRATO,
+            2: SEGUNDA_HOJA,
+            3: CLAUSULA_TERCERA,
+            4: PAGARE,
+            5: CARTA_DE_INSTRUCCIONES,
+            6: CARTA_DE_INSTRUCCIONES,
+            7: CEDULA_DE_PEDRO,
+            8: CONSTANCIA,
+        }
+        cortado = _nombrados(
+            ([1, 2, 3, 4, 5, 6, 7], "CONTRATO DE TRANSACCION", None),
+            ([8], "CONSTANCIA DE RECEPCION DE PETICIONES", "RE2310202200001"),
+        )
+        limpio = el_contrato_sin_pagare(cortado, textos, {"01": [7]})
+        assert [g.page_numbers for g in limpio.grupos.groups] == [[1, 2, 3], [4, 5, 6, 7], [8]]
+        assert [g.kind for g in limpio.grupos.groups][:2] == ["CONTRATO DE TRANSACCION", "PAGARE"]
+        assert [g.code.value for g in limpio.grupos.groups] == ["01", "02", "03 RE2310202200001"]
+        assert limpio.anexos == {"02": [7]} and set(limpio.movidas) == {4, 5, 6, 7}
+
+    def test_el_contrato_limpio_no_se_toca(self):
+        """La cláusula TERCERO nombra el pagaré y la carta de instrucciones: no es ninguno de los dos."""
+        from resolutions.application.anexos_declarados import el_contrato_sin_pagare
+
+        textos = {1: CONTRATO, 2: CLAUSULA_TERCERA, 3: CEDULA_DE_PEDRO}
+        cortado = _nombrados(([1, 2, 3], "CONTRATO DE TRANSACCION", None))
+        limpio = el_contrato_sin_pagare(cortado, textos, {"01": [3]})
+        assert limpio.grupos is cortado and not limpio.movidas
+
+
+# -- el paquete de la empresa sin su carátula (el operador, 2026-11-24) -----------------
+
+
+class TestElPaqueteSinCaratula:
+    """«Si la página principal no llega a estar, no importa, que una los demás». 6831824 (UPD2453179): la carta
+    «SOLICITUD» con la escritura y la factura (1-11) y la declaración juramentada (12) salían en dos PDF."""
+
+    def test_6831824_la_declaracion_va_con_la_solicitud(self):
+        from resolutions.application.anexos_declarados import unir_el_paquete_sin_caratula
+
+        cortado = _grupos(list(range(1, 12)), [12])
+        unido = unir_el_paquete_sin_caratula(cortado, {"01": [11]}, anclas={12}, paradas=set())
+        assert [g.page_numbers for g in unido.grupos.groups] == [list(range(1, 13))]
+        assert unido.anexos == {"01": [11]} and unido.movidas == {12: 1}
+
+    def test_hacia_delante_tambien(self):
+        """La declaración delante, la solicitud de servicio y el RETIE detrás: un documento."""
+        from resolutions.application.anexos_declarados import unir_el_paquete_sin_caratula
+
+        unido = unir_el_paquete_sin_caratula(_grupos([1], [2, 3], [4]), {}, anclas={1, 2}, paradas=set())
+        assert [g.page_numbers for g in unido.grupos.groups] == [[1, 2, 3, 4]]
+
+    @pytest.mark.parametrize("parada", [3, 5])
+    def test_la_parada_corta(self, parada):
+        """Una constancia (3) delante, o un acuerdo de pago o un sello (5) detrás, no entran."""
+        from resolutions.application.anexos_declarados import unir_el_paquete_sin_caratula
+
+        unido = unir_el_paquete_sin_caratula(_grupos([3], [4], [5], [6]), {}, anclas={4}, paradas={parada})
+        esperado = [[3], [4, 5, 6]] if parada == 3 else [[3, 4], [5], [6]]
+        assert [g.page_numbers for g in unido.grupos.groups] == esperado
+
+    def test_la_declaracion_sola_no_cambia(self):
+        from resolutions.application.anexos_declarados import unir_el_paquete_sin_caratula
+
+        cortado = _grupos([1])
+        unido = unir_el_paquete_sin_caratula(cortado, {}, anclas={1}, paradas=set())
+        assert unido.grupos is cortado and not unido.movidas
+
+    def test_dentro_del_paquete_con_caratula_no_se_toca(self):
+        """La declaración que ya va en el paquete de su carátula (1) no arma otro."""
+        from resolutions.application.anexos_declarados import unir_el_paquete_sin_caratula
+
+        cortado = _grupos([1, 2, 3], [4])
+        unido = unir_el_paquete_sin_caratula(cortado, {}, anclas={2}, paradas={1})
+        assert unido.grupos is cortado
+
+    def test_la_auditoria_avisa_la_declaracion_aparte(self):
+        from resolutions.application.auditoria_de_la_entrega import auditar_los_radicados
+        from resolutions.domain.conciliacion import ArchivoEntregado
+
+        solicitud = (
+            "Santa Rosa del Sur, agosto 26 de 2022\nSeñores: GRUPO EPM\nREFERENCIA: SOLICITUD.\n"
+            "Yo, ANA MARIA GOMEZ RUIZ, solicito respetuosamente el cambio de nombre del titular del recibo."
+        )
+        textos = {1: solicitud, 2: DECLARACION_DE_ANA}
+        assert formulario_que_abre(DECLARACION_DE_ANA) == DECLARACION_JURAMENTADA
+        partido = auditar_los_radicados(
+            [ArchivoEntregado("01_SOLICITUD.pdf", (1,)), ArchivoEntregado("02_DECLARACION.pdf", (2,))], textos
+        )
+        assert any("declaración juramentada salió aparte" in d for d in partido.dudas)
+        tras_la_constancia = auditar_los_radicados(
+            [ArchivoEntregado("01_CONSTANCIA.pdf", (1,)), ArchivoEntregado("02_DECLARACION.pdf", (2,))],
+            {1: CONSTANCIA, 2: DECLARACION_DE_ANA},
+        )
+        assert not any("declaración juramentada" in d for d in tras_la_constancia.dudas)

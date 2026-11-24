@@ -3800,6 +3800,33 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             grupos, anexos, abren_paquete=caratulas, paradas=cierran_el_paquete
         )
         grupos, anexos = paquetes_de_la_empresa.grupos, paquetes_de_la_empresa.anexos
+        # Y sin su carátula, las piezas van juntas igual (el operador, 2026-11-24:
+        # «si la página principal no llega a estar, no importa, que una los
+        # demás»): desde la declaración juramentada o la solicitud de servicio,
+        # los documentos seguidos hasta la primera parada. El acuerdo de pago y
+        # el contrato de transacción son paradas: no se tocan.
+        from ...application.anexos_declarados import unir_el_paquete_sin_caratula
+
+        anclas_sin_caratula = {
+            p
+            for p, clase in clase_de_la_hoja_que_abre.items()
+            if p not in no_son_caratula
+            and (
+                clase == _DECLARACION
+                or titulo_del_documento(textos.get(p, "") or "").startswith("SOLICITUD DE SERVICIO")
+            )
+        }
+        if anclas_sin_caratula:
+            contratos = {
+                p for p in textos if titulo_del_documento(textos.get(p, "") or "") == "CONTRATO DE TRANSACCION"
+            }
+            paquetes_sin_caratula = unir_el_paquete_sin_caratula(
+                grupos,
+                anexos,
+                anclas=anclas_sin_caratula,
+                paradas=cierran_el_paquete | caratulas | contratos,
+            )
+            grupos, anexos = paquetes_sin_caratula.grupos, paquetes_sin_caratula.anexos
     # F5g. Cada anexo con su documento (el operador, 2026-11-23): la secuencia
     # del PDF -- con su página principal anterior --, salvo que su persona lo
     # haga de otro documento de la caja. La constancia no recibe ninguno: lo
@@ -4069,6 +4096,21 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     # un reclamo y trae una cédula detrás es el reclamo, no un «DOCUMENTO DE
     # IDENTIDAD».
     grupos = nombrar_sin_soporte(grupos, textos)
+    # F6a. El contrato de transacción nunca lleva pagaré (el operador,
+    # 2026-11-24): el seguro final. El pagaré, sus cartas y la cédula de detrás
+    # que hubieran quedado dentro salen como «PAGARE».
+    contratos_sin_pagare = None
+    if entregado_por is not Agrupacion.MES:
+        from ...application.anexos_declarados import el_contrato_sin_pagare
+
+        contratos_sin_pagare = el_contrato_sin_pagare(grupos, textos, anexos)
+        if contratos_sin_pagare.movidas:
+            logger.warning(
+                "pagaré dentro del contrato de transacción en %s: hojas %s",
+                taller.name,
+                sorted(contratos_sin_pagare.movidas),
+            )
+            grupos, anexos = contratos_sin_pagare.grupos, contratos_sin_pagare.anexos
     # F6b. El reclamo y la constancia de su contenido llevan su RE en el
     # nombre (lo dictó el operador el 2026-11-04), y la contestación y todo
     # documento con su sello (2026-11-11). Por mes no: el archivo es un mes, no
@@ -4235,7 +4277,21 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
             },
             textos,
         )
+    # F6e. La notificación personal con la respuesta a la reclamación de su
+    # mismo RE, en un PDF (el operador, 2026-11-24: «únelos, sólo para esos
+    # casos»): con el nombre, el RE y la fecha de la notificación, y las hojas
+    # como en el papel. Ya con el RE de cada documento en su código.
+    notificaciones_con_su_respuesta = None
+    if entregado_por is not Agrupacion.MES:
+        from ...application.anexos_declarados import la_notificacion_con_su_respuesta
+
+        notificaciones_con_su_respuesta = la_notificacion_con_su_respuesta(grupos, textos, anexos)
+        grupos, anexos = notificaciones_con_su_respuesta.grupos, notificaciones_con_su_respuesta.anexos
     piezas = describir_piezas(grupos.groups)
+    if notificaciones_con_su_respuesta is not None and notificaciones_con_su_respuesta.parejas:
+        from ...application.anexos_declarados import la_notificacion_primero
+
+        piezas = la_notificacion_primero(piezas, notificaciones_con_su_respuesta.notificaciones())
     # F7. La fecha que la estructura no dio en la capa: el agente relee la hoja
     # principal y sus respaldos, en local y, si se eligió una lectura con IA,
     # con la IA. Lo que no sale va sin fecha y a Revisión (2026-11-10: la de su
@@ -4497,7 +4553,25 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
                 else []
             ),
             *([aviso] if (aviso := aviso_de_varios_sellos(varios_sellos)) else []),
+            *(
+                [aviso]
+                if notificaciones_con_su_respuesta is not None and (aviso := notificaciones_con_su_respuesta.aviso())
+                else []
+            ),
+            *(
+                [
+                    f"{len(contratos_sin_pagare.movidas)} hoja(s) de pagaré que iban dentro de un contrato de "
+                    "transacción salieron como PAGARE: el contrato nunca lleva pagaré"
+                ]
+                if contratos_sin_pagare is not None and contratos_sin_pagare.movidas
+                else []
+            ),
         ],
+        # Cada notificación personal unida a la respuesta de su mismo RE: el RE,
+        # las hojas de cada una y por qué se eligió esa pareja (2026-11-24).
+        "notificacion_con_su_respuesta": (
+            notificaciones_con_su_respuesta.parejas if notificaciones_con_su_respuesta is not None else []
+        ),
         # Y el detalle de cada PDF con dos o más sellos de RE distinto: sus
         # sellos, lo que hizo el agente y por qué (2026-11-12).
         "varios_sellos": varios_sellos,

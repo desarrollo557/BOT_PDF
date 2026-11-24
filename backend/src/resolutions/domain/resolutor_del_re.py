@@ -363,3 +363,75 @@ def eleccion_del_juez(respuesta: str | None, candidatos: Sequence[str]) -> str |
     vistos = {"RE" + re.sub(r"\D", "", h.group(1)) for h in _RE_EN_LA_RESPUESTA.finditer(respuesta or "")}
     elegidos = vistos & lista
     return elegidos.pop() if len(elegidos) == 1 else None
+
+
+# -- el RE que cita el expediente (2026-11-24) ------------------------------------------
+
+#: Cuántas cifras puede diferir lo leído a mano del RE que otro documento del
+#: expediente cita: una cifra si sólo lo cita el expediente, dos si además es
+#: uno de los candidatos que leyó el bot.
+CIFRAS_DEL_EXPEDIENTE = 1
+CIFRAS_DEL_CANDIDATO_CITADO = 2
+#: Un número de trece cifras en el texto de otro documento: «oficio
+#: 2311202201568», «RE2311202201568», «Radicado número: RE…».
+_TRECE_CIFRAS = re.compile(r"(?<!\d)(\d{13})(?!\d)")
+#: Cuánto texto alrededor de la cita se guarda como evidencia.
+CONTEXTO_DE_LA_CITA = 70
+
+
+@dataclass(frozen=True, slots=True)
+class CitaDelExpediente:
+    """El RE que otro documento del mismo NIC cita, con el trozo donde lo cita."""
+
+    radicado: str
+    fragmento: str
+    #: El documento que lo cita: su nombre de archivo, para la evidencia.
+    fuente: str
+
+
+def _cifras_distintas(uno: str, otro: str) -> int:
+    return sum(a != b for a, b in zip(uno, otro, strict=True)) if len(uno) == len(otro) else len(uno)
+
+
+def re_citado_en_el_expediente(
+    actual: str, candidatos: Sequence[str], textos: Mapping[str, str]
+) -> CitaDelExpediente | None:
+    """El RE que corrige lo leído a mano porque otro documento del mismo NIC lo cita tal cual; ``None`` si nada cambia.
+
+    El operador, 2026-11-24, ante 4251556: el sello de la petición de 2022
+    lleva el RE escrito a mano, el «1» con su gancho se leyó «7» y el PDF salió
+    RE2311202207568. La petición de 2023, en otro UPD del mismo NIC, dice
+    «Derecho de Petición numerado según oficio 2311202201568»: ése es el RE, y
+    estaba entre los candidatos que leyó el bot.
+
+    ``textos`` son los de los otros documentos del NIC, por su nombre. Cambia
+    sólo si lo leído no está citado en ninguno y hay un único número citado a
+    ``CIFRAS_DEL_EXPEDIENTE`` cifra de lo leído, o un único candidato citado a
+    ``CIFRAS_DEL_CANDIDATO_CITADO``: trece cifras citadas tan cerca de lo leído
+    no son casualidad.
+    """
+    if not es_re_entero(actual):
+        return None
+    leido = actual[2:]
+    citas: dict[str, tuple[str, str]] = {}
+    for fuente, texto in textos.items():
+        plano = " ".join((texto or "").split())
+        for hallado in _TRECE_CIFRAS.finditer(plano):
+            numero = hallado.group(1)
+            if numero not in citas:
+                desde, hasta = max(0, hallado.start() - CONTEXTO_DE_LA_CITA), hallado.end() + CONTEXTO_DE_LA_CITA
+                citas[numero] = (plano[desde:hasta], fuente)
+    if leido in citas:
+        return None
+    de_los_candidatos = {c[2:] for c in candidatos if es_re_entero(c) and c != actual}
+    posibles = {
+        numero
+        for numero in citas
+        if _cifras_distintas(numero, leido) <= CIFRAS_DEL_EXPEDIENTE
+        or (numero in de_los_candidatos and _cifras_distintas(numero, leido) <= CIFRAS_DEL_CANDIDATO_CITADO)
+    }
+    if len(posibles) != 1:
+        return None
+    numero = posibles.pop()
+    fragmento, fuente = citas[numero]
+    return CitaDelExpediente(radicado=f"RE{numero}", fragmento=fragmento, fuente=fuente)

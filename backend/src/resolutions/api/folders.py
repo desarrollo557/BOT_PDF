@@ -4557,11 +4557,19 @@ class FolderRunner:
             escribir_indice,
             leer_indice,
         )
-        from .correccion_del_re import cerrojo_de_la_carpeta
+        from .correccion_del_re import cerrojo_de_la_carpeta, corregir_con_el_expediente
 
         # El cerrojo de la carpeta del NIC también: la corrección del RE sin la
         # corrida (``correccion_del_re``) no se cruza con la renumeración.
         with run.cerrojo, cerrojo_de_la_carpeta(carpeta):
+            # El RE leído a mano que otro documento del NIC cita distinto: aquí
+            # están ya todos sus UPD (4251556, 2026-11-24). Antes de leer las
+            # constancias que se renumeran, para que lleven el corregido.
+            try:
+                for hecho in corregir_con_el_expediente(carpeta):
+                    self._avisar(run, f"RE corregido por el expediente del NIC {carpeta.name}: {hecho}")
+            except Exception:  # noqa: BLE001 - el cruce nunca deja la carpeta sin ordenar
+                logger.warning("no se pudo cruzar los RE del NIC %s", carpeta, exc_info=True)
             try:
                 rutas = sorted(carpeta.glob(f"{Path(constancias.NOMBRE).stem}-*.json"))
             except OSError:

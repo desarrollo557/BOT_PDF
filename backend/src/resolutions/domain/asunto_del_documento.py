@@ -856,6 +856,34 @@ def portada_del_anexo(texto: str) -> str | None:
     return hallado.group(1) or ""
 
 
+#: De qué responde o notifica la hoja: el reclamo o el recurso contra su
+#: respuesta. Un mismo RE lleva las dos, cada una con su notificación personal
+#: (6834699, 7740476: «Tipo de PQR: Reclamo» y «Tipo de PQR o Asunto:
+#: REC_REPOSICION EN SUBSIDIO DE APELACION»).
+INSTANCIA_DEL_RECLAMO, INSTANCIA_DEL_RECURSO = "reclamo", "recurso"
+#: El renglón de la notificación personal: «Tipo de PQR:», «Tipo de POR o
+#: Asunto;» (la OCR lee la Q como O).
+_TIPO_DE_LA_PQR = re.compile(r"TIPO\s+DE\s+(?:LA\s+)?P\W?[QO0]\W?R\b(?:\s+O\s+ASUNTO)?\s*[:;]\s*(.{0,60})")
+#: El asunto de la respuesta: «ASUNTO: Reclamación No. RE…», «ASUNTO: Recurso
+#: de Reposición en subsidio de apelación No. RE…».
+_ASUNTO_DE_LA_RESPUESTA = re.compile(r"\bASUNTO\s*[:;]\s*(.{0,60})")
+_ES_EL_RECURSO = re.compile(r"RECURSO|REPOSICI|APELACI|\bQUEJA|\bREC_")
+
+
+def instancia_de_la_pqr(texto: str) -> str | None:
+    """De qué es la hoja: ``INSTANCIA_DEL_RECLAMO``, ``INSTANCIA_DEL_RECURSO`` o ``None`` si no lo dice.
+
+    La notificación personal lo dice en su «Tipo de PQR»; la respuesta de la
+    empresa, en su «ASUNTO». Empareja cada notificación con la respuesta que
+    notifica cuando un RE trae dos (el operador, 2026-11-24).
+    """
+    plano = _plano(texto or "")
+    hallado = _TIPO_DE_LA_PQR.search(plano) or _ASUNTO_DE_LA_RESPUESTA.search(plano)
+    if hallado is None or not hallado.group(1).strip():
+        return None
+    return INSTANCIA_DEL_RECURSO if _ES_EL_RECURSO.search(hallado.group(1)) else INSTANCIA_DEL_RECLAMO
+
+
 def consecutivo_de(texto: str) -> str | None:
     """El consecutivo con que la empresa numera su carta, sin espacios, o ``None``.
 

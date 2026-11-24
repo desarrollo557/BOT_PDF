@@ -265,3 +265,148 @@ def _en_el_indice_general_bajo_cerrojo(raiz: str, hojas_suyas: tuple[str, ...], 
         return [] if cambiado else aviso
     except Exception:  # noqa: BLE001 - lo demás ya se corrigió; se dice qué faltó
         return aviso
+
+
+# -- el RE que cita el expediente (2026-11-24) ------------------------------------------
+
+#: Cómo queda dicho en la evidencia el RE que corrigió el expediente.
+CITADO_EN_EL_EXPEDIENTE = "citado en otro documento del expediente"
+#: Lo impreso no se corrige así: la etiqueta y el PQR de la constancia se leen enteros.
+_IMPRESO = ("impres", "etiqueta", "PQR", CONFIRMADO, CITADO_EN_EL_EXPEDIENTE)
+
+
+def _se_corrige_por_el_expediente(evidencia: Mapping) -> bool:
+    """Si el RE del nombre salió de una lectura a mano o de una decisión del agente: lo que el expediente puede corregir."""
+    if not evidencia or str(evidencia.get("estado") or "") == Estado.VERIFICADO.value:
+        return False
+    metodo = str(evidencia.get("metodo") or "")
+    return not any(marca in metodo for marca in _IMPRESO)
+
+
+def _textos_de_los_pdf(carpeta: Path, rutas: list[str]) -> dict[str, str]:
+    """El texto de cada PDF entregado de la carpeta del NIC, por su ruta: su capa, que es gratis."""
+    from ..adapters.pymupdf_source import PyMuPDFPageSource
+
+    textos: dict[str, str] = {}
+    for ruta in rutas:
+        pdf = constancias.ruta_de_entrega(carpeta, ruta)
+        if pdf is None or not pdf.exists():
+            continue
+        try:
+            with PyMuPDFPageSource(pdf) as fuente:
+                textos[ruta] = "\n".join(fuente.text_of(p) or "" for p in range(1, fuente.page_count + 1))
+        except Exception:  # noqa: BLE001 - un PDF ilegible no para la carpeta
+            continue
+    return textos
+
+
+def corregir_con_el_expediente(carpeta: Path) -> list[str]:
+    """El RE leído a mano que otro documento del mismo NIC cita distinto se corrige en lo entregado (2026-11-24).
+
+    El operador, ante 4251556: la petición de 2022 salió RE2311202207568 -- el
+    «1» a mano con su gancho leído «7» -- y la de 2023, en otro UPD, dice
+    «Derecho de Petición numerado según oficio 2311202201568». Cada UPD se
+    procesa solo y no veía al otro: al ordenar la carpeta del NIC están todos.
+
+    Para cada PDF cuyo RE salió de una lectura a mano o de una decisión del
+    agente (nunca lo impreso ni lo que confirmó el operador), se busca en el
+    texto de los demás PDF del NIC un número que lo corrija
+    (``domain.resolutor_del_re.re_citado_en_el_expediente``). Si lo hay, se
+    renombra el PDF, su fila y su evidencia -- «citado en otro documento del
+    expediente», con la cita --. El índice del NIC lo reescribe quien ordena la
+    carpeta, con las filas de las constancias. Devuelve lo que corrigió.
+    """
+    from ..domain.nombre_oficial import re_del_archivo
+    from ..domain.resolutor_del_re import re_citado_en_el_expediente
+
+    hechos: list[str] = []
+    with cerrojo_de_la_carpeta(carpeta):
+        try:
+            rutas = sorted(carpeta.glob(f"{Path(constancias.NOMBRE).stem}-*.json"))
+        except OSError:
+            return hechos
+        leidas = [
+            (ruta, constancia)
+            for ruta in rutas
+            if (constancia := constancias.leer(ruta)) is not None
+            and constancia.estado == constancias.EstadoDeEntrega.COMPLETA
+        ]
+        pdfs = [str(a.get("ruta") or "") for _, c in leidas for a in _pdfs_en_orden(c)]
+        if len(pdfs) < 2:
+            return hechos
+        textos = _textos_de_los_pdf(carpeta, pdfs)
+        for ruta_de_la_constancia, constancia in leidas:
+            renombrados: list[tuple[Path, Path]] = []
+            hechos_de_esta: list[str] = []
+            celdas: list[tuple[str, str]] = []
+            for posicion, archivo in enumerate(_pdfs_en_orden(constancia)):
+                ruta = str(archivo.get("ruta") or "")
+                actual = re_del_archivo(ruta)
+                hojas = _hojas_del_documento(constancia, posicion)
+                if not actual or not hojas:
+                    continue
+                primera = str(min(hojas))
+                evidencia = (constancia.evidencia.get("re") or {}).get(primera) or {}
+                if not _se_corrige_por_el_expediente(evidencia):
+                    continue
+                candidatos = [
+                    str(c.get("valor") if isinstance(c, Mapping) else c) for c in evidencia.get("candidatos") or []
+                ]
+                otros = {Path(r).name: t for r, t in textos.items() if r != ruta}
+                cita = re_citado_en_el_expediente(actual, candidatos, otros)
+                if cita is None:
+                    continue
+                antes = constancias.ruta_de_entrega(carpeta, ruta)
+                despues = constancias.ruta_de_entrega(carpeta, con_su_re_en_la_ruta(ruta, cita.radicado))
+                if antes is None or despues is None or (despues.exists() and despues != antes):
+                    continue
+                try:
+                    if antes.exists():
+                        os.replace(antes, despues)
+                        renombrados.append((antes, despues))
+                except OSError as error:
+                    hechos.append(f"«{antes.name}»: el expediente cita {cita.radicado} y no se pudo renombrar: {explicar_fallo(error)}")
+                    continue
+                filas = (constancia.indice or {}).get("filas") or []
+                viejo = (
+                    str(filas[posicion].get("nombre") or "")
+                    if posicion < len(filas) and isinstance(filas[posicion], dict)
+                    else ""
+                )
+                re_en_la_constancia(constancia, posicion, cita.radicado, CITADO_EN_EL_EXPEDIENTE)
+                if viejo:
+                    celdas.append((viejo, con_su_re(viejo, cita.radicado)))
+                constancia.evidencia["re"][primera].update(
+                    {
+                        "metodo": f"{CITADO_EN_EL_EXPEDIENTE}: «{cita.fuente}»",
+                        "lectores": ["sello", "expediente"],
+                        "fragmento": cita.fragmento,
+                        "motivo": f"antes {actual}, leído a mano",
+                    }
+                )
+                textos[con_su_re_en_la_ruta(ruta, cita.radicado)] = textos.pop(ruta, "")
+                hechos_de_esta.append(f"«{Path(ruta).name}»: {actual} → {cita.radicado}, como lo cita «{cita.fuente}»")
+            if not hechos_de_esta:
+                continue
+            try:
+                constancias.escribir(ruta_de_la_constancia, constancia)
+            except OSError as error:
+                # Sin su constancia, los PDF vuelven a su nombre: nada queda a medias.
+                for antes, despues in reversed(renombrados):
+                    try:
+                        os.replace(despues, antes)
+                    except OSError:
+                        pass
+                hechos.append(f"no se pudo actualizar «{ruta_de_la_constancia.name}»: {explicar_fallo(error)}")
+                continue
+            hechos.extend(hechos_de_esta)
+            # Su celda en el índice del NIC y en el general de la raíz, como la
+            # corrección del operador: quien ordena la carpeta rehace el del NIC.
+            from ..adapters.indice_electronico import NOMBRE_DEL_INDICE
+
+            upd = Path(str(constancia.origen or "")).stem
+            for viejo, nuevo in celdas:
+                if (carpeta / NOMBRE_DEL_INDICE).is_file():
+                    hechos.extend(_en_el_indice_del_nic(carpeta, viejo, nuevo))
+                hechos.extend(_en_el_indice_general(str(carpeta.parent), (carpeta.name, upd), viejo, nuevo))
+    return hechos

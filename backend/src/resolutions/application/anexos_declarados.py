@@ -950,6 +950,78 @@ def unir_el_paquete_de_la_empresa(
             if grupo.page_numbers[0] in cierran or not set(grupo.page_numbers) <= dentro:
                 continue
             destino_de[k] = suyo
+    return _juntar_en_su_destino(grupos, lista, destino_de, anexos)
+
+
+def unir_el_paquete_sin_caratula(
+    grupos: GroupingResult,
+    anexos: dict[str, list[int]] | None = None,
+    *,
+    anclas: set[int] | frozenset[int],
+    paradas: set[int] | frozenset[int],
+) -> SoportesUnidos:
+    """Las piezas del paquete de la empresa van juntas aunque falte su carátula (el operador, 2026-11-24).
+
+    «Si la página principal no llega a estar, no importa: que una los demás»:
+    la carta o solicitud del usuario, la declaración juramentada, la solicitud
+    de servicio, la cédula, la escritura o el certificado, la factura y el
+    RETIE son un documento aunque no los encabece la CONSTANCIA DE CONTRATACIÓN
+    DE SERVICIO ni el EXPEDIENTE. En 6831824 (UPD2453179) la carta «SOLICITUD»
+    con la escritura y la factura iba en las hojas 1-11 y la declaración de la
+    hoja 12 salía aparte.
+
+    ``anclas`` son las hojas que abren una pieza que sólo existe dentro de un
+    paquete: la declaración bajo gravedad de juramento y la solicitud de
+    servicio eléctrico. Desde cada una se juntan los documentos seguidos -- en
+    el papel, hacia atrás y hacia delante -- hasta la primera ``parada``: las
+    mismas que cierran el paquete con carátula (constancia, notificación,
+    respuesta, acuerdo de pago, sello, etiqueta, folio 1, acta, escrito de un
+    trámite), la carátula y el contrato de transacción. El documento junto se
+    llama por el primero. El reconocimiento de deuda no se toca: sus hojas son
+    paradas.
+    """
+    anexos = {codigo: list(paginas) for codigo, paginas in (anexos or {}).items()}
+    lista = list(grupos.groups)
+    del_grupo = {p: k for k, g in enumerate(lista) for p in g.page_numbers}
+    destino_de: dict[int, int] = {}
+    hechos: set[int] = set()
+
+    def libre(k: int, suyo: int) -> bool:
+        grupo = lista[k]
+        return (
+            k not in hechos
+            and k != suyo
+            and bool(grupo.page_numbers)
+            and not any(p in paradas for p in grupo.page_numbers)
+        )
+
+    for ancla in sorted(anclas):
+        suyo = del_grupo.get(ancla)
+        if suyo is None or suyo in hechos or any(p in paradas for p in lista[suyo].page_numbers):
+            continue
+        miembros = [suyo]
+        # Hacia atrás y hacia delante, documento a documento, mientras vengan seguidos.
+        while (k := del_grupo.get(min(lista[miembros[0]].page_numbers) - 1)) is not None and libre(k, suyo):
+            if max(lista[k].page_numbers) != min(lista[miembros[0]].page_numbers) - 1:
+                break
+            miembros.insert(0, k)
+        while (k := del_grupo.get(max(lista[miembros[-1]].page_numbers) + 1)) is not None and libre(k, suyo):
+            if min(lista[k].page_numbers) != max(lista[miembros[-1]].page_numbers) + 1:
+                break
+            miembros.append(k)
+        hechos.update(miembros)
+        if len(miembros) < 2:
+            continue
+        cabeza = miembros[0]
+        for k in miembros[1:]:
+            destino_de[k] = cabeza
+    return _juntar_en_su_destino(grupos, lista, destino_de, anexos)
+
+
+def _juntar_en_su_destino(
+    grupos: GroupingResult, lista: list[PageGroup], destino_de: dict[int, int], anexos: dict[str, list[int]]
+) -> SoportesUnidos:
+    """Cada documento de ``destino_de`` dentro del suyo, en el orden del papel, y la caja renumerada."""
     if not destino_de:
         return SoportesUnidos(grupos=grupos, anexos=anexos)
     movidas: dict[int, int] = {}
@@ -1064,6 +1136,263 @@ def el_aviso_con_su_acto(
         anexos=anexos,
         movidas=movidas,
     )
+
+
+# -- la notificación personal con su respuesta (2026-11-24) ---------------------------
+
+
+@dataclass(slots=True)
+class NotificacionesConSuRespuesta:
+    """Los documentos después de unir cada notificación personal con la respuesta de su RE."""
+
+    grupos: GroupingResult
+    anexos: dict[str, list[int]]
+    #: Cada pareja unida: el RE, las hojas de cada una y por qué se eligió.
+    parejas: list[dict] = field(default_factory=list)
+
+    def notificaciones(self) -> set[int]:
+        """Las hojas de las notificaciones unidas: su pieza da la fecha de la fila."""
+        return {p for pareja in self.parejas for p in pareja["notificacion"]}
+
+    def aviso(self) -> str | None:
+        if not self.parejas:
+            return None
+        return (
+            f"{len(self.parejas)} notificación(es) personal(es) unida(s) a la respuesta a la reclamación de su "
+            "mismo RE: un PDF con el nombre de la notificación"
+        )
+
+
+def la_notificacion_con_su_respuesta(
+    grupos: GroupingResult,
+    textos: Mapping[int, str],
+    anexos: dict[str, list[int]] | None = None,
+) -> NotificacionesConSuRespuesta:
+    """La notificación personal y la respuesta a la reclamación de su mismo RE, en un PDF (el operador, 2026-11-24).
+
+    «Si encuentras una notificación personal y una respuesta a la reclamación
+    dentro de un mismo NIC con un RE igual, únelos, sólo para esos casos». La
+    notificación dice «Se entrega copia de la respuesta»: es la que la
+    notifica. El PDF lleva el nombre y el RE de la notificación, y sus hojas
+    van como en el papel (lo eligió el operador). Medido: las 19 parejas de la
+    prueba de Afinia y las 114 de una muestra de W: van en el mismo PDF de
+    origen, así que se unen dentro de él.
+
+    Cada notificación con una sola respuesta. Si un RE trae varias -- la del
+    reclamo y la del recurso, cada una con su notificación (6834699, 7740476)
+    --, se elige por este orden: la misma instancia (``instancia_de_la_pqr``),
+    la respuesta justo detrás o justo delante, la más cercana. Sólo la
+    notificación personal: la citación, la notificación por aviso y la
+    publicación siguen como estaban.
+
+    Corre con los documentos ya nombrados y con su RE en el código.
+    """
+    from ..domain.asunto_del_documento import (
+        CONTESTACION_A_RECLAMACION,
+        NOTIFICACION_PERSONAL,
+        instancia_de_la_pqr,
+    )
+    from ..domain.nombre_oficial import es_re
+
+    anexos = {codigo: list(paginas) for codigo, paginas in (anexos or {}).items()}
+    lista = list(grupos.groups)
+
+    def radicado(grupo: PageGroup) -> str | None:
+        return next((parte for parte in grupo.code.value.split() if es_re(parte)), None)
+
+    def nombre(grupo: PageGroup) -> str:
+        return " ".join((grupo.kind or "").upper().split())
+
+    def instancia(grupo: PageGroup) -> str | None:
+        return instancia_de_la_pqr(textos.get(min(grupo.page_numbers), "") or "")
+
+    notificaciones = [
+        k for k, g in enumerate(lista) if g.page_numbers and nombre(g).startswith(NOTIFICACION_PERSONAL) and radicado(g)
+    ]
+    respuestas = [
+        k for k, g in enumerate(lista) if g.page_numbers and nombre(g) == CONTESTACION_A_RECLAMACION and radicado(g)
+    ]
+    candidatas: list[tuple[tuple[int, int, int], int, int, str]] = []
+    for n in notificaciones:
+        for r in respuestas:
+            if radicado(lista[n]) != radicado(lista[r]):
+                continue
+            suyas, de_ella = lista[n].page_numbers, lista[r].page_numbers
+            la_suya, la_de_ella = instancia(lista[n]), instancia(lista[r])
+            if la_suya and la_suya == la_de_ella:
+                por_instancia, dice = 0, f"las dos del {la_suya}"
+            elif not la_suya or not la_de_ella:
+                por_instancia, dice = 1, "sin instancia que las distinga"
+            else:
+                por_instancia, dice = 2, f"la notificación es del {la_suya} y la respuesta del {la_de_ella}"
+            if min(de_ella) == max(suyas) + 1:
+                lado, donde = 0, "la respuesta va justo detrás"
+            elif min(suyas) == max(de_ella) + 1:
+                lado, donde = 1, "la respuesta va justo delante"
+            else:
+                lado, donde = 2, f"a {abs(min(de_ella) - min(suyas))} hojas"
+            candidatas.append(
+                ((por_instancia, lado, abs(min(de_ella) - min(suyas))), n, r, f"mismo RE; {dice}; {donde}")
+            )
+    candidatas.sort(key=lambda c: c[0])
+    pareja_de: dict[int, tuple[int, int]] = {}
+    parejas: list[dict] = []
+    for _clave, n, r, porque in candidatas:
+        if n in pareja_de or r in pareja_de:
+            continue
+        pareja_de[n] = pareja_de[r] = (n, r)
+        parejas.append(
+            {
+                "re": radicado(lista[n]),
+                "notificacion": list(lista[n].page_numbers),
+                "respuesta": list(lista[r].page_numbers),
+                "porque": porque,
+            }
+        )
+    if not parejas:
+        return NotificacionesConSuRespuesta(grupos=grupos, anexos=anexos)
+    salida: list[PageGroup] = []
+    for k, grupo in enumerate(lista):
+        if k not in pareja_de:
+            salida.append(grupo)
+            continue
+        n, r = pareja_de[k]
+        # En el puesto de la primera de las dos, con el nombre de la notificación.
+        if k != min(n, r):
+            continue
+        notificacion, respuesta = lista[n], lista[r]
+        propios = anexos.pop(notificacion.code.value, []) + anexos.pop(respuesta.code.value, [])
+        unido = replace(
+            notificacion, page_numbers=sorted({*notificacion.page_numbers, *respuesta.page_numbers}), orden=None
+        )
+        salida.append(unido)
+        if propios:
+            anexos[unido.code.value] = sorted(set(propios))
+    salida, anexos = _renumerar(salida, anexos)
+    return NotificacionesConSuRespuesta(
+        grupos=GroupingResult(groups=salida, quarantine=list(grupos.quarantine), repairs=list(grupos.repairs)),
+        anexos=anexos,
+        parejas=parejas,
+    )
+
+
+def la_notificacion_primero(piezas: list[dict], notificaciones: set[int]) -> list[dict]:
+    """En el archivo de una notificación unida a su respuesta, la pieza de la notificación la primera.
+
+    La fila del índice toma la fecha de la primera pieza de su archivo; el
+    operador eligió la de la notificación (2026-11-24), aunque en el papel la
+    respuesta vaya delante (7740246).
+    """
+    if not notificaciones:
+        return piezas
+    por_archivo: dict[object, list[int]] = {}
+    for k, pieza in enumerate(piezas):
+        por_archivo.setdefault(pieza.get("archivo"), []).append(k)
+    orden = list(range(len(piezas)))
+    for puestos in por_archivo.values():
+        suya = next((k for k in puestos if notificaciones.intersection(piezas[k].get("pages") or [])), None)
+        if suya is None or suya == puestos[0]:
+            continue
+        nuevos = [suya, *(k for k in puestos if k != suya)]
+        for puesto, k in zip(puestos, nuevos, strict=True):
+            orden[puesto] = k
+    return [piezas[k] for k in orden]
+
+
+# -- el contrato de transacción nunca lleva pagaré (2026-11-24) -----------------------
+
+#: El nombre del contrato, como lo deja el nombrado.
+CONTRATO_DE_TRANSACCION = "CONTRATO DE TRANSACCION"
+#: Las hojas del pagaré: él y su carta de instrucciones, por su título.
+HOJAS_DEL_PAGARE = frozenset({"PAGARE", "CARTA DE INSTRUCCIONES"})
+
+
+def el_contrato_sin_pagare(
+    grupos: GroupingResult,
+    textos: Mapping[int, str],
+    anexos: dict[str, list[int]] | None = None,
+) -> SoportesUnidos:
+    """El contrato de transacción nunca lleva pagaré (el operador, 2026-11-24): el seguro final.
+
+    Las reglas de antes ya no le pegan el pagaré (1000478, 75683e5), pero el
+    operador pidió asegurarlo. Si un documento llamado CONTRATO DE TRANSACCION
+    trae hojas de pagaré o de carta de instrucciones -- por su título estricto,
+    que no confunde la cláusula TERCERO del contrato que nombra «un pagaré en
+    blanco con carta de instrucciones» --, salen como su propio documento
+    «PAGARE», con las cédulas y los reversos mudos que las siguen. Lo demás se
+    queda en el contrato.
+
+    ``movidas`` dice, de cada hoja que salió, la primera hoja del contrato.
+    """
+    from ..domain.asunto_del_documento import titulo_del_documento
+    from ..domain.tramites import es_cedula
+
+    anexos = {codigo: list(paginas) for codigo, paginas in (anexos or {}).items()}
+    piezas: list[tuple[PageGroup, list[int]]] = []
+    movidas: dict[int, int] = {}
+    for grupo in grupos.groups:
+        suyos = anexos.get(grupo.code.value, [])
+        if " ".join((grupo.kind or "").upper().split()) != CONTRATO_DE_TRANSACCION:
+            piezas.append((grupo, suyos))
+            continue
+        del_pagare: list[int] = []
+        en_el_pagare = False
+        for pagina in sorted(grupo.page_numbers):
+            texto = textos.get(pagina, "") or ""
+            if titulo_del_documento(texto) in HOJAS_DEL_PAGARE:
+                en_el_pagare = True
+                del_pagare.append(pagina)
+            elif en_el_pagare and (es_cedula(texto) or clase_de_la_hoja(texto) == HOJA_MUDA):
+                del_pagare.append(pagina)
+            else:
+                en_el_pagare = False
+        if not del_pagare:
+            piezas.append((grupo, suyos))
+            continue
+        quedan = [p for p in grupo.page_numbers if p not in del_pagare]
+        if not quedan:
+            # Un «contrato» que es sólo pagaré: se llama por lo que es.
+            piezas.append((replace(grupo, kind="PAGARE", orden=None), suyos))
+            continue
+        orden = tuple(p for p in grupo.orden if p in quedan) if grupo.orden else None
+        piezas.append((replace(grupo, page_numbers=quedan, orden=orden), [p for p in suyos if p in quedan]))
+        pagare = PageGroup(code=grupo.code, page_numbers=del_pagare, kind="PAGARE")
+        piezas.append((pagare, [p for p in del_pagare if titulo_del_documento(textos.get(p, "") or "") not in HOJAS_DEL_PAGARE]))
+        for pagina in del_pagare:
+            movidas[pagina] = quedan[0]
+    if not movidas:
+        return SoportesUnidos(grupos=grupos, anexos=anexos)
+    salida, anexos = _renumerar_por_puesto(piezas)
+    return SoportesUnidos(
+        grupos=GroupingResult(groups=salida, quarantine=list(grupos.quarantine), repairs=list(grupos.repairs)),
+        anexos=anexos,
+        movidas=movidas,
+    )
+
+
+def _renumerar_por_puesto(
+    piezas: list[tuple[PageGroup, list[int]]],
+) -> tuple[list[PageGroup], dict[str, list[int]]]:
+    """Como ``_renumerar``, con los anexos de cada documento a su lado: dos pueden compartir código al partirse."""
+    partes = [re.match(r"^(\d+)(.*)$", grupo.code.value) for grupo, _ in piezas]
+    if not all(partes):
+        anexos: dict[str, list[int]] = {}
+        for grupo, suyos in piezas:
+            if suyos:
+                anexos.setdefault(grupo.code.value, []).extend(suyos)
+        return [grupo for grupo, _ in piezas], anexos
+    ancho = len(partes[0].group(1)) if partes else 2
+    nuevos: list[PageGroup] = []
+    renombrados: dict[str, list[int]] = {}
+    for puesto, ((grupo, suyos), parte) in enumerate(zip(piezas, partes, strict=True), start=1):
+        resto = parte.group(2)
+        valor = f"{puesto:0{ancho}d}{resto}"
+        if suyos:
+            renombrados[valor] = sorted(set(suyos))
+        nuevos.append(
+            replace(grupo, code=ResolutionCode(value=valor, raw=grupo.code.raw if resto.strip() else valor))
+        )
+    return nuevos, renombrados
 
 
 def constancias_solas(
