@@ -375,6 +375,8 @@ CIFRAS_DEL_CANDIDATO_CITADO = 2
 #: Un número de trece cifras en el texto de otro documento: «oficio
 #: 2311202201568», «RE2311202201568», «Radicado número: RE…».
 _TRECE_CIFRAS = re.compile(r"(?<!\d)(\d{13})(?!\d)")
+#: El RE que un PDF entregado lleva en su nombre: «07_RECURSO…-RE2310202215463.pdf».
+_RE_DEL_NOMBRE = re.compile(r"RE(\d{13})(?!\d)")
 #: Cuánto texto alrededor de la cita se guarda como evidencia.
 CONTEXTO_DE_LA_CITA = 70
 
@@ -413,11 +415,21 @@ def re_citado_en_el_expediente(
     if not es_re_entero(actual):
         return None
     leido = actual[2:]
+    # Lo que otro documento del NIC lleva en su nombre ya está corroborado:
+    # en 7741276 el recurso se llama …-RE2310202215463, el RE de la
+    # notificación que se iba a cambiar (2026-11-24).
+    if any(leido in _RE_DEL_NOMBRE.findall(fuente) for fuente in textos):
+        return None
     citas: dict[str, tuple[str, str]] = {}
     for fuente, texto in textos.items():
         plano = " ".join((texto or "").split())
+        propios = _RE_DEL_NOMBRE.findall(fuente)
         for hallado in _TRECE_CIFRAS.finditer(plano):
             numero = hallado.group(1)
+            # El número a una o dos cifras del RE del propio documento es su
+            # etiqueta mal leída por la capa («…13463» por «…15463»), no una cita.
+            if any(0 < _cifras_distintas(numero, propio) <= CIFRAS_DEL_CANDIDATO_CITADO for propio in propios):
+                continue
             if numero not in citas:
                 desde, hasta = max(0, hallado.start() - CONTEXTO_DE_LA_CITA), hallado.end() + CONTEXTO_DE_LA_CITA
                 citas[numero] = (plano[desde:hasta], fuente)

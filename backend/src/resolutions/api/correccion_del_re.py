@@ -276,11 +276,18 @@ _IMPRESO = ("impres", "etiqueta", "PQR", CONFIRMADO, CITADO_EN_EL_EXPEDIENTE)
 
 
 def _se_corrige_por_el_expediente(evidencia: Mapping) -> bool:
-    """Si el RE del nombre salió de una lectura a mano o de una decisión del agente: lo que el expediente puede corregir."""
+    """Si el RE del nombre salió de una lectura a mano o de una decisión del agente: lo que el expediente puede corregir.
+
+    Nunca lo impreso (``FUENTES_IMPRESAS``): el «Número de la PQR» que imprime
+    la notificación personal de 7741276 («citado en su texto») se cambiaba por
+    lo que la capa leyó mal en la etiqueta del recurso (2026-11-24).
+    """
+    from ..domain.evidencia import FUENTES_IMPRESAS
+
     if not evidencia or str(evidencia.get("estado") or "") == Estado.VERIFICADO.value:
         return False
     metodo = str(evidencia.get("metodo") or "")
-    return not any(marca in metodo for marca in _IMPRESO)
+    return not any(marca in metodo for marca in (*_IMPRESO, *FUENTES_IMPRESAS))
 
 
 def _textos_de_los_pdf(carpeta: Path, rutas: list[str]) -> dict[str, str]:

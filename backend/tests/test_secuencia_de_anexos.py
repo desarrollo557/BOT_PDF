@@ -1006,6 +1006,21 @@ class TestElReQueCitaElExpediente:
         dos = self.CITA + " y el oficio 2311202209568"
         assert re_citado_en_el_expediente("RE2311202207568", [], {"a": dos}) is None
 
+    def test_7741276_la_etiqueta_mal_leida_no_corrige_nada(self):
+        """La capa del recurso lee «…13463» en su etiqueta, que es «…15463»: el RE del nombre del recurso. Ni es
+        una cita, ni se corrige el RE que otro PDF del NIC ya lleva en su nombre (2026-11-24)."""
+        from resolutions.api.correccion_del_re import _se_corrige_por_el_expediente
+        from resolutions.domain.resolutor_del_re import re_citado_en_el_expediente
+
+        etiqueta = "Caribemar de la Costa S.A.S. ESP AL CONTESTAR CITE ESTE NUMERORE2310202299463 Asunto: 06 REC_REPOSICION"
+        recurso = "07_RECURSO-DE-REPOSICION-RE2310202299563.pdf"
+        assert re_citado_en_el_expediente("RE2310202299563", [], {recurso: etiqueta}) is None
+        # Aunque el nombre del recurso no lleve ese RE: su etiqueta mal leída no es una cita.
+        assert re_citado_en_el_expediente("RE2310202299568", [], {recurso: etiqueta}) is None
+        # Y lo impreso en su propio texto -- el «Número de la PQR» de la notificación -- no se corrige.
+        assert not _se_corrige_por_el_expediente({"estado": "encontrado", "metodo": "citado en su texto"})
+        assert _se_corrige_por_el_expediente({"estado": "encontrado", "metodo": "sello de tinta"})
+
     def test_se_corrige_en_lo_entregado(self, tmp_path):
         import pymupdf
 
