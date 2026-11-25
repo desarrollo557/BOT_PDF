@@ -101,13 +101,35 @@ if ($Red.Count) {
     [System.IO.File]::WriteAllLines($rutaEnv, [string[]]$nuevas, (New-Object System.Text.UTF8Encoding($false)))
 }
 
-# Si el puerto lo usa otro programa (no el propio Docker), se dice antes de construir.
-$escucha = Get-NetTCPConnection -LocalPort $Puerto -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($escucha) {
+# Si el puerto lo usa otro programa, se busca solo el siguiente libre y se guarda
+# en .env: nadie tiene que cerrar nada ni volver a lanzar el instalador (el
+# operador, 2026-11-25: "si esta ocupado, busca otro"; en un PC, LibreOffice
+# tenia el 8100). El propio botpdf no cuenta como ocupado; otro contenedor, si.
+function Ocupado-Por-Otro([int]$p) {
+    $escucha = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $escucha) { return $null }
     $quien = (Get-Process -Id $escucha.OwningProcess -ErrorAction SilentlyContinue).ProcessName
-    if ($quien -notmatch 'docker|wslrelay|vpnkit') {
-        throw "El puerto $Puerto lo esta usando '$quien'. Detengalo o use otro puerto: instalar-docker -Puerto 8100"
+    if ($quien -match 'docker|wslrelay|vpnkit') {
+        $duenos = @(docker ps --filter "publish=$p" --format "{{.Names}}" 2>$null)
+        if ($duenos.Count -eq 0 -or ($duenos -contains 'botpdf')) { return $null }
+        return "el contenedor $($duenos -join ', ')"
     }
+    if (-not $quien) { return "otro programa" }
+    return $quien
+}
+$quien = Ocupado-Por-Otro $Puerto
+if ($quien) {
+    $pedido = $Puerto
+    $candidatos = @(8100, 8200, 8300, 8400, 8500, 8600, 8700, 8800, 8900, 9100, 9200, 9300) + @(($pedido + 1)..($pedido + 50))
+    $libre = $candidatos | Where-Object { $_ -ne $pedido -and -not (Ocupado-Por-Otro $_) } | Select-Object -First 1
+    if (-not $libre) { throw "El puerto $pedido lo usa '$quien' y no se encontro otro libre." }
+    $Puerto = [int]$libre
+    Write-Host "   El puerto $pedido lo usa '$quien' (no se toca): el bot usara el $Puerto." -ForegroundColor Yellow
+    $actuales = @(if (Test-Path $rutaEnv) { Get-Content $rutaEnv })
+    $nuevas = @($actuales | Where-Object { $_ -notmatch '^\s*BOTPDF_PUERTO\s*=' }) + "BOTPDF_PUERTO=$Puerto"
+    [System.IO.File]::WriteAllLines($rutaEnv, [string[]]$nuevas, (New-Object System.Text.UTF8Encoding($false)))
+    $env:BOTPDF_PUERTO = "$Puerto"
+    $url = "http://localhost:$Puerto"
 }
 Paso "Puerto: $Puerto"
 
