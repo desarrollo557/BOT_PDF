@@ -37,6 +37,14 @@ services:
       # auto (por omisión): se coordina con los demás equipos del destino;
       # si: o se coordina o no corre; no: un equipo solo, como antes.
       BOTPDF_COORDINACION: ${BOTPDF_COORDINACION:-auto}
+      # Los mismos procesos en todos los equipos (el operador, 2026-11-25:
+      # «la misma cantidad de procesos en todas las imágenes»): sin esto salían
+      # de los procesadores que Docker deja ver en cada PC, y tras actualizar
+      # Docker Desktop un equipo de 32 hilos ofrecía «1, 2, 3» en vez de hasta
+      # 31. Tope de «Archivos en paralelo» y lo que hace «Auto». Un equipo más
+      # chico puede bajarlos en su .env.
+      RESOLUTIONS_DOCUMENT_WORKERS: ${RESOLUTIONS_DOCUMENT_WORKERS:-31}
+      RESOLUTIONS_FOLDER_DOCUMENTS: ${RESOLUTIONS_FOLDER_DOCUMENTS:-8}
     volumes:
       - botpdf_data:/data
     restart: unless-stopped
