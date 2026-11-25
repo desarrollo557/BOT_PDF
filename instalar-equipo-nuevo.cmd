@@ -65,8 +65,15 @@ function Abrir-Docker {
     Falla "REINICIE EL PC y vuelva a abrir este archivo. Si sigue igual, active la virtualizacion (VT-x / SVM) en la BIOS."
 }
 function Ejecutar-Script($ruta, [string[]]$argumentos) {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $ruta @argumentos
-    return $LASTEXITCODE
+    # En esta misma ventana y sin capturar lo que escribe: asi se ven sus
+    # mensajes y puede pedir usuario y clave. Solo se lee su codigo de salida
+    # (capturarlo todo mezclaba sus mensajes con el codigo, y una instalacion
+    # que habia salido bien se daba por fallida).
+    $lista = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$ruta`"") + $argumentos
+    $proceso = Start-Process powershell -ArgumentList $lista -NoNewWindow -PassThru
+    $null = $proceso.Handle
+    $proceso.WaitForExit()
+    return [int]$proceso.ExitCode
 }
 
 Write-Host "Instalacion de BOT_PDF (Folia) en $env:COMPUTERNAME" -ForegroundColor White
