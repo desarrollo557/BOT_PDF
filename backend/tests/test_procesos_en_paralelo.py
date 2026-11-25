@@ -329,9 +329,18 @@ class TestElPlanificador:
 
 
 class TestLosAjustes:
-    def test_por_defecto_uno_por_cada_cuatro_hilos(self, monkeypatch):
-        monkeypatch.setattr("os.cpu_count", lambda: 12)
-        assert Settings(document_workers=11).folder_documents == 3
+    @pytest.mark.parametrize("procesadores", [4, 12, 32])
+    def test_por_defecto_lo_mismo_en_todos_los_equipos(self, monkeypatch, procesadores):
+        """El operador, 2026-11-25: «la misma cantidad de procesos en todas las imágenes».
+
+        Antes salía de los procesadores (uno por cada cuatro hilos, y el tope
+        los hilos menos uno): un equipo con Docker viendo 4 ofrecía «1, 2, 3».
+        """
+        monkeypatch.setattr("os.cpu_count", lambda: procesadores)
+        monkeypatch.delenv("RESOLUTIONS_DOCUMENT_WORKERS", raising=False)
+        monkeypatch.delenv("RESOLUTIONS_FOLDER_DOCUMENTS", raising=False)
+        for ajustes in (Settings(), Settings.from_env()):
+            assert (ajustes.document_workers, ajustes.folder_documents) == (31, 8)
 
     def test_nunca_mas_que_los_procesos_del_pool(self):
         assert Settings(document_workers=2, folder_documents=8).folder_documents == 2

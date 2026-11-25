@@ -6,6 +6,13 @@ from pathlib import Path
 
 DEFAULT_ROOT = Path(os.environ.get("RESOLUTIONS_DATA_DIR", "./data")).resolve()
 
+#: Los procesos del servicio -- el tope de «Archivos en paralelo» -- y cuántos
+#: PDF de una carpeta lee «Automático», iguales en todos los equipos (el
+#: operador, 2026-11-25). Cada equipo los cambia con RESOLUTIONS_DOCUMENT_WORKERS
+#: y RESOLUTIONS_FOLDER_DOCUMENTS en su .env.
+PROCESOS_POR_OMISION = 31
+EN_PARALELO_POR_OMISION = 8
+
 
 def _float_opcional(name: str) -> float | None:
     """Un número decimal del entorno, o nada. Un valor ilegible es nada, no cero."""
@@ -57,7 +64,10 @@ class Settings:
 
     #: Documents processed concurrently. One OS process each, because a 400-page
     #: PDF is CPU-bound work and processes are the only way past the GIL.
-    document_workers: int = max(1, (os.cpu_count() or 4) - 1)
+    #: El mismo en todos los equipos (el operador, 2026-11-25: «la misma
+    #: cantidad de procesos en todas las imágenes»): salía de los procesadores
+    #: que Docker deja ver, y un equipo ofrecía «1, 2, 3» y otro hasta 11.
+    document_workers: int = PROCESOS_POR_OMISION
 
     #: Threads inside a worker, fanning pages out across the OCR engine. Native
     #: code releases the GIL, so this scales without another process boundary.
@@ -228,7 +238,8 @@ class Settings:
         # Cero es «lo que aguante la máquina»: uno por cada cuatro hilos, sin
         # pasar de los procesos del pool, que son quienes de verdad los leen.
         if self.folder_documents <= 0:
-            por_defecto = max(1, min(self.document_workers, (os.cpu_count() or 4) // 4))
+            # Lo mismo en todos los equipos, como los procesos (2026-11-25).
+            por_defecto = max(1, min(self.document_workers, EN_PARALELO_POR_OMISION))
             object.__setattr__(self, "folder_documents", por_defecto)
         else:
             object.__setattr__(
@@ -241,7 +252,7 @@ class Settings:
         return cls(
             upload_dir=Path(os.environ.get("RESOLUTIONS_UPLOAD_DIR", DEFAULT_ROOT / "uploads")),
             output_dir=Path(os.environ.get("RESOLUTIONS_OUTPUT_DIR", DEFAULT_ROOT / "outputs")),
-            document_workers=_int("RESOLUTIONS_DOCUMENT_WORKERS", max(1, (os.cpu_count() or 4) - 1)),
+            document_workers=_int("RESOLUTIONS_DOCUMENT_WORKERS", PROCESOS_POR_OMISION),
             page_workers=_int("RESOLUTIONS_PAGE_WORKERS", 8),
             folder_documents=_int("RESOLUTIONS_FOLDER_DOCUMENTS", 0),
             verificar_a_la_vez=_int("RESOLUTIONS_VERIFICAR_A_LA_VEZ", 8),
