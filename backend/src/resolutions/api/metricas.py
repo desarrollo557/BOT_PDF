@@ -14,6 +14,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import replace
 from pathlib import Path
 
+from ..adapters.coordinacion_en_disco import es_del_bot
 from ..adapters.metricas_de_la_extraccion import (
     escribir_la_auditoria_de_la_corrida,
     escribir_metricas,
@@ -36,7 +37,7 @@ def entregados_en(destino: Path) -> Iterator[PdfEntregado]:
     """Lo que dicen las constancias de un destino, una por PDF de origen."""
     prefijo = f"{Path(constancias.NOMBRE).stem}-"
     for ruta in sorted(destino.rglob(f"{prefijo}*.json")):
-        if _APARTADOS in ruta.parts:
+        if _APARTADOS in ruta.parts or any(es_del_bot(parte) for parte in ruta.parts):
             continue
         constancia = constancias.leer(ruta)
         if constancia is None:

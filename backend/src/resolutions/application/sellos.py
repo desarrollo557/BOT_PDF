@@ -103,7 +103,24 @@ _ANCLA_ESTRICTA = re.compile(
 #: Y los campos de la etiqueta, que sólo valen como ancla a la derecha de la
 #: hoja y con su número: «Asunto: 03», no el «Asunto:» de una carta.
 _ANCLA_A_LA_DERECHA = re.compile(r"\bASUNTO\s*:\s*0\d\b", re.IGNORECASE)
-_TINTA = re.compile(r"IM[PB]LICA|RECIBIDO|[O0]\W?[FPR]\W?[IÍ1L]\W?C\W?[IÍ1L]\W?N\W?A", re.IGNORECASE)
+#: La etiqueta por sus campos, cuando la capa pierde el renglón «AL CONTESTAR
+#: CITE ESTE NUMERO RE…» y el número del asunto: queda «Folios: 3» y, sueltos
+#: alrededor, «Caribemar de la Costa S A S», «Asunto», «Oficina», «Fecha»
+#: (4133182, UPD3119467 hoja 14, 2026-11-25: el recurso del 17/06/2024 se
+#: pegaba al derecho de petición de delante por un sello que no se veía).
+_FOLIOS_DE_LA_ETIQUETA = re.compile(r"\b[FTIL]\w?L[IL]?OS\s*[:;]\s*\d{1,2}\b", re.IGNORECASE)
+_ROTULOS_DE_LA_ETIQUETA = {
+    "asunto": re.compile(r"^\W*AS\w{0,2}N?T?O\W*$", re.IGNORECASE),
+    "oficina": re.compile(r"^\W*[O0]\W?[FPR]\W?[IÍ1L]\W?C\W?[IÍ1L]\W?N\W?A\W*$", re.IGNORECASE),
+    "fecha": re.compile(r"^\W*F\W?[EC]\W?CHA\W*$", re.IGNORECASE),
+    "empresa": re.compile(r"C[AU]R[IT]?B[OE]?MA[RS]", re.IGNORECASE),
+}
+#: La letra de la etiqueta, la más chica de la hoja: sus renglones miden
+#: 0,007 de la altura de la página, los de una carta 0,016 o más.
+LETRA_DE_LA_ETIQUETA = 0.012
+#: Cuánto se alejan sus rótulos del renglón de los folios, arriba o abajo.
+ALTO_DE_LA_ETIQUETA = 0.06
+_TINTA =re.compile(r"IM[PB]LICA|RECIBIDO|[O0]\W?[FPR]\W?[IÍ1L]\W?C\W?[IÍ1L]\W?N\W?A", re.IGNORECASE)
 #: El sello de tinta de una oficina por su rótulo, que es lo único que la capa
 #: deja entero de su letra diminuta: «OFICINA / BOLIVAR SUR» (UPD3102756:
 #: «OPICINA», «oficina'», «3CLIVAR SUR»). Debajo, «SUR»; o al lado, lo que
@@ -156,6 +173,48 @@ def hojas_que_pueden_llevar_sello(textos: Mapping[int, str]) -> list[int]:
     ]
 
 
+def _renglones(trozos) -> list[list]:
+    """Los trozos de la capa juntados por renglón, de arriba abajo."""
+    renglones: list[list] = []
+    for trozo in sorted(trozos, key=lambda t: (t.y0, t.x0)):
+        alto_del_trozo = (trozo.y1 - trozo.y0) or 1
+        if renglones and abs(renglones[-1][0].y0 - trozo.y0) < alto_del_trozo * 0.6:
+            renglones[-1].append(trozo)
+        else:
+            renglones.append([trozo])
+    return renglones
+
+
+def etiqueta_por_sus_campos(trozos, ancho: float, alto: float) -> list:
+    """Los trozos de la etiqueta impresa reconocida por sus campos, o ``[]``.
+
+    Para cuando la capa no trae el «AL CONTESTAR CITE»: el renglón «Folios: N»
+    en la mitad derecha y en la letra diminuta de la etiqueta, con al menos
+    dos de sus rótulos sueltos -- «Asunto», «Oficina», «Fecha», la empresa --
+    a menos de ``ALTO_DE_LA_ETIQUETA`` arriba o abajo, también a la derecha y
+    en la misma letra. Una carta escribe «folios» en el cuerpo y con su letra;
+    un formulario, sus campos con el texto que los llena.
+    """
+    a_la_derecha = [
+        t for t in trozos if t.x0 > ancho * 0.35 and (t.y1 - t.y0) <= alto * LETRA_DE_LA_ETIQUETA
+    ]
+    for renglon in _renglones(a_la_derecha):
+        texto = " ".join(t.texto.strip() for t in sorted(renglon, key=lambda t: t.x0))
+        if not _FOLIOS_DE_LA_ETIQUETA.search(texto):
+            continue
+        y = min(t.y0 for t in renglon)
+        rotulos = {}
+        for trozo in a_la_derecha:
+            if abs(trozo.y0 - y) > alto * ALTO_DE_LA_ETIQUETA:
+                continue
+            for clase, patron in _ROTULOS_DE_LA_ETIQUETA.items():
+                if patron.search(trozo.texto.strip()):
+                    rotulos.setdefault(clase, []).append(trozo)
+        if len(rotulos) >= 2:
+            return [*renglon, *(t for halladas in rotulos.values() for t in halladas)]
+    return []
+
+
 def ubicar_sello(source, pagina: int) -> tuple[Band, str] | None:
     """Dónde está el sello en la hoja, por su capa de texto, y lo que la capa leyó.
 
@@ -172,15 +231,8 @@ def ubicar_sello(source, pagina: int) -> tuple[Band, str] | None:
         # etiquetas cuya capa trae cada palabra suelta -- «CONTESTAR» y
         # «C'ITF.» en dos trozos (UPD2326302 p4) --, y la frase sólo existe al
         # juntarlas.
-        renglones: list[list] = []
-        for trozo in sorted(trozos, key=lambda t: (t.y0, t.x0)):
-            alto_del_trozo = (trozo.y1 - trozo.y0) or 1
-            if renglones and abs(renglones[-1][0].y0 - trozo.y0) < alto_del_trozo * 0.6:
-                renglones[-1].append(trozo)
-            else:
-                renglones.append([trozo])
         halladas = []
-        for renglon in renglones:
+        for renglon in _renglones(trozos):
             texto = " ".join(t.texto.strip() for t in sorted(renglon, key=lambda t: t.x0))
             a_la_derecha = min(t.x0 for t in renglon) > ancho * 0.35
             if ancla.search(texto) or (
@@ -197,6 +249,10 @@ def ubicar_sello(source, pagina: int) -> tuple[Band, str] | None:
     # la derecha (UPD2326315 p14, UPD2326316 p8).
     trozos = [t for t in todos if t.y0 < alto * ALTURA_DEL_SELLO]
     anclas = anclas_de(trozos, _ANCLA, con_campos=True)
+    por_sus_campos = False
+    if not anclas:
+        anclas = etiqueta_por_sus_campos(trozos, ancho, alto)
+        por_sus_campos = bool(anclas)
     if not anclas:
         trozos = todos
         anclas = anclas_de(todos, _ANCLA_ESTRICTA, con_campos=False)
@@ -209,7 +265,8 @@ def ubicar_sello(source, pagina: int) -> tuple[Band, str] | None:
     # código de barras y la fecha --. El sello de tinta, más arriba: encima de
     # su «RECIBIDO NO IMPLICA» van el rótulo de la oficina y el RE escrito a
     # mano (UPD3102756 págs. 23, 49, 57: el recorte lo dejaba fuera).
-    tinta = any(_TINTA.search(t.texto) for t in anclas)
+    # El rótulo «Oficina» de la etiqueta no es la oficina del sello de tinta.
+    tinta = not por_sus_campos and any(_TINTA.search(t.texto) for t in anclas)
     banda = Band(
         max(0.0, x0 / ancho - 0.10),
         max(0.0, y0 / alto - (SOBRE_EL_SELLO_DE_TINTA if tinta else 0.05)),

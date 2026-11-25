@@ -295,6 +295,92 @@ class TestElAnclaDelSello:
         assert _ANCLA.search(renglon)
 
 
+class _Trozo:
+    def __init__(self, texto, x0, y0, x1, y1):
+        self.texto, self.x0, self.y0, self.x1, self.y1 = texto, x0, y0, x1, y1
+
+
+class _HojaConCapa:
+    """Una hoja de 611×787 con su capa de texto en trozos (posiciones relativas)."""
+
+    def __init__(self, trozos):
+        self.trozos = [_Trozo(t, x0 * 611, y0 * 787, x1 * 611, y1 * 787) for t, x0, y0, x1, y1 in trozos]
+
+    def size_of(self, pagina):
+        return 611, 787
+
+    def trozos_of(self, pagina):
+        return self.trozos
+
+
+#: La hoja 14 de 4133182 (UPD3119467), tal como la deja la capa: la etiqueta sin
+#: su renglón «AL CONTESTAR CITE ESTE NUMERO RE…», sólo sus campos sueltos.
+_ETIQUETA_SIN_CONTESTAR = [
+    ("Caribemar", 0.63, 0.058, 0.67, 0.066),
+    ("de", 0.67, 0.058, 0.68, 0.065),
+    ("la", 0.69, 0.058, 0.69, 0.066),
+    ("Costa", 0.70, 0.058, 0.72, 0.066),
+    ("S", 0.72, 0.058, 0.72, 0.066),
+    ("A", 0.73, 0.058, 0.73, 0.066),
+    ("S", 0.74, 0.059, 0.74, 0.065),
+    ("ESP", 0.75, 0.054, 0.76, 0.062),
+    ("Folios:", 0.82, 0.074, 0.85, 0.081),
+    ("3", 0.85, 0.074, 0.86, 0.081),
+    ("Asunto", 0.54, 0.088, 0.57, 0.096),
+    ("Magangue-B", 0.57, 0.093, 0.63, 0.101),
+    ("Oficina", 0.54, 0.097, 0.57, 0.105),
+    ("Fecha", 0.64, 0.124, 0.67, 0.131),
+    # La carta, debajo y con su letra.
+    ("Magangué", 0.13, 0.126, 0.22, 0.141),
+    ("17", 0.24, 0.126, 0.26, 0.141),
+    ("Señores:", 0.13, 0.187, 0.21, 0.203),
+    ("RECURSO", 0.21, 0.268, 0.31, 0.284),
+]
+
+
+class TestLaEtiquetaPorSusCampos:
+    """4133182 (2026-11-25): el recurso del 17/06/2024 se pegaba al derecho de petición de delante.
+
+    La capa de su hoja 14 no traía el «AL CONTESTAR CITE», que es lo que anclaba
+    la etiqueta: ahora se reconoce por sus campos -- «Folios: 3» en la letra
+    diminuta de la etiqueta y, alrededor, sus rótulos --. Medido en 1.086 hojas de
+    Afinia: no aparece en ninguna otra.
+    """
+
+    def test_la_hoja_14_de_4133182_trae_su_etiqueta(self):
+        from resolutions.application.sellos import ubicar_sello
+        from resolutions.domain.sello import leer_sello
+
+        ubicado = ubicar_sello(_HojaConCapa(_ETIQUETA_SIN_CONTESTAR), 14)
+        assert ubicado is not None
+        banda, capa = ubicado
+        # La banda es la esquina de la etiqueta, no la carta de la izquierda.
+        assert banda.x0 > 0.35 and banda.y1 < 0.3
+        sello = leer_sello(capa)
+        assert sello is not None and sello.clase == "impreso" and sello.folios == 3
+
+    def test_folios_en_el_cuerpo_de_una_carta_no_es_una_etiqueta(self):
+        from resolutions.application.sellos import ubicar_sello
+
+        carta = [
+            ("Asunto", 0.55, 0.10, 0.62, 0.116),
+            ("Folios:", 0.70, 0.12, 0.78, 0.136),
+            ("3", 0.79, 0.12, 0.80, 0.136),
+            ("Fecha", 0.55, 0.14, 0.62, 0.156),
+        ]
+        assert ubicar_sello(_HojaConCapa(carta), 1) is None
+
+    def test_folios_sin_los_rotulos_de_la_etiqueta_no_basta(self):
+        from resolutions.application.sellos import ubicar_sello
+
+        formulario = [
+            ("Folios:", 0.82, 0.074, 0.85, 0.081),
+            ("3", 0.85, 0.074, 0.86, 0.081),
+            ("Observaciones", 0.54, 0.088, 0.62, 0.096),
+        ]
+        assert ubicar_sello(_HojaConCapa(formulario), 1) is None
+
+
 class _Fuente:
     """Una caja de mentira: cada hoja es su texto, y el recorte es el texto."""
 
@@ -497,6 +583,19 @@ class TestLaFechaDelSelloDeTinta:
 
         casa = "RECIBIDO NO IMPLICA ACEPTACIÓN Grupo-epm wg% 6- 20 0aa Z- O - 2027 81º%; No DE RASICACION"
         assert fecha_del_sello_de_tinta(casa) is None
+
+    def test_el_sello_fechado_mes_dia(self):
+        """4107439 (MAGANGUE PRUEBA PILOTO, 2026-11-25): «12-29-2020» es el 29 de diciembre.
+
+        Sólo cuando día-mes no existe: «01-06-2021» sigue siendo el 1 de junio.
+        """
+        from resolutions.domain.sello import fecha_del_sello_de_tinta
+
+        rotulo = "OFICINA MAGANGUE BOLIVAR SUR RECIBIDO NO IMPLICA ACEPTACIÓN FECHA DE RECIBIDO: {} No DE FOLIOS: 2"
+        assert fecha_del_sello_de_tinta(rotulo.format("12-29-2020"), hoy=date(2026, 11, 25)) == date(2020, 12, 29)
+        assert fecha_del_sello_de_tinta(rotulo.format("01-20-2021"), hoy=date(2026, 11, 25)) == date(2021, 1, 20)
+        assert fecha_del_sello_de_tinta(rotulo.format("01-06-2021"), hoy=date(2026, 11, 25)) == date(2021, 6, 1)
+        assert fecha_del_sello_de_tinta(rotulo.format("13-11-2020"), hoy=date(2026, 11, 25)) == date(2020, 11, 13)
 
     def test_sin_sello_de_tinta_o_con_dos_fechas_sin_rotulo_no_se_adivina(self):
         from resolutions.domain.sello import fecha_del_sello_de_tinta

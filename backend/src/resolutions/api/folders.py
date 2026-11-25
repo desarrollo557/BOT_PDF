@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import logging
 import os
@@ -11,7 +12,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from functools import partial
@@ -20,6 +21,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from ..adapters import red_smb
+from ..adapters.coordinacion_en_disco import CerrojoOcupado, ReclamoPerdido
 from ..adapters.excel_inventory import (
     NOMBRE_DEL_CONTROL_DE_ENTREGA,
     NOMBRE_DEL_INVENTARIO_DE_PROCESOS,
@@ -491,6 +493,33 @@ class FolderRun:
     motivos: dict[str, str] = field(default_factory=dict, repr=False)
     #: Dónde quedó «00.ANALISIS DE LA ENTREGA.xlsx», cuando ya se escribió.
     analisis: str | None = None
+    #: La corrida compartida con otros equipos sobre el mismo destino
+    #: (``adapters.coordinacion_en_disco``), o ``None`` si este equipo va solo.
+    coordinacion: object | None = field(default=None, repr=False)
+    #: Lo que dice la pantalla de la corrida compartida: quién la empezó, cuántos equipos.
+    compartida: str = ""
+    #: Los PDF que tiene otro equipo en curso (ruta → equipo): se esperan al final.
+    ajenos: dict[str, str] = field(default_factory=dict, repr=False)
+    #: Los que este equipo dejó para la segunda pasada: su carpeta es de otro.
+    diferidos: list[Path] = field(default_factory=list, repr=False)
+    #: Los de la segunda pasada, que ya no se vuelven a diferir.
+    segunda_pasada: set[str] = field(default_factory=set, repr=False)
+    #: Los que se tomaron de un equipo caído: se hacen aquí aunque allí fallaran.
+    de_caidos: set[str] = field(default_factory=set, repr=False)
+    #: El reclamo de cada PDF que este equipo tiene en curso (ruta → reclamo).
+    reclamos: dict[str, object] = field(default_factory=dict, repr=False)
+    #: Los reclamos, de uno en uno y en el orden de la carpeta.
+    orden_de_toma: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    #: Los que entregó otro equipo de la corrida y ya se contaron aquí.
+    contados_de_otro: set[str] = field(default_factory=set, repr=False)
+    de_otros_equipos: int = 0
+    #: Los que fallaron en otro equipo (ruta relativa → equipo y motivo).
+    fallidos_en_otro: dict[str, str] = field(default_factory=dict, repr=False)
+    #: Lo repetido en el destino al cerrar (``api.repetidos``), en palabras.
+    repetidos: list[str] = field(default_factory=list, repr=False)
+    #: Los trabajos con que otros equipos entregaron sus PDF de esta corrida:
+    #: la auditoría de la corrida es una sola, con los de todos.
+    trabajos_de_otros: list[str] = field(default_factory=list, repr=False)
 
     @property
     def current(self) -> str | None:
@@ -598,6 +627,14 @@ class FolderRun:
             "auditoria": self.auditoria,
             "etapa": self.etapa,
             "etapa_detalle": self.etapa_detalle,
+            # Varios equipos sobre el mismo destino (2026-11-25).
+            "compartida": self.compartida or None,
+            "equipo": getattr(self.coordinacion, "id", None),
+            "equipos_vivos": len(self.coordinacion.equipos_vivos()) if self.coordinacion is not None else 0,
+            "de_otros_equipos": self.de_otros_equipos,
+            "en_otro_equipo": len(self.ajenos),
+            "fallidos_en_otro": len(self.fallidos_en_otro),
+            "repetidos": self.repetidos[:50],
             # Newest first: the live view reads from the top.
             "deliveries": [item.as_dict() for item in reversed(self.deliveries)],
         }
@@ -1121,6 +1158,83 @@ class FolderRunner:
 
     async def _drain(self, run: FolderRun) -> None:
         try:
+            await self._drenar(run)
+        finally:
+            if not run.active and run.coordinacion is not None:
+                # Se retira de la corrida compartida: los demás dejan de esperarlo.
+                await asyncio.shield(asyncio.to_thread(self._retirarse, run))
+
+    def _retirarse(self, run: FolderRun) -> None:
+        coordinacion = run.coordinacion
+        if coordinacion is None or coordinacion.retirado:
+            return
+        try:
+            coordinacion.estado = "terminado"
+            for reclamo in list(run.reclamos.values()):
+                coordinacion.soltar(reclamo)
+            run.reclamos.clear()
+            coordinacion.parar()
+        except Exception:  # noqa: BLE001 - retirarse nunca tumba la corrida
+            logger.warning("no se pudo retirar de la corrida compartida de %s", run.destination, exc_info=True)
+
+    def _unirse_a_la_corrida(self, run: FolderRun) -> None:
+        """Se une a la corrida de los demás equipos sobre este destino, o la empieza.
+
+        Las opciones y la versión del bot tienen que ser las de la corrida: si
+        no, se rechaza con la diferencia en palabras, porque la mitad de la
+        carpeta saldría con otras reglas. Si el destino no deja coordinarse
+        -- no garantiza la creación exclusiva --, con ``auto`` sigue sola y lo
+        avisa; con ``si``, no corre.
+        """
+        from ..adapters.coordinacion_en_disco import (
+            Coordinacion,
+            CoordinacionRechazada,
+            DestinoNoCompartible,
+        )
+        from .corrida_compartida import modo, opciones_de, version_del_bot
+
+        if modo() == "no" or run.retomar in (Retomar.FALTANTES, Retomar.REVISAR):
+            return
+        ritmo = {
+            clave: valor
+            for clave, valor in (
+                ("latido", self.SEGUNDOS_DEL_LATIDO),
+                ("caido", self.SEGUNDOS_PARA_DARLO_POR_CAIDO),
+            )
+            if valor is not None
+        }
+        coordinacion = Coordinacion(run.destination, version=version_del_bot(), **ritmo)
+        try:
+            corrida = coordinacion.unirse(opciones_de(run), origen=run.source.name or str(run.source))
+        except DestinoNoCompartible as error:
+            if modo() == "si":
+                raise FolderError(str(error)) from None
+            self._avisar(run, f"{error} Esta corrida sigue sola, sin repartir con otros equipos.")
+            return
+        except CoordinacionRechazada as error:
+            raise FolderError(str(error)) from None
+        run.coordinacion = coordinacion
+        otros = len(coordinacion.equipos_vivos()) - 1
+        run.compartida = (
+            f"Corrida compartida {corrida['id']} (la empezó {corrida.get('creada_por')}); "
+            f"este equipo es {coordinacion.id}"
+            + (f", con {otros} equipo(s) más" if otros > 0 else "")
+        )
+        self._avisar(run, run.compartida)
+
+    async def _drenar(self, run: FolderRun) -> None:
+        try:
+            if run.coordinacion is None and run.state is not RunState.FAILED:
+                try:
+                    await asyncio.to_thread(self._unirse_a_la_corrida, run)
+                except FolderError as error:
+                    # No se reintenta: con otras opciones u otra versión, otra
+                    # vuelta daría lo mismo. Se dice por qué y se para.
+                    run.state = RunState.FAILED
+                    run.error = str(error)
+                    run.finished_at = _now()
+                    self._publish(run)
+                    return
             if not run.folios_mirados:
                 # Los folios del inventario del cliente, para las filas de los
                 # PDF inventariados enteros (opción B, 2026-10-30), y la caja de
@@ -1146,6 +1260,10 @@ class FolderRunner:
                 # En paralelo y por lotes: el recorrido llena la cola lote a
                 # lote mientras los trabajadores la vacían.
                 hubo = await self._procesar_por_lotes(run)
+                if run.coordinacion is not None:
+                    # Lo que otros equipos tenían en curso: se espera a que lo
+                    # entreguen (y se cuenta), o se toma si su equipo cayó.
+                    hubo = await self._esperar_a_los_otros_equipos(run) or hubo
                 # Una pasada entera sin tropezar: los tropiezos cuentan seguidos,
                 # no en toda la vida de la corrida. En una vigilancia de días,
                 # tres sueltos la dejaban en FAILED (2026-10-27).
@@ -1176,17 +1294,30 @@ class FolderRunner:
             # una muestra de 100 PDF entregados revisada otra vez. Antes de los
             # Excel generales, que la llevan en el análisis de la entrega. Una
             # carpeta vigilada no termina: no se audita.
-            if not run.watch and run.state is not RunState.FAILED and run.active:
+            # Con varios equipos, cierra uno solo -- la auditoría y los Excel
+            # generales finales --, y cuando los demás ya terminaron: así lo
+            # tiene todo contado (lo suyo y lo de ellos) y nadie lo pisa después.
+            cierra = True
+            if run.coordinacion is not None and run.active:
+                cierra = await self._esperar_el_cierre(run)
+            if cierra and not run.watch and run.state is not RunState.FAILED and run.active:
                 # Los FUID de cada subcarpeta, al día antes de auditar: la
                 # auditoría compara cada PDF con su fila del FUID entregado
                 # (2026-11-06). Sólo escribe los que cambiaron.
                 await asyncio.to_thread(self._escribir_inventario_de_actas, run)
                 await self._auditar_al_cerrar(run)
+                # Ningún archivo ni carpeta repetidos en el destino (el
+                # operador, 2026-11-25): se comprueba en el disco, con todo
+                # lo entregado por todos los equipos.
+                await asyncio.to_thread(self._buscar_repetidos, run)
             # El Excel antes de dar la carpeta por terminada: la pantalla enseña
             # el botón de descarga en cuanto la ve terminada, y un botón que
             # aparece antes que el archivo es un botón que falla.
             await asyncio.to_thread(self._escribir_inventario_de_actas, run)
-            await self._cerrar_generales(run)
+            if cierra:
+                await self._cerrar_generales(run)
+            else:
+                await self._dejar_los_generales_al_que_cierra(run)
             if run.state is not RunState.FAILED:
                 # Una carpeta detenida por fallos seguidos se queda así, con
                 # su motivo: «terminada» diría que salió bien.
@@ -1194,7 +1325,12 @@ class FolderRunner:
             run.finished_at = run.finished_at or _now()
             run.en_curso.clear()
             run.queue = []
-            await asyncio.to_thread(self._write_manifest, run)
+            if cierra:
+                await asyncio.to_thread(self._write_manifest, run)
+                if run.coordinacion is not None and not run.watch:
+                    # Cerrada en el disco: un equipo que vuelva tarde ya no
+                    # entrega ni reescribe los generales que este dejó con todo.
+                    await asyncio.to_thread(run.coordinacion.cerrar_la_corrida)
             await asyncio.to_thread(self._limpiar_las_copias, run)
             self._publish(run)
         except asyncio.CancelledError:
@@ -1246,6 +1382,247 @@ class FolderRunner:
         self._escribir_todo_lo_general(run)
         self._write_manifest(run)
         self._limpiar_las_copias(run)
+
+    # -- varios equipos sobre el mismo destino (2026-11-25) -------------------
+
+    #: Cada cuánto se mira lo que tienen en curso los otros equipos.
+    ESPERA_DE_LOS_OTROS = 5.0
+    #: El latido de este equipo y cuánto sin él para darlo por caído (las
+    #: pruebas los acortan; ver ``application.coordinacion``).
+    SEGUNDOS_DEL_LATIDO: float | None = None
+    SEGUNDOS_PARA_DARLO_POR_CAIDO: float | None = None
+
+    def _turno_de(self, run: FolderRun, carpeta: Path):
+        """El turno de una carpeta del destino entre todos los equipos (o nada, si va solo).
+
+        Entregar, dejar la constancia y ordenar la carpeta del NIC se hacen con
+        él: dos equipos con UPD del mismo NIC no renumeran a la vez.
+        """
+        coordinacion = run.coordinacion
+        if coordinacion is None:
+            return contextlib.nullcontext()
+        try:
+            nombre = carpeta.relative_to(run.destination).as_posix()
+        except ValueError:
+            nombre = str(carpeta)
+        return coordinacion.cerrojo(f"carpeta:{nombre}", cancelado=lambda: not run.active)
+
+    @staticmethod
+    def _confirmar(run: FolderRun, origin: Path) -> None:
+        """La barrera antes de entregar: el PDF sigue siendo de este equipo.
+
+        Sin su reclamo en memoria -- ya se soltó, o la corrida se detuvo -- no
+        se entrega: una entrega en un hilo que siguió tras «Detener» esperaba
+        el turno de la carpeta y, al tenerlo, pisaba la que otro equipo ya
+        había dejado completa (2026-11-25, cuatro equipos con uno detenido).
+        """
+        if run.coordinacion is None:
+            return
+        reclamo = run.reclamos.get(str(origin))
+        if reclamo is None or not run.active:
+            raise ReclamoPerdido(f"este equipo ya no tiene «{origin.name}»: no lo entrega")
+        run.coordinacion.confirmar(reclamo)
+
+    def _tomar_el_pdf(self, run: FolderRun, path: Path, relativa: str) -> tuple[bool, bool]:
+        """Reclama el PDF para este equipo. Devuelve (procesarlo, hay_que_pedir_generales).
+
+        Si lo tiene otro equipo vivo, se espera al final; si otro ya lo entregó
+        en esta corrida, se cuenta como entregado; si falló en otro, se anota y
+        no se paga otra vez aquí (lo reintenta el suyo). Tomado, se vuelve a
+        mirar su constancia: entretanto pudo entregarlo otro.
+        """
+        from ..adapters.coordinacion_en_disco import Ajeno
+
+        coordinacion = run.coordinacion
+        motivo = coordinacion.por_que_no_vale()
+        if motivo is not None:
+            # Este equipo volvió tarde (colgado, o la red caída): otros empezaron
+            # otra corrida o cerraron ésta. No toma nada más: se para con el
+            # motivo, y relanzarlo lo une a la corrida en marcha.
+            if run.active:
+                run.state = RunState.FAILED
+                run.error = f"Este equipo ya no está en la corrida compartida: {motivo}. Vuelva a lanzar la carpeta."
+                run.finished_at = _now()
+            return False, False
+        resultado = coordinacion.reclamar(relativa)
+        if isinstance(resultado, Ajeno):
+            if resultado.estado == "hecho":
+                return False, self._entregado_por_otro(run, path, resultado.equipo)
+            run.ajenos[str(path)] = resultado.equipo
+            return False, False
+        fallo = coordinacion.fallo_de(relativa)
+        if fallo is not None and str(path) not in run.de_caidos:
+            coordinacion.soltar(resultado)
+            run.fallidos_en_otro[relativa] = f"{fallo.equipo}: {fallo.error}"
+            return False, False
+        run.reclamos[str(path)] = resultado
+        if run.retomar == Retomar.NO:
+            vigencia, constancia = self._vigencia(run, path)
+            if vigencia is Vigencia.VIGENTE:
+                # Lo entregó otro equipo (o una corrida de antes) mientras éste lo
+                # tenía en la cola: se cuenta y se marca hecho para los demás.
+                coordinacion.terminar(resultado)
+                run.reclamos.pop(str(path), None)
+                return False, self._entregado_por_otro(run, path, "otro equipo", constancia=constancia)
+            if constancia is not None and vigencia in (Vigencia.INCOMPLETA, Vigencia.ORIGEN_CAMBIADO):
+                run.a_rehacer[str(path)] = (vigencia, constancia)
+        return True, False
+
+    def _entregado_por_otro(
+        self, run: FolderRun, path: Path, equipo: str, *, constancia: Constancia | None = None
+    ) -> bool:
+        """Lo que entregó otro equipo, contado aquí como ya entregado. Dice si cambió algo."""
+        clave = str(path)
+        if clave in run.contados_de_otro:
+            return False
+        if constancia is None:
+            vigencia, constancia = self._vigencia(run, path)
+            if vigencia is not Vigencia.VIGENTE:
+                # Su reclamo dice «hecho» pero la constancia todavía no: un
+                # destino lento. Se vuelve a mirar en la espera.
+                run.ajenos[clave] = equipo
+                return False
+        run.contados_de_otro.add(clave)
+        run.seen.add(clave)
+        run.ajenos.pop(clave, None)
+        run.ya_entregados += 1
+        run.de_otros_equipos += 1
+        if constancia is not None and constancia.job_id:
+            run.trabajos_de_otros.append(constancia.job_id)
+        self._anotar_la_verificacion(
+            run, str(self._relative(run, path)), DECISION_YA_ENTREGADO, f"lo entregó el equipo {equipo} en esta corrida"
+        )
+        self._contar_lo_ya_entregado(run, path, constancia)
+        return True
+
+    def _mirar_los_ajenos(self, run: FolderRun) -> tuple[list[Path], bool]:
+        """Cómo van los PDF que tenían otros equipos: los libres se rehacen aquí."""
+        coordinacion = run.coordinacion
+        libres: list[Path] = []
+        contados = False
+        for clave in list(run.ajenos):
+            path = Path(clave)
+            relativa = str(self._relative(run, path))
+            estado = coordinacion.estado_de(relativa)
+            if estado is None:
+                # Libre: su equipo cayó o lo soltó sin entregarlo. Lo hace éste.
+                run.ajenos.pop(clave, None)
+                libres.append(path)
+            elif estado.estado == "hecho":
+                contados = self._entregado_por_otro(run, path, estado.equipo) or contados
+            elif estado.estado == "falló":
+                run.ajenos.pop(clave, None)
+                run.fallidos_en_otro[relativa] = f"{estado.equipo}: {estado.error}"
+        if libres:
+            for path in libres:
+                run.seen.discard(str(path))
+                run.segunda_pasada.add(str(path))
+                run.de_caidos.add(str(path))
+            self._preparar_otra_vuelta(run, libres)
+        return libres, contados
+
+    def _para_la_segunda_pasada(self, run: FolderRun, path: Path) -> bool:
+        """Si el PDF es de una carpeta que en la primera pasada le toca a otro equipo vivo.
+
+        Cada carpeta NIC tiene un equipo preferido (``equipo_preferido``): así
+        los UPD de un NIC caen en el mismo equipo, y dos equipos no se disputan
+        cada PDF de la cola. Sólo ordena: el reclamo es lo que garantiza que
+        cada PDF lo haga uno.
+        """
+        coordinacion = run.coordinacion
+        if coordinacion is None or str(path) in run.segunda_pasada:
+            return False
+        return not coordinacion.me_toca_primero(str(self._relative(run, path)))
+
+    async def _esperar_a_los_otros_equipos(self, run: FolderRun) -> bool:
+        """Espera lo que otros equipos tienen en curso; toma lo de los caídos. Dice si procesó algo."""
+        hubo = False
+        while run.active and run.ajenos:
+            libres, contados = await asyncio.to_thread(self._mirar_los_ajenos, run)
+            if contados:
+                self._pedir_generales(run)
+            if libres:
+                hubo = True
+                run.queue = [str(self._relative(run, path)) for path in libres]
+                await self._consumir_en_paralelo(run, libres)
+                continue
+            if run.ajenos:
+                run.etapa = "Esperando a otros equipos"
+                run.etapa_detalle = f"{len(run.ajenos)} PDF en curso en otros equipos"
+                self._publish(run)
+                await asyncio.sleep(self.ESPERA_DE_LOS_OTROS)
+        if run.etapa == "Esperando a otros equipos":
+            run.etapa, run.etapa_detalle = "", ""
+        return hubo
+
+    async def _esperar_el_cierre(self, run: FolderRun) -> bool:
+        """Si este equipo cierra la corrida compartida: el primero que acaba, y espera a los demás."""
+        coordinacion = run.coordinacion
+        coordinacion.estado = "cerrando"
+        if not await asyncio.to_thread(coordinacion.tomar_rol, "cierre"):
+            self._avisar(run, "Este equipo terminó su parte; la auditoría y los Excel generales los cierra otro equipo.")
+            return False
+        while run.active and not await asyncio.to_thread(coordinacion.los_demas_terminaron):
+            run.etapa = "Esperando a otros equipos"
+            run.etapa_detalle = "este equipo cierra la corrida cuando los demás terminen"
+            self._publish(run)
+            await asyncio.sleep(self.ESPERA_DE_LOS_OTROS)
+        # Lo que falló en otro equipo y su reintento sí entregó.
+        contados = await asyncio.to_thread(self._recontar_lo_de_los_otros, run)
+        if contados:
+            self._pedir_generales(run)
+        if run.etapa == "Esperando a otros equipos":
+            run.etapa, run.etapa_detalle = "", ""
+        return True
+
+    def _recontar_lo_de_los_otros(self, run: FolderRun) -> bool:
+        contados = False
+        for relativa in list(run.fallidos_en_otro):
+            path = run.source / relativa
+            vigencia, constancia = self._vigencia(run, path)
+            if vigencia is Vigencia.VIGENTE:
+                run.fallidos_en_otro.pop(relativa, None)
+                contados = self._entregado_por_otro(run, path, "otro equipo", constancia=constancia) or contados
+        for relativa, motivo in run.fallidos_en_otro.items():
+            self._avisar(run, f"«{relativa}» falló en el equipo {motivo}")
+        return contados
+
+    def _buscar_repetidos(self, run: FolderRun) -> None:
+        """Los archivos y carpetas repetidos del destino, como avisos de la corrida."""
+        from .repetidos import buscar_repetidos
+
+        def en_la_fuente(relativa: str) -> bool:
+            ruta = run.source / relativa
+            try:
+                if red_smb.por_smb(run.source):
+                    return Path(relativa).name in set(red_smb.carpetas(str(ruta.parent)))
+                return ruta.is_dir()
+            except Exception:  # noqa: BLE001 - sin poder mirarlo, se avisa
+                return False
+
+        try:
+            repetidos = buscar_repetidos(run.destination, detener=lambda: not run.active, en_la_fuente=en_la_fuente)
+        except Exception as error:  # noqa: BLE001 - el control no tumba la corrida
+            self._avisar(run, f"No se pudo buscar archivos repetidos en el destino: {explicar_fallo(error)}")
+            return
+        run.repetidos = [repetido.en_palabras() for repetido in repetidos]
+        if not repetidos:
+            self._avisar(run, "Control de repetidos: ningún archivo ni carpeta repetidos en el destino.")
+            return
+        self._avisar(run, f"Control de repetidos: {len(repetidos)} repetido(s) en el destino. Revíselos:")
+        for repetido in repetidos[:20]:
+            self._avisar(run, f"Repetido — {repetido.en_palabras()}")
+
+    async def _dejar_los_generales_al_que_cierra(self, run: FolderRun) -> None:
+        """El equipo que no cierra no reescribe los generales al final: los escribe el que cierra, con todo."""
+        run.generales_pendientes = False
+        escritor = run.escritor
+        if escritor is not None and not escritor.done():
+            escritor.cancel()
+            try:
+                await escritor
+            except asyncio.CancelledError:
+                pass
 
     #: Cuántos PDF del origen se reparten y se ponen a procesar de una vez. Con
     #: un millón en el árbol, juntar la lista entera antes de empezar el primero
@@ -1576,20 +1953,28 @@ class FolderRunner:
         )
         return Vigencia.SIN_CONSTANCIA, None
 
-    @staticmethod
-    def _recordar_la_fecha(run: FolderRun, ruta: Path, constancia: Constancia, fecha: int) -> None:
+    def _recordar_la_fecha(self, run: FolderRun, ruta: Path, constancia: Constancia, fecha: int) -> None:
         """El origen se copió o se movió y su SHA-256 dice que es el mismo: se guarda su fecha nueva.
 
         Sin esto cada vuelta volvía a leer el PDF entero -- por la red, si es
         de la red -- para llegar a la misma conclusión. Es el archivo del bot
         en el destino; si no se deja escribir, la próxima vez se vuelve a
         comparar, que es lo de antes.
+
+        La constancia se relee del disco dentro del cerrojo y del turno de su
+        carpeta: la que se leyó al verificar pudo quedar vieja -- otro equipo, o
+        el orden de la carpeta del NIC, la renumeró entretanto --, y escribirla
+        tal cual deshacía esa renumeración (2026-11-25).
         """
         constancia.modificado_ns = fecha
         try:
-            with run.cerrojo:
-                constancias.escribir(ruta, constancia)
+            with self._turno_de(run, ruta.parent), run.cerrojo:
+                actual = constancias.leer(ruta) or constancia
+                actual.modificado_ns = fecha
+                constancias.escribir(ruta, actual)
         except OSError:
+            logger.warning("no se pudo guardar la fecha nueva del origen en %s", ruta, exc_info=True)
+        except Exception:  # noqa: BLE001 - el turno ocupado: se vuelve a comparar la próxima vez
             logger.warning("no se pudo guardar la fecha nueva del origen en %s", ruta, exc_info=True)
 
     def _tiene_pdf_entregado(self, run: FolderRun, path: Path) -> bool:
@@ -1830,6 +2215,16 @@ class FolderRunner:
             while run.active:
                 if not cola:
                     if estado["terminado"]:
+                        if run.diferidos:
+                            # La segunda pasada: las carpetas de los otros
+                            # equipos, al revés -- ellos van al derecho --, para
+                            # ayudar a los lentos o tomar lo de los caídos. Lo ya
+                            # entregado se salta con su reclamo «hecho».
+                            segunda = list(reversed(run.diferidos))
+                            run.diferidos.clear()
+                            run.segunda_pasada.update(str(path) for path in segunda)
+                            cola.extend(segunda)
+                            continue
                         return
                     # Sin `await` entre mirar y limpiar: en asyncio nadie puede
                     # meter algo en la cola en medio.
@@ -1842,6 +2237,9 @@ class FolderRunner:
                 if not run.active or not cola:
                     continue
                 path = cola.popleft()
+                if self._para_la_segunda_pasada(run, path):
+                    run.diferidos.append(path)
+                    continue
                 async with ranuras:
                     if not run.active:
                         return
@@ -1961,6 +2359,26 @@ class FolderRunner:
             del run.queue[0]
         elif relativa in run.queue:
             run.queue.remove(relativa)
+
+        if run.coordinacion is not None:
+            # Con otros equipos en el mismo destino, el PDF se reclama antes de
+            # bajarlo o leerlo: lo hace uno solo y se paga una vez. En fila (un
+            # cerrojo de asyncio es FIFO): de aquí a crear su trabajo no hay
+            # otro `await`, así que los trabajos salen en el orden de la carpeta.
+            try:
+                async with run.orden_de_toma:
+                    procesarlo, contado = await asyncio.to_thread(self._tomar_el_pdf, run, path, relativa)
+            except Exception as error:  # noqa: BLE001 - el destino que no contesta: se reintenta luego
+                self._avisar(run, f"No se pudo reclamar «{relativa}» en el destino: {explicar_fallo(error)}")
+                run.failed += 1
+                run.fallidos[str(path)] = explicar_fallo(error)
+                self._publish(run)
+                return
+            if contado:
+                self._pedir_generales(run)
+            if not procesarlo:
+                self._publish(run)
+                return
 
         # Al retomar, antes de nada se mira qué hay de este PDF en el destino.
         # Lo completo no se vuelve a leer, y de lo que está a medias se leen
@@ -2099,7 +2517,22 @@ class FolderRunner:
                         f"copiaron al destino ({'; '.join(entrega.fallos[:3])}). Vuelva a lanzar "
                         "la carpeta: este PDF se rehará."
                     )
-                await asyncio.to_thread(self._dejar_constancia, run, job, path, huella, entrega)
+                cerrada = await asyncio.to_thread(self._dejar_constancia, run, job, path, huella, entrega)
+                if cerrada:
+                    reclamo = run.reclamos.pop(str(path), None)
+                    if reclamo is not None:
+                        # «Hecho» para los demás equipos: ninguno lo vuelve a tomar.
+                        await asyncio.to_thread(run.coordinacion.terminar, reclamo, trabajo=job.id)
+                elif run.coordinacion is not None:
+                    # Sin su constancia completa no es una entrega: se suelta con
+                    # el motivo y se rehace (lo entregado se aparta al rehacerlo).
+                    run.processed -= 1
+                    run.resolutions -= len(((job.report or {}).get("groups")) or [])
+                    run.incompletas.add(str(path))
+                    run.entregas_incompletas = len(run.incompletas)
+                    raise EntregaIncompleta(
+                        f"No se pudo cerrar la constancia de «{relativa}» en el destino: se rehará."
+                    )
                 if str(path) in run.incompletas:
                     # Una vuelta posterior sí la terminó.
                     run.incompletas.discard(str(path))
@@ -2135,6 +2568,15 @@ class FolderRunner:
                 if control is not None:
                     control.accion = "cancelado"
             raise
+        except ReclamoPerdido as error:
+            # Otro equipo lo dio por caído y lo tomó: lo entrega él. No es un
+            # fallo de este PDF, y aquí no se entrega nada más.
+            run.reclamos.pop(str(path), None)
+            if job.state is JobState.DONE:
+                run.processed -= 1
+                run.resolutions -= len(((job.report or {}).get("groups")) or [])
+            run.ajenos[str(path)] = "otro equipo"
+            self._avisar(run, f"«{relativa}»: {error}. Lo entrega el otro equipo.")
         except Exception as error:  # noqa: BLE001 - un documento no tumba la carpeta
             if not isinstance(error, EntregaIncompleta):
                 logger.exception("no se pudo terminar %s", relativa)
@@ -2146,6 +2588,19 @@ class FolderRunner:
                 control.accion = "falló"
                 control.error = job.error
         finally:
+            reclamo = run.reclamos.pop(str(path), None)
+            if reclamo is not None and run.coordinacion is not None:
+                # No se entregó: se suelta para los demás, con el motivo si falló
+                # (el reintento lo hace este equipo; los otros no lo pagan otra vez).
+                fallo = job.error if job.state is JobState.FAILED else None
+                try:
+                    await asyncio.shield(
+                        asyncio.to_thread(
+                            run.coordinacion.soltar, reclamo, error=fallo, reintentable=bool(job.reintentable)
+                        )
+                    )
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001 - el latido lo dará por libre
+                    logger.warning("no se pudo soltar el reclamo de %s", relativa, exc_info=True)
             self._borrar_la_copia(path, local)
             run.en_curso.pop(job.id, None)
             self._anotar_el_proceso(run, job, relativa)
@@ -2178,7 +2633,8 @@ class FolderRunner:
     def _copiar_lo_pendiente(self, run: FolderRun, entrega: Entrega, origin: Path) -> None:
         quedan: list[tuple[Path, Path, bool]] = []
         fallos: list[str] = []
-        with run.cerrojo:
+        with self._turno_de(run, entrega.base), run.cerrojo:
+            self._confirmar(run, origin)
             for desde, hasta, reemplaza in entrega.pendientes:
                 try:
                     if not reemplaza and hasta.exists():
@@ -2769,21 +3225,54 @@ class FolderRunner:
                 origen=str(run.source),
                 destino=str(run.destination),
                 encontrados=run.discovered,
-                procesados=run.processed,
-                ya_entregados=run.ya_entregados,
-                fallidos=dict(run.fallidos),
+                # Con varios equipos, la corrida es una sola: lo que procesaron
+                # los demás cuenta aquí como procesado, no como ya entregado.
+                procesados=run.processed + run.de_otros_equipos,
+                ya_entregados=run.ya_entregados - run.de_otros_equipos,
+                fallidos={**dict(run.fallidos), **run.fallidos_en_otro},
                 operador=run.operator or "",
                 dictamen=f"{run.etapa} — {run.etapa_detalle}".strip(" —") if run.etapa else "",
             )
-            escribir_la_auditoria(run.destination, corrida, run.job_ids)
+            # Los trabajos de todos los equipos de la corrida: una sola auditoría.
+            trabajos = [*run.job_ids, *run.trabajos_de_otros]
+            if run.coordinacion is not None:
+                try:
+                    de_la_corrida, fallidos = run.coordinacion.lo_hecho_en_la_corrida()
+                    trabajos = sorted({*trabajos, *de_la_corrida})
+                    corrida = replace(
+                        corrida,
+                        # Desde que el primer equipo la empezó.
+                        inicio=str((run.coordinacion.corrida or {}).get("creada") or corrida.inicio),
+                        procesados=max(corrida.procesados, len(de_la_corrida)),
+                        ya_entregados=max(0, corrida.ya_entregados),
+                        fallidos={**fallidos, **corrida.fallidos},
+                    )
+                except OSError:
+                    logger.warning("no se pudo leer lo hecho en la corrida compartida", exc_info=True)
+            escribir_la_auditoria(run.destination, corrida, trabajos)
         except Exception:  # noqa: BLE001 - la entrega ya está
             logger.warning("no se pudo escribir la auditoría de la corrida", exc_info=True)
 
     def _escribir_todo_lo_general(self, run: FolderRun) -> None:
-        with run.cerrojo_generales:
-            self._escribir_control(run)
-            self._escribir_generales(run)
-            run.generales_en = time.monotonic()
+        # Con otros equipos, los Excel de la raíz de uno en uno entre todos:
+        # dos reemplazando el mismo archivo a la vez lo dejarían roto.
+        if run.coordinacion is not None and not run.coordinacion.retirado and not run.coordinacion.vigente():
+            # Un equipo que volvió tarde no reescribe los generales que ya
+            # cerró otro con todo: los dejaría con lo suyo y nada más.
+            logger.warning("%s: no se reescriben los generales, la corrida compartida ya no es de este equipo", run.source)
+            return
+        turno = (
+            run.coordinacion.cerrojo("generales", espera_maxima=10 * 60.0)
+            if run.coordinacion is not None and not run.coordinacion.retirado
+            else contextlib.nullcontext()
+        )
+        try:
+            with turno, run.cerrojo_generales:
+                self._escribir_control(run)
+                self._escribir_generales(run)
+                run.generales_en = time.monotonic()
+        except CerrojoOcupado as error:
+            self._avisar(run, f"Los Excel generales esperan su turno: {error}. Se vuelven a escribir luego.")
 
     async def _mirar_el_destino(
         self,
@@ -3216,8 +3705,13 @@ class FolderRunner:
         # que no se parte diría que se perdieron todas. Se reescribe en cada
         # acta, que cuesta milisegundos, para que el Excel esté siempre al día
         # aunque la corrida se corte.
-        with run.cerrojo:
-            entrega = self._entregar(run, job, origin, huella)
+        # Con otros equipos: el turno de su carpeta del destino y, dentro, que
+        # el PDF siga siendo de este equipo (la barrera contra el que vuelve
+        # después de que lo dieran por caído).
+        with self._turno_de(run, self._output_dir(run, origin, job)):
+            self._confirmar(run, origin)
+            with run.cerrojo:
+                entrega = self._entregar(run, job, origin, huella)
         # Los FUID de las subcarpetas que cambiaron, fuera del cerrojo: las
         # demás entregas siguen mientras se escriben.
         self._escribir_los_pendientes(run)
@@ -4159,7 +4653,7 @@ class FolderRunner:
 
     def _dejar_constancia(
         self, run: FolderRun, job: Job, origin: Path, huella: tuple[int, int], entrega: Entrega
-    ) -> None:
+    ) -> bool:
         """La constancia «completa» de un PDF entregado entero: la próxima corrida lo salta.
 
         Lleva lo que los generales necesitan de él -- su fila de procesos, sus
@@ -4243,18 +4737,23 @@ class FolderRunner:
                 # La raíz del destino, por su índice general.
                 "raiz": str(run.destination),
             }
-        try:
-            with run.cerrojo:
-                constancias.escribir(entrega.constancia, constancia)
-        except OSError as error:
-            logger.warning("no se pudo cerrar la constancia de %s: %s", origin.name, error)
-            self._avisar(run, f"No se pudo guardar la constancia de «{origin.name}»: {explicar_fallo(error)}")
-        if self._plana(run):
-            # La carpeta del NIC, con este UPD ya dentro: numerada seguida y con
-            # un solo índice.
-            self._ordenar_la_caja(run, entrega.base)
+        cerrada = True
+        with self._turno_de(run, entrega.base):
+            self._confirmar(run, origin)
+            try:
+                with run.cerrojo:
+                    constancias.escribir(entrega.constancia, constancia)
+            except OSError as error:
+                cerrada = False
+                logger.warning("no se pudo cerrar la constancia de %s: %s", origin.name, error)
+                self._avisar(run, f"No se pudo guardar la constancia de «{origin.name}»: {explicar_fallo(error)}")
+            if self._plana(run):
+                # La carpeta del NIC, con este UPD ya dentro: numerada seguida y con
+                # un solo índice.
+                self._ordenar_la_caja(run, entrega.base)
         if getattr(self._settings, "liberar_salidas", False):
             self._liberar_salidas(job)
+        return cerrada
 
     def tiene_la_corrida(self, job) -> bool:
         """Si la corrida del trabajo sigue en memoria: sus correcciones van por ella."""
@@ -4560,8 +5059,9 @@ class FolderRunner:
         from .correccion_del_re import cerrojo_de_la_carpeta, corregir_con_el_expediente
 
         # El cerrojo de la carpeta del NIC también: la corrección del RE sin la
-        # corrida (``correccion_del_re``) no se cruza con la renumeración.
-        with run.cerrojo, cerrojo_de_la_carpeta(carpeta):
+        # corrida (``correccion_del_re``) no se cruza con la renumeración. Y su
+        # turno entre equipos: dos PC con UPD del mismo NIC no renumeran a la vez.
+        with self._turno_de(run, carpeta), run.cerrojo, cerrojo_de_la_carpeta(carpeta):
             # El RE leído a mano que otro documento del NIC cita distinto: aquí
             # están ya todos sus UPD (4251556, 2026-11-24). Antes de leer las
             # constancias que se renumeran, para que lleven el corregido.
@@ -5057,7 +5557,9 @@ def _copiar(desde: Path, hasta: Path, medir: Callable[[int, float, float], None]
     ``medir`` recibe los bytes y de cuándo a cuándo se copiaron: la velocidad
     de escritura en el destino (2026-11-05).
     """
-    parcial = hasta.with_name(hasta.name + ".part")
+    # Con nombre único: dos equipos que entregan a la misma carpeta no
+    # comparten el «.part» (2026-11-25, varios PC en un destino).
+    parcial = hasta.with_name(f"{hasta.name}.{uuid4().hex[:8]}.part")
     for espera in (*ESPERAS_SI_ESTA_EN_USO, None):
         try:
             inicio = time.monotonic()

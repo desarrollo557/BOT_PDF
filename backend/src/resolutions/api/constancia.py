@@ -25,6 +25,7 @@ contenido del PDF se lee, ni del origen ni del destino.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -32,14 +33,35 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PureWindowsPath
+from uuid import uuid4
 
 from ..adapters import red_smb
+from ..adapters.coordinacion_en_disco import reintentar_si_esta_en_uso
 
 logger = logging.getLogger(__name__)
 
 #: El nombre de la constancia en la carpeta de un PDF. Con punto delante, para
 #: que no estorbe al abrir la carpeta, y no es un PDF: ningún `*.pdf` la cuenta.
 NOMBRE = ".bot-entrega.json"
+#: Un segundo, en nanosegundos: la precisión de la fecha más gruesa que da un
+#: sistema de archivos montado.
+_SEGUNDO_NS = 1_000_000_000
+
+
+def misma_fecha(una: int, otra: int) -> bool:
+    """Si dos fechas del origen son la misma, leída cada una con su precisión.
+
+    Un equipo la lee por SMB (en centenas de nanosegundos) y otro, a veces, por
+    una unidad montada que la da en segundos enteros: la misma copia parecía
+    «cambiada» en cada equipo, que volvía a leerla entera por la red (2026-11-25,
+    varios PC). Sólo se igualan si una de las dos viene en segundos enteros y
+    caen en el mismo segundo; cualquier otra diferencia se comprueba con la
+    firma del PDF, como siempre.
+    """
+    if una == otra:
+        return True
+    gruesa = una % _SEGUNDO_NS == 0 or otra % _SEGUNDO_NS == 0
+    return gruesa and una // _SEGUNDO_NS == otra // _SEGUNDO_NS
 #: Las actas se entregan en una carpeta espejo que comparten todos los PDF de
 #: una subcarpeta; ahí la constancia de cada uno va en esta carpeta, con su
 #: nombre.
@@ -198,11 +220,21 @@ def escribir(ruta: Path, constancia: Constancia) -> None:
     ruta.parent.mkdir(parents=True, exist_ok=True)
     if nueva and ruta.parent.name == CARPETA_DE_ACTAS:
         _ocultar(ruta.parent)
-    temporal = ruta.with_name(ruta.name + ".tmp")
+    # Con nombre único: dos equipos -- o dos hilos -- que escriben la misma
+    # constancia no se pisan el temporal (2026-11-25, varios PC en un destino).
+    temporal = ruta.with_name(f"{ruta.name}.{uuid4().hex[:8]}.tmp")
     temporal.write_text(json.dumps(constancia.as_dict(), ensure_ascii=False), encoding="utf-8")
     # Windows no deja reemplazar un archivo oculto: se le quita la marca antes.
     _ocultar(ruta, oculto=False)
-    os.replace(temporal, ruta)
+    # Ni uno que otro equipo está leyendo en ese momento (comprueba si ya está
+    # entregado): se reintenta. Sin esto, la constancia «completa» no se
+    # escribía y el PDF quedaba como entrega cortada (2026-11-25, varios PC).
+    try:
+        reintentar_si_esta_en_uso(lambda: os.replace(temporal, ruta))
+    except OSError:
+        with contextlib.suppress(OSError):
+            temporal.unlink()
+        raise
     _ocultar(ruta)
 
 
@@ -372,7 +404,7 @@ def verificar(
             f"el PDF de origen cambió de tamaño: {_peso(constancia.tamano)} → {_peso(tamano)}",
         )
     fecha_nueva = None
-    if modificado != constancia.modificado_ns:
+    if not misma_fecha(modificado, constancia.modificado_ns):
         if not (constancia.firma and _firma_o_nada(origen) == constancia.firma):
             return Verificacion(Vigencia.ORIGEN_CAMBIADO, "el PDF de origen tiene otra fecha de modificación")
         fecha_nueva = modificado

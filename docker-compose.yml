@@ -31,6 +31,12 @@ services:
       RESOLUTIONS_LOG_DIR: /data/logs
       RESOLUTIONS_TESSERACT_CMD: tesseract
       BOTPDF_WEB_ROOT: /app/web/build
+      # El nombre del PC en la corrida compartida (varios equipos sobre el mismo
+      # destino, 2026-11-25): sin él, el del contenedor, que nadie reconoce.
+      BOTPDF_EQUIPO: ${COMPUTERNAME:-}
+      # auto (por omisión): se coordina con los demás equipos del destino;
+      # si: o se coordina o no corre; no: un equipo solo, como antes.
+      BOTPDF_COORDINACION: ${BOTPDF_COORDINACION:-auto}
     volumes:
       - botpdf_data:/data
     restart: unless-stopped

@@ -743,6 +743,13 @@ def fecha_del_sello_de_tinta(texto: str, *, hoy: date | None = None) -> date | N
     def valida(hallado: re.Match[str]) -> date | None:
         dia, mes, anio = (int(g) for g in hallado.groups())
         anio = anio + 2000 if anio < 100 else anio
+        # Algunos sellos se fechan mes-día: «12-29-2020», «01-20-2021»
+        # (4107439, MAGANGUE PRUEBA PILOTO, 2026-11-25). Como día-mes es
+        # imposible, se perdía la fecha del sello y el documento se fechaba por
+        # el papel. Sólo cuando día-mes no existe: «01-06-2021» sigue siendo el
+        # 1 de junio, como en la mayoría de los sellos.
+        if mes > 12 and dia <= 12:
+            dia, mes = mes, dia
         try:
             fecha = date(anio, mes, dia)
         except ValueError:
