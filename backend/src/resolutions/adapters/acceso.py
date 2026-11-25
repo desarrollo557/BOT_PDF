@@ -88,6 +88,56 @@ def montada_por_la_red(ruta: str, montajes: str) -> bool:
     return de_red
 
 
+def montaje_de_la_red(ruta: str, montajes: str | None = None) -> str | None:
+    """Dónde tiene montada el contenedor la carpeta de red ``ruta``, o ``None`` si no la tiene.
+
+    El operador, 2026-11-25: «la idea es colocar como ruta destino rutas en red».
+    El cliente SMB propio sólo lee; para escribir, la carpeta tiene que estar
+    montada (``scripts/montar-unidad-de-red.ps1``), y ``/proc/mounts`` dice
+    dónde: «//200.100.20.101/Users/SIAR1/Desktop /equipo/w cifs …». Entonces
+    «\\\\200.100.20.101\\Users\\SIAR1\\Desktop\\MAGANGUE PRUEBA PILOTO» es
+    «/equipo/w/MAGANGUE PRUEBA PILOTO». Sin distinguir mayúsculas, y con el
+    servidor por su nombre o por su dirección. Manda el montaje más largo.
+    """
+    pedida = red_smb.partes(ruta)
+    if pedida is None:
+        return None
+    if montajes is None:
+        try:
+            montajes = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+    camino = "/".join(t for t in [pedida.recurso, *pedida.resto.split("\\")] if t)
+    mejor: tuple[int, str] | None = None
+    for linea in montajes.splitlines():
+        campos = linea.split()
+        if len(campos) < 3 or campos[2].lower() not in TIPOS_DE_RED:
+            continue
+        fuente = red_smb.partes(_sin_escapes(campos[0]))
+        if fuente is None or not _mismo_servidor(fuente.servidor, pedida.servidor):
+            continue
+        base = "/".join(t for t in [fuente.recurso, *fuente.resto.split("\\")] if t)
+        if not (camino.casefold() == base.casefold() or camino.casefold().startswith(base.casefold() + "/")):
+            continue
+        resto = camino[len(base) :].strip("/")
+        punto = _sin_escapes(campos[1]).rstrip("/") or "/"
+        if mejor is None or len(base) > mejor[0]:
+            mejor = (len(base), f"{punto}/{resto}" if resto else punto)
+    return mejor[1] if mejor else None
+
+
+def _mismo_servidor(uno: str, otro: str) -> bool:
+    """El mismo equipo, escrito por su nombre o por su dirección («SIAR1-PC» o «200.100.20.101»)."""
+    if uno.casefold() == otro.casefold():
+        return True
+    import socket
+
+    try:
+        return socket.gethostbyname(uno) == socket.gethostbyname(otro)
+    except OSError:
+        return False
+
+
 def medir_lectura(ruta: str | Path, tope: int = MUESTRA) -> tuple[int, float]:
     """Lee hasta ``tope`` bytes de ``ruta``: cuántos y en cuántos segundos."""
     if red_smb.por_smb(ruta):

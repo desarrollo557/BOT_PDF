@@ -432,15 +432,41 @@ class TestUnaCorridaDesdeLaRed:
             with pytest.raises(FolderError, match="Dejarlo"):
                 asyncio.run(ir(disposicion))
 
-    def test_el_destino_va_en_el_equipo(self, servidor, ajustes):
+    def test_el_destino_de_red_sin_montar_dice_como_montarlo(self, servidor, ajustes):
         red_smb.conectar(CARPETA, USUARIO, CLAVE)
         motor = _motor(ajustes, JobRegistry(), [])
 
         async def ir():
             motor.start(CARPETA, rf"{RAIZ}\SALIDA")
 
-        with pytest.raises(FolderError, match="destino tiene que estar en este equipo"):
+        with pytest.raises(FolderError, match="tiene que tenerla montada") as error:
             asyncio.run(ir())
+        assert "montar-unidad-de-red.ps1" in str(error.value)
+
+    def test_el_destino_de_red_montado_se_entrega_alli(self, servidor, ajustes, tmp_path, monkeypatch):
+        """El operador, 2026-11-25: «la idea es colocar como ruta destino rutas en red»."""
+        from resolutions.adapters import acceso
+
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        montada = tmp_path / "montada"
+        montada.mkdir()
+        vistas: list[str] = []
+
+        def montaje(ruta, montajes=None):
+            vistas.append(ruta)
+            return str(montada / "SALIDA")
+
+        monkeypatch.setattr(acceso, "montaje_de_la_red", montaje)
+        motor = _motor(ajustes, JobRegistry(), [])
+
+        async def ir():
+            corrida = motor.start(CARPETA, rf"{RAIZ}\SALIDA")
+            motor.stop(corrida.id)
+            return corrida
+
+        corrida = asyncio.run(ir())
+        assert corrida.destination == montada / "SALIDA"
+        assert vistas and vistas[0].replace("\\", "/").lower().endswith("/salida")
 
 
 class TestLaPantallaRecibeUnaPregunta:
@@ -670,7 +696,7 @@ class TestUnaUnidadQueSeLeePorLaRed:
         with pytest.raises(FolderError, match="Dejarlo"):
             asyncio.run(ir(str(tmp_path / "destino"), SourceDisposition.MOVE))
         # Antes se colaba: «Z:\SALIDA» no parecía de red y se creaba dentro del contenedor.
-        with pytest.raises(FolderError, match="destino tiene que estar en este equipo"):
+        with pytest.raises(FolderError, match="tiene que tenerla montada"):
             asyncio.run(ir(r"Z:\SALIDA"))
 
 

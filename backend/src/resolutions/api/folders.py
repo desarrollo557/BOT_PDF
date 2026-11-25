@@ -780,12 +780,24 @@ def validate_folders(
     if red_smb.es_de_red(source):
         red_smb.asegurar(source)
     if red_smb.por_smb(destination):
-        # Se lee de la red; no se escribe en ella: lo entregado va a una
-        # carpeta de este equipo, que es la que el bot puede vigilar y retomar.
-        raise FolderError(
-            f"La carpeta de destino tiene que estar en este equipo (C:\\…), y {escrito} "
-            "es de red; el origen sí puede ser una carpeta de red"
-        )
+        # Una carpeta de red como destino (el operador, 2026-11-25: «la idea es
+        # colocar como ruta destino rutas en red»): se escribe por donde está
+        # montada en el contenedor. El cliente SMB propio sólo lee.
+        from ..adapters.acceso import montaje_de_la_red
+
+        montada = montaje_de_la_red(destination)
+        if montada is None:
+            partes = red_smb.partes(destination)
+            raiz = partes.raiz if partes else escrito
+            raise FolderError(
+                f"Para entregar en la carpeta de red {escrito}, el bot tiene que tenerla montada "
+                "en este equipo (una sola vez). En CMD, dentro de la carpeta BOT_PDF: "
+                f"«net use W: {raiz} /persistent:yes» y después «powershell -NoProfile "
+                "-ExecutionPolicy Bypass -File scripts\\montar-unidad-de-red.ps1 W». Luego vuelva "
+                "a pegar la ruta de red. Revise también que la ruta esté bien escrita (por ejemplo "
+                "«Users» y no «User»)."
+            )
+        destination = montada
 
     target = Path(destination).expanduser()
     if red_smb.por_smb(source):

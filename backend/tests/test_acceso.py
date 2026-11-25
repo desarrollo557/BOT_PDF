@@ -56,3 +56,37 @@ class TestLaPruebaDeVelocidad:
         with pytest.raises(OSError):
             acceso.medir_escritura(tmp_path / "no-existe", cuanto=10)
         assert not (tmp_path / "no-existe").exists()
+
+
+#: Lo que dice ``/proc/mounts`` en el contenedor con W: montada (2026-11-25).
+_MONTAJES = (
+    "overlay / overlay rw,relatime 0 0\n"
+    r"C:\134 /equipo/c 9p rw,relatime 0 0" "\n"
+    "//200.100.20.101/Users/SIAR1/Desktop /equipo/w cifs rw,relatime,vers=3.0,username=SIAR1 0 0\n"
+    # El espacio, como lo escribe el núcleo: «\040».
+    r"//200.100.20.101/Users/SIAR1/Desktop/con\040espacio /equipo/x cifs rw 0 0" "\n"
+)
+
+
+class TestElDestinoDeRedMontado:
+    """El operador, 2026-11-25: «la idea es colocar como ruta destino rutas en red»."""
+
+    def test_la_ruta_de_red_se_escribe_por_su_montaje(self):
+        ruta = "//200.100.20.101/Users/SIAR1/Desktop/MAGANGUE PRUEBA PILOTO/MAGANGUE - PROCESADO"
+        assert acceso.montaje_de_la_red(ruta, _MONTAJES) == "/equipo/w/MAGANGUE PRUEBA PILOTO/MAGANGUE - PROCESADO"
+
+    def test_sin_distinguir_mayusculas_ni_barras(self):
+        ruta = r"\\200.100.20.101\users\siar1\DESKTOP\Salida"
+        assert acceso.montaje_de_la_red(ruta, _MONTAJES) == "/equipo/w/Salida"
+
+    def test_la_raiz_del_montaje_y_el_montaje_mas_largo(self):
+        assert acceso.montaje_de_la_red("//200.100.20.101/Users/SIAR1/Desktop", _MONTAJES) == "/equipo/w"
+        assert acceso.montaje_de_la_red("//200.100.20.101/Users/SIAR1/Desktop/con espacio/A", _MONTAJES) == "/equipo/x/A"
+
+    def test_lo_que_no_esta_montado_no_se_inventa(self):
+        # «User» y no «Users»: otro recurso, no está montado.
+        assert acceso.montaje_de_la_red("//200.100.20.101/User/SIAR1/Desktop/X", _MONTAJES) is None
+        # Otra carpeta del mismo recurso, fuera de lo montado.
+        assert acceso.montaje_de_la_red("//200.100.20.101/Users/Otro/X", _MONTAJES) is None
+        assert acceso.montaje_de_la_red("//200.100.20.97/afinia/X", _MONTAJES) is None
+        assert acceso.montaje_de_la_red("C:/Users/X", _MONTAJES) is None
