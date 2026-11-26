@@ -88,6 +88,12 @@ class Settings:
     #: trabajando: una tras otra, relanzar mil PDF ya entregados eran 16 s
     #: (2026-10-28). Uno lo deja en fila, como antes.
     verificar_a_la_vez: int = 8
+    #: Cuántas entregas planas (la caja de correspondencia) escriben a la vez en
+    #: el destino, entre todas las carpetas de este equipo; a una misma carpeta
+    #: de NIC, siempre de una en una. Iban todas en fila: con un destino de red
+    #: lento, ~20 s cada PDF y los ya leídos esperando 14-29 min (2026-11-25,
+    #: siete PC sobre el Escritorio de un Windows). Uno lo deja en fila.
+    entregas_a_la_vez: int = 4
 
     #: Cuántas llamadas a la IA de pago a la vez, sumando todos los documentos.
     #: Con varios documentos en paralelo cada uno pide las suyas, y el
@@ -256,6 +262,7 @@ class Settings:
             page_workers=_int("RESOLUTIONS_PAGE_WORKERS", 8),
             folder_documents=_int("RESOLUTIONS_FOLDER_DOCUMENTS", 0),
             verificar_a_la_vez=_int("RESOLUTIONS_VERIFICAR_A_LA_VEZ", 8),
+            entregas_a_la_vez=_int("RESOLUTIONS_ENTREGAS_A_LA_VEZ", 4),
             ia_a_la_vez=_int("RESOLUTIONS_IA_A_LA_VEZ", 8),
             queue_limit=_int("RESOLUTIONS_QUEUE_LIMIT", 10_000),
             reintentos=_int("RESOLUTIONS_REINTENTOS", 2),

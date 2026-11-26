@@ -99,8 +99,13 @@ def escribir_indice(
     territorial: str | None,
     nombre_del_expediente: str | None = None,
     plantilla: Path = PLANTILLA,
+    armado_en_local: bool = False,
 ) -> Path:
-    """Escribe el índice en ``destino`` y devuelve la ruta del archivo."""
+    """Escribe el índice en ``destino`` y devuelve la ruta del archivo.
+
+    ``armado_en_local``: se arma en este equipo y va al destino de una sola
+    copia (``guardar_libro``): el de la carpeta de un NIC, en cada entrega.
+    """
     from openpyxl import load_workbook
 
     libro = load_workbook(plantilla)
@@ -116,7 +121,7 @@ def escribir_indice(
     # Entero o nada: a un temporal y luego en su sitio. El libro general lee
     # el índice de cada carpeta mientras otra entrega lo reescribe, y leía uno
     # a medias (EOFError, 2026-10-22, «1000265\00.INDICE ELECTRONICO.xlsx»).
-    return guardar_libro(libro, ruta)
+    return guardar_libro(libro, ruta, armado_en_local=armado_en_local)
 
 
 def cambiar_el_nombre(ruta: Path, viejo: str, nuevo: str, *, ocurrencia: int = 0) -> bool:

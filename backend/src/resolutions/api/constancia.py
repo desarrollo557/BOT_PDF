@@ -29,6 +29,7 @@ import contextlib
 import json
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -165,13 +166,27 @@ def huella_del_origen(path: Path) -> tuple[int, int]:
 
 def leer(ruta: Path) -> Constancia | None:
     """La constancia en ``ruta``, o ``None`` si no hay o no se entiende."""
+    return leer_si_hay(ruta)[0]
+
+
+def leer_si_hay(ruta: Path) -> tuple[Constancia | None, bool]:
+    """La constancia en ``ruta`` y si el archivo está: ``(None, False)`` si no hay.
+
+    ``(None, True)``: está y no se entiende (dañada). Así quien verifica no
+    pregunta después al destino si existe: con tres rutas posibles por PDF,
+    eran tres idas y vueltas más por cada uno, en cada equipo (2026-11-26).
+    """
     try:
         datos = json.loads(ruta.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return None
+        return None, False
     except (OSError, ValueError):
         logger.warning("constancia ilegible en %s", ruta, exc_info=True)
-        return None
+        return None, True
+    return _de_los_datos(datos, ruta), True
+
+
+def _de_los_datos(datos: object, ruta: Path) -> Constancia | None:
     if not isinstance(datos, dict):
         return None
     conocidos = set(Constancia.__dataclass_fields__)
@@ -210,16 +225,20 @@ def leer(ruta: Path) -> Constancia | None:
     return constancia
 
 
-def escribir(ruta: Path, constancia: Constancia) -> None:
+def escribir(ruta: Path, constancia: Constancia, *, carpeta_existe: bool = False) -> None:
     """La escribe entera o no la escribe: a un temporal y luego en su sitio.
 
     Un corte a media escritura dejaría un JSON roto, que se leería como «sin
     constancia» y daría por entregado lo que no se sabe si lo está.
+
+    ``carpeta_existe``: quien la llama acaba de crear o listar la carpeta, y
+    preguntarlo otra vez son dos idas y vueltas más a un destino de red.
     """
-    nueva = not ruta.parent.exists()
-    ruta.parent.mkdir(parents=True, exist_ok=True)
-    if nueva and ruta.parent.name == CARPETA_DE_ACTAS:
-        _ocultar(ruta.parent)
+    if not carpeta_existe:
+        nueva = not ruta.parent.exists()
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        if nueva and ruta.parent.name == CARPETA_DE_ACTAS:
+            _ocultar(ruta.parent)
     # Con nombre único: dos equipos -- o dos hilos -- que escriben la misma
     # constancia no se pisan el temporal (2026-11-25, varios PC en un destino).
     temporal = ruta.with_name(f"{ruta.name}.{uuid4().hex[:8]}.tmp")
@@ -261,14 +280,20 @@ def _ocultar(ruta: Path, *, oculto: bool = True) -> None:
         logger.debug("no se pudo cambiar la visibilidad de %s", ruta, exc_info=True)
 
 
-def archivos_de(carpeta: Path, rutas: list[Path]) -> list[dict]:
-    """Lo entregado, con su tamaño, relativo a ``carpeta``."""
+def archivos_de(carpeta: Path, rutas: list[Path], *, tamanos: Mapping[Path, int] | None = None) -> list[dict]:
+    """Lo entregado, con su tamaño, relativo a ``carpeta``.
+
+    ``tamanos``: los que la copia ya comprobó (``_copiar``); sin preguntar otra
+    vez al destino por cada archivo.
+    """
     archivos = []
     for ruta in rutas:
-        try:
-            tamano = ruta.stat().st_size
-        except OSError:
-            continue
+        tamano = (tamanos or {}).get(ruta)
+        if tamano is None:
+            try:
+                tamano = ruta.stat().st_size
+            except OSError:
+                continue
         try:
             relativa = ruta.relative_to(carpeta)
         except ValueError:

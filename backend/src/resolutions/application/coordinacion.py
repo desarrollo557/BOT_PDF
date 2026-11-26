@@ -26,6 +26,11 @@ SEGUNDOS_PARA_DARLO_POR_CAIDO = 90.0
 #: Y el propio equipo deja de entregar si lleva esto sin poder escribir su
 #: latido: antes de que los demás lo den por caído (90 s), con margen.
 SEGUNDOS_SIN_LATIDO_PROPIO = 45.0
+#: Si la última vez que este equipo pudo mirar los latidos de los demás fue
+#: hace más que esto, no juzga a nadie: su propia mirada está atrasada -- el
+#: hilo esperando a un servidor que no contesta, una lectura de 467 s medida
+#: el 2026-11-25 --, y vería caídos a todos los que siguen latiendo.
+SEGUNDOS_DE_MIRADA_ATRASADA = 60.0
 
 #: Las opciones de la corrida que tienen que ser las mismas en todos los
 #: equipos: con otra lectura o con otra habilidad, la mitad de la carpeta
@@ -120,15 +125,20 @@ class Vida:
     """
 
     caido: float = SEGUNDOS_PARA_DARLO_POR_CAIDO
+    #: Sin una mirada buena en este tiempo, nadie cae (``SEGUNDOS_DE_MIRADA_ATRASADA``).
+    atrasada: float = SEGUNDOS_DE_MIRADA_ATRASADA
     _vistos: dict[str, tuple[object, float]] = field(default_factory=dict)
     _mirando_desde: float | None = None
+    _ultima_mirada: float | None = None
 
     def mirada(self, ahora: float, *, bien: bool) -> None:
         """Una vuelta mirando los latidos: si salió bien, la cuenta de mirar seguido sigue."""
         if not bien:
             self._mirando_desde = None
-        elif self._mirando_desde is None:
+            return
+        if self._mirando_desde is None:
             self._mirando_desde = ahora
+        self._ultima_mirada = ahora
 
     def observar(self, equipo: str, contador: object, ahora: float) -> None:
         anterior = self._vistos.get(equipo)
@@ -144,7 +154,18 @@ class Vida:
             return True
         if self._mirando_desde is None or ahora - self._mirando_desde < self.caido:
             return True
+        if self._ultima_mirada is None or ahora - self._ultima_mirada > self.atrasada:
+            # La mirada propia se quedó atrás (el hilo esperando a la red): lo
+            # que no se ha podido ver no es que el otro haya muerto.
+            return True
         return ahora - visto[1] < self.caido
 
     def vivos(self, ahora: float) -> list[str]:
         return sorted(equipo for equipo in list(self._vistos) if self.vivo(equipo, ahora))
+
+    def muerto_hace(self, equipo: str, ahora: float) -> float | None:
+        """Cuánto lleva caído un equipo según esta mirada; ``None`` si vive o no se le puede juzgar."""
+        if self.vivo(equipo, ahora):
+            return None
+        visto = self._vistos.get(equipo)
+        return None if visto is None else ahora - visto[1]

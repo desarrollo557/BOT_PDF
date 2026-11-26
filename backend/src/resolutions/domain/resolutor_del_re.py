@@ -412,27 +412,60 @@ def re_citado_en_el_expediente(
     ``CIFRAS_DEL_CANDIDATO_CITADO``: trece cifras citadas tan cerca de lo leído
     no son casualidad.
     """
+    return re_citado_entre_citas(
+        actual, candidatos, {fuente: citas_del_texto(texto) for fuente, texto in textos.items()}
+    )
+
+
+def citas_del_texto(texto: str) -> list[tuple[str, str]]:
+    """Los números de trece cifras de un documento, cada uno con su contexto, en el orden en que aparecen.
+
+    Sólo la primera vez que sale cada número: es la que vale para cruzarlo con
+    el expediente. Es todo lo que ``re_citado_entre_citas`` necesita del texto,
+    así que se saca una vez, de la copia local, al entregar el PDF, y se guarda
+    en su constancia: al ordenar la carpeta del NIC no hay que volver a abrir
+    por la red los PDF de los demás UPD (2026-11-25: unas 114 lecturas por PDF,
+    y PDF de 80 MB releídos enteros en cada entrega de su NIC).
+    """
+    plano = " ".join((texto or "").split())
+    vistos: set[str] = set()
+    citas: list[tuple[str, str]] = []
+    for hallado in _TRECE_CIFRAS.finditer(plano):
+        numero = hallado.group(1)
+        if numero in vistos:
+            continue
+        vistos.add(numero)
+        desde, hasta = max(0, hallado.start() - CONTEXTO_DE_LA_CITA), hallado.end() + CONTEXTO_DE_LA_CITA
+        citas.append((numero, plano[desde:hasta]))
+    return citas
+
+
+def re_citado_entre_citas(
+    actual: str, candidatos: Sequence[str], citas_de: Mapping[str, Sequence[tuple[str, str]]]
+) -> CitaDelExpediente | None:
+    """``re_citado_en_el_expediente`` con las citas de cada documento ya sacadas (``citas_del_texto``).
+
+    ``citas_de`` va por el nombre de cada documento, como ``textos``: el filtro
+    de la etiqueta mal leída mira el RE de su nombre.
+    """
     if not es_re_entero(actual):
         return None
     leido = actual[2:]
     # Lo que otro documento del NIC lleva en su nombre ya está corroborado:
     # en 7741276 el recurso se llama …-RE2310202215463, el RE de la
     # notificación que se iba a cambiar (2026-11-24).
-    if any(leido in _RE_DEL_NOMBRE.findall(fuente) for fuente in textos):
+    if any(leido in _RE_DEL_NOMBRE.findall(fuente) for fuente in citas_de):
         return None
     citas: dict[str, tuple[str, str]] = {}
-    for fuente, texto in textos.items():
-        plano = " ".join((texto or "").split())
+    for fuente, suyas in citas_de.items():
         propios = _RE_DEL_NOMBRE.findall(fuente)
-        for hallado in _TRECE_CIFRAS.finditer(plano):
-            numero = hallado.group(1)
+        for numero, fragmento in suyas:
             # El número a una o dos cifras del RE del propio documento es su
             # etiqueta mal leída por la capa («…13463» por «…15463»), no una cita.
             if any(0 < _cifras_distintas(numero, propio) <= CIFRAS_DEL_CANDIDATO_CITADO for propio in propios):
                 continue
             if numero not in citas:
-                desde, hasta = max(0, hallado.start() - CONTEXTO_DE_LA_CITA), hallado.end() + CONTEXTO_DE_LA_CITA
-                citas[numero] = (plano[desde:hasta], fuente)
+                citas[numero] = (fragmento, fuente)
     if leido in citas:
         return None
     de_los_candidatos = {c[2:] for c in candidatos if es_re_entero(c) and c != actual}

@@ -865,11 +865,29 @@ class TestLaEntregaIncompleta:
         def copia_cortada(origen, destino, **_):
             Path(destino).write_bytes(b"01234")
 
-        monkeypatch.setattr(folders.shutil, "copy2", copia_cortada)
+        # ``copyfile`` y no ``copy2`` desde el 2026-11-26: copiar las fechas eran
+        # uno o dos cambios de atributos por archivo en un destino de red.
+        monkeypatch.setattr(folders.shutil, "copyfile", copia_cortada)
         with pytest.raises(OSError):
             folders._copiar(desde, hasta)
         assert not hasta.exists()
         assert not list(hasta.parent.iterdir())
+
+    def test_la_copia_directa_cortada_no_deja_nada(self, tmp_path, monkeypatch):
+        from resolutions.api import folders
+
+        desde = tmp_path / "x.pdf"
+        desde.write_bytes(b"0123456789")
+        carpeta = tmp_path / "dest"
+        carpeta.mkdir()
+
+        def copia_cortada(origen, destino, *_):
+            destino.write(origen.read(5))
+
+        monkeypatch.setattr(folders.shutil, "copyfileobj", copia_cortada)
+        with pytest.raises(OSError):
+            folders._copiar_directo(desde, carpeta, "x.pdf")
+        assert not list(carpeta.iterdir())
 
 
 class TestElOriginalSoloSeTocaSiEsElQueSeLeyo:
@@ -1719,7 +1737,7 @@ class TestRelanzarEsRapidoYExacto:
 
         monkeypatch.setattr(motor, "_pdfs_locales", lento)
         monkeypatch.setattr(motor, "_repartir", lambda run, encontrados, huellas: (list(encontrados), []))
-        run = SimpleNamespace(source=tmp_path / "origen", seen=set())
+        run = SimpleNamespace(source=tmp_path / "origen", seen=set(), encolados=set())
 
         lotes = [pendientes for pendientes, _ in motor._lotes_del_origen(run)]
 

@@ -20,6 +20,8 @@ a todo lo entregado:
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 import os
 import threading
 from collections.abc import Mapping
@@ -307,7 +309,39 @@ def _textos_de_los_pdf(carpeta: Path, rutas: list[str]) -> dict[str, str]:
     return textos
 
 
-def corregir_con_el_expediente(carpeta: Path) -> list[str]:
+def citas_del_pdf(pdf: Path) -> list[list[str]] | None:
+    """Las citas de trece cifras de un PDF (``citas_del_texto``), de su capa de texto; ``None`` si no se lee.
+
+    Se sacan de la copia local al entregarlo y van en su constancia, junto a su
+    archivo: así el cruce con el expediente no vuelve a abrir el PDF por la red.
+    """
+    from ..adapters.pymupdf_source import PyMuPDFPageSource
+    from ..domain.resolutor_del_re import citas_del_texto
+
+    try:
+        with PyMuPDFPageSource(pdf) as fuente:
+            texto = "\n".join(fuente.text_of(p) or "" for p in range(1, fuente.page_count + 1))
+    except Exception:  # noqa: BLE001 - un PDF ilegible no para la entrega
+        return None
+    return [[numero, fragmento] for numero, fragmento in citas_del_texto(texto)]
+
+
+def _citas_guardadas(archivo: Mapping) -> list[tuple[str, str]] | None:
+    citas = archivo.get("citas")
+    if not isinstance(citas, list):
+        return None
+    validas = []
+    for cita in citas:
+        if isinstance(cita, list | tuple) and len(cita) == 2 and all(isinstance(parte, str) for parte in cita):
+            validas.append((cita[0], cita[1]))
+        else:
+            return None
+    return validas
+
+
+def corregir_con_el_expediente(
+    carpeta: Path, *, leidas: list[tuple[Path, object]] | None = None, en_el_orden: bool = False
+) -> list[str]:
     """El RE leído a mano que otro documento del mismo NIC cita distinto se corrige en lo entregado (2026-11-24).
 
     El operador, ante 4251556: la petición de 2022 salió RE2311202207568 -- el
@@ -322,30 +356,68 @@ def corregir_con_el_expediente(carpeta: Path) -> list[str]:
     renombra el PDF, su fila y su evidencia -- «citado en otro documento del
     expediente», con la cita --. El índice del NIC lo reescribe quien ordena la
     carpeta, con las filas de las constancias. Devuelve lo que corrigió.
+
+    Rápido, porque corre en cada entrega de la carpeta (2026-11-26):
+
+    - primero se miran los candidatos -- un RE leído a mano que se pueda
+      corregir --, y sin ninguno no se lee nada;
+    - el texto de cada PDF sale de las citas guardadas en su constancia
+      (``citas_del_pdf``); sólo se abre por la red el de una entrega de antes
+      que no las trae;
+    - ``leidas``: las constancias completas que ya leyó quien ordena la carpeta,
+      para no volver a listarlas ni leerlas; se corrigen en el sitio;
+    - ``en_el_orden``: lo llama quien ordena la carpeta, que reescribe enseguida
+      el índice del NIC con las constancias ya corregidas, y el general lo rehace
+      el escritor de los generales: no se parchea ninguno de los dos aquí.
     """
     from ..domain.nombre_oficial import re_del_archivo
-    from ..domain.resolutor_del_re import re_citado_en_el_expediente
+    from ..domain.resolutor_del_re import citas_del_texto, re_citado_entre_citas
 
     hechos: list[str] = []
     with cerrojo_de_la_carpeta(carpeta):
-        try:
-            rutas = sorted(carpeta.glob(f"{Path(constancias.NOMBRE).stem}-*.json"))
-        except OSError:
+        if leidas is None:
+            try:
+                rutas = sorted(carpeta.glob(f"{Path(constancias.NOMBRE).stem}-*.json"))
+            except OSError:
+                return hechos
+            leidas = [
+                (ruta, constancia)
+                for ruta in rutas
+                if (constancia := constancias.leer(ruta)) is not None
+                and constancia.estado == constancias.EstadoDeEntrega.COMPLETA
+            ]
+        archivos = [a for _, c in leidas for a in _pdfs_en_orden(c)]
+        if len(archivos) < 2:
             return hechos
-        leidas = [
-            (ruta, constancia)
-            for ruta in rutas
-            if (constancia := constancias.leer(ruta)) is not None
-            and constancia.estado == constancias.EstadoDeEntrega.COMPLETA
-        ]
-        pdfs = [str(a.get("ruta") or "") for _, c in leidas for a in _pdfs_en_orden(c)]
-        if len(pdfs) < 2:
+        # Sin ningún RE que se pueda corregir, no hace falta ningún texto.
+        if not any(
+            re_del_archivo(str(archivo.get("ruta") or ""))
+            and (hojas := _hojas_del_documento(constancia, posicion))
+            and _se_corrige_por_el_expediente((constancia.evidencia.get("re") or {}).get(str(min(hojas))) or {})
+            for _, constancia in leidas
+            for posicion, archivo in enumerate(_pdfs_en_orden(constancia))
+        ):
             return hechos
-        textos = _textos_de_los_pdf(carpeta, pdfs)
+        citas_de: dict[str, list[tuple[str, str]]] = {}
+        sin_citas: list[str] = []
+        for archivo in archivos:
+            ruta = str(archivo.get("ruta") or "")
+            guardadas = _citas_guardadas(archivo)
+            if guardadas is None:
+                sin_citas.append(ruta)
+            else:
+                citas_de[ruta] = guardadas
+        for ruta, texto in _textos_de_los_pdf(carpeta, sin_citas).items():
+            citas_de[ruta] = citas_del_texto(texto)
         for ruta_de_la_constancia, constancia in leidas:
             renombrados: list[tuple[Path, Path]] = []
             hechos_de_esta: list[str] = []
             celdas: list[tuple[str, str]] = []
+            # Cómo estaba: si no se puede guardar, vuelve a estar así también en
+            # memoria. Quien ordena la carpeta sigue con este mismo objeto, y con
+            # los cambios a medias numeraba y escribía el índice con un RE que el
+            # archivo no lleva (la revisión, 2026-11-26).
+            respaldo = copy.deepcopy(constancia)
             for posicion, archivo in enumerate(_pdfs_en_orden(constancia)):
                 ruta = str(archivo.get("ruta") or "")
                 actual = re_del_archivo(ruta)
@@ -359,8 +431,8 @@ def corregir_con_el_expediente(carpeta: Path) -> list[str]:
                 candidatos = [
                     str(c.get("valor") if isinstance(c, Mapping) else c) for c in evidencia.get("candidatos") or []
                 ]
-                otros = {Path(r).name: t for r, t in textos.items() if r != ruta}
-                cita = re_citado_en_el_expediente(actual, candidatos, otros)
+                otros = {Path(r).name: c for r, c in citas_de.items() if r != ruta}
+                cita = re_citado_entre_citas(actual, candidatos, otros)
                 if cita is None:
                     continue
                 antes = constancias.ruta_de_entrega(carpeta, ruta)
@@ -391,19 +463,22 @@ def corregir_con_el_expediente(carpeta: Path) -> list[str]:
                         "motivo": f"antes {actual}, leído a mano",
                     }
                 )
-                textos[con_su_re_en_la_ruta(ruta, cita.radicado)] = textos.pop(ruta, "")
+                citas_de[con_su_re_en_la_ruta(ruta, cita.radicado)] = citas_de.pop(ruta, [])
                 hechos_de_esta.append(f"«{Path(ruta).name}»: {actual} → {cita.radicado}, como lo cita «{cita.fuente}»")
             if not hechos_de_esta:
                 continue
             try:
                 constancias.escribir(ruta_de_la_constancia, constancia)
             except OSError as error:
-                # Sin su constancia, los PDF vuelven a su nombre: nada queda a medias.
+                # Sin su constancia, los PDF vuelven a su nombre y la constancia
+                # en memoria a como estaba: nada queda a medias.
                 for antes, despues in reversed(renombrados):
                     try:
                         os.replace(despues, antes)
                     except OSError:
                         pass
+                for campo in dataclasses.fields(respaldo):
+                    setattr(constancia, campo.name, getattr(respaldo, campo.name))
                 hechos.append(f"no se pudo actualizar «{ruta_de_la_constancia.name}»: {explicar_fallo(error)}")
                 continue
             hechos.extend(hechos_de_esta)
@@ -411,6 +486,10 @@ def corregir_con_el_expediente(carpeta: Path) -> list[str]:
             # corrección del operador: quien ordena la carpeta rehace el del NIC.
             from ..adapters.indice_electronico import NOMBRE_DEL_INDICE
 
+            if en_el_orden:
+                # Quien ordena la carpeta reescribe enseguida el índice del NIC
+                # con estas constancias, y el general lo rehace su escritor.
+                continue
             upd = Path(str(constancia.origen or "")).stem
             for viejo, nuevo in celdas:
                 if (carpeta / NOMBRE_DEL_INDICE).is_file():

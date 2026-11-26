@@ -27,12 +27,14 @@ Ver ``application.coordinacion`` para la parte que no toca el disco.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import logging
 import os
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +60,16 @@ AREA = ".botpdf-coordinacion"
 #: Cuánto se espera, como mucho, el turno de una carpeta NIC que tiene otro
 #: equipo vivo: una entrega grande por la red tarda minutos, no horas.
 ESPERA_MAXIMA_DEL_CERROJO = 30 * 60.0
+#: Cuántos latidos espera la barrera (``confirmar``) a que vuelva a escribirse
+#: el propio cuando lleva demasiado sin poder: un servidor lento un momento no
+#: tira el OCR ya pagado (2026-11-25: «este equipo lleva demasiado sin poder
+#: escribir…», con PDF ya leídos).
+LATIDOS_DE_ESPERA_DEL_PROPIO = 6
+#: Cada cuántos latidos se vuelca el diario al disco: una línea por PDF a la
+#: red eran dos idas y vueltas más por entrega.
+LATIDOS_ENTRE_VOLCADOS = 3
+#: Hasta cuántas líneas del diario se guardan si el destino no las deja escribir.
+LINEAS_DEL_DIARIO_EN_MEMORIA = 50_000
 
 _EXCLUSIVO = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
 
@@ -90,8 +102,12 @@ class Ajeno:
     """El PDF lo tiene otro equipo, o ya lo hizo."""
 
     equipo: str
-    estado: str  # «en curso» | «hecho» | «falló»
+    estado: str  # «en curso» | «hecho» | «falló» | «aquí»
     error: str = ""
+
+
+#: El estado de un PDF que ya está en curso en este mismo equipo.
+AQUI = "aquí"
 
 
 def es_del_bot(nombre: str) -> bool:
@@ -128,15 +144,20 @@ def _leer(ruta: Path) -> dict | None:
 
 
 def _crear_en_exclusiva(ruta: Path, datos: Mapping[str, object]) -> bool:
-    """Crea el archivo sólo si no existe. ``False`` si otro ya lo tenía."""
+    """Crea el archivo sólo si no existe. ``False`` si otro ya lo tenía.
+
+    Sin ``fsync``: la exclusividad la da ``O_CREAT | O_EXCL`` en el servidor, y
+    lo escrito le llega al cerrar. El ``fsync`` sólo le pedía al Windows del
+    destino que lo asentara en su disco: 9 763 esperas de 1,06 s de media en
+    una corrida de 9 h 45 min (2026-11-25), unas 2,9 h por equipo. Un lector
+    que lo encuentra vacío ya lo trata como ilegible (``_leer``).
+    """
     try:
         fd = os.open(ruta, _EXCLUSIVO)
     except FileExistsError:
         return False
     try:
         os.write(fd, json.dumps(dict(datos), ensure_ascii=False).encode("utf-8"))
-        with contextlib.suppress(OSError):
-            os.fsync(fd)
     finally:
         os.close(fd)
     return True
@@ -149,14 +170,65 @@ def _crear_en_exclusiva(ruta: Path, datos: Mapping[str, object]) -> bool:
 #: «procesando» y el que cierra lo esperaba para siempre (2026-11-25).
 ESPERAS_SI_ESTA_EN_USO = (0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
 
+#: Lo que el cliente SMB de Linux devuelve, en vez de «en uso», cuando el
+#: servidor retiene un archivo un momento: «Resource temporarily unavailable»
+#: (EAGAIN) y «Device or resource busy» (EBUSY). Cortaba el orden de la
+#: carpeta del NIC a la mitad (2026-11-25, «.ordenando-0-…»).
+ERRORES_PASAJEROS = frozenset(
+    numero for numero in (errno.EAGAIN, errno.EBUSY, getattr(errno, "ETXTBSY", None)) if numero is not None
+)
+
+
+#: Lo que devuelve el cliente SMB mientras el servidor del destino no contesta
+#: un momento: «Host is down» (los 36 fallos del 2026-11-25), la conexión
+#: cortada, el tiempo agotado. Al volver la red, lo mismo sale bien.
+ERRORES_DE_LA_RED = ERRORES_PASAJEROS | frozenset(
+    numero
+    for numero in (
+        getattr(errno, nombre, None)
+        for nombre in (
+            "EHOSTDOWN",
+            "EHOSTUNREACH",
+            "ENETDOWN",
+            "ENETUNREACH",
+            "ENETRESET",
+            "ECONNRESET",
+            "ECONNABORTED",
+            "ECONNREFUSED",
+            "ETIMEDOUT",
+            "EIO",
+            "ESTALE",
+        )
+    )
+    if numero is not None
+)
+#: Cuánto se espera a que vuelva el servidor antes de dar por fallido el turno
+#: de una carpeta: el PDF ya está leído y pagado, y un corte de unos segundos
+#: lo rehacía entero.
+ESPERA_DE_LA_RED = 120.0
+
+
+def es_de_la_red(error: BaseException) -> bool:
+    """Si el fallo es de la red o de un archivo retenido: se espera y se reintenta."""
+    return isinstance(error, OSError) and not isinstance(error, FileExistsError) and (
+        error.errno in ERRORES_DE_LA_RED or isinstance(error, (ConnectionError, TimeoutError))
+    )
+
+
+def es_pasajero(error: BaseException) -> bool:
+    """Si el archivo está retenido un momento y vale la pena esperar: en uso, o EAGAIN/EBUSY de SMB."""
+    return isinstance(error, PermissionError) or (
+        isinstance(error, OSError) and error.errno in ERRORES_PASAJEROS
+    )
+
 
 def reintentar_si_esta_en_uso(hacer: Callable[[], object]) -> object:
-    """Hace ``hacer``; si el archivo está en uso (``PermissionError``), espera y lo intenta otra vez."""
+    """Hace ``hacer``; si el archivo está en uso o retenido un momento, espera y lo intenta otra vez."""
     for espera in (*ESPERAS_SI_ESTA_EN_USO, None):
         try:
             return hacer()
-        except PermissionError:
-            if espera is None:
+        except OSError as error:
+            if espera is None or not es_pasajero(error):
                 raise
             time.sleep(espera)
     return None
@@ -172,6 +244,14 @@ def _escribir_entero(ruta: Path, datos: Mapping[str, object]) -> None:
         with contextlib.suppress(OSError):
             temporal.unlink()
         raise
+
+
+def _existe(ruta: Path) -> bool:
+    """Si el archivo está; ante un fallo de la red, que sí (lo prudente: no quitar un turno a ciegas)."""
+    try:
+        return ruta.exists()
+    except OSError:
+        return True
 
 
 def _borrar(ruta: Path) -> None:
@@ -216,9 +296,14 @@ class Coordinacion:
         self.version = version
         self.latido = latido
         self.sin_latido_propio = sin_latido_propio
+        #: Cuánto espera la barrera a que vuelva el latido propio (``confirmar``).
+        self.espera_del_latido = latido * LATIDOS_DE_ESPERA_DEL_PROPIO
         self._reloj = reloj
         self._dormir = dormir
         self._vida = Vida(caido=caido)
+        #: Los latidos de otras corridas sobre este destino: no reparten nada,
+        #: sólo se miran para borrar los que dejó un arranque caído hace rato.
+        self._otras = Vida(caido=caido)
         self._mutex = threading.Lock()
         self._cerrojos: dict[str, _CerrojoLocal] = {}
         self._por_borrar: list[Path] = []
@@ -227,7 +312,18 @@ class Coordinacion:
         self._terminados: set[str] = set()
         self._ultimo_latido = reloj()
         self._parar = threading.Event()
+        #: El latido propio va solo en su hilo, a ritmo fijo; la mirada a los
+        #: demás, en otro. Juntos, una lectura lenta de un latido ajeno -- o un
+        #: borrado esperando a la red -- retrasaba el propio, y a los 45 s la
+        #: barrera tiraba el trabajo ya hecho (2026-11-25).
         self._hilo: threading.Thread | None = None
+        self._hilo_de_la_mirada: threading.Thread | None = None
+        #: El diario se escribe por tandas (``_volcar_el_diario``).
+        self._diario_pendiente: list[str] = []
+        self._cerrojo_del_diario = threading.Lock()
+        self._volcando = threading.Lock()
+        #: Los reclamos que no se pudieron dejar «hecho» (el destino sin contestar).
+        self._hechos_pendientes: list[tuple[Reclamo, str | None]] = []
         self.corrida: dict | None = None
         #: Lo que el latido cuenta a los demás de este equipo.
         self.estado = "uniéndose"
@@ -307,24 +403,32 @@ class Coordinacion:
         try:
             with self.cerrojo("corrida", espera_maxima=5 * 60.0):
                 corrida = _leer(self.area / "corrida.json")
-                antes = {
-                    id_: datos for id_, datos in self._latidos_de_otros().items() if datos.get("estado") != "terminado"
-                }
-                vivos: dict[str, dict] = {}
-                # Se miran varias veces durante dos latidos y medio: con que su
-                # contador cambie una vez, está vivo. Uno lento por la red no se
-                # da por muerto (y no se le quita la corrida) por un latido tarde.
-                vueltas = 5
-                for _ in range(vueltas if antes else 0):
-                    self._dormir(self.latido * 2.5 / vueltas + 0.2)
-                    for id_, datos in self._latidos_de_otros().items():
-                        if id_ in antes and datos.get("contador") != antes[id_].get("contador"):
-                            vivos[id_] = datos
-                    if len(vivos) == len(antes):
-                        break
                 # Una corrida cerrada no se reabre: lo que quede latiendo en ella
                 # es un equipo que volvió tarde, y ya no entrega (``por_que_no_vale``).
                 abierta = bool(corrida) and not corrida.get("cerrada")
+                antes = {
+                    id_: datos for id_, datos in self._latidos_de_otros().items() if datos.get("estado") != "terminado"
+                }
+                # Los que deciden si hay corrida en marcha: los latidos de la
+                # corrida abierta. Se miran hasta que uno cambie su contador -- está
+                # vivo y la corrida sigue --, o hasta el plazo de caído. Mirarlos
+                # sólo dos latidos y medio (≈26 s) era menos que lo que tarda un
+                # latido con el servidor lento (huecos de más de 45 s el
+                # 2026-11-25): el que se unía empezaba una corrida nueva y dejaba
+                # fuera a todos los demás, que dejaban de entregar.
+                relevantes = {
+                    id_ for id_, datos in antes.items() if abierta and datos.get("corrida") == corrida.get("id")
+                }
+                vivos: dict[str, dict] = {}
+                if relevantes:
+                    limite = time.monotonic() + self._vida.caido + self.latido
+                    while time.monotonic() < limite:
+                        self._dormir(min(self.latido, 2.0) * 0.5 + 0.05)
+                        for id_, datos in self._latidos_de_otros().items():
+                            if id_ in antes and datos.get("contador") != antes[id_].get("contador"):
+                                vivos[id_] = datos
+                        if relevantes & set(vivos):
+                            break
                 en_la_corrida = {
                     id_: d for id_, d in vivos.items() if abierta and d.get("corrida") == corrida.get("id")
                 }
@@ -383,13 +487,29 @@ class Coordinacion:
             return
         self._hilo = threading.Thread(target=self._latiendo, name=f"latido-{self.id}", daemon=True)
         self._hilo.start()
+        self._hilo_de_la_mirada = threading.Thread(target=self._mirando, name=f"mirada-{self.id}", daemon=True)
+        self._hilo_de_la_mirada.start()
 
     def _latiendo(self) -> None:
-        while not self._parar.wait(self.latido):
+        """Sólo el latido propio, a ritmo fijo: lo que tarda uno se descuenta del siguiente."""
+        siguiente = time.monotonic() + self.latido
+        while not self._parar.wait(max(0.0, siguiente - time.monotonic())):
             self._latir()
+            # Si el latido tardó más que su periodo, el siguiente va enseguida,
+            # sin amontonar los atrasados.
+            siguiente = max(siguiente + self.latido, time.monotonic())
+
+    def _mirando(self) -> None:
+        """Lo demás que se hace cada latido: mirar a los otros, borrar lo pendiente, la corrida, el diario."""
+        vueltas = 0
+        while not self._parar.wait(self.latido):
+            vueltas += 1
             self._mirar_a_los_demas()
             self._borrar_lo_pendiente()
+            self._marcar_lo_pendiente()
             self._mirar_la_corrida()
+            if vueltas % LATIDOS_ENTRE_VOLCADOS == 0:
+                self._volcar_el_diario()
 
     def _latir(self) -> None:
         self._contador += 1
@@ -412,32 +532,71 @@ class Coordinacion:
 
     def _latidos_de_otros(self) -> dict[str, dict]:
         latidos: dict[str, dict] = {}
+        ilegibles: set[str] = set()
         for ruta in self._equipos.glob("*.json"):
             if ruta.stem == self.id:
                 continue
             datos = _leer(ruta)
             if datos is not None:
                 latidos[ruta.stem] = datos
+            else:
+                ilegibles.add(ruta.stem)
+        #: Los latidos que están en la carpeta y no se dejaron leer en la última
+        #: mirada: su equipo no se sabe si terminó (``los_demas_terminaron``).
+        self._ilegibles = ilegibles
         return latidos
 
-    def _mirar_a_los_demas(self) -> dict[str, dict]:
-        ahora = self._reloj()
+    def _mirar_a_los_demas(self) -> dict[str, dict] | None:
+        """Lee los latidos de los demás; ``None`` si no se pudo mirar (la red).
+
+        Lo visto se fecha al terminar de leer, no al empezar: con el servidor
+        lento una lectura tardó 467 s (2026-11-25), y fechada al empezar hacía
+        parecer muertos a equipos que acababan de latir. Una mirada que tarda
+        más que ``Vida.atrasada`` no cuenta como mirar de seguido: nadie cae
+        hasta volver a mirar bien durante el plazo entero.
+        """
+        empezo = self._reloj()
         try:
             latidos = self._latidos_de_otros()
         except OSError:
+            ahora = self._reloj()
             self._vida.mirada(ahora, bien=False)
-            return {}
-        self._vida.mirada(ahora, bien=True)
+            self._otras.mirada(ahora, bien=False)
+            return None
+        ahora = self._reloj()
+        bien = ahora - empezo <= self._vida.atrasada
+        self._vida.mirada(ahora, bien=bien)
+        self._otras.mirada(ahora, bien=bien)
         corrida = (self.corrida or {}).get("id")
         for id_, datos in latidos.items():
             # El que se retiró ya no tiene nada: lo que haya dejado está libre.
             if datos.get("estado") == "terminado":
                 self._terminados.add(id_)
-            # Sólo los de esta corrida: el latido que dejó un equipo que se
-            # cayó en una corrida anterior no reparte nada.
-            if corrida is None or datos.get("corrida") == corrida:
-                self._vida.observar(id_, datos.get("contador"), ahora)
+                continue
+            # Sólo los de esta corrida reparten: el latido que dejó un equipo
+            # que se cayó en una corrida anterior no cuenta para nada.
+            vida = self._vida if corrida is None or datos.get("corrida") == corrida else self._otras
+            vida.observar(id_, datos.get("contador"), ahora)
+            muerto = vida.muerto_hace(id_, ahora)
+            if muerto is not None and muerto > 2 * vida.caido:
+                self._quitar_el_latido(id_, datos)
         return latidos
+
+    def _quitar_el_latido(self, id_: str, visto: Mapping[str, object]) -> None:
+        """Borra el latido que dejó un arranque caído hace rato, si sigue igual que cuando se vio.
+
+        Nunca se borraban: cada reinicio de un PC dejaba uno más, y cada equipo
+        los releía todos en cada vuelta. Si su dueño vuelve, su siguiente
+        latido lo escribe otra vez.
+        """
+        ruta = self._equipos / f"{id_}.json"
+        try:
+            actual = _leer(ruta)
+            if actual is not None and actual.get("contador") == visto.get("contador"):
+                _borrar(ruta)
+                self.anotar("borró el latido de un equipo caído", de=id_)
+        except OSError:
+            logger.debug("no se pudo borrar el latido viejo de %s", id_, exc_info=True)
 
     def _mirar_la_corrida(self) -> None:
         if self.corrida is None:
@@ -483,9 +642,11 @@ class Coordinacion:
         if self._parar.is_set():
             return
         self._parar.set()
-        if self._hilo is not None and self._hilo is not threading.current_thread():
-            self._hilo.join(timeout=self.latido + 5)
+        for hilo in (self._hilo, self._hilo_de_la_mirada):
+            if hilo is not None and hilo is not threading.current_thread():
+                hilo.join(timeout=self.latido + 5)
         self.estado = "terminado"
+        self._marcar_lo_pendiente()
         self._latir()
         self._borrar_lo_pendiente()
         try:
@@ -493,6 +654,7 @@ class Coordinacion:
         except OSError:
             logger.warning("no se pudo borrar el latido de %s; queda como «terminado»", self.id)
         self.anotar("se retiró")
+        self._volcar_el_diario()
 
     # -- reparto ----------------------------------------------------------------
 
@@ -509,6 +671,13 @@ class Coordinacion:
         dice que el PDF ya está entregado por otro.
         """
         clave = clave_de(relativa)
+        if clave in self.en_curso:
+            # Ya lo tiene otro hilo de este mismo equipo: un PDF que entró dos
+            # veces en la cola (el recorrido que vuelve a empezar tras una caída
+            # del origen). Devolverle el mismo reclamo lo hacía leer y pagar dos
+            # veces, y el que acababa primero soltaba el del otro (2026-11-25:
+            # «la entrega anterior se rehízo» y «ya no tiene…» en el mismo NIC).
+            return Ajeno(equipo=self.equipo, estado=AQUI)
         ruta = self._reclamo(clave)
         for _ in range(5):
             ficha = uuid4().hex
@@ -527,7 +696,7 @@ class Coordinacion:
                 return Reclamo(clave=clave, relativa=relativa, ficha=ficha)
             actual = _leer(ruta)
             if actual is None:
-                if not ruta.exists():
+                if not _existe(ruta):
                     continue  # se soltó entretanto: otra vez
                 dueno = f"ilegible:{clave}"
                 if self.vivo(dueno):
@@ -556,6 +725,11 @@ class Coordinacion:
         if actual.get("estado") == "hecho":
             return Ajeno(equipo=str(actual.get("equipo") or "?"), estado="hecho")
         if actual.get("id") != self.id and not self.vivo(str(actual.get("id"))):
+            return None
+        if actual.get("id") == self.id and clave not in self.en_curso:
+            # Uno propio que no lleva ningún hilo de este equipo -- no se pudo
+            # soltar con el destino caído --: está libre, y lo vuelve a tomar
+            # éste. Si no, se esperaba a sí mismo y la corrida no cerraba.
             return None
         return Ajeno(equipo=str(actual.get("equipo") or "?"), estado="en curso")
 
@@ -601,15 +775,41 @@ class Coordinacion:
         """La barrera antes de lo que no tiene vuelta atrás: entregar, dejar la constancia."""
         if reclamo is None:
             return
+        # El último latido escrito antes de cualquier espera: lo que miden los demás.
+        antes = self._ultimo_latido
         motivo = self.por_que_no_vale()
         if motivo is not None or self.desplazado:
             raise ReclamoPerdido(motivo or "otro equipo empezó una corrida nueva sobre este destino")
-        if not self.puede_entregar():
+        if not self.puede_entregar() and self.sigue_siendo_mio(reclamo):
+            # El latido propio va atrasado -- el servidor lento un momento --,
+            # pero el PDF sigue siendo de este equipo: se espera a que vuelva a
+            # escribirse en vez de tirar el OCR ya pagado. Después se relee la
+            # ficha: si en ese rato otro lo tomó, no se entrega.
+            self._esperar_el_latido_propio(antes)
+        if not self.puede_entregar() or self._ultimo_latido - antes >= self._hueco_maximo():
+            # Un hueco de latido tan largo que los demás pudieron darlo por
+            # caído y quitarle el turno de la carpeta -- aunque el reclamo siga
+            # siendo suyo --: no escribe nada.
             raise ReclamoPerdido(
                 "este equipo lleva demasiado sin poder escribir en el destino; otro puede haberlo tomado"
             )
         if not self.sigue_siendo_mio(reclamo):
             raise ReclamoPerdido(f"otro equipo tomó «{reclamo.relativa}» mientras se procesaba aquí")
+
+    def _hueco_maximo(self) -> float:
+        """El hueco de latido propio a partir del cual los demás pueden haberlo dado por caído, con margen."""
+        return self._vida.caido - 2 * self.latido
+
+    def _esperar_el_latido_propio(self, antes: float) -> None:
+        """Hasta que vuelva el latido propio, sin pasar nunca del plazo en que los demás lo darían por caído."""
+        limite = time.monotonic() + self.espera_del_latido
+        while (
+            not self.puede_entregar()
+            and time.monotonic() < limite
+            and self._reloj() - antes < self._hueco_maximo()
+            and not self._parar.is_set()
+        ):
+            self._parar.wait(min(0.5, max(0.01, self.latido / 2)))
 
     def terminar(self, reclamo: Reclamo, *, trabajo: str | None = None) -> None:
         """El PDF quedó entregado con su constancia: su reclamo dice «hecho» para todos.
@@ -619,18 +819,42 @@ class Coordinacion:
         """
         self.en_curso.pop(reclamo.clave, None)
         self.hechos += 1
+        if not self._marcar_hecho(reclamo, trabajo):
+            # El destino no contestó: se reintenta con la mirada. Si no, el
+            # reclamo seguía «en curso» de un equipo vivo, los demás lo esperaban
+            # y la corrida no cerraba.
+            with self._mutex:
+                self._hechos_pendientes.append((reclamo, trabajo))
+        # Con su trabajo: el que cierra arma la auditoría de la corrida con los
+        # diarios de todos, sin leer un reclamo por PDF (``lo_hecho_en_la_corrida``).
+        self.anotar("entregó", pdf=reclamo.relativa, trabajo=trabajo or "")
+
+    def _marcar_hecho(self, reclamo: Reclamo, trabajo: str | None) -> bool:
+        """Deja el reclamo «hecho» si sigue siendo de este equipo. ``False`` si el destino no lo dejó."""
+        ruta = self._reclamo(reclamo.clave)
         try:
-            if not self.sigue_siendo_mio(reclamo):
-                return
-            datos = _leer(self._reclamo(reclamo.clave)) or {}
-            _escribir_entero(
-                self._reclamo(reclamo.clave),
-                {**datos, "estado": "hecho", "hecho": _ahora_iso(), "trabajo": trabajo},
-            )
+            # Una lectura y no dos: la ficha y los datos salen de la misma.
+            datos = _leer(ruta)
+            if datos is None:
+                # No está o no se dejó leer: si sigue ahí, se reintenta.
+                return not _existe(ruta)
+            if datos.get("ficha") != reclamo.ficha:
+                return True
+            _escribir_entero(ruta, {**datos, "estado": "hecho", "hecho": _ahora_iso(), "trabajo": trabajo})
             _borrar(self._fallido(reclamo.clave))
+            return True
         except OSError:
             logger.warning("no se pudo marcar como hecho %s", reclamo.relativa, exc_info=True)
-        self.anotar("entregó", pdf=reclamo.relativa)
+            return False
+
+    def _marcar_lo_pendiente(self) -> None:
+        """Los «hecho» que el destino no dejó escribir, otra vez."""
+        with self._mutex:
+            pendientes, self._hechos_pendientes = self._hechos_pendientes, []
+        quedan = [(reclamo, trabajo) for reclamo, trabajo in pendientes if not self._marcar_hecho(reclamo, trabajo)]
+        if quedan:
+            with self._mutex:
+                self._hechos_pendientes[:0] = quedan
 
     def soltar(self, reclamo: Reclamo, *, error: str | None = None, reintentable: bool = False) -> None:
         """Suelta el PDF sin entregarlo; si falló, deja dicho por qué para los demás."""
@@ -675,7 +899,7 @@ class Coordinacion:
             return
         try:
             actual = _leer(ruta)
-            ilegible_y_sigue = actual is None and visto.get("ficha") is None and ruta.exists()
+            ilegible_y_sigue = actual is None and visto.get("ficha") is None and _existe(ruta)
             el_mismo = actual is not None and actual.get("ficha") == visto.get("ficha")
             if ilegible_y_sigue or el_mismo:
                 _borrar(ruta)
@@ -705,13 +929,34 @@ class Coordinacion:
         return False
 
     def lo_hecho_en_la_corrida(self) -> tuple[list[str], dict[str, str]]:
-        """Los trabajos de todos los PDF entregados en esta corrida, y los que fallaron (ruta → motivo)."""
-        trabajos: list[str] = []
+        """Los trabajos de todos los PDF entregados en esta corrida, y los que fallaron (ruta → motivo).
+
+        De los diarios de los equipos -- uno por arranque, unos pocos archivos --
+        y no de un reclamo por PDF: con 29 000 reclamos eran unas 116 000 idas y
+        vueltas a la red en un solo hilo, una o dos horas al cerrar (2026-11-25).
+        El listado de los reclamos (una sola petición) dice cuáles hay; sólo se
+        leen, varios a la vez, los que ningún diario cuenta -- un equipo que cayó
+        antes de volcar el suyo --.
+        """
+        self._volcar_el_diario()
+        trabajo_de = self._entregados_segun_los_diarios()
+        reclamos = self._de_la_corrida / "reclamos"
+        try:
+            claves = sorted(e.name[: -len(".json")] for e in os.scandir(reclamos) if e.name.endswith(".json"))
+        except OSError:
+            claves = None
+        if claves is not None:
+            existen = set(claves)
+            trabajo_de = {clave: trabajo for clave, trabajo in trabajo_de.items() if clave in existen}
+            faltan = [clave for clave in claves if clave not in trabajo_de]
+            if faltan:
+                with ThreadPoolExecutor(max_workers=min(8, len(faltan)), thread_name_prefix="lo-hecho") as hilos:
+                    leidos = list(hilos.map(lambda clave: _leer(reclamos / f"{clave}.json"), faltan))
+                for clave, datos in zip(faltan, leidos, strict=True):
+                    if datos and datos.get("estado") == "hecho" and datos.get("trabajo"):
+                        trabajo_de[clave] = str(datos["trabajo"])
+        trabajos = [trabajo_de[clave] for clave in sorted(trabajo_de)]
         fallidos: dict[str, str] = {}
-        for ruta in sorted((self._de_la_corrida / "reclamos").glob("*.json")):
-            datos = _leer(ruta)
-            if datos and datos.get("estado") == "hecho" and datos.get("trabajo"):
-                trabajos.append(str(datos["trabajo"]))
         for ruta in sorted((self._de_la_corrida / "fallidos").glob("*.json")):
             datos = _leer(ruta)
             if datos and datos.get("relativa"):
@@ -721,13 +966,24 @@ class Coordinacion:
     def los_demas_terminaron(self) -> bool:
         """Si ningún otro equipo vivo de esta corrida sigue procesando."""
         corrida = (self.corrida or {}).get("id")
-        for id_, datos in self._mirar_a_los_demas().items():
+        latidos = self._mirar_a_los_demas()
+        if latidos is None:
+            # Sin poder mirar no se sabe: se espera (cerrar con alguien todavía
+            # entregando dejaba lo suyo fuera de los generales y la auditoría).
+            return False
+        for id_, datos in latidos.items():
             if datos.get("estado") == "terminado":
                 # El que se retiró y no pudo borrar su latido: se limpia aquí.
                 with contextlib.suppress(OSError):
                     _borrar(self._equipos / f"{id_}.json")
                 continue
             if datos.get("corrida") == corrida and datos.get("estado") != "terminado" and self.vivo(id_):
+                return False
+        # Un equipo de esta corrida cuyo latido está en la carpeta pero no se
+        # dejó leer un momento sigue contando. El que se retiró lo borró: ése no.
+        ahora = self._reloj()
+        for id_ in getattr(self, "_ilegibles", set()):
+            if id_ not in self._terminados and self._vida.vivo(id_, ahora):
                 return False
         return True
 
@@ -770,16 +1026,36 @@ class Coordinacion:
     ) -> str:
         desde = self._reloj()
         pausa = 0.05
+        sin_red_desde: float | None = None
+        espera_de_la_red = 1.0
         while True:
             ficha = uuid4().hex
-            if _crear_en_exclusiva(ruta, {"id": self.id, "equipo": self.equipo, "ficha": ficha, "nombre": nombre}):
+            try:
+                creado = _crear_en_exclusiva(
+                    ruta, {"id": self.id, "equipo": self.equipo, "ficha": ficha, "nombre": nombre}
+                )
+            except OSError as error:
+                # El servidor del destino no contesta un momento: se espera a que
+                # vuelva en vez de dar por fallido un PDF ya leído y pagado.
+                ahora = time.monotonic()
+                sin_red_desde = sin_red_desde if sin_red_desde is not None else ahora
+                if not es_de_la_red(error) or ahora - sin_red_desde > ESPERA_DE_LA_RED:
+                    raise
+                if cancelado is not None and cancelado():
+                    raise CerrojoOcupado(f"se canceló esperando el turno de «{nombre}»") from error
+                logger.warning("el destino no contesta al tomar el turno de %s: %s; se reintenta", nombre, error)
+                self._dormir(espera_de_la_red)
+                espera_de_la_red = min(espera_de_la_red * 2, 15.0)
+                continue
+            sin_red_desde, espera_de_la_red = None, 1.0
+            if creado:
                 return ficha
             actual = _leer(ruta)
             if actual is not None and actual.get("id") == self.id:
                 # Uno propio que no se pudo borrar al soltarlo: vuelve a ser de este.
                 return str(actual.get("ficha"))
             dueno = str(actual.get("id")) if actual else f"ilegible:{ruta.name}"
-            if (actual is not None or ruta.exists()) and not self.vivo(dueno):
+            if (actual is not None or _existe(ruta)) and not self.vivo(dueno):
                 self.anotar("quitó el cerrojo de un equipo caído", cerrojo=nombre, de=dueno)
                 self._quitar_huerfano(ruta, actual or {"ficha": None})
                 continue
@@ -796,6 +1072,10 @@ class Coordinacion:
             actual = _leer(ruta)
             if actual is not None and actual.get("ficha") == ficha:
                 _borrar(ruta)
+            elif actual is None and _existe(ruta):
+                # No se dejó leer (la red): se reintenta con la mirada, o quedaba
+                # a nombre de este equipo vivo y los demás lo esperaban 30 min.
+                self._por_borrar.append(ruta)
         except OSError:
             # Se reintenta con el latido: si no, los demás esperarían a un vivo
             # que ya no lo usa.
@@ -804,7 +1084,10 @@ class Coordinacion:
 
     def _borrar_lo_pendiente(self) -> None:
         quedan = []
-        for ruta in self._por_borrar:
+        for ruta in list(self._por_borrar):
+            if self._lo_tiene_tomado(ruta):
+                # Este equipo lo volvió a tomar entretanto: ya no se borra.
+                continue
             try:
                 actual = _leer(ruta)
                 if actual is None or actual.get("id") == self.id:
@@ -813,13 +1096,79 @@ class Coordinacion:
                 quedan.append(ruta)
         self._por_borrar = quedan
 
+    def _lo_tiene_tomado(self, ruta: Path) -> bool:
+        """Si un cerrojo o un reclamo pendiente de borrar lo tiene ahora este proceso."""
+        if ruta.parent.name == "cerrojos":
+            local = self._cerrojos.get(ruta.stem)
+            return local is not None and local.cuenta > 0
+        if ruta.parent.name == "reclamos":
+            return ruta.stem in self.en_curso
+        return False
+
     # -- el diario ----------------------------------------------------------------
 
     def anotar(self, que: str, **datos: object) -> None:
-        """Una línea en el diario de este equipo: qué hizo y cuándo. Que falle no para nada."""
+        """Una línea en el diario de este equipo: qué hizo y cuándo. Que falle no para nada.
+
+        Se guarda en memoria y se vuelca por tandas (``_volcar_el_diario``):
+        escribirla en la red en el momento eran dos idas y vueltas más por PDF.
+        """
         try:
             linea = json.dumps({"cuando": _ahora_iso(), "equipo": self.id, "que": que, **datos}, ensure_ascii=False)
-            with open(self.area / "diario" / f"{self.id}.jsonl", "a", encoding="utf-8") as diario:
-                diario.write(linea + "\n")
+        except (TypeError, ValueError):
+            return
+        with self._cerrojo_del_diario:
+            self._diario_pendiente.append(linea)
+            if len(self._diario_pendiente) > LINEAS_DEL_DIARIO_EN_MEMORIA:
+                del self._diario_pendiente[: -LINEAS_DEL_DIARIO_EN_MEMORIA]
+
+    def _volcar_el_diario(self) -> None:
+        """Lo anotado desde la última vez, al diario del destino de una sola escritura."""
+        with self._volcando:
+            with self._cerrojo_del_diario:
+                lineas, self._diario_pendiente = self._diario_pendiente, []
+            if not lineas:
+                return
+            try:
+                with open(self.area / "diario" / f"{self.id}.jsonl", "a", encoding="utf-8") as diario:
+                    diario.write("".join(f"{linea}\n" for linea in lineas))
+            except OSError:
+                # Se intenta en la próxima vuelta, con lo nuevo detrás.
+                with self._cerrojo_del_diario:
+                    self._diario_pendiente[:0] = lineas
+                logger.debug("no se pudo volcar el diario de %s", self.id, exc_info=True)
+
+    def _entregados_segun_los_diarios(self) -> dict[str, str]:
+        """La clave y el trabajo de cada PDF que algún equipo dice haber entregado en esta corrida."""
+        corrida = (self.corrida or {}).get("id")
+        trabajo_de: dict[str, str] = {}
+        #: Las que dos líneas dan con trabajos distintos (un PDF rehecho en la
+        #: misma corrida): las decide su reclamo, que lleva el último.
+        dudosas: set[str] = set()
+        try:
+            diarios = sorted((self.area / "diario").glob("*.jsonl"))
         except OSError:
-            pass
+            return trabajo_de
+        for diario in diarios:
+            try:
+                texto = diario.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            de_esta = False
+            for linea in texto.splitlines():
+                try:
+                    datos = json.loads(linea)
+                except ValueError:
+                    continue
+                if not isinstance(datos, dict):
+                    continue
+                if datos.get("que") == "se unió":
+                    # Un diario por arranque, y cada arranque es de una corrida.
+                    de_esta = datos.get("corrida") == corrida
+                elif de_esta and datos.get("que") == "entregó" and datos.get("pdf") and datos.get("trabajo"):
+                    clave, trabajo = clave_de(str(datos["pdf"])), str(datos["trabajo"])
+                    if trabajo_de.setdefault(clave, trabajo) != trabajo:
+                        dudosas.add(clave)
+        for clave in dudosas:
+            trabajo_de.pop(clave, None)
+        return trabajo_de

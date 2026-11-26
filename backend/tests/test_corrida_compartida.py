@@ -82,10 +82,11 @@ def equipo(destino: Path, nombre: str, *, version: str = "v1", reloj=None, opcio
 
 
 def caer(coordinacion: Coordinacion) -> None:
-    """El equipo se cae: deja de latir sin retirarse (su latido queda en el disco)."""
+    """El equipo se cae: deja de latir y de mirar sin retirarse (su latido queda en el disco)."""
     coordinacion._parar.set()
-    if coordinacion._hilo is not None:
-        coordinacion._hilo.join()
+    for hilo in (coordinacion._hilo, coordinacion._hilo_de_la_mirada):
+        if hilo is not None:
+            hilo.join()
 
 
 def dar_por_caido(observador: Coordinacion, reloj: Reloj) -> None:
@@ -145,17 +146,28 @@ class TestLaFechaDelOrigenEntreEquipos:
 
 
 class TestLaVida:
+    @staticmethod
+    def _mirando(vida: Vida, desde: float, hasta: float) -> None:
+        """Quien mira, mira de seguido cada diez segundos."""
+        t = desde
+        while t <= hasta:
+            vida.mirada(t, bien=True)
+            t += 10
+
     def test_nunca_visto_esta_vivo_hasta_que_pase_el_plazo(self):
         vida = Vida(caido=90)
         vida.mirada(0, bien=True)
         assert vida.vivo("PC2", 10)
+        self._mirando(vida, 10, 95)
         assert vida.vivo("PC2", 95)
+        self._mirando(vida, 100, 101)
         assert not vida.vivo("PC2", 101)
 
     def test_el_contador_que_cambia_lo_mantiene_vivo(self):
         vida = Vida(caido=90)
         vida.mirada(0, bien=True)
         for t in range(0, 300, 10):
+            vida.mirada(float(t), bien=True)
             vida.observar("PC2", t, float(t))
         assert vida.vivo("PC2", 300)
 
@@ -165,9 +177,26 @@ class TestLaVida:
         vida.mirada(0, bien=True)
         vida.observar("PC2", 1, 0)
         vida.mirada(50, bien=False)
-        vida.mirada(200, bien=True)
+        self._mirando(vida, 200, 250)
         assert vida.vivo("PC2", 250)
+        self._mirando(vida, 260, 291)
         assert not vida.vivo("PC2", 291)
+
+    def test_con_la_mirada_propia_atrasada_nadie_cae(self):
+        # El hilo que mira, colgado esperando a la red (una lectura de 467 s el
+        # 2026-11-25): sin mirar no se sabe nada de los demás, y nadie cae.
+        vida = Vida(caido=90)
+        self._mirando(vida, 0, 100)
+        vida.observar("PC2", 1, 0)
+        assert not vida.vivo("PC2", 100)
+        vida.observar("PC3", 1, 95)
+        # Lleva 200 s sin poder mirar: ni PC3, que latía, ni PC2 se dan por caídos.
+        assert vida.vivo("PC2", 300)
+        assert vida.vivo("PC3", 300)
+        # Al volver a mirar, el que de verdad no latió sigue caído.
+        vida.mirada(305, bien=True)
+        assert not vida.vivo("PC3", 305)
+        assert vida.muerto_hace("PC3", 305) == pytest.approx(210)
 
 
 class TestLosReclamos:
@@ -357,6 +386,299 @@ class TestCuatroEquiposALaVez:
         finally:
             for coordinacion in equipos:
                 coordinacion.parar()
+
+
+class TestLaCoordinacionContraUnServidorLento:
+    """Lo que el 2026-11-25 se midió contra el Escritorio de un Windows compartido por
+    siete PC: FLUSH de 1,06 s, renombres de 0,94 s, una lectura de 467 s y «Host is down»."""
+
+    def test_crear_en_exclusiva_no_pide_fsync(self, tmp_path, monkeypatch):
+        from resolutions.adapters import coordinacion_en_disco
+
+        def prohibido(_fd):
+            raise AssertionError("fsync no da exclusividad y costaba un segundo por archivo")
+
+        monkeypatch.setattr(coordinacion_en_disco.os, "fsync", prohibido)
+        ruta = tmp_path / "reclamo.json"
+        assert coordinacion_en_disco._crear_en_exclusiva(ruta, {"ficha": "a"})
+        assert not coordinacion_en_disco._crear_en_exclusiva(ruta, {"ficha": "b"})
+        assert coordinacion_en_disco._leer(ruta) == {"ficha": "a"}
+
+    def test_el_propio_en_curso_no_se_devuelve_otra_vez(self, tmp_path):
+        from resolutions.adapters.coordinacion_en_disco import AQUI
+
+        uno = equipo(tmp_path, "PC1")
+        try:
+            tomado = uno.reclamar("NIC/UPD.pdf")
+            assert isinstance(tomado, Reclamo)
+            # Otro hilo del mismo equipo con el mismo PDF (entró dos veces en la cola).
+            otra_vez = uno.reclamar("NIC/UPD.pdf")
+            assert isinstance(otra_vez, Ajeno) and otra_vez.estado == AQUI
+            # Suelto, se puede volver a tomar (la vuelta de reintento).
+            uno.soltar(tomado)
+            assert isinstance(uno.reclamar("NIC/UPD.pdf"), Reclamo)
+        finally:
+            uno.parar()
+
+    def test_un_reclamo_propio_que_no_lleva_nadie_esta_libre(self, tmp_path):
+        uno = equipo(tmp_path, "PC1")
+        try:
+            uno.reclamar("NIC/UPD.pdf")
+            assert uno.estado_de("NIC/UPD.pdf").estado == "en curso"
+            # No se pudo soltar (el destino caído) y ningún hilo lo lleva ya:
+            # antes se esperaba a sí mismo para siempre y la corrida no cerraba.
+            uno.en_curso.clear()
+            assert uno.estado_de("NIC/UPD.pdf") is None
+            assert isinstance(uno.reclamar("NIC/UPD.pdf"), Reclamo)
+        finally:
+            uno.parar()
+
+    def test_la_barrera_espera_a_que_vuelva_el_latido_propio(self, tmp_path):
+        reloj = Reloj()
+        uno = equipo(tmp_path, "PC1", reloj=reloj)
+        try:
+            tomado = uno.reclamar("NIC/UPD.pdf")
+            # Un minuto sin poder escribir su latido (el destino sin contestar)...
+            uno._latir = lambda: None
+            time.sleep(0.1)
+            reloj.ahora += 60
+            assert not uno.puede_entregar()
+
+            def vuelve():
+                time.sleep(0.1)
+                uno._ultimo_latido = reloj()
+
+            hilo = threading.Thread(target=vuelve)
+            hilo.start()
+            # ...y vuelve: el PDF sigue siendo suyo y se entrega, sin tirar lo leído.
+            uno.confirmar(tomado)
+            hilo.join()
+        finally:
+            uno.parar()
+
+    def test_el_latido_propio_no_espera_a_la_mirada(self, tmp_path, monkeypatch):
+        uno = equipo(tmp_path, "PC1")
+        try:
+            mirar = uno._latidos_de_otros
+
+            def lenta():
+                time.sleep(1.0)
+                return mirar()
+
+            monkeypatch.setattr(uno, "_latidos_de_otros", lenta)
+            antes = uno._contador
+            time.sleep(0.6)
+            # Con la mirada colgada en una lectura lenta, el latido sigue a su ritmo.
+            assert uno._contador - antes >= 5
+            assert uno.puede_entregar()
+        finally:
+            uno.parar()
+
+    def test_unirse_no_desplaza_a_quien_late_tarde(self, tmp_path):
+        uno = equipo(tmp_path, "PC1")
+        pausado = threading.Event()
+        pausado.set()
+        latir = uno._latir
+        uno._latir = lambda: None if pausado.is_set() else latir()
+        try:
+
+            def vuelve():
+                # Su latido tarda más de lo que miraba antes quien se unía (≈2,5 latidos).
+                time.sleep(0.6)
+                pausado.clear()
+
+            hilo = threading.Thread(target=vuelve)
+            hilo.start()
+            otro = Coordinacion(tmp_path, equipo="PC2", version="v1", latido=LATIDO, caido=3.0)
+            otro.unirse(OPCIONES, origen="MAGANGUE")
+            hilo.join()
+            try:
+                assert otro.corrida["id"] == uno.corrida["id"]
+                assert uno.por_que_no_vale() is None
+            finally:
+                otro.parar()
+        finally:
+            uno.parar()
+
+    def test_lo_hecho_sale_de_los_diarios_y_de_los_reclamos_que_faltan(self, tmp_path):
+        uno, otro = equipo(tmp_path, "PC1"), equipo(tmp_path, "PC2")
+        try:
+            for numero in range(3):
+                uno.terminar(uno.reclamar(f"NIC/UPD{numero}.pdf"), trabajo=f"job-uno-{numero}")
+                otro.terminar(otro.reclamar(f"NIC/UPDB{numero}.pdf"), trabajo=f"job-otro-{numero}")
+            otro._volcar_el_diario()
+            esperados = sorted([f"job-uno-{n}" for n in range(3)] + [f"job-otro-{n}" for n in range(3)])
+            assert sorted(uno.lo_hecho_en_la_corrida()[0]) == esperados
+            # Un equipo que cayó sin volcar su diario: lo suyo sale de sus reclamos.
+            for diario in (tmp_path / AREA / "diario").glob(f"{otro.id}.jsonl"):
+                diario.unlink()
+            assert sorted(uno.lo_hecho_en_la_corrida()[0]) == esperados
+        finally:
+            uno.parar()
+            otro.parar()
+
+    def test_el_turno_espera_a_que_vuelva_el_destino(self, tmp_path, monkeypatch):
+        import errno
+
+        from resolutions.adapters import coordinacion_en_disco
+
+        uno = equipo(tmp_path, "PC1")
+        try:
+            uno._dormir = lambda _segundos: None
+            crear = coordinacion_en_disco._crear_en_exclusiva
+            fallos = []
+
+            def sin_red(ruta, datos):
+                if ruta.suffix == ".lock" and len(fallos) < 2:
+                    fallos.append(ruta)
+                    raise OSError(errno.EHOSTDOWN, "Host is down")
+                return crear(ruta, datos)
+
+            monkeypatch.setattr(coordinacion_en_disco, "_crear_en_exclusiva", sin_red)
+            # Los 36 «Host is down» del 2026-11-25: con el PDF ya leído y pagado.
+            with uno.cerrojo("carpeta:4133182"):
+                pass
+            assert len(fallos) == 2
+        finally:
+            uno.parar()
+
+    def test_la_barrera_no_espera_mas_alla_del_plazo_de_caido(self, tmp_path):
+        reloj = Reloj()
+        uno = equipo(tmp_path, "PC1", reloj=reloj)
+        try:
+            tomado = uno.reclamar("NIC/UPD.pdf")
+            uno._latir = lambda: None
+            time.sleep(0.1)
+            # Un hueco de latido tan largo que los demás pudieron darlo por caído
+            # y quitarle el turno de la carpeta: aunque el reclamo siga siendo
+            # suyo, no escribe.
+            reloj.ahora += 100
+            with pytest.raises(ReclamoPerdido, match="demasiado sin poder escribir"):
+                uno.confirmar(tomado)
+
+            # Y si el latido vuelve mientras espera, pero tras un hueco de esa
+            # medida, tampoco.
+            uno._ultimo_latido = reloj.ahora = 2000.0
+            reloj.ahora += 60
+
+            def vuelve_tarde():
+                time.sleep(0.1)
+                reloj.ahora += 35
+                uno._ultimo_latido = reloj()
+
+            hilo = threading.Thread(target=vuelve_tarde)
+            hilo.start()
+            with pytest.raises(ReclamoPerdido):
+                uno.confirmar(tomado)
+            hilo.join()
+        finally:
+            uno.parar()
+
+    def test_una_mirada_lenta_no_da_por_caido_a_nadie(self, tmp_path):
+        reloj = Reloj()
+        uno = equipo(tmp_path, "PC1", reloj=reloj)
+        otro = equipo(tmp_path, "PC2")
+        try:
+            caer(uno)
+            for _ in range(4):
+                uno._mirar_a_los_demas()
+                reloj.ahora += 20
+            assert uno.vivo(otro.id)
+            leer = uno._latidos_de_otros
+
+            def lenta():
+                # La lectura tarda 467 s (medido el 2026-11-25).
+                reloj.ahora += 467
+                return leer()
+
+            uno._latidos_de_otros = lenta
+            uno._mirar_a_los_demas()
+            uno._latidos_de_otros = leer
+            reloj.ahora += 10
+            uno._mirar_a_los_demas()
+            # Lo leído se fecha al terminar la lectura, y una mirada tan lenta no
+            # cuenta como mirar de seguido: el que latía sigue vivo.
+            assert uno.vivo(otro.id)
+        finally:
+            otro.parar()
+
+    def test_el_que_cierra_no_cierra_si_no_pudo_mirar(self, tmp_path, monkeypatch):
+        uno, otro = equipo(tmp_path, "PC1"), equipo(tmp_path, "PC2")
+        try:
+            uno._mirar_a_los_demas()
+            assert not uno.los_demas_terminaron()
+
+            def sin_red():
+                raise OSError("Host is down")
+
+            monkeypatch.setattr(uno, "_latidos_de_otros", sin_red)
+            assert not uno.los_demas_terminaron()
+            # Un vivo cuyo latido está en la carpeta pero no se dejó leer sigue contando.
+            monkeypatch.undo()
+
+            def ilegible():
+                uno._ilegibles = {otro.id}
+                return {}
+
+            monkeypatch.setattr(uno, "_latidos_de_otros", ilegible)
+            assert not uno.los_demas_terminaron()
+        finally:
+            uno.parar()
+            otro.parar()
+
+    def test_el_hecho_que_no_se_pudo_escribir_se_reintenta(self, tmp_path, monkeypatch):
+        from resolutions.adapters import coordinacion_en_disco
+
+        uno, otro = equipo(tmp_path, "PC1"), equipo(tmp_path, "PC2")
+        try:
+            tomado = uno.reclamar("NIC/UPD.pdf")
+            # Sin sus hilos: sólo lo que hace la prueba.
+            caer(uno)
+            escribir = coordinacion_en_disco._escribir_entero
+            monkeypatch.setattr(
+                coordinacion_en_disco, "_escribir_entero", lambda ruta, datos: (_ for _ in ()).throw(OSError("Host is down"))
+            )
+            uno.terminar(tomado, trabajo="job-1")
+            assert otro.estado_de("NIC/UPD.pdf").estado == "en curso"
+            # Vuelve la red: la mirada lo deja «hecho».
+            monkeypatch.setattr(coordinacion_en_disco, "_escribir_entero", escribir)
+            uno._marcar_lo_pendiente()
+            assert otro.estado_de("NIC/UPD.pdf").estado == "hecho"
+            assert not uno._hechos_pendientes
+        finally:
+            uno.parar()
+            otro.parar()
+
+    def test_lo_pendiente_de_borrar_no_se_lleva_el_turno_vuelto_a_tomar(self, tmp_path):
+        from resolutions.adapters.coordinacion_en_disco import clave_de
+
+        uno = equipo(tmp_path, "PC1")
+        try:
+            ruta = tmp_path / AREA / "cerrojos" / f"{clave_de('carpeta:X')}.lock"
+            with uno.cerrojo("carpeta:X"):
+                # Un borrado que quedó pendiente de una vez anterior.
+                uno._por_borrar.append(ruta)
+                uno._borrar_lo_pendiente()
+                assert ruta.exists()
+            assert not ruta.exists()
+        finally:
+            uno.parar()
+
+    def test_el_latido_viejo_de_un_arranque_caido_se_borra(self, tmp_path):
+        import json
+
+        reloj = Reloj()
+        uno = equipo(tmp_path, "PC1", reloj=reloj)
+        try:
+            caer(uno)
+            viejo = tmp_path / AREA / "equipos" / "PC9-viejo.json"
+            viejo.write_text(json.dumps({"id": "PC9-viejo", "corrida": "otra", "contador": 7}), encoding="utf-8")
+            for _ in range(7):
+                uno._mirar_a_los_demas()
+                reloj.ahora += 40
+            assert not viejo.exists()
+        finally:
+            uno._parar.set()
 
 
 class TestRepetidos:
