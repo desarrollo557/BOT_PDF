@@ -465,13 +465,22 @@ class TestElSelloAlPie:
 
     FIRMA = "en constancia firma\nNIXON FERNEY ARIZA MOYA\nC.C. N° 7.925.433"
     SELLO = [("OFICINA", 300, 500, 100, 20), ("ACEPTACIÓN", 300, 540, 120, 20), ("Grupo-epm", 450, 540, 90, 20)]
+    #: Una hoja del cuerpo de la carta, con su texto legible: ni firma ni campos
+    #: del sello. Con menos de PALABRAS_DE_UNA_HOJA_MUDA palabras sería una hoja
+    #: muda, que desde el 2026-11-24 sí se mira al pie (la carta escrita a mano);
+    #: el «hoja del cuerpo de la carta» de antes, de seis palabras, ya lo era.
+    CUERPO = (
+        "Por medio de la presente me permito solicitar la revisión de la factura del mes de "
+        "marzo, porque el consumo facturado no corresponde al registrado en el medidor de mi "
+        "vivienda y pido que se corrija el cobro con la lectura real del medidor."
+    )
 
     def test_lo_halla_con_la_ia_lee_su_re_y_no_abre_nada(self):
         from resolutions.application.sellos import sellos_al_pie
 
         pago = self._Pago("OFICINA SANTA ROSA DEL SUR\nFECHA DE RECIBIDO 28-08-23 11:22 am\nRE2311202302952")
         hallados = sellos_al_pie(
-            self._Fuente(), {1: "hoja del cuerpo de la carta", 2: self.FIRMA, 3: self.FIRMA}, {3},
+            self._Fuente(), {1: self.CUERPO, 2: self.FIRMA, 3: self.FIRMA}, {3},
             lector_realzado=self._Realzado(self.SELLO), de_pago=pago,
         )
         # Sólo la hoja de firma sin sello: la 1 no firma y la 3 ya traía el suyo.
@@ -521,10 +530,10 @@ class TestElSelloAlPie:
 
         campos = "Solicito la refacturación.\nFECHA uE RECeiOO;\nNo DE FOLIOS:"
         assert se_mira_al_pie(campos) and se_mira_al_pie(self.CAPA_ROTA)
-        assert not se_mira_al_pie("hoja del cuerpo de la carta")
+        assert not se_mira_al_pie(self.CUERPO)
         pago = self._Pago("OFICINA SANTA ROSA DEL SUR\nFECHA DE RECIBO: 03-06-2021\nRE2311202100160")
         hallados = sellos_al_pie(
-            self._Fuente(), {1: self.CAPA_ROTA, 2: campos, 3: "hoja del cuerpo de la carta"}, set(),
+            self._Fuente(), {1: self.CAPA_ROTA, 2: campos, 3: self.CUERPO}, set(),
             lector_realzado=self._Realzado(self.SELLO), de_pago=pago,
         )
         assert list(hallados) == [1, 2] and pago.leidas == 2
