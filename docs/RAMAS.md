@@ -1,54 +1,60 @@
 # Flujo de ramas
 
 Tres ramas permanentes. Ninguna se toca directo: todo entra por pull request y
-todo pasa por CI.
+todo pasa por CI. El estándar de ramas es el que pidió el operador el
+2026-11-26.
 
 ```
-feat/… fix/… ──PR──▶ develop ──PR──▶ main ──PR──▶ produccion
-                        ▲                              │
-                        └──────── hotfix/… ────────────┘
+feature/… bugfix/… chore/… docs/… ──PR──▶ develop ──▶ release/… ──PR──▶ main ──▶ produccion
+                                            ▲                                        │
+                                            └───────────── hotfix/… ─────────────────┘
 ```
 
 | Rama | Qué es | Quién la mueve |
 |---|---|---|
-| `develop` | El día a día. Acá se integra todo lo que se está construyendo. Puede romperse un rato; para eso está. | Cualquier PR de trabajo |
-| `main` | Lo que ya se probó y se considera correcto. Es el candidato a producción y el que se prueba contra documentos reales. | PR desde `develop` |
-| `produccion` | Exactamente lo que corre en la máquina de la universidad. Cada merge acá es un despliegue. | PR desde `main`, y `hotfix/*` cuando arde |
+| `develop` | Integración y desarrollo continuo. Acá se integra todo lo que se está construyendo. Puede romperse un rato; para eso está. | Las ramas de trabajo |
+| `release/*` | La preparación de una versión nueva, sacada de `develop`, p. ej. `release/2026-11-26`. Sólo arreglos de último momento. | Se saca de `develop` |
+| `main` | Estable y lista para producción: lo que ya se probó y se considera correcto. | PR desde `release/*` (o `develop`) y `hotfix/*` |
+| `produccion` | Exactamente lo que corre en los equipos (`actualizar-docker`). Va al mismo commit que `main`; cada movimiento acá es un despliegue. | Desde `main`, y `hotfix/*` cuando arde |
 
 ## Nombres de rama
 
 El prefijo dice qué tipo de cambio trae, y la validación del PR lo exige:
 
-```
-feat/picker-de-carpetas
-fix/pagina-sin-numero-hereda
-refactor/cola-de-progreso
-docs/modelo-de-datos
-test/formato-oficial
-chore/dependencias
-perf/ocr-banda-superior
-hotfix/inventario-no-carga
-```
+| Prefijo | Para qué | Ejemplo |
+|---|---|---|
+| `feature/` | Funcionalidades nuevas | `feature/monitoreo-de-equipos` |
+| `bugfix/` | Errores detectados | `bugfix/nombre-documental` |
+| `hotfix/` | Correcciones urgentes en producción | `hotfix/inventario-no-carga` |
+| `release/` | Preparación de una versión nueva | `release/2026-11-26` |
+| `chore/` | Mantenimiento: dependencias, configuración | `chore/dependencias` |
+| `docs/` | Cambios en la documentación del proyecto | `docs/modelo-de-datos` |
+
+Los prefijos de antes (`feat/`, `fix/`, `refactor/`, `test/`, `perf/`) se
+siguen aceptando para las ramas que ya existían; el trabajo nuevo usa los de la
+tabla.
 
 ## Ciclo normal
 
 ```bash
 git switch develop && git pull
-git switch -c feat/lo-que-sea
+git switch -c feature/lo-que-sea      # o bugfix/…, chore/…, docs/…
 # ... trabajo, commits ...
-git push -u origin feat/lo-que-sea
+git push -u origin feature/lo-que-sea
 gh pr create --base develop --fill
 ```
 
-El título del PR se usa como mensaje del merge, así que va en formato
-Conventional Commits: `feat(folders): el picker lista rutas reales del disco`.
+Los commits y el título del PR van en formato Conventional Commits, que es lo
+que valida el PR: `feat(folders): el picker lista rutas reales del disco`,
+`fix(nombres): …`, `chore(ci): …`, `docs: …`.
 
 ## Subir a producción
 
-1. PR de `develop` a `main`. CI en verde y revisión.
-2. Probar `main` contra documentos reales, con el servicio levantado.
-3. PR de `main` a `produccion`, titulado `release: …`.
-4. Etiquetar el merge: `git tag -a v0.3.0 -m "…" && git push origin v0.3.0`.
+1. Sacar `release/<fecha>` de `develop`. CI en verde sobre esa rama.
+2. Probar la versión contra documentos reales, con el servicio levantado.
+3. `main` avanza a la release (PR desde `release/*`, o fast-forward como abajo).
+4. `produccion` va al mismo commit que `main`.
+5. Etiquetar: `git tag -a v<fecha> -m "…" && git push origin v<fecha>`.
 
 ## Hotfix
 

@@ -29,14 +29,20 @@ jobs:
                 *) echo "::error::A 'produccion' sólo se mergea 'main' o 'hotfix/*'. Esta rama es '$ORIGEN'."; exit 1 ;;
               esac ;;
             main)
+              # Una versión llega por su release/*; develop y hotfix/* como hasta ahora.
               case "$ORIGEN" in
-                develop|hotfix/*) ;;
-                *) echo "::error::A 'main' sólo se mergea 'develop' o 'hotfix/*'. Esta rama es '$ORIGEN'."; exit 1 ;;
+                develop|release/*|hotfix/*) ;;
+                *) echo "::error::A 'main' sólo se mergea 'develop', 'release/*' o 'hotfix/*'. Esta rama es '$ORIGEN'."; exit 1 ;;
               esac ;;
             develop)
+              # El estándar desde el 2026-11-26: feature/, bugfix/, hotfix/,
+              # release/, chore/ y docs/. Los prefijos de antes (feat/, fix/,
+              # refactor/, test/, perf/) se siguen aceptando para las ramas que
+              # ya existían.
               case "$ORIGEN" in
-                feat/*|fix/*|refactor/*|docs/*|test/*|chore/*|perf/*|hotfix/*) ;;
-                *) echo "::error::El nombre de la rama debe empezar por feat/, fix/, refactor/, docs/, test/, chore/ o perf/. Esta es '$ORIGEN'."; exit 1 ;;
+                feature/*|bugfix/*|hotfix/*|release/*|chore/*|docs/*) ;;
+                feat/*|fix/*|refactor/*|test/*|perf/*) ;;
+                *) echo "::error::El nombre de la rama debe empezar por feature/, bugfix/, hotfix/, release/, chore/ o docs/. Esta es '$ORIGEN'."; exit 1 ;;
               esac ;;
             *)
               echo "::error::'$DESTINO' no es una rama de integración. Los PR van a develop, main o produccion."; exit 1 ;;

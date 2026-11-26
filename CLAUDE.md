@@ -92,4 +92,7 @@ arriba, o en `OBSIDIAN_VAULT` si está definida.
   `scripts/check_layers.py` y falla el PR.
 - El entorno se levanta con `scripts/levantar.ps1`. En esta máquina hay otros
   servicios de Node encendidos: nunca arranques sobre sus puertos.
-- Ramas: `develop`, `main` y `produccion` terminan apuntando al mismo commit.
+- Ramas: estándar `feature/*`, `bugfix/*`, `hotfix/*`, `release/*`, `chore/*` y
+  `docs/*` desde `develop`; una versión pasa por `release/<fecha>` (ver
+  `docs/RAMAS.md`). `develop`, `main` y `produccion` terminan apuntando al
+  mismo commit.
