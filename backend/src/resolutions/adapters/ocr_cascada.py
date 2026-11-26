@@ -90,6 +90,12 @@ class OcrEnCascada:
         Tesseract superaba sus 15 s y cada una de esas páginas se pagaba al
         OCR de fuera sin que el papel tuviera nada difícil. Un segundo intento
         es gratis y casi siempre llega: la carga sube y baja.
+
+        Desde el 2026-11-26 Tesseract corre por turnos (``tesseract_ocr.TURNOS``,
+        núcleos − 1 a la vez en todo el equipo) y su plazo cuenta desde que
+        arranca, no desde que se pidió: pasarse de tiempo ya mide la página y
+        no la carga del equipo. El segundo intento se queda: sigue siendo
+        gratis, y la página que de verdad no se deja leer escala igual.
         """
         try:
             return self._local.read(image_png)

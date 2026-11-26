@@ -640,9 +640,12 @@ class TestElResumidorDeMistral:
             raise urllib.error.URLError("sin conexión")
 
         monkeypatch.setattr("urllib.request.urlopen", urlopen)
+        esperas = []
 
-        with pytest.raises(ResumenNoDisponible, match="no respondió"):
-            MistralResumidor("llave").resumir("t")
+        # Sin dormir de verdad las esperas entre reintentos (2 + 5 + 10 s).
+        with pytest.raises(ResumenNoDisponible, match=r"no respondió \(sin conexión\) tras 4 intentos"):
+            MistralResumidor("llave", esperar=esperas.append).resumir("t")
+        assert esperas == [2.0, 5.0, 10.0]
 
 
 class TestElLectorDeFolios:

@@ -14,20 +14,42 @@ binario cuesta 0,22 s -- es cargar el modelo del español --, y en un libro de
 grados eran 303 arranques, la quinta parte del tiempo de Tesseract. Con una
 lista de archivos el binario arranca una vez y lee varias; cada imagen se lee
 igual que sola, con el mismo modo y el mismo idioma.
+
+Y desde el 2026-11-26 corre por turnos: como mucho ``TESSERACT_A_LA_VEZ`` a
+la vez en todo el equipo, sumando procesos, hilos y llamadas
+(``TurnosDeTesseract``).
 """
 
 from __future__ import annotations
 
+import errno
+import logging
 import os
+import random
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from io import BytesIO
 
 from PIL import Image, ImageFilter, ImageOps
 
 from ..application.ports import OcrResult
+
+try:  # Linux: el contenedor, que es donde corre la corrida
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+try:  # Windows: el equipo de desarrollo
+    import msvcrt
+except ImportError:  # Linux
+    msvcrt = None
+
+logger = logging.getLogger(__name__)
 
 #: El binario. El instalador de Windows no lo pone en el PATH, y descubrirlo en
 #: un proceso worker que heredó un entorno viejo es una forma confusa de
@@ -40,6 +62,34 @@ TESSERACT_CMD = os.environ.get("RESOLUTIONS_TESSERACT_CMD") or "tesseract"
 #: equipo con menos núcleos la tanda de sellos pasaba de su tope de 225 s y
 #: caía al OCR de pago (2026-10-28). Quien lo fije a mano, manda.
 _ENTORNO = {**os.environ, "OMP_THREAD_LIMIT": os.environ.get("OMP_THREAD_LIMIT") or "1"}
+
+
+def _nucleos() -> int:
+    """Los núcleos que puede usar este proceso: los que deja ver Docker, no los del PC."""
+    afinidad = getattr(os, "sched_getaffinity", None)
+    if afinidad is not None:
+        return len(afinidad(0))
+    return os.cpu_count() or 2
+
+
+def _tesseract_a_la_vez() -> int:
+    """``RESOLUTIONS_TESSERACT_A_LA_VEZ`` si es un entero de 1 o más; si no, núcleos − 1.
+
+    Vacía o ilegible es automático: un núcleo queda libre para el resto del
+    bot -- renderizar, la red, el servicio --, y nunca menos de un turno.
+    """
+    try:
+        pedido = int((os.environ.get("RESOLUTIONS_TESSERACT_A_LA_VEZ") or "").strip())
+    except ValueError:
+        pedido = 0
+    if pedido >= 1:
+        return pedido
+    return max(1, _nucleos() - 1)
+
+
+#: Cuántos Tesseract corren a la vez en todo el equipo (``TurnosDeTesseract``).
+#: Como ``TESSERACT_CMD``, se lee una vez, al importar.
+TESSERACT_A_LA_VEZ = _tesseract_a_la_vez()
 
 
 def tesseract_disponible() -> bool:
@@ -133,6 +183,160 @@ def en_columnas(tsv: str) -> dict[str, list]:
             else:
                 columnas[nombre].append(int(celda))
     return columnas
+
+
+#: La primera espera con todos los turnos tomados y la más larga. Crece de una
+#: vez a la siguiente, con un cuarto de azar arriba o abajo para que quienes
+#: esperan no vuelvan a probar todos en el mismo instante.
+_ESPERA_INICIAL = 0.02
+#: 0,05 s y no 0,2 (2026-11-26, medido): con 0,2 un hilo recién llegado
+#: esperaba de media 3,3-4,1 s, y hasta 12,8 s, mientras otros encadenaban
+#: turnos; con 0,05, 1,8 s de media y 3,8 s como mucho, a cambio de un 8,4 % de
+#: un núcleo con 64 hilos esperando.
+_ESPERA_MAXIMA = 0.05
+#: Lo que contesta Windows cuando el cerrojo ya es de otro (medido: EACCES).
+_OCUPADO_EN_WINDOWS = frozenset({errno.EACCES, errno.EDEADLK})
+
+
+class TurnosDeTesseract:
+    """Cuántos Tesseract corren a la vez en todo el equipo, y la espera por un turno.
+
+    En otro PC de la corrida compartida Tesseract pasaba de 90 s por página y
+    cada página que se pasaba de tiempo se pagaba a Mistral (2026-11-26). No
+    era el papel sino el equipo: 8 PDF a la vez y 31 procesos desde 47a3a64, y
+    el Planificador sólo reparte los hilos de página; la fecha, la franja, el
+    sello, el rastreo y las tandas llamaban a Tesseract sin tope y se quitaban
+    el procesador unas a otras. Este PC, con 12 núcleos y la CPU al 32-54 %, no
+    tuvo ni un «Tesseract superó» en 4 horas.
+
+    Un turno es uno de ``cuantos`` archivos de cerrojo en ``carpeta``. Cada toma
+    abre sus propios descriptores -- dos tomas nunca comparten uno, ni en el
+    mismo proceso --, prueba los cerrojos sin bloquearse empezando por uno al
+    azar y, con todos tomados, espera de 0,02 a 0,05 s y vuelve a probar.
+
+    Cerrojos de archivo y no un semáforo del Manager como el de la IA
+    (``turnos.py``): el pool mata los procesos congelados
+    (``rehacer_pool(matar=True)`` en ``api/main.py``) y un semáforo perdería
+    para siempre los turnos de un proceso muerto. ``flock`` y ``locking`` los
+    suelta el sistema operativo cuando el proceso muere.
+
+    Si la carpeta o sus archivos no se pueden usar, se avisa una vez y
+    Tesseract corre sin turno: el turno ordena el OCR, nunca lo para.
+    """
+
+    def __init__(self, cuantos: int, carpeta: str | os.PathLike[str]) -> None:
+        self.cuantos = max(1, int(cuantos))
+        self.carpeta = os.fspath(carpeta)
+        self._avisado = False
+        self._candado = threading.Lock()
+
+    @contextmanager
+    def turno(self) -> Iterator[bool]:
+        """Un turno mientras dura el bloque; ``False`` si se corre sin él."""
+        try:
+            descriptor: int | None = self._esperar_uno()
+        except OSError as error:
+            self._avisar(error)
+            descriptor = None
+        try:
+            yield descriptor is not None
+        finally:
+            if descriptor is not None:
+                _soltar(descriptor)
+
+    def _esperar_uno(self) -> int:
+        """El descriptor de un cerrojo ya tomado; espera mientras estén todos ocupados.
+
+        Lo abierto para esperar se queda abierto entre vueltas -- en Windows
+        abrir y cerrar cuesta 93 µs y probar el cerrojo 3 -- y se cierra al
+        salir, con turno o con error: ningún descriptor se pierde.
+        """
+        if fcntl is None and msvcrt is None:
+            raise OSError("este sistema no tiene cerrojos de archivo")
+        abiertos: dict[int, int] = {}
+        inicio = random.randrange(self.cuantos)
+        espera = _ESPERA_INICIAL
+        try:
+            while True:
+                for paso in range(self.cuantos):
+                    indice = (inicio + paso) % self.cuantos
+                    if indice not in abiertos:
+                        abiertos[indice] = self._abrir(indice)
+                    if _tomar(abiertos[indice]):
+                        return abiertos.pop(indice)
+                time.sleep(espera * random.uniform(0.75, 1.25))
+                espera = min(_ESPERA_MAXIMA, espera * 1.5)
+        finally:
+            # Sin dejar que un cierre fallido se lleve el turno ya tomado.
+            for descriptor in abiertos.values():
+                with suppress(OSError):
+                    os.close(descriptor)
+
+    def _abrir(self, indice: int) -> int:
+        ruta = os.path.join(self.carpeta, f"{indice}.lock")
+        try:
+            return os.open(ruta, os.O_RDWR | os.O_CREAT, 0o666)
+        except FileNotFoundError:
+            # La primera vez en este equipo, o si alguien borró la carpeta.
+            os.makedirs(self.carpeta, exist_ok=True)
+            return os.open(ruta, os.O_RDWR | os.O_CREAT, 0o666)
+
+    def _avisar(self, error: OSError) -> None:
+        with self._candado:
+            if self._avisado:
+                return
+            self._avisado = True
+        logger.warning(
+            "Tesseract lee sin turnos en este equipo: no se pudo usar %s (%s). "
+            "Las lecturas siguen, pero sin el tope de %d a la vez.",
+            self.carpeta,
+            error,
+            self.cuantos,
+        )
+
+
+def _tomar(descriptor: int) -> bool:
+    """Toma el cerrojo sin esperar; ``False`` si es de otro.
+
+    Cualquier otro error se lanza: no es «ocupado» sino que los turnos no
+    sirven, y esperar por eso dejaría parado el OCR.
+    """
+    if fcntl is not None:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        return True
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    try:
+        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+    except OSError as error:
+        if error.errno in _OCUPADO_EN_WINDOWS:
+            return False
+        raise
+    return True
+
+
+def _soltar(descriptor: int) -> None:
+    """Suelta el cerrojo y cierra el descriptor; nunca tumba la lectura ya hecha."""
+    try:
+        if fcntl is not None:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        else:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+    except OSError:
+        # Cerrar el descriptor lo suelta igual.
+        logger.debug("no se pudo soltar el turno de Tesseract; se cierra igual", exc_info=True)
+    with suppress(OSError):
+        os.close(descriptor)
+
+
+#: Los turnos de este equipo, comunes a todos sus procesos porque comparten la
+#: carpeta temporal. ``TesseractOcr._run`` lo busca aquí en cada llamada.
+TURNOS = TurnosDeTesseract(
+    TESSERACT_A_LA_VEZ, os.path.join(tempfile.gettempdir(), "botpdf-turnos-de-tesseract")
+)
 
 
 class TesseractOcr:
@@ -240,6 +444,10 @@ class TesseractOcr:
 
         Con ``entrada`` la lista de archivos de un lote, y entonces el tiempo
         máximo es el de una imagen por cada una que trae.
+
+        Con un turno de ``TURNOS``, tomado antes de arrancar el binario: el
+        plazo cuenta desde que Tesseract arranca, así que esperar turno nunca
+        es pasarse de tiempo (2026-11-26).
         """
         args = [
             self._command,
@@ -258,19 +466,20 @@ class TesseractOcr:
             # Sin esto, un servicio sin consola abre y cierra una ventana negra
             # por cada página que lee.
             extra["creationflags"] = subprocess.CREATE_NO_WINDOW
-        try:
-            completed = subprocess.run(
-                args,
-                input=image,
-                capture_output=True,
-                check=False,
-                timeout=self._config.timeout_seconds * imagenes,
-                **extra,
-            )
-        except subprocess.TimeoutExpired as error:
-            raise TesseractError(
-                f"Tesseract superó {self._config.timeout_seconds * imagenes:g} s"
-            ) from error
+        with TURNOS.turno():
+            try:
+                completed = subprocess.run(
+                    args,
+                    input=image,
+                    capture_output=True,
+                    check=False,
+                    timeout=self._config.timeout_seconds * imagenes,
+                    **extra,
+                )
+            except subprocess.TimeoutExpired as error:
+                raise TesseractError(
+                    f"Tesseract superó {self._config.timeout_seconds * imagenes:g} s"
+                ) from error
         if completed.returncode != 0:
             motivo = completed.stderr.decode("utf-8", "replace").strip()
             raise TesseractError(motivo or f"tesseract terminó con código {completed.returncode}")

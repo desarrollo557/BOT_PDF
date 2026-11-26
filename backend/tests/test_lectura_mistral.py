@@ -10,7 +10,9 @@ trabajo sale igual con lo que leyó Tesseract. Un motor de lectura que puede
 tumbar una caja de cuatrocientas páginas no es una mejora, es una dependencia.
 """
 
+import http.client
 import json
+import urllib.error
 
 import pytest
 
@@ -698,3 +700,207 @@ class TestDetenerNoPagaMas:
         assert lector is not None
         with pytest.raises(Cancelled):
             lector.read(b"\x89PNG imagen")
+
+
+class _RespuestaDelChat:
+    """Lo que `urlopen` devuelve: el cuerpo tal cual, sea JSON o no."""
+
+    def __init__(self, cuerpo: bytes) -> None:
+        self._cuerpo = cuerpo
+
+    @classmethod
+    def con(cls, texto: str) -> "_RespuestaDelChat":
+        return cls(
+            json.dumps(
+                {
+                    "choices": [{"message": {"content": texto}}],
+                    "usage": {"prompt_tokens": 120, "completion_tokens": 8},
+                }
+            ).encode()
+        )
+
+    def read(self):
+        return self._cuerpo
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+class TestElChatRepiteLoQueSeCortoPorLaRed:
+    """2026-11-26: «Mistral no respondió (timed out)» dejaba un sello sin transcribir.
+
+    El OCR de pago ya repetía los cortes de conexión; el chat -- el sello, el
+    nombre, el resumen del acta -- los daba por perdidos a la primera. Un corte
+    no es un «no» del proveedor: se repite con las mismas esperas que un 429,
+    sin contarlo como rechazo, y sólo agotados los intentos cuenta un fallo.
+
+    Pero no todos cuestan lo mismo: lo que no se mandó (``URLError``) se repite
+    hasta el tope, gratis; lo que se cortó con la petición ya enviada, que
+    Mistral pudo cobrar, una sola vez y con un aviso que lo dice.
+    """
+
+    @staticmethod
+    def _contestando(monkeypatch, *respuestas):
+        """Un `urlopen` que da cada respuesta en orden y repite la última."""
+        pedidas: list = []
+
+        def urlopen(peticion, timeout=None):
+            pedidas.append(peticion)
+            siguiente = respuestas[min(len(pedidas), len(respuestas)) - 1]
+            if isinstance(siguiente, BaseException):
+                raise siguiente
+            return siguiente
+
+        monkeypatch.setattr("urllib.request.urlopen", urlopen)
+        return pedidas
+
+    @staticmethod
+    def _cuenta(consumo: Consumo) -> dict:
+        return consumo.as_dict()["proveedores"].get("mistral-resumen", {})
+
+    @pytest.mark.parametrize(
+        "corte",
+        [
+            urllib.error.URLError(TimeoutError("timed out")),
+            TimeoutError("The read operation timed out"),
+            http.client.RemoteDisconnected("Remote end closed connection without response"),
+            http.client.IncompleteRead(b'{"choi'),
+            ConnectionResetError("el proveedor cerró la conexión"),
+        ],
+        ids=["timed-out", "plazo-de-lectura", "remote-disconnected", "incomplete-read", "conexion-reiniciada"],
+    )
+    def test_un_corte_y_luego_la_respuesta(self, monkeypatch, caplog, corte):
+        from resolutions.adapters.mistral_resumen import MistralResumidor
+
+        pedidas = self._contestando(monkeypatch, corte, _RespuestaDelChat.con("Listo."))
+        esperas: list[float] = []
+        consumo = Consumo()
+
+        with caplog.at_level("WARNING", logger="resolutions.adapters.mistral_resumen"):
+            resumen = MistralResumidor("llave", consumo=consumo, esperar=esperas.append).resumir("t")
+
+        assert resumen == "Listo."
+        assert len(pedidas) == 2
+        assert esperas == [2.0]
+        assert self._cuenta(consumo)["fallos"] == 0
+        assert self._cuenta(consumo)["rechazos"] == 0, "un corte no es un «más despacio»"
+        # Sólo lo que llegó a mandarse avisa de que pudo cobrarse.
+        cobros = [r for r in caplog.records if "pudo cobrarse" in r.getMessage()]
+        assert len(cobros) == (0 if isinstance(corte, urllib.error.URLError) else 1)
+
+    @pytest.mark.parametrize(
+        "corte",
+        [
+            TimeoutError("The read operation timed out"),
+            http.client.RemoteDisconnected("Remote end closed connection without response"),
+            http.client.IncompleteRead(b'{"choi'),
+        ],
+        ids=["plazo-de-lectura", "remote-disconnected", "incomplete-read"],
+    )
+    def test_lo_ya_enviado_se_repite_una_sola_vez(self, monkeypatch, caplog, corte):
+        """Mistral pudo cobrarla: dos peticiones como mucho, un fallo y un aviso que lo dice."""
+        from resolutions.adapters.mistral_resumen import MistralResumidor
+        from resolutions.application.ports import ResumenNoDisponible
+
+        pedidas = self._contestando(monkeypatch, corte)
+        esperas: list[float] = []
+        consumo = Consumo()
+        resumidor = MistralResumidor("llave", consumo=consumo, esperar=esperas.append)
+
+        with (
+            caplog.at_level("WARNING", logger="resolutions.adapters.mistral_resumen"),
+            pytest.raises(ResumenNoDisponible, match="tras 2 intentos"),
+        ):
+            resumidor.resumir("t")
+        assert len(pedidas) == 2
+        assert esperas == [2.0]
+        assert self._cuenta(consumo)["fallos"] == 1
+        assert self._cuenta(consumo)["rechazos"] == 0
+        [aviso] = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert "pudo cobrarse" in aviso
+
+    def test_lo_que_no_se_mando_no_gasta_la_unica_repeticion(self, monkeypatch):
+        """Enviada, sin enviar y enviada otra vez: tres peticiones y ninguna más."""
+        from resolutions.adapters.mistral_resumen import MistralResumidor
+        from resolutions.application.ports import ResumenNoDisponible
+
+        pedidas = self._contestando(
+            monkeypatch,
+            TimeoutError("The read operation timed out"),
+            urllib.error.URLError(TimeoutError("timed out")),
+            http.client.RemoteDisconnected("Remote end closed connection without response"),
+            _RespuestaDelChat.con("no debería pedirse"),
+        )
+        esperas: list[float] = []
+        consumo = Consumo()
+
+        with pytest.raises(ResumenNoDisponible, match=r"\(RemoteDisconnected\) tras 3 intentos"):
+            MistralResumidor("llave", consumo=consumo, esperar=esperas.append).resumir("t")
+        assert len(pedidas) == 3
+        assert esperas == [2.0, 5.0]
+        assert self._cuenta(consumo)["fallos"] == 1
+
+    def test_si_la_red_no_vuelve_queda_sin_resumen_y_un_solo_fallo(self, monkeypatch):
+        from resolutions.adapters.mistral_resumen import MistralResumidor
+        from resolutions.application.ports import ResumenNoDisponible
+
+        pedidas = self._contestando(monkeypatch, urllib.error.URLError(TimeoutError("timed out")))
+        esperas: list[float] = []
+        consumo = Consumo()
+        resumidor = MistralResumidor("llave", consumo=consumo, esperar=esperas.append)
+
+        with pytest.raises(ResumenNoDisponible, match=r"no respondió \(timed out\) tras 4 intentos"):
+            resumidor.resumir("t")
+        assert len(pedidas) == 4
+        assert esperas == [2.0, 5.0, 10.0]
+        assert self._cuenta(consumo)["fallos"] == 1
+
+    def test_un_cuerpo_que_no_es_json_no_se_repite(self, monkeypatch):
+        from resolutions.adapters.mistral_resumen import MistralResumidor
+        from resolutions.application.ports import ResumenNoDisponible
+
+        pedidas = self._contestando(monkeypatch, _RespuestaDelChat(b"<html>502 Bad Gateway</html>"))
+        esperas: list[float] = []
+        consumo = Consumo()
+
+        with pytest.raises(ResumenNoDisponible, match="JSONDecodeError"):
+            MistralResumidor("llave", consumo=consumo, esperar=esperas.append).resumir("t")
+        assert len(pedidas) == 1
+        assert esperas == []
+        assert self._cuenta(consumo)["fallos"] == 1
+
+    def test_una_llave_rechazada_sigue_sin_repetirse(self, monkeypatch):
+        from resolutions.adapters.mistral_resumen import MistralResumidor
+        from resolutions.application.ports import ResumenNoDisponible
+
+        rechazo = urllib.error.HTTPError("https://api.mistral.ai", 401, "Unauthorized", {}, None)
+        pedidas = self._contestando(monkeypatch, rechazo)
+        esperas: list[float] = []
+
+        with pytest.raises(ResumenNoDisponible, match="rechazó la llave"):
+            MistralResumidor("llave", esperar=esperas.append).resumir("t")
+        assert len(pedidas) == 1
+        assert esperas == []
+
+    def test_detener_durante_la_espera_no_vuelve_a_pedir(self, monkeypatch):
+        """«Detener» sale como ``Cancelled``: la rama de los cortes no se lo traga."""
+        from resolutions.adapters.mistral_resumen import MistralResumidor
+        from resolutions.application.control import Cancelled, FlagRunControl
+
+        pedidas = self._contestando(
+            monkeypatch, urllib.error.URLError(TimeoutError("timed out")), _RespuestaDelChat.con("Listo.")
+        )
+        estados = ["running"]
+
+        def esperar(_segundos):
+            estados[0] = "cancelled"  # el operador pulsó «Detener» mientras se esperaba
+
+        resumidor = MistralResumidor(
+            "llave", esperar=esperar, antes_de_pedir=FlagRunControl(lambda: estados[0]).check
+        )
+        with pytest.raises(Cancelled):
+            resumidor.resumir("t")
+        assert len(pedidas) == 1

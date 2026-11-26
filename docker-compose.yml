@@ -49,6 +49,10 @@ services:
       # distintos van juntas; al mismo NIC, de una en una. Si el servidor del
       # destino se ahoga (renombres de varios segundos), se baja en el .env.
       RESOLUTIONS_ENTREGAS_A_LA_VEZ: ${RESOLUTIONS_ENTREGAS_A_LA_VEZ:-4}
+      # Cuántos Tesseract leen a la vez en todo el equipo (2026-11-26): vacío es
+      # automático, los núcleos que ve Docker menos uno. Sin tope, en un PC
+      # sobrecargado Tesseract pasaba de 90 s y la página se pagaba a Mistral.
+      RESOLUTIONS_TESSERACT_A_LA_VEZ: ${RESOLUTIONS_TESSERACT_A_LA_VEZ:-}
     volumes:
       - botpdf_data:/data
     restart: unless-stopped

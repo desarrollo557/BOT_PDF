@@ -15,6 +15,7 @@ cuesta varias veces lo mismo por la misma tarea.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import time
@@ -36,6 +37,15 @@ ENDPOINT = "https://api.mistral.ai/v1/chat/completions"
 #: Con qué nombre aparece en el consumo del trabajo, aparte del OCR de pago:
 #: aquél cuenta páginas y éste tokens, y sumarlos no tendría sentido.
 PROVEEDOR = "mistral-resumen"
+
+#: Cortes con la petición sin mandar: urllib envuelve en ``URLError`` sólo lo
+#: que falla dentro de ``h.request()`` (conectar o enviar). ``HTTPError`` también
+#: es un ``URLError``, pero es una respuesta y tiene su rama, antes.
+_SIN_ENVIAR = (urllib.error.URLError,)
+
+#: Cortes con la petición ya enviada: llegan crudos de ``getresponse()`` o al
+#: leer el cuerpo (el plazo de lectura, ``RemoteDisconnected``, ``IncompleteRead``).
+_TRAS_ENVIAR = (TimeoutError, ConnectionError, http.client.HTTPException)
 
 #: Lo que se le pide al modelo. Las reglas son las del operador: el resumen del
 #: documento en general y nunca el llamado a lista, la verificación del
@@ -77,8 +87,9 @@ class MistralResumenConfig:
     #: palabras (2026-11-09). El margen es para que no se corte a media frase.
     max_tokens: int = 1000
     temperatura: float = 0.2
-    #: Cuántas veces se reintenta un «más despacio» (429) o una caída del
-    #: proveedor (5xx) antes de dejar el acta sin resumen.
+    #: Cuántas veces se reintenta un «más despacio» (429), una caída del
+    #: proveedor (5xx) o un corte de la red sin enviar antes de dejar el acta
+    #: sin resumen. Un corte con la petición ya enviada, una sola vez.
     reintentos: int = 3
     #: Segundos de espera antes de cada reintento.
     esperas: tuple[float, ...] = (2.0, 5.0, 10.0)
@@ -140,6 +151,13 @@ class MistralResumidor:
         return respuesta
 
     def _resumir_sin_cache(self, texto: str, imagen: bytes | None) -> str:
+        """Lo que contesta Mistral, repitiendo lo que se cortó por la red.
+
+        Un corte sin enviar (``URLError``) se repite hasta ``reintentos`` porque
+        no llegó y es gratis; uno ya enviado, una sola vez, porque Mistral pudo
+        cobrarlo (2026-11-26: «Mistral no respondió (timed out)» del otro PC era
+        un ``URLError``).
+        """
         pedido: str | list[dict] = f"{self._encabezado}:\n\n{texto}"
         if imagen:
             import base64
@@ -160,6 +178,7 @@ class MistralResumidor:
             }
         ).encode()
 
+        repetida_tras_enviar = False
         for intento in range(self._config.reintentos + 1):
             try:
                 payload = self._pedir(cuerpo)
@@ -177,12 +196,38 @@ class MistralResumidor:
                     ) from error
                 self._fallo()
                 raise ResumenNoDisponible(self._rechazo(error.code)) from error
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
-                # Una caída de red deja esta acta sin resumen, no el trabajo
-                # entero: el número y la fecha ya se leyeron del papel.
+            except json.JSONDecodeError as error:
+                # Llegó entera y no es JSON: pedirla otra vez no la cambia.
                 self._fallo()
-                motivo = getattr(error, "reason", None) or type(error).__name__
-                raise ResumenNoDisponible(f"Mistral no respondió ({motivo})") from error
+                raise ResumenNoDisponible(f"Mistral no respondió ({type(error).__name__})") from error
+            except _SIN_ENVIAR as error:
+                # No llegó: se repite con las esperas de un 429 y sin contarlo
+                # como rechazo, porque el proveedor no dijo que no.
+                if intento < self._config.reintentos:
+                    espera = self._espera(intento)
+                    logger.debug(
+                        "no se pudo mandar la petición a Mistral (%s); se espera %.1f s (intento %d)",
+                        _motivo(error),
+                        espera,
+                        intento + 1,
+                    )
+                    self._esperar(espera)
+                    continue
+                raise self._sin_respuesta(error, intento + 1) from error
+            except _TRAS_ENVIAR as error:
+                # Llegó y pudo cobrarse: una vez más como mucho, y que se vea.
+                if intento < self._config.reintentos and not repetida_tras_enviar:
+                    repetida_tras_enviar = True
+                    espera = self._espera(intento)
+                    logger.warning(
+                        "la petición a Mistral pudo cobrarse y no llegó la respuesta (%s); "
+                        "se repite una sola vez en %.1f s",
+                        _motivo(error),
+                        espera,
+                    )
+                    self._esperar(espera)
+                    continue
+                raise self._sin_respuesta(error, intento + 1) from error
 
             anotar_uso_json(self._consumo, PROVEEDOR, payload)
             resumen = sin_cortes(_texto_de(payload).strip(), cortado=_cortado(payload))
@@ -220,6 +265,18 @@ class MistralResumidor:
         if self._consumo is not None:
             self._consumo.fallo(PROVEEDOR)
 
+    def _sin_respuesta(self, error: BaseException, intentos: int) -> ResumenNoDisponible:
+        """El fallo, ya contado, de un corte que no se repite más.
+
+        Queda esta acta sin resumen, no el trabajo: el número y la fecha ya se
+        leyeron del papel.
+        """
+        self._fallo()
+        return ResumenNoDisponible(
+            f"Mistral no respondió ({_motivo(error)}) tras {intentos} "
+            f"{'intento' if intentos == 1 else 'intentos'}"
+        )
+
     def _rechazo(self, codigo: int) -> str:
         """Lo que se le dice al operador de un rechazo que no se reintenta.
 
@@ -234,6 +291,11 @@ class MistralResumidor:
             self._cerrado = "la cuenta de Mistral no tiene saldo (HTTP 402)"
             return self._cerrado
         return f"Mistral rechazó la petición (HTTP {codigo})"
+
+
+def _motivo(error: BaseException) -> str:
+    """El porqué de un corte: el que da urllib («timed out») o el nombre del error."""
+    return str(getattr(error, "reason", None) or type(error).__name__)
 
 
 def _cortado(payload: dict) -> bool:

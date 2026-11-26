@@ -14,6 +14,7 @@ estructura resolvió gratis sigue siendo un corte válido.
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import logging
@@ -26,6 +27,7 @@ from resolutions.adapters.mistral_boundary import (
     MistralBoundaryOracle,
     MistralConfig,
 )
+from resolutions.application.consumo import Consumo
 from resolutions.application.ports import BoundaryOracle
 
 HUELLAS = [
@@ -86,7 +88,8 @@ def registro() -> list:
 
 @pytest.fixture
 def oraculo() -> MistralBoundaryOracle:
-    return MistralBoundaryOracle(api_key="llave-de-prueba")
+    # Sin dormir de verdad entre los reintentos de un corte de red.
+    return MistralBoundaryOracle(api_key="llave-de-prueba", esperar=lambda _segundos: None)
 
 
 class TestLoQueNoLlegaAPreguntarse:
@@ -271,6 +274,122 @@ class TestLoQueElLogTieneQueDecir:
         with caplog.at_level(logging.WARNING):
             oraculo.judge(HUELLAS, COSTURAS)
         assert "no se entendió" not in caplog.text
+
+
+class TestUnCorteDeRedSeRepite:
+    """2026-11-26: un corte de red no es un «no» del proveedor.
+
+    Lo que no se mandó (``URLError``) se repite dos veces, con 1 y 2 s de
+    espera; lo que se cortó con la pregunta ya enviada, que Mistral pudo
+    cobrar, una sola vez y con un aviso que lo dice. Sólo entonces van las
+    dudas a revisión y cuenta un fallo. Un 401, un 429 o un cuerpo que no es
+    JSON son respuestas, y repetir la pregunta no las cambia.
+    """
+
+    @staticmethod
+    def _contestando(monkeypatch, *respuestas):
+        """Un `urlopen` que da cada respuesta en orden y repite la última."""
+        pedidas: list = []
+
+        def falso_urlopen(request, timeout=None):
+            pedidas.append(request)
+            siguiente = respuestas[min(len(pedidas), len(respuestas)) - 1]
+            if isinstance(siguiente, BaseException):
+                raise siguiente
+            return siguiente
+
+        monkeypatch.setattr("urllib.request.urlopen", falso_urlopen)
+        return pedidas
+
+    @pytest.mark.parametrize(
+        "corte",
+        [
+            urllib.error.URLError(TimeoutError("timed out")),
+            TimeoutError("The read operation timed out"),
+            http.client.RemoteDisconnected("Remote end closed connection without response"),
+        ],
+        ids=["sin-enviar", "plazo-de-lectura", "remote-disconnected"],
+    )
+    def test_un_corte_y_luego_la_respuesta(self, monkeypatch, corte):
+        texto = veredicto({"costura": "12|13", "nuevo": True})
+        pedidas = self._contestando(
+            monkeypatch, corte, _Respuesta({"choices": [{"message": {"content": texto}}]})
+        )
+        esperas: list[float] = []
+        consumo = Consumo()
+        oraculo = MistralBoundaryOracle(api_key="k", consumo=consumo, esperar=esperas.append)
+
+        assert oraculo.judge(HUELLAS, COSTURAS) == {(12, 13): True}
+        assert len(pedidas) == 2
+        assert esperas == [1.0]
+        assert consumo.as_dict()["proveedores"]["mistral-bordes"]["fallos"] == 0
+
+    def test_si_la_red_no_vuelve_las_dudas_van_a_revision_con_un_fallo(self, monkeypatch, caplog):
+        corte = urllib.error.URLError(TimeoutError("timed out"))
+        pedidas = self._contestando(monkeypatch, corte)
+        esperas: list[float] = []
+        consumo = Consumo()
+        oraculo = MistralBoundaryOracle(api_key="k", consumo=consumo, esperar=esperas.append)
+
+        with caplog.at_level(logging.WARNING, logger="resolutions.adapters.mistral_boundary"):
+            assert oraculo.judge(HUELLAS, COSTURAS) == {}
+        assert len(pedidas) == 3
+        assert esperas == [1.0, 2.0]
+        assert consumo.as_dict()["proveedores"]["mistral-bordes"]["fallos"] == 1
+        [aviso] = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert "timed out" in aviso
+        assert "3 intentos" in aviso
+        assert "revisión" in aviso
+
+    @pytest.mark.parametrize(
+        "corte",
+        [
+            TimeoutError("The read operation timed out"),
+            http.client.RemoteDisconnected("Remote end closed connection without response"),
+            http.client.IncompleteRead(b'{"cort'),
+        ],
+        ids=["plazo-de-lectura", "remote-disconnected", "incomplete-read"],
+    )
+    def test_lo_ya_enviado_se_repite_una_sola_vez(self, monkeypatch, caplog, corte):
+        """Mistral pudo cobrar la pregunta: dos como mucho, un fallo y un aviso que lo dice."""
+        pedidas = self._contestando(monkeypatch, corte)
+        esperas: list[float] = []
+        consumo = Consumo()
+        oraculo = MistralBoundaryOracle(api_key="k", consumo=consumo, esperar=esperas.append)
+
+        with caplog.at_level(logging.WARNING, logger="resolutions.adapters.mistral_boundary"):
+            assert oraculo.judge(HUELLAS, COSTURAS) == {}
+        assert len(pedidas) == 2
+        assert esperas == [1.0]
+        assert consumo.as_dict()["proveedores"]["mistral-bordes"]["fallos"] == 1
+        cobro, aviso = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert "pudo cobrarse" in cobro
+        assert type(corte).__name__ in aviso
+        assert "2 intentos" in aviso
+        assert "revisión" in aviso
+
+    @pytest.mark.parametrize(
+        "respuesta",
+        [
+            urllib.error.HTTPError(ENDPOINT, 401, "Unauthorized", {}, None),
+            urllib.error.HTTPError(ENDPOINT, 429, "Too Many Requests", {}, None),
+            _CuerpoQueNoEsJson(),
+        ],
+        ids=["401", "429", "no-es-json"],
+    )
+    def test_una_respuesta_no_se_repite(self, monkeypatch, respuesta):
+        pedidas = self._contestando(monkeypatch, respuesta)
+        esperas: list[float] = []
+        consumo = Consumo()
+        oraculo = MistralBoundaryOracle(api_key="k", consumo=consumo, esperar=esperas.append)
+
+        assert oraculo.judge(HUELLAS, COSTURAS) == {}
+        assert len(pedidas) == 1
+        assert esperas == []
+        assert consumo.as_dict()["proveedores"]["mistral-bordes"]["fallos"] == 1
+
+    def test_por_omision_dos_reintentos_con_1_y_2_segundos(self):
+        assert (MistralConfig().reintentos, MistralConfig().esperas) == (2, (1.0, 2.0))
 
 
 class TestElContrato:
