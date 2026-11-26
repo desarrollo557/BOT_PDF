@@ -45,11 +45,17 @@ def recorte_del_nombre(
     try:
         import pymupdf
         from PIL import Image
+
+        from .mupdf_messages import APERTURAS
     except Exception:  # noqa: BLE001 - sin las bibliotecas no hay imagen, y no pasa nada
         return None
     recortes = []
     try:
-        with pymupdf.open(pdf) as documento:
+        # La apertura, de una en una en el proceso (``APERTURAS``): corre en el
+        # servicio, a la vez que la auditoría de cierre abre los suyos.
+        with APERTURAS:
+            abierto = pymupdf.open(pdf)
+        with abierto as documento:
             piezas = [(ficha, zona) for zona in zonas] + [(notas, zona) for zona in zonas_de_la_siguiente]
             for numero, (arriba, abajo) in piezas:
                 if numero is None or not 1 <= numero <= documento.page_count:

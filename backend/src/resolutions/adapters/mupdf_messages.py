@@ -28,16 +28,25 @@ cada documento, que es lo que hace :func:`drenar`, cierra esa fuga.
 from __future__ import annotations
 
 import logging
+import threading
 
 import pymupdf
 
 from ..application.diagnostico import Gravedad, Incidencia, agrupar, explicar, traducir
 
-__all__ = ["Gravedad", "Incidencia", "drenar", "explicar", "instalar", "traducir"]
+__all__ = ["APERTURAS", "Gravedad", "Incidencia", "drenar", "explicar", "instalar", "traducir"]
 
 logger = logging.getLogger(__name__)
 
 _instalado = False
+
+#: Abrir un PDF y vaciar el almacén de avisos, de uno en uno en el proceso.
+#: PyMuPDF cambia mientras abre un interruptor global de mensajes y escribe en
+#: un almacén global; dos hilos que abren a la vez se cruzaron y Python murió
+#: con un fallo nativo (0xc00000ff, en fz_open_document y su impresión) en la
+#: auditoría de cierre, que abre varios PDF a la vez (2026-11-26). Leer las
+#: páginas no pasa por aquí: sigue en paralelo.
+APERTURAS = threading.RLock()
 
 
 def instalar() -> None:
@@ -97,14 +106,16 @@ def drenar(documento: str | None = None) -> list[Incidencia]:
     # 0 mientras abre un documento y lo restaura al terminar; dos hilos que
     # abren a la vez -- la muestra de la auditoría de cierre abre cuatro -- se
     # cruzan, y el segundo «restaura» el 0 del primero. 0 también calla, pero
-    # aquí se deja como lo dejó ``instalar`` (2026-11-05).
-    if pymupdf.TOOLS.mupdf_display_errors() is not False:
-        pymupdf.TOOLS.mupdf_display_errors(False)
-    try:
-        crudo = pymupdf.TOOLS.mupdf_warnings()
-    except Exception:  # noqa: BLE001 - saber esto nunca vale un documento
-        logger.debug("no se pudo leer el almacén de avisos de MuPDF", exc_info=True)
-        return []
+    # aquí se deja como lo dejó ``instalar`` (2026-11-05). Con el mismo
+    # cerrojo que las aperturas: el almacén y el interruptor son del proceso.
+    with APERTURAS:
+        if pymupdf.TOOLS.mupdf_display_errors() is not False:
+            pymupdf.TOOLS.mupdf_display_errors(False)
+        try:
+            crudo = pymupdf.TOOLS.mupdf_warnings()
+        except Exception:  # noqa: BLE001 - saber esto nunca vale un documento
+            logger.debug("no se pudo leer el almacén de avisos de MuPDF", exc_info=True)
+            return []
     incidencias = agrupar(crudo)
     for incidencia in incidencias:
         registrar(incidencia, documento)

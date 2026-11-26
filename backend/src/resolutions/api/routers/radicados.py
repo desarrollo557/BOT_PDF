@@ -169,7 +169,13 @@ def _dentro_del_trabajo(ctx, job_id: str, relativa: str) -> Path:
 def _la_hoja(pdf: Path, numero: int) -> bytes | None:
     import pymupdf
 
-    with pymupdf.open(pdf) as documento:
+    from ...adapters.mupdf_messages import APERTURAS
+
+    # La apertura, de una en una en el proceso: la auditoría de cierre abre
+    # varios PDF a la vez en este mismo servicio (``APERTURAS``).
+    with APERTURAS:
+        abierto = pymupdf.open(pdf)
+    with abierto as documento:
         if not 1 <= numero <= documento.page_count:
             return None
         return documento[numero - 1].get_pixmap(dpi=PPP_DE_LA_HOJA).tobytes("jpeg")

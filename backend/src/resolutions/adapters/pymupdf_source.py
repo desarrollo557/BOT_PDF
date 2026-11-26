@@ -9,7 +9,7 @@ from PIL import Image
 from ..application.ports import Band, LineBox
 from ..domain.diploma import TextLine
 from ..domain.formulario import Trozo
-from .mupdf_messages import drenar
+from .mupdf_messages import APERTURAS, drenar
 
 #: PDF user space is 72 dpi. Every render scales from there.
 _PDF_DPI = 72.0
@@ -115,7 +115,9 @@ def _abrir(path: Path, nombre: str):
     if tamano == 0:
         raise PdfQueNoSeAbre(f"«{nombre}» está vacío (0 bytes): el escaneo no se guardó entero")
     try:
-        documento = pymupdf.open(path)
+        # Las aperturas, de una en una en el proceso (``APERTURAS``).
+        with APERTURAS:
+            documento = pymupdf.open(path)
     except FileNotFoundError:
         raise PdfQueNoSeAbre(
             f"«{nombre}» ya no está en su sitio: se movió o se borró antes de leerlo"
