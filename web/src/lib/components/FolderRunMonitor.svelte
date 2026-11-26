@@ -10,7 +10,9 @@
   import AgenteDeLaCorrida from '$lib/components/AgenteDeLaCorrida.svelte';
   import AuditoriaDeCierre from '$lib/components/AuditoriaDeCierre.svelte';
   import Descargas, { type GrupoDeDescargas } from '$lib/components/Descargas.svelte';
+  import EquiposDeLaCorrida from '$lib/components/EquiposDeLaCorrida.svelte';
   import { confirmar } from '$lib/confirmar.svelte';
+  import { notaDeDetenida, notaDeParando } from '$lib/equipos';
   import FolderTree from '$lib/components/FolderTree.svelte';
   import Icono from '$lib/components/Icono.svelte';
   import PageRibbon from '$lib/components/PageRibbon.svelte';
@@ -153,6 +155,12 @@
   const red = $derived(run.red);
   const midiendo = $derived(red?.prueba.estado === 'midiendo');
   const falta = $derived(red && active ? loQueFalta(red) : null);
+
+  /**
+   * La corrida compartida que cumple una orden de parar (2026-11-26): mientras
+   * sigue, de quién es la orden y qué hace; ya terminada, quién la detuvo.
+   */
+  const notaDeLaOrden = $derived(active ? notaDeParando(run.parando) : notaDeDetenida(run.detenido_por));
 
   function clock(at: string): string {
     const parsed = Date.parse(at);
@@ -346,6 +354,9 @@
   {#if error}
     <p class="inline-error">{error}</p>
   {/if}
+  {#if notaDeLaOrden}
+    <p class="nota">{notaDeLaOrden}</p>
+  {/if}
 
   <!-- El inventario general de la carpeta: un Excel con una fila por PDF, que
        se reescribe con cada acta. Va arriba de todo y con el botón grande
@@ -498,6 +509,12 @@
         <span class="falta tabular">{resumenBajando}</span>
       {/if}
     </div>
+  {/if}
+
+  {#if run.compartida}
+    <!-- Los equipos de la corrida compartida, en vivo, y la orden de pararlos
+         con calma o ya (2026-11-26). -->
+    <EquiposDeLaCorrida {run} />
   {/if}
 
   {#if run.agente}

@@ -11,7 +11,7 @@ import shutil
 import threading
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime
@@ -19,6 +19,7 @@ from enum import StrEnum
 from functools import partial
 from itertools import islice
 from pathlib import Path
+from queue import Empty, Full, Queue
 from uuid import uuid4
 
 from ..adapters import red_smb
@@ -27,6 +28,16 @@ from ..adapters.excel_inventory import (
     NOMBRE_DEL_CONTROL_DE_ENTREGA,
     NOMBRE_DEL_INVENTARIO_DE_PROCESOS,
 )
+from ..application.coordinacion import (
+    CORRIDA_TERMINADA,
+    MODOS_DE_PARAR,
+    NO_ES_COMPARTIDA,
+    NO_ESTA_EN_LA_CORRIDA,
+    OrdenNoPermitida,
+    por_que_no_se_puede_parar,
+    resumen_de_los_equipos,
+)
+from ..application.orden_del_recorrido import lo_pendiente_primero, nombre_de_la_carpeta
 from ..application.revisor_de_cortes import AgenteDeLaCorrida
 from ..domain.ritmo import AvanceDeLaDescarga, Ritmo
 from . import constancia as constancias
@@ -210,6 +221,15 @@ def _now() -> str:
 
 class FolderError(ValueError):
     """A source or destination that cannot be used, explained in Spanish."""
+
+
+class EquipoNoEncontrado(LookupError):
+    """La corrida o el equipo al que se le quiere ordenar parar no está; el motivo va en palabras."""
+
+
+# ``OrdenNoPermitida`` es la de ``application.coordinacion``, la misma que lanza la
+# coordinación al escribir la orden: con una copia aquí, la de un equipo que se
+# acababa de retirar salía como un 500 y no como el 409 que es (2026-11-26).
 
 
 @dataclass(frozen=True, slots=True)
@@ -515,6 +535,10 @@ class FolderRun:
     #: todavía no se tomó. Al volver a recorrer tras una caída del origen se
     #: salta como lo visto: lo encolaba otra vez y se leía y pagaba dos veces.
     encolados: set[str] = field(default_factory=set, repr=False)
+    #: La raíz del destino, listada una vez por recorrido (2026-11-26): por dónde
+    #: empezar y qué PDF van por el carril rápido. Sólo mientras dura el
+    #: recorrido (``_lotes_del_origen``); sin ella, el orden de ruta de siempre.
+    destino_listado: DestinoListado | None = field(default=None, repr=False)
     #: Los PDF que este equipo está leyendo o entregando ahora (su ruta).
     tomados: set[str] = field(default_factory=set, repr=False)
     #: Los entregados por otro equipo que se contaron sin leer su constancia
@@ -557,6 +581,11 @@ class FolderRun:
     #: Los trabajos con que otros equipos entregaron sus PDF de esta corrida:
     #: la auditoría de la corrida es una sola, con los de todos.
     trabajos_de_otros: list[str] = field(default_factory=list, repr=False)
+    #: El monitoreo de equipos (2026-11-26). La orden de «Parar con calma» que
+    #: cumple este equipo: termina lo que tiene en curso y no toma nada nuevo.
+    parando: dict | None = None
+    #: Quién lo detuvo con una orden de parar, en palabras: completa «Detenido por …».
+    detenido_por: str | None = None
 
     @property
     def current(self) -> str | None:
@@ -668,6 +697,9 @@ class FolderRun:
             "compartida": self.compartida or None,
             "equipo": getattr(self.coordinacion, "id", None),
             "equipos_vivos": len(self.coordinacion.equipos_vivos()) if self.coordinacion is not None else 0,
+            # La orden de parar con calma que cumple, y quién lo detuvo con una (2026-11-26).
+            "parando": dict(self.parando) if self.parando else None,
+            "detenido_por": self.detenido_por,
             "de_otros_equipos": self.de_otros_equipos,
             "en_otro_equipo": len(self.ajenos),
             "fallidos_en_otro": len(self.fallidos_en_otro),
@@ -742,11 +774,7 @@ def en_orden_de_ruta(raiz: Path, al_fallar: Callable[[OSError], None] | None = N
     """
 
     def nivel(carpeta: str) -> list[tuple[str, bool]]:
-        for _, subcarpetas, archivos in os.walk(carpeta, onerror=al_fallar):
-            entradas = [(nombre, True) for nombre in subcarpetas if nombre != CONSUMED_DIR]
-            entradas += [(nombre, False) for nombre in archivos if nombre.lower().endswith(".pdf")]
-            return sorted(entradas, key=lambda entrada: entrada[0].lower())
-        return []
+        return _primer_nivel(carpeta, al_fallar)
 
     pila = [(str(raiz), iter(nivel(str(raiz))))]
     while pila:
@@ -761,6 +789,175 @@ def en_orden_de_ruta(raiz: Path, al_fallar: Callable[[OSError], None] | None = N
             pila.append((ruta, iter(nivel(ruta))))
         else:
             yield Path(ruta)
+
+
+def _primer_nivel(carpeta: str, al_fallar: Callable[[OSError], None] | None = None) -> list[tuple[str, bool]]:
+    """Las subcarpetas y los PDF de ``carpeta``, sin entrar en ellas: cada nivel de ``en_orden_de_ruta``.
+
+    Una sola definición del nivel -- con ``os.walk``, sin ``_procesados``, por
+    nombre sin mayúsculas -- para el recorrido que empieza por lo pendiente y
+    para ``en_orden_de_ruta``, que usa también la auditoría de cierre: con dos
+    copias, cambiar una sola haría que el cuadre contara cosas distintas de lo
+    recorrido (2026-11-26).
+    """
+    for _, subcarpetas, archivos in os.walk(carpeta, onerror=al_fallar):
+        entradas = [(nombre, True) for nombre in subcarpetas if nombre != CONSUMED_DIR]
+        entradas += [(nombre, False) for nombre in archivos if nombre.lower().endswith(".pdf")]
+        return sorted(entradas, key=lambda entrada: entrada[0].lower())
+    return []
+
+
+class DestinoListado:
+    """La raíz del destino de una corrida, listada una sola vez por recorrido del origen.
+
+    El operador, 2026-11-26: «que no se demore mucho buscando los ya procesados
+    para comenzar a procesar». Esa mañana cada equipo tardó de 3 a 28 min desde
+    que se unió hasta su primer PDF, verificando uno a uno lo ya entregado que
+    tenía delante. La raíz del destino de Magangué -- 29.480 carpetas NIC -- se
+    lista entera en 2,9 s; con ella el recorrido sabe qué carpetas del origen no
+    están en el destino y empieza por ellas, y qué PDF no tienen constancia que
+    leer porque la carpeta de la raíz donde iría no existe (el carril rápido de
+    ``_repartir``).
+
+    Sólo la raíz: una carpeta cuyo padre no existe, no existe; si la de la raíz
+    sí está, lo de dentro lo dice la constancia, como siempre. Listar además
+    cada carpeta que ya está, una tras otra en el hilo que verifica, salía más
+    caro que verificarlas en paralelo: con 2.000 cajas de un PDF y 6 ms por
+    listado, el recorrido entero pasaba de 2,1 a 16,2 s (banco del 2026-11-26).
+    Sin mayúsculas, como Windows y SMB: así puede salir «está» de más, nunca
+    «no está» de más. Lo que no se puede saber es ``None``, y quien pregunta
+    verifica como antes.
+
+    Vale mientras dura un recorrido: lo que esta corrida entrega después no
+    cambia nada, porque lo que ya tomó se salta (``seen``). Con otros equipos,
+    ``_tomar_el_pdf`` reclama cada PDF y vuelve a mirar su constancia antes de
+    leerlo; sin ellos, en el destino sólo escribe esta corrida.
+    """
+
+    def __init__(self, destino: Path) -> None:
+        self.destino = destino
+        #: Los PDF que el recorrido mandó por el carril rápido, hasta que ``_repartir`` los decide.
+        self.sin_carpeta: set[str] = set()
+        self._cerrojo = threading.Lock()
+        self._mirada = False
+        self._nombres: frozenset[str] | None = None
+        self._existe = True
+
+    def nombres_de_la_raiz(self) -> frozenset[str] | None:
+        """Los nombres de la raíz del destino, sin mayúsculas: vacío si no existe, ``None`` si no se pudo listar."""
+        with self._cerrojo:
+            if not self._mirada:
+                self._nombres, self._existe = self._listar()
+                self._mirada = True
+            return self._nombres
+
+    def existe(self, ruta: Path) -> bool | None:
+        """Si ``ruta`` está en el destino: ``False`` si seguro que no, ``True`` si es de la raíz y está, ``None`` si no se sabe."""
+        try:
+            partes = ruta.relative_to(self.destino).parts
+        except ValueError:
+            return None
+        nombres = self.nombres_de_la_raiz()
+        if nombres is None:
+            return None
+        if not partes:
+            return self._existe
+        if partes[0].lower() not in nombres:
+            return False
+        return True if len(partes) == 1 else None
+
+    def _listar(self) -> tuple[frozenset[str] | None, bool]:
+        try:
+            with os.scandir(self.destino) as entradas:
+                return frozenset(entrada.name.lower() for entrada in entradas), True
+        except (FileNotFoundError, NotADirectoryError):
+            return frozenset(), False
+        except Exception as error:  # noqa: BLE001 - sin saberlo, se verifica como antes
+            logger.warning("no se pudo listar el destino %s para empezar por lo pendiente: %s", self.destino, error)
+            return None, True
+
+
+#: Lo que deja el hilo del listado del origen al acabar, y lo que da
+#: ``_ListadoEnSuHilo.siguiente`` si se cumple la espera sin nada nuevo.
+_FIN_DEL_LISTADO = object()
+_NADA_TODAVIA = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _FalloDelListado:
+    """Lo que falló al listar el origen: sale por quien lee, detrás de lo ya listado."""
+
+    error: Exception
+
+
+class _ListadoEnSuHilo:
+    """Los PDF del origen, listados en un hilo propio mientras quien los pide verifica los de antes.
+
+    Recorrer y verificar iban en serie, en el mismo hilo: cada lote de
+    constancias paraba el listado del origen, y cada listado -- 21 ms por
+    carpeta de Magangué -- paraba la verificación (2026-11-26). Aquí el listado
+    llena una cola acotada -- ``tope`` PDF, uno o dos lotes: la memoria no se
+    llena de rutas -- y quien verifica la vacía con ``siguiente``. Lo que falle
+    al listar sale por ``siguiente`` en su orden, detrás de lo ya listado.
+    ``cerrar`` lo detiene: lo que tenía por delante se tira, y el hilo se va en
+    cuanto vuelve del listado en que estaba.
+    """
+
+    def __init__(self, fuente: Iterator, *, tope: int) -> None:
+        self._cola: Queue = Queue(maxsize=max(1, tope))
+        self._parar = threading.Event()
+        self._hilo = threading.Thread(target=self._listar, args=(fuente,), name="recorrido-del-origen", daemon=True)
+        self._hilo.start()
+
+    def _listar(self, fuente: Iterator) -> None:
+        final: object = _FIN_DEL_LISTADO
+        try:
+            for elemento in fuente:
+                if not self._poner(elemento):
+                    return
+        except Exception as error:  # noqa: BLE001 - sale por quien lee, en su orden
+            final = _FalloDelListado(error)
+        finally:
+            # Lo que listaba, cerrado: los listados de la red pedidos por delante se cancelan.
+            cerrar = getattr(fuente, "close", None)
+            if cerrar is not None:
+                with contextlib.suppress(Exception):
+                    cerrar()
+        self._poner(final)
+
+    def _poner(self, elemento: object) -> bool:
+        while not self._parar.is_set():
+            try:
+                self._cola.put(elemento, timeout=0.2)
+                return True
+            except Full:
+                continue
+        return False
+
+    def siguiente(self, espera: float | None = None) -> object:
+        """Lo siguiente: un (ruta, huella), ``_FIN_DEL_LISTADO`` o un ``_FalloDelListado``.
+
+        Con ``espera``, como mucho esos segundos: pasados sin nada, ``_NADA_TODAVIA``.
+        """
+        limite = None if espera is None else time.monotonic() + espera
+        while True:
+            paso = 0.5 if limite is None else min(0.5, max(0.0, limite - time.monotonic()))
+            try:
+                return self._cola.get(timeout=paso)
+            except Empty:
+                pass
+            if limite is not None and time.monotonic() >= limite:
+                return _NADA_TODAVIA
+            if not self._hilo.is_alive() and self._cola.empty():
+                # Se fue sin decir nada (no debería pasar): se recorre otra vez.
+                return _FalloDelListado(FolderError("El listado del origen se cortó sin terminar"))
+
+    def cerrar(self) -> None:
+        """Detiene el listado y tira lo que tenía por delante."""
+        self._parar.set()
+        with contextlib.suppress(Empty):
+            while True:
+                self._cola.get_nowait()
 
 
 def clean_path(raw: str) -> str:
@@ -1069,6 +1266,9 @@ class FolderRunner:
         #: Las tareas que miden la red de cada corrida: con su referencia aquí,
         #: el recolector no se las lleva a medio medir.
         self._medidores: set[asyncio.Task] = set()
+        #: Las que esperan a que se vacíe una corrida con la orden de «Parar con
+        #: calma» (``_parar_al_vaciarse``), por lo mismo.
+        self._paradas: set[asyncio.Task] = set()
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -1270,7 +1470,23 @@ class FolderRunner:
             return
         except CoordinacionRechazada as error:
             raise FolderError(str(error)) from None
+        if not run.active:
+            # Se detuvo mientras se unía («Detener», o una orden recibida en la
+            # unión): unirse tarda de segundos a minutos. Se retira ya; si no,
+            # quedaba latiendo «procesando» sin nadie que la parara, y el que
+            # cierra la esperaba para siempre (2026-11-26).
+            coordinacion.parar()
+            return
         run.coordinacion = coordinacion
+        # La orden de parar que otro equipo deja para éste desde el monitoreo
+        # (2026-11-26): llega al hilo de la mirada y se cumple en el bucle. Se
+        # conecta ya unida, y la que llegó durante la unión -- la mirada ya
+        # corría y la guardó en ``orden`` -- se cumple ahora: no se avisa dos
+        # veces, y ``_obedecer`` es idempotente si coincide con la del aviso.
+        recibir = self._al_recibir_orden(run.id)
+        coordinacion.al_recibir_orden = recibir
+        if coordinacion.orden is not None:
+            recibir(dict(coordinacion.orden))
         otros = len(coordinacion.equipos_vivos()) - 1
         run.compartida = (
             f"Corrida compartida {corrida['id']} (la empezó {corrida.get('creada_por')}); "
@@ -1732,6 +1948,15 @@ class FolderRunner:
     async def _esperar_el_cierre(self, run: FolderRun) -> bool:
         """Si este equipo cierra la corrida compartida: el primero que acaba, y espera a los demás."""
         coordinacion = run.coordinacion
+        if run.parando is not None:
+            # Con la orden de «Parar con calma» no cierra (2026-11-26): la
+            # auditoría y los generales finales los hace otro equipo. Lo suyo
+            # ya se vació, así que se detiene aquí, y la cancelación de
+            # «Detener» llega en la espera, no a mitad de escribir un Excel.
+            while run.active and not self._parar_si_se_vacio(run):
+                await asyncio.sleep(self.ESPERA_AL_VACIARSE)
+            await asyncio.sleep(0)
+            return False
         coordinacion.estado = "cerrando"
         if not await asyncio.to_thread(coordinacion.tomar_rol, "cierre"):
             self._avisar(run, "Este equipo terminó su parte; la auditoría y los Excel generales los cierra otro equipo.")
@@ -1819,7 +2044,9 @@ class FolderRunner:
         """Los lotes del origen, uno tras otro; si el origen no se deja, espera a que vuelva.
 
         El recorrido avanza un lote cada vez que se pide el siguiente: mientras
-        se procesa el primero, el resto del árbol todavía no se ha leído.
+        se procesa el primero, el resto del árbol todavía no se ha leído. El
+        listado va como mucho dos lotes por delante, en su propio hilo
+        (``_ListadoEnSuHilo``, 2026-11-26), y lo que falla en él sale por aquí.
 
         La carpeta de origen suele estar en una unidad de red, y una unidad de
         red se desconecta: la VPN que se cae, el servidor que se reinicia. Eso
@@ -1882,34 +2109,119 @@ class FolderRunner:
         carpeta, es pedirle que haga a mano lo que la máquina sabe hacer.
 
         En orden de ruta: carpeta por carpeta, por nombre, que es lo que mantiene
-        juntos los documentos de una misma caja mientras se procesan.
+        juntos los documentos de una misma caja mientras se procesan. Pero lo
+        pendiente primero (2026-11-26): las carpetas de la raíz que ya están en
+        el destino van al final (``_pdfs_locales``, ``_pdfs_en_la_red``). Cada
+        equipo tardaba de 3 a 28 min en tomar su primer PDF: lo pendiente de
+        Magangué quedaba detrás de unos 35.000 PDF ya entregados, y recorrer y
+        verificar iban en serie. Ahora el listado va en su propio hilo
+        (``_ListadoEnSuHilo``) y aquí se verifica mientras tanto.
 
         Lo ya entregado se sabe por su constancia (ver ``constancia.py``), sin
         abrir ni el origen ni lo entregado. Sin constancia, una carpeta del
         destino con algún PDF es una entrega de antes de que existiera, y se da
-        por buena como hasta ahora.
+        por buena como hasta ahora. Un PDF cuya carpeta no está en el destino no
+        tiene constancia que leer: va por el carril rápido
+        (``_sin_carpeta_en_el_destino``), en lotes aparte, para que no espere a
+        que se verifiquen los ya entregados que vienen detrás de él.
         """
-        fuente = self._pdfs_en_la_red(run) if red_smb.por_smb(run.source) else self._pdfs_locales(run)
+        destino = DestinoListado(run.destination)
+        # Sólo cuando se verifica al recorrer: al retomar lo que falta o al
+        # revisar, cada PDF se compara con el destino al procesarlo.
+        rapido = run.retomar in (Retomar.NO, Retomar.TODO)
+        listado: _ListadoEnSuHilo | None = None
         lote: list[Path] = []
         huellas: dict[str, tuple[int, int]] = {}
+        sin_carpeta = False
         tope = min(self.PRIMER_LOTE, self.LOTE_DEL_ORIGEN)
         desde = time.monotonic()
-        for path, huella in fuente:
-            # Lo ya tomado y lo que ya está en la cola o en la segunda pasada:
-            # al recorrer otra vez tras una caída del origen, se encolaba de
-            # nuevo y se leía (y pagaba) dos veces (2026-11-25).
-            if str(path) in run.seen or str(path) in run.encolados:
-                continue
-            lote.append(path)
-            if huella is not None:
-                huellas[str(path)] = huella
-            if len(lote) >= tope or time.monotonic() - desde >= self.SEGUNDOS_POR_LOTE:
-                yield self._repartir(run, lote, huellas)
-                lote, huellas = [], {}
-                tope = self.LOTE_DEL_ORIGEN
-                desde = time.monotonic()
-        if lote:
-            yield self._repartir(run, lote, huellas)
+
+        def cortar() -> tuple[list[Path], list[tuple[Path, Constancia | None]]]:
+            nonlocal lote, huellas, tope, desde
+            repartido = self._repartir(run, lote, huellas)
+            lote, huellas = [], {}
+            tope, desde = self.LOTE_DEL_ORIGEN, time.monotonic()
+            return repartido
+
+        try:
+            run.destino_listado = destino
+            fuente = self._pdfs_en_la_red(run) if red_smb.por_smb(run.source) else self._pdfs_locales(run)
+            # Uno o dos lotes por delante, no más: la memoria no se llena de rutas.
+            listado = _ListadoEnSuHilo(fuente, tope=2 * max(1, self.LOTE_DEL_ORIGEN))
+            # La raíz del destino aquí, mientras el hilo del listado lee la del origen.
+            destino.nombres_de_la_raiz()
+            while True:
+                espera = max(0.0, desde + self.SEGUNDOS_POR_LOTE - time.monotonic()) if lote else None
+                elemento = listado.siguiente(espera)
+                if elemento is _NADA_TODAVIA:
+                    # Ningún lote espera más de ``SEGUNDOS_POR_LOTE`` a llenarse.
+                    yield cortar()
+                    continue
+                if elemento is _FIN_DEL_LISTADO:
+                    break
+                if isinstance(elemento, _FalloDelListado):
+                    # Lo listado antes del fallo sale primero; el fallo, después.
+                    if lote:
+                        yield cortar()
+                    raise elemento.error
+                path, huella = elemento
+                # Lo ya tomado y lo que ya está en la cola o en la segunda pasada:
+                # al recorrer otra vez tras una caída del origen, se encolaba de
+                # nuevo y se leía (y pagaba) dos veces (2026-11-25).
+                if str(path) in run.seen or str(path) in run.encolados:
+                    continue
+                nuevo = rapido and self._sin_carpeta_en_el_destino(run, path, destino)
+                if lote and nuevo != sin_carpeta:
+                    # Cada lote, de un solo carril y en orden de ruta.
+                    yield cortar()
+                sin_carpeta = nuevo
+                if nuevo:
+                    destino.sin_carpeta.add(str(path))
+                lote.append(path)
+                if huella is not None:
+                    huellas[str(path)] = huella
+                if len(lote) >= tope or time.monotonic() - desde >= self.SEGUNDOS_POR_LOTE:
+                    yield cortar()
+            if lote:
+                yield cortar()
+        finally:
+            # Cerrar el recorrido -- relanzarlo, detener la corrida -- detiene el listado.
+            if listado is not None:
+                listado.cerrar()
+            if run.destino_listado is destino:
+                run.destino_listado = None
+
+    def _sin_carpeta_en_el_destino(self, run: FolderRun, path: Path, destino: DestinoListado) -> bool:
+        """Si un PDF va por el carril rápido: no están en el destino ni su carpeta ni la de su constancia.
+
+        Son las carpetas donde ``_vigencia`` busca su constancia -- la suya (la
+        de ``_output_dir``), la de sus actas en el espejo y, en la entrega
+        plana, la de su subcarpeta de antes -- y donde ``_tiene_pdf_entregado``
+        busca lo entregado sin constancia. Si de ninguna está en el destino su
+        carpeta de la raíz (``DestinoListado.existe``), no hay nada que leer: es
+        nuevo. Ante la duda -- la carpeta de la raíz sí está, la raíz no se dejó
+        listar, una ruta que no se puede calcular --, el carril normal, que lo
+        verifica como siempre.
+        """
+        try:
+            # La suya primero: en un relanzamiento casi todo está, y basta con ella.
+            if destino.existe(self._output_dir(run, path)) is not False:
+                return False
+            otras = [self._ruta_de_la_constancia(run, path, actas=True).parent]
+            if self._plana(run):
+                otras.append(self._entrega_de_antes(run, path))
+            return all(destino.existe(carpeta) is False for carpeta in otras)
+        except Exception:  # noqa: BLE001 - sin poder saberlo, se verifica como siempre
+            logger.debug("no se pudo saber si «%s» tiene su carpeta en el destino", path, exc_info=True)
+            return False
+
+    def _avisar_por_donde_empieza(self, run: FolderRun, faltan: int, estan: int) -> None:
+        """Lo que dice la pantalla al empezar por lo pendiente: sólo si hay carpetas de los dos lados."""
+        if not faltan or not estan:
+            return
+        delante = "1 carpeta que no está" if faltan == 1 else f"{faltan} carpetas que no están"
+        detras = "la otra se verifica" if estan == 1 else f"las otras {estan} se verifican"
+        self._avisar(run, f"Se empieza por {delante} en el destino; {detras} mientras tanto.")
 
     def _pdfs_locales(self, run: FolderRun):
         """Los PDF de una carpeta del equipo, a medida que se leen.
@@ -1918,6 +2230,10 @@ class FolderRunner:
         subcarpeta que no se deja leer -- la red que parpadea, un permiso --, y
         sus PDF desaparecían de la corrida sin un error que mirar. Ahora cada
         una queda en los avisos de la corrida. ``_procesados`` no se recorre.
+
+        Con el destino listado del recorrido (``run.destino_listado``), lo
+        pendiente primero (``_lo_pendiente_primero_en_el_equipo``); sin él -- la
+        auditoría de cierre --, en orden de ruta, como siempre.
         """
 
         def no_se_pudo(error: OSError) -> None:
@@ -1929,19 +2245,53 @@ class FolderRunner:
                 f"{error.strerror or error}. Sus PDF no entraron en esta corrida.",
             )
 
+        destino = run.destino_listado
         try:
-            for path in en_orden_de_ruta(run.source, no_se_pudo):
+            if destino is None:
+                rutas = en_orden_de_ruta(run.source, no_se_pudo)
+            else:
+                rutas = self._lo_pendiente_primero_en_el_equipo(run, destino, no_se_pudo)
+            for path in rutas:
                 yield path, None
         except FolderError:
             raise
         except OSError as error:
             raise FolderError(f"No se pudo leer la carpeta de origen: {error}") from None
 
+    def _lo_pendiente_primero_en_el_equipo(
+        self, run: FolderRun, destino: DestinoListado, no_se_pudo: Callable[[OSError], None]
+    ) -> Iterator[Path]:
+        """Los PDF de una carpeta del equipo, lo pendiente primero (2026-11-26).
+
+        La raíz se lista una vez (``_primer_nivel``); sus subcarpetas que ya
+        están en el destino (``lo_pendiente_primero``) van al final, y lo demás
+        -- las que faltan y los PDF sueltos de la raíz -- delante, en su orden de
+        ruta de siempre: sin nada en el destino, el orden de antes. Dentro de
+        cada subcarpeta, ``en_orden_de_ruta`` con el mismo ``no_se_pudo``: la
+        raíz que no se deja leer es un error; una subcarpeta, un aviso.
+        """
+        raiz = str(run.source)
+        entradas = _primer_nivel(raiz, no_se_pudo)
+        faltan, estan = lo_pendiente_primero(
+            [nombre for nombre, es_carpeta in entradas if es_carpeta], destino.nombres_de_la_raiz() or ()
+        )
+        self._avisar_por_donde_empieza(run, len(faltan), len(estan))
+        al_final = set(estan)
+        delante = [(nombre, es_carpeta) for nombre, es_carpeta in entradas if not (es_carpeta and nombre in al_final)]
+        for nombre, es_carpeta in [*delante, *((nombre, True) for nombre in estan)]:
+            ruta = os.path.join(raiz, nombre)
+            if es_carpeta:
+                yield from en_orden_de_ruta(Path(ruta), no_se_pudo)
+            else:
+                yield Path(ruta)
+
     def _pdfs_en_la_red(self, run: FolderRun):
         """Lo mismo, para una carpeta de red leída con SMB, con la huella de cada PDF.
 
         Un listado por carpeta con el tamaño y la fecha de cada PDF: la huella
-        sale de ahí, sin otra pregunta al servidor por archivo.
+        sale de ahí, sin otra pregunta al servidor por archivo. Con el destino
+        listado del recorrido, lo pendiente primero
+        (``_lo_pendiente_primero_en_la_red``); sin él, ``red_smb.iterar``.
         """
 
         def no_se_pudo(carpeta: str, error: OSError) -> None:
@@ -1951,11 +2301,16 @@ class FolderRunner:
                 f"{error.strerror or error}. Sus PDF no entraron en esta corrida.",
             )
 
+        destino = run.destino_listado
         try:
-            for archivo in red_smb.iterar(
-                str(run.source), saltar=frozenset({CONSUMED_DIR}), al_fallar=no_se_pudo
-            ):
-                yield Path(archivo.ruta), (archivo.tamano, archivo.modificado_ns)
+            if destino is None:
+                archivos = red_smb.iterar(str(run.source), saltar=frozenset({CONSUMED_DIR}), al_fallar=no_se_pudo)
+            else:
+                archivos = self._lo_pendiente_primero_en_la_red(run, destino, no_se_pudo)
+            # Cerrado al cerrar éste: los listados pedidos por delante se cancelan.
+            with contextlib.closing(archivos):
+                for archivo in archivos:
+                    yield Path(archivo.ruta), (archivo.tamano, archivo.modificado_ns)
         except red_smb.CredencialesDeRed as error:
             # A mitad de una corrida no hay a quién preguntar: se espera a que
             # el operador vuelva a entrar, como con una unidad que se cayó.
@@ -1965,13 +2320,47 @@ class FolderRunner:
         except OSError as error:
             raise FolderError(f"No se pudo leer la carpeta de red: {error}") from None
 
+    def _lo_pendiente_primero_en_la_red(
+        self, run: FolderRun, destino: DestinoListado, no_se_pudo: Callable[[str, OSError], None]
+    ) -> Iterator[red_smb.ArchivoDeRed]:
+        """Lo de ``_lo_pendiente_primero_en_el_equipo``, para una carpeta de red leída con SMB.
+
+        La raíz, con un solo listado (``red_smb.listar_nivel``: 7,8 s la de
+        Magangué, ~32.000 carpetas). Las subcarpetas, con
+        ``red_smb.iterar_carpetas``, que pide por delante el listado de las
+        siguientes: una tras otra, a 21 ms cada una, eran unos 10 min antes de
+        llegar a lo pendiente (2026-11-26). Los PDF sueltos de la raíz, en su
+        sitio entre lo que falta; cada tramo de carpetas seguidas va de una vez.
+        """
+        saltar = frozenset({CONSUMED_DIR})
+        sueltos, subcarpetas = red_smb.listar_nivel(str(run.source), saltar=saltar)
+        faltan, estan = lo_pendiente_primero(subcarpetas, destino.nombres_de_la_raiz() or ())
+        self._avisar_por_donde_empieza(run, len(faltan), len(estan))
+        delante = sorted(
+            [*((archivo.ruta, archivo) for archivo in sueltos), *((carpeta, None) for carpeta in faltan)],
+            key=lambda entrada: nombre_de_la_carpeta(entrada[0]).lower(),
+        )
+        tramo: list[str] = []
+        for ruta, archivo in delante:
+            if archivo is None:
+                tramo.append(ruta)
+                continue
+            if tramo:
+                yield from red_smb.iterar_carpetas(tramo, saltar=saltar, al_fallar=no_se_pudo)
+                tramo = []
+            yield archivo
+        yield from red_smb.iterar_carpetas([*tramo, *estan], saltar=saltar, al_fallar=no_se_pudo)
+
     def _repartir(
         self, run: FolderRun, encontrados: list[Path], huellas: dict[str, tuple[int, int]]
     ) -> tuple[list[Path], list[tuple[Path, Constancia | None]]]:
         """Lo pendiente y lo ya entregado, según la constancia de cada PDF.
 
         Las constancias se miran a la vez (``_mirar_las_constancias``); lo que
-        se decide con ellas, en orden y en este hilo.
+        se decide con ellas, en orden y en este hilo. Lo que el recorrido mandó
+        por el carril rápido (``DestinoListado.sin_carpeta``: ni su carpeta ni
+        la de su constancia están en el destino) es nuevo sin mirar nada, que
+        es lo que diría su constancia: no hay ninguna (2026-11-26).
         """
         pending: list[Path] = []
         entregados: list[tuple[Path, Constancia | None]] = []
@@ -1979,10 +2368,25 @@ class FolderRunner:
         for path in por_mirar:
             if str(path) in huellas:
                 run.huellas_del_origen[str(path)] = huellas[str(path)]
-        miradas = self._mirar_las_constancias(run, por_mirar)
-        for path, (vigencia, constancia, con_pdf_entregado) in zip(por_mirar, miradas, strict=True):
+        destino = run.destino_listado
+        nuevos = destino.sin_carpeta if destino is not None else set()
+        sin_carpeta = [str(path) in nuevos for path in por_mirar]
+        miradas = iter(
+            self._mirar_las_constancias(
+                run, [path for path, nuevo in zip(por_mirar, sin_carpeta, strict=True) if not nuevo]
+            )
+        )
+        for path, nuevo in zip(por_mirar, sin_carpeta, strict=True):
             key = str(path)
             relativa = str(self._relative(run, path))
+            if nuevo:
+                nuevos.discard(key)
+                # Su huella, como la de cualquier otro que se va a procesar.
+                self._tomar_la_huella(run, path)
+                self._anotar_la_verificacion(run, relativa, DECISION_NUEVO, MOTIVO_SIN_CARPETA)
+                pending.append(path)
+                continue
+            vigencia, constancia, con_pdf_entregado = next(miradas)
             if run.retomar == Retomar.NO:
                 motivo = run.motivos.pop(key, "")
                 if vigencia is Vigencia.VIGENTE:
@@ -2391,6 +2795,10 @@ class FolderRunner:
                         if run.state is not RunState.RECOVERING:
                             run.state = RunState.PROCESSING
                         hay_novedad.set()
+                        # Los trabajadores toman lo nuevo antes de que se pida el
+                        # lote siguiente: verificar lo ya entregado que viene
+                        # detrás no se adelanta al primer PDF nuevo (2026-11-26).
+                        await asyncio.sleep(0)
                     self._publish(run)
                     # Un lote por delante, no más.
                     while run.active and len(cola) >= self.LOTE_DEL_ORIGEN:
@@ -2406,7 +2814,9 @@ class FolderRunner:
             while run.active:
                 if not cola:
                     if estado["terminado"]:
-                        if run.diferidos and not estado["clasificando"]:
+                        # Con la orden de «Parar con calma», la segunda pasada
+                        # no empieza: lo de los demás lo hacen ellos (2026-11-26).
+                        if run.diferidos and not estado["clasificando"] and run.parando is None:
                             # La segunda pasada: las carpetas de los otros
                             # equipos, al revés -- ellos van al derecho --, para
                             # ayudar a los lentos o tomar lo de los caídos. Lo ya
@@ -2447,6 +2857,11 @@ class FolderRunner:
                 async with ranuras:
                     if not run.active:
                         return
+                    if run.parando is not None:
+                        # La orden de parar llegó mientras esperaba la ranura:
+                        # el PDF vuelve a la cola sin tomarse.
+                        cola.appendleft(path)
+                        continue
                     await self._consume(run, path)
                     # El ritmo de la corrida, para estimar lo que falta.
                     run.terminados_en.append(time.monotonic())
@@ -2487,6 +2902,10 @@ class FolderRunner:
                 async with ranuras:
                     if not run.active:
                         return
+                    if run.parando is not None:
+                        # La orden de parar llegó mientras esperaba la ranura.
+                        cola.appendleft(path)
+                        continue
                     await self._consume(run, path)
                     run.terminados_en.append(time.monotonic())
 
@@ -2499,9 +2918,13 @@ class FolderRunner:
         Tras una racha de fallos la carpeta se pausa un rato y luego sigue con
         un solo documento a la vez, hasta que uno salga bien: si la red volvió,
         el primero lo dice y vuelven todos; si no, se gasta un intento y no
-        diez.
+        diez. Con la orden de «Parar con calma» (2026-11-26) no se toma nada
+        nuevo: se espera a que ``_parar_al_vaciarse`` detenga la corrida.
         """
         while run.active and cola:
+            if run.parando is not None:
+                await asyncio.sleep(0.2)
+                continue
             espera = run.pausa_hasta - time.monotonic()
             if espera > 0:
                 if run.state is not RunState.RECOVERING:
@@ -2547,6 +2970,171 @@ class FolderRunner:
         logger.info("%s: %s archivos a la vez", run.source, paralelo or "automático,")
         self._publish(run)
         return run
+
+    # -- el monitoreo de equipos (2026-11-26) ---------------------------------
+    #
+    # El operador: «un monitoreo para ver los que están conectados y poder
+    # desconectarlos». La pantalla sólo sabía cuántos equipos latían, ninguno
+    # podía parar a otro, y «Detener» cancelaba en el acto lo que se estaba
+    # leyendo, ya pagado. Ahora un equipo puede parar a otro -- o a sí mismo --
+    # con calma: termina lo que tiene en curso, lo entrega y se retira.
+
+    #: Cada cuánto mira una corrida con la orden de «Parar con calma» si ya se vació.
+    ESPERA_AL_VACIARSE = 1.0
+
+    def equipos(self, run_id: str) -> dict | None:
+        """Los equipos de la corrida compartida, para el monitoreo; ``None`` si la corrida no existe.
+
+        Sin E/S: lo que vio la última mirada de la coordinación
+        (``Coordinacion.latidos``), que es de hace un latido como mucho.
+        """
+        from .corrida_compartida import version_del_bot
+
+        run = self._runs.get(run_id)
+        if run is None:
+            return None
+        coordinacion = run.coordinacion
+        if coordinacion is None:
+            return {
+                "compartida": False,
+                "corrida": None,
+                "version": version_del_bot(),
+                "este": None,
+                "activa": run.active,
+                "equipos": [],
+            }
+        return resumen_de_los_equipos(
+            coordinacion.latidos(),
+            este=coordinacion.id,
+            corrida=(coordinacion.corrida or {}).get("id"),
+            version=coordinacion.version,
+            activa=run.active,
+        )
+
+    def ordenar_parar(self, run_id: str, equipo_id: str, modo: str, operador: str | None = None) -> dict:
+        """Ordena parar a un equipo de la corrida compartida; devuelve la lista, como ``equipos``.
+
+        «calma» termina lo que tiene en curso y no toma nada nuevo; «ya» es
+        «Detener». Al propio equipo, directo; a otro, con un archivo en el
+        destino que su mirada lee en el siguiente latido: hay E/S, así que se
+        llama desde un hilo. Lo que no se puede, con ``EquipoNoEncontrado`` u
+        ``OrdenNoPermitida`` y el motivo para el operador.
+
+        No hay «quitar» un caído, a propósito: sus PDF los toman los demás a
+        los 90 s y su latido se borra solo a los 3 min, y marcarlo «terminado»
+        a mano lo dejaba fuera para siempre si en realidad seguía vivo.
+        """
+        if modo not in MODOS_DE_PARAR:
+            raise ValueError(f"modo de parar desconocido: {modo!r}")
+        run = self._runs.get(run_id)
+        if run is None:
+            raise EquipoNoEncontrado("El proceso de carpeta no existe")
+        if not run.active:
+            raise OrdenNoPermitida(CORRIDA_TERMINADA)
+        coordinacion = run.coordinacion
+        if coordinacion is None:
+            raise OrdenNoPermitida(NO_ES_COMPARTIDA)
+        resumen = self.equipos(run_id) or {}
+        equipo = next((e for e in resumen.get("equipos", []) if e["id"] == equipo_id), None)
+        if equipo is None or not equipo["de_esta_corrida"]:
+            raise EquipoNoEncontrado(NO_ESTA_EN_LA_CORRIDA)
+        motivo = por_que_no_se_puede_parar(equipo, activa=run.active)
+        if motivo is not None:
+            raise OrdenNoPermitida(motivo)
+        orden = coordinacion.ordenar_parar(equipo_id, modo, operador)
+        logger.info("%s: %s ordenó «%s» a %s", run.source, coordinacion.id, orden.get("modo"), equipo_id)
+        return self.equipos(run_id) or resumen
+
+    def _al_recibir_orden(self, run_id: str) -> Callable[[dict], None]:
+        """Lo que hace la coordinación con una orden de parar: pasarla al bucle, que es donde se cumple."""
+        bucle = self._loop
+
+        def recibir(orden: dict) -> None:
+            if bucle is not None and not bucle.is_closed():
+                bucle.call_soon_threadsafe(self._obedecer, run_id, orden)
+
+        return recibir
+
+    @staticmethod
+    def _quien_ordena(orden: Mapping[str, object]) -> str:
+        """Quién dio la orden, para completar «Detenido por …»: «el equipo SIAR (operador Juan)»."""
+        equipo = orden.get("equipo_que_ordena") or orden.get("por") or "otro"
+        operador = str(orden.get("operador") or "").strip()
+        return f"el equipo {equipo}" + (f" (operador {operador})" if operador else "")
+
+    def _obedecer(self, run_id: str, orden: dict) -> None:
+        """Cumple, en el bucle, la orden de parar que recibió este equipo.
+
+        «ya» es «Detener»: lo que se estaba leyendo se suelta y lo toman los
+        demás. «calma» deja terminar lo que tiene en curso y no toma nada
+        nuevo: ``_esperar_turno`` retiene a los trabajadores, la segunda pasada
+        y el cierre no empiezan, y ``_parar_al_vaciarse`` la detiene cuando ya
+        no le queda nada.
+        """
+        run = self._runs.get(run_id)
+        if run is None or not run.active:
+            # Una corrida que ya no está activa pero cuya coordinación sigue
+            # latiendo (se detuvo en un mal momento): la orden la retira, o los
+            # demás la esperarían para siempre (2026-11-26).
+            coordinacion = getattr(run, "coordinacion", None)
+            if run is not None and coordinacion is not None and not coordinacion.retirado:
+                asyncio.get_running_loop().run_in_executor(None, self._retirarse, run)
+            return
+        quien = self._quien_ordena(orden)
+        al_empezar = quien[:1].upper() + quien[1:]
+        if orden.get("modo") == "ya":
+            run.detenido_por = f"{quien}, con «Parar ya»"
+            self._avisar(
+                run,
+                f"{al_empezar} ordenó «Parar ya»: este equipo se detiene ahora y lo que estaba leyendo "
+                "lo retoman los otros equipos.",
+            )
+            self.stop(run_id)
+            return
+        if run.parando is not None:
+            return
+        run.parando = dict(orden)
+        en_curso = len(run.tomados)
+        lo_suyo = (
+            f"termina los {en_curso} PDF que tiene en curso"
+            if en_curso > 1
+            else "termina el PDF que tiene en curso"
+            if en_curso == 1
+            else "no tiene nada en curso"
+        )
+        self._avisar(
+            run,
+            f"{al_empezar} ordenó «Parar con calma»: este equipo {lo_suyo}, no toma ninguno nuevo y se "
+            "detiene; lo demás lo hacen los otros equipos.",
+        )
+        self._publish(run)
+        tarea = asyncio.get_running_loop().create_task(self._parar_al_vaciarse(run))
+        self._paradas.add(tarea)
+        tarea.add_done_callback(self._paradas.discard)
+
+    async def _parar_al_vaciarse(self, run: FolderRun) -> None:
+        """Con la orden de «Parar con calma», detiene la corrida cuando ya no le queda nada en curso.
+
+        Mira cada ``ESPERA_AL_VACIARSE``; si la corrida deja de estar activa por
+        otra vía -- «Detener», «Parar ya», o termina --, se acaba sin más.
+        """
+        while run.active and not self._parar_si_se_vacio(run):
+            await asyncio.sleep(self.ESPERA_AL_VACIARSE)
+
+    def _parar_si_se_vacio(self, run: FolderRun) -> bool:
+        """Detiene la corrida si ya no lee, entrega ni baja nada. Dice si ya no está activa.
+
+        Si el equipo está cerrando la corrida -- la auditoría, los generales
+        finales --, no la interrumpe: termina sola.
+        """
+        if not run.active:
+            return True
+        if run.tomados or run.bajando or getattr(run.coordinacion, "estado", None) == "cerrando":
+            return False
+        run.detenido_por = f"{self._quien_ordena(run.parando or {})}, con «Parar con calma»"
+        self._avisar(run, "«Parar con calma»: este equipo terminó lo que tenía en curso y se detiene.")
+        self.stop(run.id)
+        return True
 
     async def _consume(self, run: FolderRun, path: Path) -> None:
         """Un PDF de la carpeta: procesarlo, entregarlo y contarlo.
@@ -2614,6 +3202,12 @@ class FolderRunner:
         #: Por qué no se entregó un PDF que sigue siendo de este equipo (su
         #: latido no volvió a tiempo): se suelta con el motivo y se reintenta aquí.
         perdido_propio: str | None = None
+        #: Lo que este PDF escribe en el destino en su hilo -- la entrega, su
+        #: constancia -- mientras lo escribe: cancelar no para el hilo, y su
+        #: reclamo no se suelta hasta que acaba (``_esperar_lo_que_escribe``).
+        escribiendo: asyncio.Task | None = None
+        #: Si al cancelarlo ya había quedado entregado entero, con su constancia completa.
+        entregado_al_cancelar = False
         # De una carpeta de red se procesa una copia local, bajada justo antes
         # y borrada al terminar (ver `_copia_local`).
         local = self._copia_local(run, path)
@@ -2726,7 +3320,9 @@ class FolderRunner:
             if job.state is JobState.DONE:
                 run.processed += 1
                 run.resolutions += len(((job.report or {}).get("groups")) or [])
-                entrega = await asyncio.to_thread(self._deliver, run, job, path, huella)
+                escribiendo = asyncio.create_task(asyncio.to_thread(self._deliver, run, job, path, huella))
+                entrega = await asyncio.shield(escribiendo)
+                escribiendo = None
                 if entrega.ya_estaba is not None:
                     # Otro equipo lo entregó entero mientras éste lo leía (lo
                     # dio por caído un momento): se cuenta como suyo y no se
@@ -2758,7 +3354,11 @@ class FolderRunner:
                         f"copiaron al destino ({'; '.join(entrega.fallos[:3])}). Vuelva a lanzar "
                         "la carpeta: este PDF se rehará."
                     )
-                cerrada = await asyncio.to_thread(self._dejar_constancia, run, job, path, huella, entrega)
+                escribiendo = asyncio.create_task(
+                    asyncio.to_thread(self._dejar_constancia, run, job, path, huella, entrega)
+                )
+                cerrada = await asyncio.shield(escribiendo)
+                escribiendo = None
                 if cerrada:
                     reclamo = run.reclamos.pop(str(path), None)
                     if reclamo is not None:
@@ -2808,6 +3408,16 @@ class FolderRunner:
                 self._registry.mark_cancelled(job)
                 if control is not None:
                     control.accion = "cancelado"
+            if escribiendo is not None and run.coordinacion is not None:
+                # «Detener» o «Parar ya» con la entrega escribiendo en el destino
+                # en su hilo, que sigue: se espera antes de soltar el reclamo (en
+                # el «finally»). Soltado antes, otro equipo lo tomaba sin ver aún
+                # su constancia y lo entregaba encima: «01_UPD022 (2).pdf» (2026-11-26).
+                entregado_al_cancelar = await self._esperar_lo_que_escribe(escribiendo, relativa)
+                if not entregado_al_cancelar:
+                    # No es una entrega: lo cuenta quien lo rehaga.
+                    run.processed -= 1
+                    run.resolutions -= len(((job.report or {}).get("groups")) or [])
             raise
         except ReclamoPerdido as error:
             if job.state is JobState.DONE:
@@ -2859,7 +3469,14 @@ class FolderRunner:
                 control.error = job.error
         finally:
             reclamo = run.reclamos.pop(str(path), None)
-            if reclamo is not None and run.coordinacion is not None:
+            if reclamo is not None and run.coordinacion is not None and entregado_al_cancelar:
+                # Quedó entregado entero, con su constancia completa, antes de que
+                # llegara «Detener»: «hecho» para los demás, que no lo rehacen.
+                try:
+                    await asyncio.shield(asyncio.to_thread(run.coordinacion.terminar, reclamo, trabajo=job.id))
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001 - quien lo tome verá su constancia
+                    logger.warning("no se pudo dejar como hecho el reclamo de %s", relativa, exc_info=True)
+            elif reclamo is not None and run.coordinacion is not None:
                 # No se entregó: se suelta para los demás, con el motivo si falló
                 # (el reintento lo hace este equipo; los otros no lo pagan otra vez).
                 fallo = job.error if job.state is JobState.FAILED else perdido_propio
@@ -2882,6 +3499,40 @@ class FolderRunner:
             # -- también si falló --, cuando le toque al escritor de fondo.
             self._pedir_generales(run)
             self._publish(run)
+
+    #: Cuánto espera, como mucho, «Detener» (o «Parar ya») a que acabe lo que
+    #: un PDF ya escribía en el destino en su hilo, antes de soltar su reclamo.
+    ESPERA_DE_LA_ENTREGA_AL_DETENER = 120.0
+
+    async def _esperar_lo_que_escribe(self, escribiendo: asyncio.Task, relativa: str) -> bool:
+        """Espera, con tope, lo que un PDF cancelado escribía en el destino en su hilo. Dice si quedó entregado entero.
+
+        Cancelar la corrida cancela la espera, no el hilo: la entrega sigue
+        copiando. Si su reclamo se soltaba ya, otro equipo lo tomaba, no veía
+        todavía su constancia «entregando» -- no se había escrito -- y lo
+        entregaba encima: «01_UPD022 (2).pdf», igual al original (2026-11-26).
+        Esperada, quien lo tome después ve lo que dejó y lo aparta al
+        rehacerlo, o lo encuentra entregado. Con tope: un destino que no
+        contesta no deja «Detener» colgado; pasado, se suelta como antes.
+        """
+        if not escribiendo.done():
+            try:
+                await asyncio.wait({escribiendo}, timeout=self.ESPERA_DE_LA_ENTREGA_AL_DETENER)
+            except asyncio.CancelledError:
+                # Otra cancelación encima (el servicio que se apaga): no se espera más.
+                pass
+        if not escribiendo.done():
+            # Su fallo, si acaba fallando, se recoge: nadie más lo va a esperar.
+            escribiendo.add_done_callback(lambda tarea: tarea.cancelled() or tarea.exception())
+            logger.warning("«%s» seguía escribiendo en el destino al detener: se suelta igual", relativa)
+            return False
+        if escribiendo.cancelled() or escribiendo.exception() is not None:
+            return False
+        resultado = escribiendo.result()
+        if isinstance(resultado, Entrega):
+            # La entrega plana por el camino rápido cierra su constancia en su turno.
+            resultado = resultado.cerrada
+        return resultado is True
 
     #: Cuántas veces se reintenta sólo la copia antes de dar la entrega por incompleta.
     VECES_QUE_SE_RECOPIA = 2
@@ -6112,6 +6763,9 @@ DECISION_SE_REHACE = "Se rehace"
 DECISION_NUEVO = "Nuevo: se procesa"
 DECISION_OTRA_VEZ = "Se procesa otra vez"
 DECISION_SE_COMPARA = "Se compara con el destino"
+#: El motivo del carril rápido (2026-11-26): ni su carpeta ni la de su
+#: constancia están en el destino, así que no hay constancia que leer.
+MOTIVO_SIN_CARPETA = "su carpeta no está en el destino"
 
 PREFIJO_DE_PASO = constancias.PREFIJO_DE_PASO
 

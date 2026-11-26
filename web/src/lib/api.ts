@@ -4,8 +4,10 @@ import type { TipoOption, TipoPedido } from './tipos';
 import type { OracleChoice } from './oracles';
 import type {
   Batch,
+  EquiposDeLaCorrida,
   FuidStatus,
   JobState,
+  OrdenDeParar,
   TaskKind,
   FolderRun,
   InventoryPage,
@@ -647,7 +649,7 @@ export async function documentFuidStatus(jobId: string): Promise<FuidStatus> {
  * depending on a new endpoint. A service older than this is not broken, it is
  * stale, and saying which is the difference between a restart and a bug hunt.
  */
-export const REQUIRED_API_REVISION = 24;
+export const REQUIRED_API_REVISION = 26;
 
 export interface Health {
   status: string;
@@ -945,6 +947,42 @@ export function stopFolderRun(runId: string): Promise<FolderRun> {
 /** Cuántos archivos a la vez, con la carpeta en marcha; 0 vuelve al automático. */
 export function cambiarParalelo(runId: string, paralelo: number): Promise<FolderRun> {
   return send(`${BASE}/folder-runs/${runId}/paralelo`, 'POST', { paralelo });
+}
+
+/**
+ * Quién está conectado a una corrida compartida (2026-11-26): cada equipo con
+ * su estado, lo que lleva hecho, su ritmo y su último latido. El servicio la
+ * arma con lo que ya miró, sin salir a la red, así que aguanta pedirla cada
+ * pocos segundos.
+ */
+export async function equiposDeLaCorrida(
+  runId: string,
+  signal?: AbortSignal
+): Promise<EquiposDeLaCorrida> {
+  const response = await pedir(`${BASE}/folder-runs/${encodeURIComponent(runId)}/equipos`, {
+    headers: attribution(),
+    signal
+  });
+  if (!response.ok) throw new ApiError(await detailOf(response));
+  return response.json();
+}
+
+/**
+ * Ordena parar a un equipo de la corrida compartida, este incluido
+ * (2026-11-26). Con «calma» termina lo que está leyendo, lo entrega y se
+ * retira; con «ya» se detiene en el acto. Devuelve la lista de equipos con la
+ * orden ya puesta.
+ */
+export function pararEquipo(
+  runId: string,
+  equipoId: string,
+  modo: OrdenDeParar['modo']
+): Promise<EquiposDeLaCorrida> {
+  return send(
+    `${BASE}/folder-runs/${encodeURIComponent(runId)}/equipos/${encodeURIComponent(equipoId)}/parar`,
+    'POST',
+    { modo }
+  );
 }
 
 /**

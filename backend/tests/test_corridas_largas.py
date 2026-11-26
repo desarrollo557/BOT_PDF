@@ -1737,7 +1737,9 @@ class TestRelanzarEsRapidoYExacto:
 
         monkeypatch.setattr(motor, "_pdfs_locales", lento)
         monkeypatch.setattr(motor, "_repartir", lambda run, encontrados, huellas: (list(encontrados), []))
-        run = SimpleNamespace(source=tmp_path / "origen", seen=set(), encolados=set())
+        # Una corrida de verdad: el recorrido lista también la raíz de su destino
+        # para empezar por lo pendiente (2026-11-26).
+        run = FolderRun(id="lento", source=tmp_path / "origen", destination=tmp_path / "destino")
 
         lotes = [pendientes for pendientes, _ in motor._lotes_del_origen(run)]
 

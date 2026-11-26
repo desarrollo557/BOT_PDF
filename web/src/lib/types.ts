@@ -901,6 +901,84 @@ export interface FolderRun {
   /** Cómo terminó por la auditoría: «Terminado», «Terminado con faltantes»… */
   etapa?: string | null;
   etapa_detalle?: string;
+  /**
+   * La corrida compartida con otros equipos sobre el mismo destino, dicha en
+   * palabras (quién la empezó, qué equipo es este); null si este equipo va
+   * solo. Ausente en un servicio anterior.
+   */
+  compartida?: string | null;
+  /** El id de este equipo en la corrida compartida («DESARROLLADOR-fa12b8»). Ausente en un servicio anterior. */
+  equipo?: string | null;
+  /** Cuántos equipos laten en la corrida, este incluido. Ausente en un servicio anterior. */
+  equipos_vivos?: number;
+  /**
+   * La orden de parar que cumple este equipo (2026-11-26): con «calma» termina
+   * lo que está leyendo, lo entrega y se retira. Ausente en un servicio anterior.
+   */
+  parando?: OrdenDeParar | null;
+  /** Quién la detuvo con una orden de parar, ya terminada. Ausente en un servicio anterior. */
+  detenido_por?: string | null;
+}
+
+/**
+ * Una orden de parar un equipo de la corrida compartida (2026-11-26), como la
+ * deja el servicio en el destino. «calma»: termina lo que está leyendo, lo
+ * entrega y se retira; «ya»: se detiene en el acto, como con «Detener».
+ */
+export interface OrdenDeParar {
+  modo: 'calma' | 'ya';
+  /** El id del equipo al que va. */
+  para?: string | null;
+  /** El id del equipo desde cuya pantalla se dio. */
+  por?: string | null;
+  /** Y el nombre de ese equipo («SIAR»). */
+  equipo_que_ordena?: string | null;
+  /** Quién la dio, si se identificó. */
+  operador?: string | null;
+  /** Cuándo, en ISO. */
+  cuando?: string | null;
+}
+
+/** Un equipo que late sobre el destino de la corrida (`GET /api/folder-runs/{id}/equipos`). */
+export interface EquipoDeLaCorrida {
+  /** El nombre del PC y su arranque: «COORDINADORTIC-1e52b0». Dos arranques son dos ids. */
+  id: string;
+  /** El nombre del PC: «COORDINADORTIC». */
+  equipo: string;
+  version: string | null;
+  misma_version: boolean;
+  corrida: string | null;
+  de_esta_corrida: boolean;
+  /** Lo que dice su latido: «uniéndose», «procesando», «cerrando» o «terminado». */
+  estado: string;
+  vivo: boolean;
+  /** Si es el equipo de esta pantalla. */
+  este: boolean;
+  hechos: number;
+  en_curso: number;
+  unido: string | null;
+  escrito: string | null;
+  /** Segundos desde que se le vio latir, con el reloj de este equipo. */
+  quieto_hace: number | null;
+  /** Su ritmo; null sin datos o con menos de 5 min en la corrida. */
+  pdf_por_hora: number | null;
+  /** La orden de parar que cumple, o null. */
+  orden: OrdenDeParar | null;
+  /** Si se le puede ordenar parar; si no, `por_que_no` lo dice en palabras. */
+  se_puede_parar: boolean;
+  por_que_no: string | null;
+}
+
+/** Quién está conectado a la corrida compartida (2026-11-26), en el orden en que se enseña. */
+export interface EquiposDeLaCorrida {
+  /** Falso si la corrida va sola: entonces no trae equipos. */
+  compartida: boolean;
+  corrida: string | null;
+  version: string | null;
+  /** El id de este equipo; null si la corrida no es compartida. */
+  este: string | null;
+  activa: boolean;
+  equipos: EquipoDeLaCorrida[];
 }
 
 /** Algo del origen o del destino que no cuadra, con su evidencia. */

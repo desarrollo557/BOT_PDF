@@ -12,6 +12,7 @@ destino compartido, en el área ``.botpdf-coordinacion``::
     corridas/<corrida>/roles/          quién cierra la corrida
     cerrojos/<clave>.lock              el turno de cada carpeta NIC del destino
     diario/<id>.jsonl                  lo que hizo cada equipo, para revisarlo
+    ordenes/<id>.json                  la orden de parar que un equipo deja para otro
 
 **El reclamo** es un archivo creado en exclusiva (``O_CREAT | O_EXCL``), que
 el servidor SMB resuelve de forma atómica: de dos equipos que lo intentan a la
@@ -41,13 +42,17 @@ from pathlib import Path
 from uuid import uuid4
 
 from ..application.coordinacion import (
+    MODOS_DE_PARAR,
     SEGUNDOS_DEL_LATIDO,
     SEGUNDOS_PARA_DARLO_POR_CAIDO,
     SEGUNDOS_SIN_LATIDO_PROPIO,
+    UNIENDOSE,
+    OrdenNoPermitida,
     Vida,
     carpeta_de,
     clave_de,
     equipo_preferido,
+    la_orden_que_manda,
     opciones_distintas,
 )
 
@@ -326,11 +331,31 @@ class Coordinacion:
         self._hechos_pendientes: list[tuple[Reclamo, str | None]] = []
         self.corrida: dict | None = None
         #: Lo que el latido cuenta a los demás de este equipo.
-        self.estado = "uniéndose"
+        self.estado = UNIENDOSE
         self.en_curso: dict[str, str] = {}
         self.hechos = 0
         #: Otro equipo empezó una corrida nueva sobre este destino: esta ya no vale.
         self.desplazado = False
+        #: El monitoreo de equipos (2026-11-26). Cuándo se unió a la corrida
+        #: (ISO, con su reloj): con ``escrito`` da su ritmo en la pantalla.
+        self.unido: str | None = None
+        #: La orden de parar que cumple este equipo, o ``None`` (``recibir_orden``).
+        self.orden: dict | None = None
+        #: Lo que se hace al recibir una orden de parar: la corrida la cumple en su bucle.
+        self.al_recibir_orden: Callable[[dict], None] | None = None
+        self._cerrojo_de_la_orden = threading.Lock()
+        #: Las órdenes que dio este equipo a otros (id → orden): el monitoreo las
+        #: enseña en cuanto se dan, sin esperar a que el otro la lea y la lleve
+        #: en su latido (hasta tres latidos).
+        self._ordenes_dadas: dict[str, dict] = {}
+        #: La foto de los latidos para la pantalla (``latidos``): lo que leyó la
+        #: última mirada y el último latido propio escrito. Cada pantalla abierta
+        #: pregunta cada 5 s: leer el destino en cada pregunta eran idas y
+        #: vueltas de más contra un servidor que ya va lento.
+        self._cerrojo_de_la_foto = threading.Lock()
+        self._foto: dict[str, dict] = {}
+        self._corrida_de_la_foto: str | None = None
+        self._latido_propio: dict | None = None
 
     @property
     def retirado(self) -> bool:
@@ -395,7 +420,7 @@ class Coordinacion:
         diferencia en palabras --. Sin ninguno, la corrida es nueva: lo que
         dejaron las anteriores (reclamos, fallos) queda en su carpeta y no cuenta.
         """
-        for carpeta in ("equipos", "cerrojos", "diario", "corridas"):
+        for carpeta in ("equipos", "cerrojos", "diario", "corridas", "ordenes"):
             (self.area / carpeta).mkdir(parents=True, exist_ok=True)
         self.sondear()
         self._latir()
@@ -450,6 +475,8 @@ class Coordinacion:
                 self.corrida = corrida
                 for carpeta in ("reclamos", "fallidos", "roles"):
                     (self._de_la_corrida / carpeta).mkdir(parents=True, exist_ok=True)
+                # Desde aquí cuenta su ritmo en el monitoreo: el de «se unió».
+                self.unido = _ahora_iso()
                 self.estado = "procesando"
                 self._latir()
         except BaseException:
@@ -500,11 +527,12 @@ class Coordinacion:
             siguiente = max(siguiente + self.latido, time.monotonic())
 
     def _mirando(self) -> None:
-        """Lo demás que se hace cada latido: mirar a los otros, borrar lo pendiente, la corrida, el diario."""
+        """Lo demás que se hace cada latido: mirar a los otros, las órdenes, borrar lo pendiente, la corrida, el diario."""
         vueltas = 0
         while not self._parar.wait(self.latido):
             vueltas += 1
             self._mirar_a_los_demas()
+            self._mirar_las_ordenes()
             self._borrar_lo_pendiente()
             self._marcar_lo_pendiente()
             self._mirar_la_corrida()
@@ -513,6 +541,7 @@ class Coordinacion:
 
     def _latir(self) -> None:
         self._contador += 1
+        en_curso = sorted(self.en_curso.values())
         datos = {
             "id": self.id,
             "equipo": self.equipo,
@@ -520,13 +549,21 @@ class Coordinacion:
             "corrida": (self.corrida or {}).get("id"),
             "contador": self._contador,
             "estado": self.estado,
-            "en_curso": sorted(self.en_curso.values())[:20],
+            # Los nombres, cortados en veinte; cuántos son, todos: con más de
+            # veinte a la vez la pantalla decía veinte (2026-11-26).
+            "en_curso": en_curso[:20],
+            "en_curso_n": len(en_curso),
             "hechos": self.hechos,
+            # El monitoreo (2026-11-26): desde cuándo está y qué orden de parar cumple.
+            "unido": self.unido,
+            "orden": self.orden,
             "escrito": _ahora_iso(),
         }
         try:
             _escribir_entero(self._equipos / f"{self.id}.json", datos)
             self._ultimo_latido = self._reloj()
+            with self._cerrojo_de_la_foto:
+                self._latido_propio = datos
         except OSError:
             logger.warning("no se pudo escribir el latido de %s", self.id, exc_info=True)
 
@@ -568,6 +605,8 @@ class Coordinacion:
         self._vida.mirada(ahora, bien=bien)
         self._otras.mirada(ahora, bien=bien)
         corrida = (self.corrida or {}).get("id")
+        #: Lo que enseña el monitoreo hasta la próxima mirada (``latidos``).
+        foto = {id_: dict(datos) for id_, datos in latidos.items()}
         for id_, datos in latidos.items():
             # El que se retiró ya no tiene nada: lo que haya dejado está libre.
             if datos.get("estado") == "terminado":
@@ -578,16 +617,20 @@ class Coordinacion:
             vida = self._vida if corrida is None or datos.get("corrida") == corrida else self._otras
             vida.observar(id_, datos.get("contador"), ahora)
             muerto = vida.muerto_hace(id_, ahora)
-            if muerto is not None and muerto > 2 * vida.caido:
-                self._quitar_el_latido(id_, datos)
+            if muerto is not None and muerto > 2 * vida.caido and self._quitar_el_latido(id_, datos):
+                foto.pop(id_, None)
+        with self._cerrojo_de_la_foto:
+            self._foto = foto
+            self._corrida_de_la_foto = corrida
         return latidos
 
-    def _quitar_el_latido(self, id_: str, visto: Mapping[str, object]) -> None:
-        """Borra el latido que dejó un arranque caído hace rato, si sigue igual que cuando se vio.
+    def _quitar_el_latido(self, id_: str, visto: Mapping[str, object]) -> bool:
+        """Borra el latido que dejó un arranque caído hace rato, si sigue igual que cuando se vio. Dice si lo borró.
 
         Nunca se borraban: cada reinicio de un PC dejaba uno más, y cada equipo
         los releía todos en cada vuelta. Si su dueño vuelve, su siguiente
-        latido lo escribe otra vez.
+        latido lo escribe otra vez. Con él se va la orden de parar que ya no
+        llegó a leer (2026-11-26).
         """
         ruta = self._equipos / f"{id_}.json"
         try:
@@ -595,8 +638,12 @@ class Coordinacion:
             if actual is not None and actual.get("contador") == visto.get("contador"):
                 _borrar(ruta)
                 self.anotar("borró el latido de un equipo caído", de=id_)
+                with contextlib.suppress(OSError):
+                    _borrar(self._orden_de(id_))
+                return True
         except OSError:
             logger.debug("no se pudo borrar el latido viejo de %s", id_, exc_info=True)
+        return False
 
     def _mirar_la_corrida(self) -> None:
         if self.corrida is None:
@@ -623,13 +670,62 @@ class Coordinacion:
         return not self.desplazado and self._reloj() - self._ultimo_latido < self.sin_latido_propio
 
     def latidos(self) -> dict[str, dict]:
-        """Los latidos de todos los equipos del destino, para la pantalla."""
-        todos = self._latidos_de_otros()
-        datos = _leer(self._equipos / f"{self.id}.json")
-        if datos:
-            todos[self.id] = datos
-        for id_, latido in todos.items():
-            latido["vivo"] = self.vivo(id_)
+        """Los latidos de los equipos del destino, para el monitoreo, con ``vivo`` y ``quieto_hace``.
+
+        Sin leer el disco (2026-11-26): lo que vio la última mirada, que es de
+        hace un latido como mucho, y el último latido propio escrito. ``vivo``
+        se calcula sin apuntar a nadie en ``Vida`` -- ``Vida.vivo`` cuenta como
+        visto al que no conoce, y así preguntar desde la pantalla cambiaba
+        ``equipos_vivos`` y el reparto --. ``quieto_hace``: los segundos que
+        lleva su contador sin cambiar, medidos por quien mira.
+
+        Retirado este equipo, nadie más está vivo: su mirada ya no corre, la
+        foto es la de cuando se retiró, y ``Vida.vivo`` -- con la mirada
+        atrasada -- daba vivos a todos horas después (2026-11-26).
+        """
+        ahora = self._reloj()
+        retirado = self.retirado
+        with self._cerrojo_de_la_foto:
+            foto = {id_: dict(datos) for id_, datos in self._foto.items()}
+            corrida = self._corrida_de_la_foto
+            propio = dict(self._latido_propio) if self._latido_propio else {}
+            dadas = dict(self._ordenes_dadas)
+        todos: dict[str, dict] = {}
+        for id_, datos in foto.items():
+            if id_ == self.id:
+                continue
+            # Con la misma vida en que lo observó la mirada que hizo la foto.
+            vida = self._vida if corrida is None or datos.get("corrida") == corrida else self._otras
+            quieto = vida.quieto_hace(id_, ahora)
+            if retirado or datos.get("estado") == "terminado" or id_ in self._terminados:
+                vivo = False
+            else:
+                # Nunca observado (no debería pasar: la foto es lo observado): vivo, ante la duda.
+                vivo = quieto is None or vida.vivo(id_, ahora)
+            # La que dio este equipo se ve en cuanto se da, sin esperar a que el
+            # otro la lea y la lleve en su latido.
+            orden = la_orden_que_manda(datos.get("orden"), dadas.get(id_))
+            todos[id_] = {**datos, "orden": orden, "vivo": vivo, "quieto_hace": quieto}
+        # El propio, con lo que ya sabe y aún no escribió: una orden recién
+        # recibida se ve en la respuesta de quien la dio.
+        en_curso = sorted(self.en_curso.values())
+        todos[self.id] = {
+            "id": self.id,
+            "equipo": self.equipo,
+            "version": self.version,
+            "contador": self._contador,
+            "escrito": None,
+            **propio,
+            "corrida": (self.corrida or {}).get("id"),
+            "estado": self.estado,
+            "en_curso": en_curso[:20],
+            "en_curso_n": len(en_curso),
+            "hechos": self.hechos,
+            "unido": self.unido,
+            "orden": self.orden,
+            "vivo": not retirado,
+            "quieto_hace": max(0.0, ahora - self._ultimo_latido),
+        }
         return todos
 
     def parar(self) -> None:
@@ -653,8 +749,122 @@ class Coordinacion:
             _borrar(self._equipos / f"{self.id}.json")
         except OSError:
             logger.warning("no se pudo borrar el latido de %s; queda como «terminado»", self.id)
+        # La orden de parar que cumplió, si la había: ya no la va a leer nadie.
+        try:
+            _borrar(self._orden_de(self.id))
+        except OSError:
+            logger.warning("no se pudo borrar la orden de parar de %s", self.id)
         self.anotar("se retiró")
         self._volcar_el_diario()
+
+    # -- órdenes de parar (2026-11-26) --------------------------------------------
+    #
+    # El operador: «un monitoreo para ver los que están conectados y poder
+    # desconectarlos». Una orden es un archivo en ``ordenes/<id>.json`` que deja
+    # cualquier equipo y lee el destinatario con su mirada, cada latido: sin
+    # servidor central, como todo lo demás.
+
+    def _orden_de(self, id_: str) -> Path:
+        return self.area / "ordenes" / f"{id_}.json"
+
+    def orden_para(self, id_: str, modo: str, operador: str | None = None) -> dict:
+        """La orden de parar que da este equipo a ``id_``, sin escribirla."""
+        if modo not in MODOS_DE_PARAR:
+            raise ValueError(f"modo de parar desconocido: {modo!r}")
+        return {
+            "para": id_,
+            "modo": modo,
+            "por": self.id,
+            "equipo_que_ordena": self.equipo,
+            "operador": operador,
+            "cuando": _ahora_iso(),
+        }
+
+    def ordenar_parar(self, id_: str, modo: str, operador: str | None = None) -> dict:
+        """Ordena parar a un equipo de la corrida: «calma» o «ya». Devuelve la orden que queda en pie.
+
+        Al propio equipo, directo y sin archivo. A otro, en ``ordenes/<id>.json``,
+        que su mirada lee en el siguiente latido: hay E/S, así que se llama desde
+        un hilo. «ya» manda sobre «calma», y una orden repetida no hace nada:
+        lo que ya estaba escrito se devuelve tal cual.
+
+        Antes se mira su latido en el destino: si se retiró después de la
+        última mirada, ``OrdenNoPermitida`` -- la orden no la leería nadie y
+        quedaría en ``ordenes/`` para siempre, dada por puesta (2026-11-26) --.
+        """
+        orden = self.orden_para(id_, modo, operador)
+        if id_ == self.id:
+            self.anotar("ordenó parar", a=id_, modo=modo, operador=operador or "")
+            self.recibir_orden(orden)
+            return dict(self.orden or orden)
+        if self._se_retiro(id_):
+            raise OrdenNoPermitida(f"«{id_}» ya se retiró de la corrida: no queda nada que parar.")
+        ruta = self._orden_de(id_)
+        anterior = _leer(ruta)
+        if anterior is None and modo != "ya" and _existe(ruta):
+            # Hay una orden que no se deja leer (la red): una «calma» no pisa a
+            # ciegas lo que puede ser un «ya». Quien la pide lo intenta otra vez.
+            raise OSError(errno.EAGAIN, "la orden de parar que ya tenía ese equipo no se deja leer")
+        if anterior is not None and anterior.get("para") == id_ and anterior.get("modo") in ("ya", modo):
+            orden = anterior
+        else:
+            ruta.parent.mkdir(parents=True, exist_ok=True)
+            _escribir_entero(ruta, orden)
+            self.anotar("ordenó parar", a=id_, modo=modo, operador=operador or "")
+        with self._cerrojo_de_la_foto:
+            self._ordenes_dadas[id_] = la_orden_que_manda(self._ordenes_dadas.get(id_), orden) or dict(orden)
+        return orden
+
+    def _se_retiro(self, id_: str) -> bool:
+        """Si el equipo ``id_`` ya se retiró: su latido no está en el destino, o dice «terminado».
+
+        Un latido que está y no se deja leer -- la red, o lo están
+        reemplazando -- no dice nada: ``OSError``, y quien ordena lo intenta
+        otra vez, como con la orden anterior que no se deja leer.
+        """
+        ruta = self._equipos / f"{id_}.json"
+        latido = _leer(ruta)
+        if latido is None:
+            if _existe(ruta):
+                raise OSError(errno.EAGAIN, "el latido de ese equipo no se deja leer")
+            return True
+        return latido.get("estado") == "terminado"
+
+    def _mirar_las_ordenes(self) -> None:
+        """La orden de parar que otro equipo dejó para éste, si la hay. Nunca tumba la mirada."""
+        if (self.orden or {}).get("modo") == "ya":
+            return  # nada manda sobre «ya»: no hay más que leer
+        try:
+            orden = _leer(self._orden_de(self.id))
+            if orden is not None and orden.get("para") == self.id:
+                self.recibir_orden(orden)
+        except Exception:  # noqa: BLE001 - la mirada sigue aunque una orden no se entienda
+            logger.warning("no se pudo leer la orden de parar de %s", self.id, exc_info=True)
+
+    def recibir_orden(self, orden: Mapping[str, object]) -> bool:
+        """Este equipo recibe una orden de parar. Dice si es nueva.
+
+        Idempotente: la misma orden otra vez no hace nada, «ya» manda sobre
+        «calma» y una «calma» después de «ya» se ignora. Avisa a la corrida
+        (``al_recibir_orden``) fuera del cerrojo, y un fallo al avisar no tumba
+        la mirada.
+        """
+        modo = orden.get("modo")
+        if modo not in MODOS_DE_PARAR:
+            return False
+        with self._cerrojo_de_la_orden:
+            actual = (self.orden or {}).get("modo")
+            if actual in ("ya", modo):
+                return False
+            self.orden = dict(orden)
+        self.anotar("recibió la orden de parar", modo=modo, de=orden.get("por"), operador=orden.get("operador") or "")
+        avisar = self.al_recibir_orden
+        if avisar is not None:
+            try:
+                avisar(dict(orden))
+            except Exception:  # noqa: BLE001 - la orden queda anotada aunque la corrida no conteste
+                logger.warning("no se pudo pasar la orden de parar a la corrida de %s", self.id, exc_info=True)
+        return True
 
     # -- reparto ----------------------------------------------------------------
 
@@ -973,9 +1183,11 @@ class Coordinacion:
             return False
         for id_, datos in latidos.items():
             if datos.get("estado") == "terminado":
-                # El que se retiró y no pudo borrar su latido: se limpia aquí.
+                # El que se retiró y no pudo borrar su latido: se limpia aquí,
+                # con la orden de parar que cumplió.
                 with contextlib.suppress(OSError):
                     _borrar(self._equipos / f"{id_}.json")
+                    _borrar(self._orden_de(id_))
                 continue
             if datos.get("corrida") == corrida and datos.get("estado") != "terminado" and self.vivo(id_):
                 return False

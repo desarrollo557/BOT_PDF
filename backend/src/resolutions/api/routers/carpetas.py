@@ -13,11 +13,19 @@ from fastapi.responses import FileResponse
 from ...adapters import red_smb
 from ...adapters.excel_inventory import NOMBRE_DEL_INVENTARIO_DE_PROCESOS
 from ...adapters.indice_electronico import NOMBRE_DEL_INDICE
+from ...application.coordinacion import CORRIDA_TERMINADA, MODOS_DE_PARAR
 from ...application.task import TaskKind
 from .. import native_picker
 from ..contexto import Ctx
 from ..errores import explicar_fallo
-from ..folders import FolderError, SourceDisposition, clean_path
+from ..folders import (
+    EquipoNoEncontrado,
+    FolderError,
+    OrdenNoPermitida,
+    SourceDisposition,
+    clean_path,
+)
+from ..identidad import Quien, exigir_identificado
 from ..indices import carpeta_del_lote, libro_de_indices
 from ..rutas_del_equipo import (
     al_operador,
@@ -281,6 +289,67 @@ async def cambiar_paralelo(ctx: Ctx, run_id: str, payload: dict | None = None) -
     if run is None:
         raise HTTPException(status_code=409, detail="Ese proceso ya había terminado")
     return run.as_dict()
+
+
+@router.get("/api/folder-runs/{run_id}/equipos")
+async def equipos_de_la_corrida(ctx: Ctx, run_id: str) -> dict[str, object]:
+    """Los equipos conectados a la corrida compartida, para el monitoreo (2026-11-26).
+
+    Lo pidió el operador: «un monitoreo para ver los que están conectados y
+    poder desconectarlos». No sale a la red: es lo que vio la última mirada de
+    los latidos, así que la pantalla lo puede pedir cada pocos segundos. Una
+    corrida que va sola contesta ``compartida: false`` y sin equipos.
+    """
+    from ..corrida_compartida import version_del_bot
+
+    if not version_del_bot.cache_info().currsize:
+        # La huella del código se calcula una sola vez leyendo los .py (40 ms
+        # medidos): en un hilo, para que la lista nunca lea el disco en el bucle.
+        await asyncio.to_thread(version_del_bot)
+    equipos = ctx.folders.equipos(run_id)
+    if equipos is None:
+        raise HTTPException(status_code=404, detail="El proceso de carpeta no existe")
+    return equipos
+
+
+@router.post("/api/folder-runs/{run_id}/equipos/{equipo_id}/parar")
+async def parar_un_equipo(
+    ctx: Ctx,
+    run_id: str,
+    equipo_id: str,
+    quien: Quien,
+    payload: dict | None = None,
+    x_operator: str | None = Header(default=None),
+) -> dict[str, object]:
+    """Ordena parar a un equipo de la corrida compartida, este incluido (2026-11-26).
+
+    Cuerpo ``{"modo": "calma" | "ya"}``; sin él, «calma»: termina lo que está
+    leyendo, lo entrega y se retira, y no se paga dos veces. «ya» es «Detener»:
+    lo que estaba leyendo lo retoman los demás. Hay que haber entrado. Contesta
+    lo mismo que ``GET …/equipos``, con la orden ya puesta.
+    """
+    usuario = exigir_identificado(quien)
+    modo = str((payload or {}).get("modo") or "calma").strip().lower()
+    if modo not in MODOS_DE_PARAR:
+        raise HTTPException(status_code=422, detail=f"Modo de parar desconocido: «{modo}». Use «calma» o «ya».")
+    run = ctx.folders.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="El proceso de carpeta no existe")
+    if not run.active:
+        raise HTTPException(status_code=409, detail=CORRIDA_TERMINADA)
+    operador = _operator(x_operator) or usuario.etiqueta
+    try:
+        # En un hilo: la orden a otro equipo se escribe en el destino, que puede ir lento.
+        return await asyncio.to_thread(ctx.folders.ordenar_parar, run_id, equipo_id, modo, operador)
+    except EquipoNoEncontrado as error:
+        raise HTTPException(status_code=404, detail=str(error)) from None
+    except OrdenNoPermitida as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
+    except OSError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"No se pudo dejar la orden en el destino compartido: {explicar_fallo(error)}. Vuelva a intentarlo.",
+        ) from None
 
 
 @router.delete("/api/folder-runs")

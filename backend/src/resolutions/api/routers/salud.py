@@ -20,7 +20,7 @@ router = APIRouter()
 #: running across an update answers 404 to every new route and 405 to every new
 #: method -- which reads as a broken request rather than as a stale service.
 #: The screen compares this against what it was built for and says so plainly.
-API_REVISION = 25
+API_REVISION = 26
 
 #: What this revision can do, so the screen can name what is missing rather than
 #: only that something is.
@@ -98,6 +98,15 @@ API_FEATURES = (
     "paralelo",
     # El rendimiento del equipo y del bot, en vivo (GET /api/rendimiento).
     "rendimiento",
+    # Quién está conectado a una corrida compartida, con su estado, lo hecho,
+    # su ritmo y su último latido (GET /api/folder-runs/{id}/equipos, 2026-11-26).
+    "equipos-de-la-corrida",
+    # Y ordenarle parar a uno, con calma o ya, este incluido
+    # (POST /api/folder-runs/{id}/equipos/{equipo}/parar). La pantalla no
+    # consulta estas dos: exige la revisión 26 (REQUIRED_API_REVISION), y
+    # contra un servicio anterior lo dice el aviso de servicio desactualizado;
+    # la lista de equipos falla con su error y, sin lista, no hay botones.
+    "parar-un-equipo",
 )
 
 @router.get("/api/health")
