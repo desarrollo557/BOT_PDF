@@ -29,8 +29,11 @@ import re
 import stat as stat_mod
 import sys
 import threading
-from collections.abc import Callable, Iterator
+from collections import deque
+from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -135,6 +138,7 @@ _cerrojo = threading.Lock()
 
 _turnos: dict[str, threading.BoundedSemaphore] = {}
 _descargas: dict[str, threading.BoundedSemaphore] = {}
+_adelantos: dict[str, threading.BoundedSemaphore] = {}
 
 
 def _turno_del_servidor(servidor: str) -> threading.BoundedSemaphore:
@@ -152,6 +156,21 @@ def _turno_de_descarga(servidor: str) -> threading.BoundedSemaphore:
     """
     with _cerrojo:
         return _descargas.setdefault(
+            servidor.lower(), threading.BoundedSemaphore(max(1, A_LA_VEZ_POR_SERVIDOR - 1))
+        )
+
+
+def _turno_de_adelanto(servidor: str) -> threading.BoundedSemaphore:
+    """Los listados de ``iterar_carpetas``, también uno menos que los turnos del servidor.
+
+    La reserva de ``_turno_de_descarga`` al revés: el adelanto pide varias
+    carpetas a la vez y, sin tope propio, podía tener los cuatro turnos y una
+    descarga esperaba a que terminaran sus listados. Así siempre queda uno para
+    bajar (2026-11-26). Cada uno toma su reserva antes que el turno, y nadie que
+    tenga un turno espera una reserva: no hay espera en círculo.
+    """
+    with _cerrojo:
+        return _adelantos.setdefault(
             servidor.lower(), threading.BoundedSemaphore(max(1, A_LA_VEZ_POR_SERVIDOR - 1))
         )
 
@@ -543,9 +562,6 @@ def iterar(
     va a ``al_fallar`` y el recorrido sigue; la de arriba que no se deja leer,
     o una sesión que se cae, es un error.
     """
-    import smbclient
-    from smbprotocol.exceptions import SMBAuthenticationError, SMBConnectionClosed
-
     p = partes(ruta)
     if p is None:
         raise ValueError(f"No es una ruta de red: {ruta}")
@@ -553,42 +569,231 @@ def iterar(
     # Windows no distingue mayúsculas: «_procesados» y «_PROCESADOS» son la misma.
     saltar = frozenset(nombre.lower() for nombre in saltar)
 
-    def nivel(carpeta: str, *, primera: bool) -> list:
-        cuenta = _cuenta(p.servidor)
+    def subcarpeta(carpeta: str) -> list:
         try:
-            return _con_turno(  # type: ignore[return-value]
-                p, lambda: sorted(smbclient.scandir(carpeta, **cuenta), key=lambda e: e.name.lower())
-            )
-        except Exception as error:  # noqa: BLE001 - se traduce o se avisa
-            if not primera and al_fallar is not None and isinstance(error, OSError):
-                al_fallar(partes(carpeta).del_servicio, error)  # type: ignore[union-attr]
-                return []
-            if isinstance(error, (SMBAuthenticationError, SMBConnectionClosed)):
-                # La próxima vez se vuelve a entrar con lo que ya se dio.
-                with _cerrojo:
-                    _conectados.pop(f"{p.servidor.lower()}/{p.recurso.lower()}", None)
-            raise _traducir(error, p, con_usuario=bool(cuenta)) from error
+            return _listado(p, carpeta)
+        except Exception as error:  # noqa: BLE001 - se avisa o se traduce
+            _avisar_o_lanzar(error, p, carpeta, al_fallar)
+            return []
 
-    # En orden de ruta, como el disco local: archivos y subcarpetas mezclados
-    # por nombre, y cada subcarpeta se lista cuando le toca.
-    pila = [(p.unc, iter(nivel(p.unc, primera=True)))]
+    try:
+        entradas = _listado(p, p.unc)
+    except Exception as error:  # noqa: BLE001 - se traduce
+        raise _error_al_listar(error, p) from error
+    yield from _en_profundidad(p.unc, entradas, subcarpeta, extension=extension, saltar=saltar)
+
+
+def listar_nivel(
+    ruta: str,
+    *,
+    extension: str = ".pdf",
+    saltar: frozenset[str] = frozenset(),
+) -> tuple[list[ArchivoDeRed], list[str]]:
+    """Un solo listado de ``ruta``: sus archivos con esa extensión y sus subcarpetas, sin entrar en ellas.
+
+    Para empezar una corrida sin recorrer antes el árbol entero (2026-11-26):
+    la raíz del origen de Magangué -- unas 32.000 carpetas -- se lista de una
+    vez en 7,8 s, y con ella y la raíz del destino se sabe qué carpetas faltan
+    por entregar (``application/orden_del_recorrido.py``).
+
+    Los archivos, con tamaño y fecha del mismo listado; las subcarpetas, como
+    rutas del servicio («//servidor/recurso/…»), sin las de ``saltar`` (sin
+    distinguir mayúsculas). Las dos listas, por nombre sin mayúsculas: el orden
+    de ``iterar``. Si ``ruta`` no se deja leer es un error, como la carpeta de
+    arriba de ``iterar``: traducido, y una sesión caída se olvida.
+    """
+    p = partes(ruta)
+    if p is None:
+        raise ValueError(f"No es una ruta de red: {ruta}")
+    asegurar(p.raiz)
+    saltar = frozenset(nombre.lower() for nombre in saltar)
+    try:
+        entradas = _listado(p, p.unc)
+    except Exception as error:  # noqa: BLE001 - se traduce
+        raise _error_al_listar(error, p) from error
+    archivos: list[ArchivoDeRed] = []
+    carpetas: list[str] = []
+    for entrada in entradas:
+        completa = f"{p.unc}\\{entrada.name}"
+        if entrada.is_dir():
+            if entrada.name.lower() not in saltar:
+                # Pegada, no pasada por ``partes``: ésa recorta la ruta entera y
+                # una carpeta «1000265 » perdía su espacio final (2026-11-26).
+                carpetas.append(f"{p.del_servicio}/{entrada.name}")
+        elif entrada.name.lower().endswith(extension):
+            archivos.append(_archivo(completa, entrada))
+    return archivos, carpetas
+
+
+def _unc_tal_cual(ruta: str, p: Partes) -> str:
+    """La UNC de ``ruta`` con el nombre de su última carpeta tal cual.
+
+    ``partes`` recorta los espacios de las puntas de la ruta entera: una carpeta
+    cuyo nombre acaba en espacio («1000265 », que NTFS admite si la creó un
+    cliente SMB) perdía el suyo, y se listaba otra que no existe (2026-11-26).
+    """
+    crudo = str(ruta)
+    final = crudo[len(crudo.rstrip()):]
+    return p.unc + final if final and p.resto else p.unc
+
+
+def iterar_carpetas(
+    carpetas: Iterable[str],
+    *,
+    extension: str = ".pdf",
+    saltar: frozenset[str] = frozenset(),
+    al_fallar: Callable[[str, OSError], None] | None = None,
+    adelantadas: int | None = None,
+) -> Iterator[ArchivoDeRed]:
+    """Los archivos de cada una de ``carpetas`` y de sus subcarpetas, carpeta por carpeta en el orden dado.
+
+    De cada carpeta salen en el orden exacto de ``iterar(carpeta)``, pero el
+    listado de las siguientes se pide por delante, varias a la vez: una
+    carpeta de Magangué tarda 21 ms en listarse (32 ms en el p90), y las
+    ~32.000 una tras otra eran unos 10 min antes de llegar a lo pendiente
+    (2026-11-26). Lo de dentro de cada una, en profundidad y cuando le toca.
+
+    ``adelantadas``: cuántas carpetas se piden por delante, y sólo ésas quedan
+    en memoria. Por omisión y como mucho, ``A_LA_VEZ_POR_SERVIDOR``. A la vez
+    se listan como mucho los turnos del servidor menos uno
+    (``_turno_de_adelanto``): siempre queda uno para las descargas.
+
+    Una carpeta -- de éstas o de sus subcarpetas -- que no se deja leer va a
+    ``al_fallar`` y se sigue; sin ``al_fallar``, se lanza traducida. Una sesión
+    que se cae se lanza traducida, como en ``iterar``. Si quien lee cierra el
+    generador a medias, lo pedido por delante se cancela sin esperarlo.
+    """
+    tope = A_LA_VEZ_POR_SERVIDOR if adelantadas is None else adelantadas
+    tope = max(1, min(tope, A_LA_VEZ_POR_SERVIDOR))
+    saltar = frozenset(nombre.lower() for nombre in saltar)
+    por_pedir = iter(carpetas)
+    # Lo pedido por delante, en el orden dado: (partes, carpeta UNC, su listado).
+    ventana: deque[tuple[Partes, str, Future]] = deque()
+    asegurados: set[str] = set()
+    cerrado = threading.Event()
+    hilos = ThreadPoolExecutor(max_workers=tope, thread_name_prefix="red-adelanto")
+
+    def listar(p: Partes, carpeta: str) -> list:
+        with _turno_de_adelanto(p.servidor):
+            if cerrado.is_set():
+                return []  # se cerró mientras esperaba su turno: nadie lo va a leer
+            return _listado(p, carpeta)
+
+    def subcarpeta(p: Partes, carpeta: str) -> list:
+        try:
+            return listar(p, carpeta)
+        except Exception as error:  # noqa: BLE001 - se avisa o se traduce
+            _avisar_o_lanzar(error, p, carpeta, al_fallar)
+            return []
+
+    def pedir_la_siguiente() -> bool:
+        carpeta = next(por_pedir, None)
+        if carpeta is None:
+            return False
+        p = partes(carpeta)
+        if p is None:
+            raise ValueError(f"No es una ruta de red: {carpeta}")
+        if p.raiz.lower() not in asegurados:
+            asegurar(p.raiz)
+            asegurados.add(p.raiz.lower())
+        unc = _unc_tal_cual(carpeta, p)
+        ventana.append((p, unc, hilos.submit(listar, p, unc)))
+        return True
+
+    try:
+        for _ in range(tope):
+            if not pedir_la_siguiente():
+                break
+        while ventana:
+            p, carpeta, listado = ventana.popleft()
+            # La que sale deja sitio a la siguiente: siempre «tope» por delante.
+            pedir_la_siguiente()
+            try:
+                entradas = listado.result()
+            except Exception as error:  # noqa: BLE001 - se avisa o se traduce
+                _avisar_o_lanzar(error, p, carpeta, al_fallar)
+                continue
+            yield from _en_profundidad(
+                carpeta, entradas, partial(subcarpeta, p), extension=extension, saltar=saltar
+            )
+    finally:
+        # Lo pedido que no empezó se cancela; lo que se está listando termina
+        # solo y su hilo se va. No se espera aquí: nadie va a leerlo.
+        cerrado.set()
+        hilos.shutdown(wait=False, cancel_futures=True)
+
+
+def _listado(p: Partes, carpeta: str) -> list:
+    """Las entradas de ``carpeta`` (UNC) en un listado, por nombre sin mayúsculas, dentro de su turno.
+
+    ``smbclient.scandir`` es perezoso: se consume entero dentro del turno, o
+    seguiría pidiéndole al servidor fuera de él.
+    """
+    import smbclient
+
+    cuenta = _cuenta(p.servidor)
+    return _con_turno(  # type: ignore[return-value]
+        p, lambda: sorted(smbclient.scandir(carpeta, **cuenta), key=lambda e: e.name.lower())
+    )
+
+
+def _error_al_listar(error: Exception, p: Partes) -> Exception:
+    """El error de un listado, traducido; una sesión caída, además, se olvida."""
+    from smbprotocol.exceptions import SMBAuthenticationError, SMBConnectionClosed
+
+    if isinstance(error, (SMBAuthenticationError, SMBConnectionClosed)):
+        # La próxima vez se vuelve a entrar con lo que ya se dio.
+        with _cerrojo:
+            _conectados.pop(f"{p.servidor.lower()}/{p.recurso.lower()}", None)
+    return _traducir(error, p, con_usuario=bool(_cuenta(p.servidor)))
+
+
+def _avisar_o_lanzar(
+    error: Exception, p: Partes, carpeta: str, al_fallar: Callable[[str, OSError], None] | None
+) -> None:
+    """Una carpeta que no se deja leer va a ``al_fallar`` y se sigue; lo demás se lanza traducido."""
+    if al_fallar is not None and isinstance(error, OSError):
+        al_fallar(partes(carpeta).del_servicio, error)  # type: ignore[union-attr]
+        return
+    raise _error_al_listar(error, p) from error
+
+
+def _archivo(completa: str, entrada) -> ArchivoDeRed:
+    """Un archivo del listado, con el tamaño y la fecha que trae: sin otra pregunta al servidor."""
+    datos = entrada.stat()
+    return ArchivoDeRed(
+        partes(completa).del_servicio,  # type: ignore[union-attr]
+        int(datos.st_size),
+        int(datos.st_mtime_ns),
+    )
+
+
+def _en_profundidad(
+    carpeta: str,
+    entradas: list,
+    listar: Callable[[str], list],
+    *,
+    extension: str,
+    saltar: frozenset[str],
+) -> Iterator[ArchivoDeRed]:
+    """Los archivos de ``carpeta`` -- ya listada en ``entradas`` -- y los de sus subcarpetas.
+
+    En orden de ruta, como el disco local: archivos y subcarpetas mezclados
+    por nombre, y cada subcarpeta se lista (``listar``) cuando le toca.
+    """
+    pila = [(carpeta, iter(entradas))]
     while pila:
-        carpeta, entradas = pila[-1]
-        entrada = next(entradas, None)
+        actual, resto = pila[-1]
+        entrada = next(resto, None)
         if entrada is None:
             pila.pop()
             continue
-        completa = f"{carpeta}\\{entrada.name}"
+        completa = f"{actual}\\{entrada.name}"
         if entrada.is_dir():
             if entrada.name.lower() not in saltar:
-                pila.append((completa, iter(nivel(completa, primera=False))))
+                pila.append((completa, iter(listar(completa))))
         elif entrada.name.lower().endswith(extension):
-            datos = entrada.stat()
-            yield ArchivoDeRed(
-                partes(completa).del_servicio,  # type: ignore[union-attr]
-                int(datos.st_size),
-                int(datos.st_mtime_ns),
-            )
+            yield _archivo(completa, entrada)
 
 
 def recorrer(

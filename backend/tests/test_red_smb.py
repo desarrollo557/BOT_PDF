@@ -14,12 +14,14 @@ import errno
 import io
 import stat
 import sys
+import threading
+import time
 import types
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from smbprotocol.exceptions import SMBAuthenticationError
+from smbprotocol.exceptions import SMBAuthenticationError, SMBConnectionClosed
 
 from resolutions.adapters import red_smb
 from resolutions.api.folders import FolderError, FolderRunner, SourceDisposition
@@ -856,4 +858,341 @@ class TestLaDescargaEnVivo:
         # Al terminar de bajarlo, ya no está.
         assert de_la_corrida[-1]["bajando"] == []
         assert run.as_dict()["bajando"] == []
+
+
+# -- el arranque rápido: la raíz de una vez y las carpetas pedidas por delante --------
+#
+# 2026-11-26: cada equipo tardaba de 3 a 28 min desde que se unía a la corrida hasta
+# tomar su primer PDF. El origen de Magangué (~32.000 carpetas NIC, 21 ms cada listado)
+# se recorría de a una carpeta: unos 10 min en serie antes de llegar a lo pendiente.
+
+SERVICIO = red_smb.partes(CARPETA).del_servicio
+
+
+def _plantar(servidor, *rutas: str, prohibidas: tuple[str, ...] = ()) -> None:
+    """Cambia el árbol del servidor de mentira por éste, bajo CARPETA; cada archivo lleva su ruta dentro."""
+    servidor.archivos = {
+        servidor._clave(rf"{CARPETA}\{ruta}"): f"%PDF-1.4 {ruta}".encode() for ruta in rutas
+    }
+    servidor.prohibidas = {servidor._clave(rf"{CARPETA}\{ruta}") for ruta in prohibidas}
+
+
+def _relativas(archivos) -> list[str]:
+    return [archivo.ruta.removeprefix(SERVICIO + "/") for archivo in archivos]
+
+
+def _esperar(condicion, segundos: float = 5.0) -> None:
+    limite = time.monotonic() + segundos
+    while not condicion():
+        assert time.monotonic() < limite, "no llegó a tiempo"
+        time.sleep(0.01)
+
+
+class _Espia:
+    """El ``scandir`` del servidor de mentira, mirado: qué se listó y cuántos a la vez.
+
+    Además, puede hacer que unas carpetas tarden (``retrasos``), se queden
+    colgadas hasta ``soltar`` (``esperan``) o fallen (``fallan``). Las carpetas,
+    relativas a CARPETA.
+    """
+
+    def __init__(
+        self,
+        servidor,
+        monkeypatch,
+        *,
+        retraso: float = 0.0,
+        retrasos: dict[str, float] | None = None,
+        esperan=(),
+        soltar: threading.Event | None = None,
+        fallan: dict[str, Exception] | None = None,
+    ) -> None:
+        self._original = servidor.scandir
+        self._clave = servidor._clave
+        self._retraso = retraso
+        self._retrasos = {self._de(ruta): segundos for ruta, segundos in (retrasos or {}).items()}
+        self._esperan = {self._de(ruta) for ruta in esperan}
+        self._soltar = soltar
+        self._fallan = {self._de(ruta): error for ruta, error in (fallan or {}).items()}
+        self._cerrojo = threading.Lock()
+        self.listadas: list[str] = []
+        self.dentro = 0
+        self.maximo = 0
+        monkeypatch.setattr(sys.modules["smbclient"], "scandir", self.scandir)
+
+    def _de(self, relativa: str) -> str:
+        return self._clave(rf"{CARPETA}\{relativa}")
+
+    def scandir(self, ruta, **cuenta):
+        clave = self._clave(ruta)
+        with self._cerrojo:
+            self.listadas.append(clave.removeprefix(self._clave(CARPETA)).lstrip("\\"))
+            self.dentro += 1
+            self.maximo = max(self.maximo, self.dentro)
+        try:
+            time.sleep(self._retrasos.get(clave, self._retraso))
+            if clave in self._esperan:
+                self._soltar.wait(10)
+            if clave in self._fallan:
+                raise self._fallan[clave]
+            yield from self._original(ruta, **cuenta)
+        finally:
+            with self._cerrojo:
+                self.dentro -= 1
+
+
+@pytest.fixture
+def turnos(monkeypatch):
+    """Cuatro turnos por servidor, como en el contenedor, sin los semáforos de otras pruebas."""
+    monkeypatch.setattr(red_smb, "A_LA_VEZ_POR_SERVIDOR", 4)
+    for nombre in ("_turnos", "_descargas", "_adelantos"):
+        monkeypatch.setattr(red_smb, nombre, {})
+
+
+#: Raíz con un PDF suelto y carpetas NIC con sus PDF, desordenados en el servidor.
+DOS_NIVELES = (
+    r"300\UPD3.pdf",
+    r"100\UPD2.pdf",
+    r"100\upd1.pdf",
+    r"200\nota.txt",
+    r"050\UPD9.pdf",
+    r"200\UPD5.pdf",
+    r"400\nota.txt",
+    "SUELTO.pdf",
+)
+#: Con subcarpetas dentro de las carpetas, archivos entre ellas y un «_procesados».
+TRES_NIVELES = (
+    r"300\X\Y\UPD7.pdf",
+    r"100\c.pdf",
+    r"100\b\UPD4.pdf",
+    r"100\a.pdf",
+    r"100\_procesados\VIEJO.pdf",
+    r"100\b\nota.txt",
+    r"200\UPD5.pdf",
+    r"200\d\e\UPD6.pdf",
+    r"200\d\UPD8.pdf",
+    "SUELTO.pdf",
+)
+
+
+class TestListarUnNivel:
+    def test_archivos_y_subcarpetas_por_nombre_sin_entrar_ni_apartados(self, servidor, turnos, monkeypatch):
+        _plantar(servidor, "b.pdf", "A.pdf", "nota.txt", r"Z\UPD1.pdf", r"m\UPD2.pdf", r"_procesados\VIEJO.pdf")
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        espia = _Espia(servidor, monkeypatch)
+
+        archivos, carpetas = red_smb.listar_nivel(CARPETA, saltar=frozenset({"_Procesados"}))
+
+        assert [archivo.ruta for archivo in archivos] == [f"{SERVICIO}/A.PDF", f"{SERVICIO}/B.PDF"]
+        # El tamaño y la fecha, del mismo listado.
+        assert (archivos[0].tamano, archivos[0].modificado_ns) == (len(b"%PDF-1.4 A.pdf"), 7)
+        # «_PROCESADOS» se salta aunque se pidiera «_Procesados».
+        assert carpetas == [f"{SERVICIO}/M", f"{SERVICIO}/Z"]
+        # Un solo listado: las subcarpetas no se abren.
+        assert espia.listadas == [""]
+
+    def test_la_raiz_que_no_se_deja_leer_es_un_error_y_la_sesion_caida_se_olvida(self, servidor, turnos, monkeypatch):
+        _plantar(servidor, r"100\UPD1.pdf", prohibidas=("",))
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        with pytest.raises(PermissionError):
+            red_smb.listar_nivel(CARPETA)
+        assert red_smb.conectados() == [RAIZ]
+
+        servidor.prohibidas = set()
+        _Espia(servidor, monkeypatch, fallan={"": SMBConnectionClosed("la conexión se cerró")})
+        with pytest.raises(red_smb.RedNoDisponible):
+            red_smb.listar_nivel(CARPETA)
+        # La próxima vez se vuelve a entrar con lo que ya se dio.
+        assert red_smb.conectados() == []
+
+
+class TestIterarCarpetas:
+    @pytest.mark.parametrize(
+        ("arbol", "orden"),
+        [
+            (DOS_NIVELES, ["050/UPD9.PDF", "100/UPD1.PDF", "100/UPD2.PDF", "200/UPD5.PDF", "300/UPD3.PDF"]),
+            (
+                TRES_NIVELES,
+                [
+                    "100/A.PDF",
+                    "100/B/UPD4.PDF",
+                    "100/C.PDF",
+                    "200/D/E/UPD6.PDF",
+                    "200/D/UPD8.PDF",
+                    "200/UPD5.PDF",
+                    "300/X/Y/UPD7.PDF",
+                ],
+            ),
+        ],
+        ids=["dos-niveles", "tres-niveles"],
+    )
+    def test_el_mismo_orden_que_iterar(self, servidor, turnos, monkeypatch, arbol, orden):
+        _plantar(servidor, *arbol)
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        # Las primeras son las que más tardan en listarse: se entregan en el
+        # orden dado, no en el que terminan sus listados.
+        _Espia(servidor, monkeypatch, retrasos={"050": 0.15, "100": 0.15, "200": 0.08})
+        saltar = frozenset({"_PROCESADOS"})
+        sueltos, carpetas = red_smb.listar_nivel(CARPETA, saltar=saltar)
+
+        obtenido = list(red_smb.iterar_carpetas(carpetas, saltar=saltar, adelantadas=4))
+
+        assert _relativas(obtenido) == orden
+        assert obtenido == [archivo for carpeta in carpetas for archivo in red_smb.iterar(carpeta, saltar=saltar)]
+        # Con los sueltos de la raíz es el recorrido entero de antes: nada se pierde ni se repite.
+        assert _relativas(sueltos) == ["SUELTO.PDF"]
+        assert obtenido == [archivo for archivo in red_smb.iterar(CARPETA, saltar=saltar) if archivo not in sueltos]
+
+    def test_una_carpeta_que_acaba_en_espacio_no_lo_pierde(self, servidor, turnos, monkeypatch):
+        # «1000265 »: NTFS admite el espacio final si la creó un cliente SMB.
+        # Pasada por ``partes``, que recorta la ruta entera, perdía su espacio y
+        # se listaba otra que no existe: sus PDF no entraban en la corrida y,
+        # con una hermana «1000265», ésa se leía dos veces (2026-11-26).
+        _plantar(servidor, "100 \\UPD1.pdf", r"100\UPD2.pdf", r"200\UPD3.pdf")
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        fallos: list[str] = []
+
+        sueltos, carpetas = red_smb.listar_nivel(CARPETA)
+        obtenido = list(red_smb.iterar_carpetas(carpetas, al_fallar=lambda carpeta, _error: fallos.append(carpeta)))
+
+        assert sueltos == [] and fallos == []
+        assert obtenido == list(red_smb.iterar(CARPETA))
+        assert sorted(_relativas(obtenido)) == ["100 /UPD1.PDF", "100/UPD2.PDF", "200/UPD3.PDF"]
+
+    def test_varias_a_la_vez_y_nunca_mas_que_los_turnos(self, servidor, turnos, monkeypatch):
+        nics = [f"{n:03d}" for n in range(12)]
+        _plantar(servidor, *(rf"{nic}\UPD{nic}.pdf" for nic in nics))
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        espia = _Espia(servidor, monkeypatch, retraso=0.05)
+
+        obtenido = list(red_smb.iterar_carpetas([f"{SERVICIO}/{nic}" for nic in nics], adelantadas=4))
+
+        assert _relativas(obtenido) == [f"{nic}/UPD{nic}.PDF" for nic in nics]
+        assert espia.maximo > 1
+        # Nunca más que los turnos del servidor, y ni siquiera todos: uno queda para bajar.
+        assert espia.maximo <= red_smb.A_LA_VEZ_POR_SERVIDOR - 1
+
+    @pytest.mark.parametrize("adelantadas", [1, 4, 10])
+    def test_solo_se_adelantan_las_que_se_piden(self, servidor, turnos, monkeypatch, adelantadas):
+        nics = [f"{n:03d}" for n in range(20)]
+        _plantar(servidor, *(rf"{nic}\UPD{nic}.pdf" for nic in nics))
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        espia = _Espia(servidor, monkeypatch)
+        recorrido = red_smb.iterar_carpetas([f"{SERVICIO}/{nic}" for nic in nics], adelantadas=adelantadas)
+        try:
+            assert _relativas([next(recorrido)]) == ["000/UPD000.PDF"]
+            # La que se lee y las «adelantadas» siguientes; más de los turnos, nunca.
+            listadas = min(adelantadas, red_smb.A_LA_VEZ_POR_SERVIDOR) + 1
+            _esperar(lambda: len(espia.listadas) >= listadas)
+            time.sleep(0.1)  # y ninguna más mientras nadie lee
+            assert sorted(espia.listadas) == nics[:listadas]
+        finally:
+            recorrido.close()
+
+    def test_una_carpeta_que_no_se_deja_leer_va_a_al_fallar_y_se_sigue(self, servidor, turnos):
+        _plantar(
+            servidor,
+            r"100\UPD1.pdf",
+            r"200\UPD2.pdf",
+            r"300\a.pdf",
+            r"300\SUB\UPD3.pdf",
+            r"400\UPD4.pdf",
+            prohibidas=("200", r"300\SUB"),
+        )
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        carpetas = [f"{SERVICIO}/{nic}" for nic in ("100", "200", "300", "400")]
+        avisos: list = []
+
+        obtenido = list(
+            red_smb.iterar_carpetas(carpetas, al_fallar=lambda carpeta, error: avisos.append((carpeta, type(error))))
+        )
+
+        assert _relativas(obtenido) == ["100/UPD1.PDF", "300/A.PDF", "400/UPD4.PDF"]
+        # Una de las dadas y una de sus subcarpetas, en orden.
+        assert avisos == [(f"{SERVICIO}/200", PermissionError), (f"{SERVICIO}/300/SUB", PermissionError)]
+        # Sin a quién avisar, se lanza.
+        with pytest.raises(PermissionError):
+            list(red_smb.iterar_carpetas(carpetas))
+
+    @pytest.mark.parametrize(
+        ("caida", "traducida"),
+        [
+            (SMBConnectionClosed("la conexión se cerró"), red_smb.RedNoDisponible),
+            (SMBAuthenticationError("la sesión caducó"), red_smb.CredencialesDeRed),
+        ],
+        ids=["conexion-cerrada", "sesion-caducada"],
+    )
+    def test_una_sesion_caida_se_lanza_y_se_olvida(self, servidor, turnos, monkeypatch, caida, traducida):
+        nics = ["100", "200", "300", "400"]
+        _plantar(servidor, *(rf"{nic}\UPD{nic}.pdf" for nic in nics))
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        _Espia(servidor, monkeypatch, fallan={"300": caida})
+        avisos: list = []
+        vistos: list = []
+
+        with pytest.raises(traducida):
+            for archivo in red_smb.iterar_carpetas(
+                [f"{SERVICIO}/{nic}" for nic in nics], al_fallar=lambda carpeta, error: avisos.append(carpeta)
+            ):
+                vistos.append(archivo)
+
+        # Lo de antes llegó, en orden; la sesión caída no es «una carpeta que no se deja leer».
+        assert _relativas(vistos) == ["100/UPD100.PDF", "200/UPD200.PDF"]
+        assert avisos == []
+        # La próxima vez se vuelve a entrar con lo que ya se dio.
+        assert red_smb.conectados() == []
+
+    def test_cerrar_a_medias_no_espera_ni_deja_hilos(self, servidor, turnos, monkeypatch):
+        nics = [f"{n:03d}" for n in range(12)]
+        _plantar(servidor, *(rf"{nic}\UPD{nic}.pdf" for nic in nics))
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        soltar = threading.Event()
+        # Desde la tercera, cada listado se queda colgado, como un servidor que no contesta.
+        espia = _Espia(servidor, monkeypatch, esperan=nics[2:], soltar=soltar)
+        recorrido = red_smb.iterar_carpetas([f"{SERVICIO}/{nic}" for nic in nics], adelantadas=4)
+        try:
+            assert _relativas([next(recorrido)]) == ["000/UPD000.PDF"]
+            _esperar(lambda: espia.dentro == 3)  # 002, 003 y 004, colgados con su turno
+            inicio = time.monotonic()
+            recorrido.close()
+            # No espera a los listados colgados: nadie los va a leer.
+            assert time.monotonic() - inicio < 1.0
+        finally:
+            soltar.set()
+        for hilo in [h for h in threading.enumerate() if h.name.startswith("red-adelanto")]:
+            hilo.join(5)
+            assert not hilo.is_alive()
+        # Lo que no había empezado no se pidió al servidor.
+        assert not set(espia.listadas) & set(nics[5:])
+
+    def test_el_adelanto_deja_siempre_un_turno_para_bajar(self, servidor, turnos, monkeypatch, tmp_path):
+        """La reserva de las descargas al revés: con los listados por delante colgados, un PDF se baja igual."""
+        monkeypatch.setattr(red_smb, "A_LA_VEZ_POR_SERVIDOR", 2)
+        nics = ["100", "200", "300"]
+        _plantar(servidor, *(rf"{nic}\UPD{nic}.pdf" for nic in nics))
+        red_smb.conectar(CARPETA, USUARIO, CLAVE)
+        soltar = threading.Event()
+        espia = _Espia(servidor, monkeypatch, esperan=nics, soltar=soltar)
+        vistos: list = []
+        recorrido = threading.Thread(
+            target=lambda: vistos.extend(
+                red_smb.iterar_carpetas([f"{SERVICIO}/{nic}" for nic in nics], adelantadas=2)
+            )
+        )
+        recorrido.start()
+        try:
+            _esperar(lambda: espia.dentro == 1)
+            bajada = threading.Thread(
+                target=red_smb.traer, args=(rf"{CARPETA}\200\UPD200.pdf", tmp_path / "UPD200.pdf")
+            )
+            bajada.start()
+            bajada.join(3)
+            assert not bajada.is_alive()
+            assert (tmp_path / "UPD200.pdf").read_bytes() == servidor.archivos[servidor._clave(rf"{CARPETA}\200\UPD200.pdf")]
+            # Con dos turnos, el adelanto lista de a uno: el otro era el de la descarga.
+            assert espia.maximo == 1
+        finally:
+            soltar.set()
+            recorrido.join(5)
+        assert _relativas(vistos) == [f"{nic}/UPD{nic}.PDF" for nic in nics]
 
