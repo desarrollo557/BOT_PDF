@@ -536,6 +536,7 @@ def auditar_los_radicados(archivos: Sequence[ArchivoEntregado], textos: Mapping[
         tipo_unificado,
     )
     from ..domain.sello import folios_que_no_cuadran, leer_sello, radicados_impresos
+    from ..domain.titulo_impreso import titulo_por_su_formato
     from ..domain.tramites import radicados_de
     from .anexos_declarados import RECONOCIMIENTO, partes_del_acuerdo
 
@@ -582,8 +583,14 @@ def auditar_los_radicados(archivos: Sequence[ArchivoEntregado], textos: Mapping[
         ):
             resultado.dudas.append(f"«{archivo.nombre}»: abre con una contestación de la empresa y se llama {titulo}")
         # Lo que se llama por su formato (2026-11-24): la carta «MESUC» de
-        # Electricaribe al usuario, la nota crédito de Aseopronto.
-        esperado = NOMBRE_POR_SU_FORMATO.get(titulo_del_documento(primera)) or titulo_de_la_caratula(primera)
+        # Electricaribe al usuario, la nota crédito de Aseopronto. Y desde el
+        # 2026-11-26 la planilla que se reconoce por su título impreso: el
+        # FORMATO DE RELACION DIARIA DE PAGOS.
+        esperado = (
+            NOMBRE_POR_SU_FORMATO.get(titulo_del_documento(primera))
+            or titulo_de_la_caratula(primera)
+            or titulo_por_su_formato(primera)
+        )
         if esperado and _comparable(titulo) != _comparable(esperado):
             resultado.dudas.append(f"«{archivo.nombre}»: su formato es el de {esperado} y se llama {titulo}")
         motivo = folios_que_no_cuadran(len(hojas), etiqueta.folios) if etiqueta is not None else None

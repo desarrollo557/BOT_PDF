@@ -66,6 +66,72 @@ _MEMBRETE = re.compile(
 _MESES = r"ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|SET|OCT|NOV|DIC"
 _FECHA = re.compile(rf"\b(?:{_MESES})\w*\.?\s+(?:DE\s+)?\d{{4}}\b|\b\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}}\b")
 
+# -- el formato que se reconoce por sus marcas ---------------------------------------
+
+#: La planilla del recaudador «FORMATO DE RELACIÓN DIARIA DE PAGOS No. 8055349»:
+#: fecha, punto de pago y gestor arriba, una tabla de 25 pagos («VR. PAGADO»,
+#: «ABONO A DEUDA», «MES APLICADO») y al pie «Valor Recaudado» y «Valor a
+#: consignar». Su título va en dos renglones y el genérico sólo tomaba el
+#: primero, «FORMATO DE RELACION». Lo dictó el operador el 2026-11-26 ante
+#: UPD2995828, que salió «01_DOCUMENTO.pdf»: «no quiero nombres genéricos…
+#: sino originales evidenciados en el mismo documento… apliquémoslo solo a este
+#: formato». Sin el número de la planilla: es de cada hoja, no del formato.
+RELACION_DIARIA_DE_PAGOS = "FORMATO DE RELACION DIARIA DE PAGOS"
+#: En cuántos renglones con algo del principio se busca su título: la capa lo
+#: pone tras «FECHA:» y la OCR de casa, tras el punto de pago y el gestor.
+RENGLONES_DEL_FORMATO = 20
+#: Su título, como lo dejan la capa y Tesseract: «DIARIA Di: PAGOS», «DIARIA
+#: Df: PAGO5», «D£ PAGOs», y los dos renglones separados por lo que el escáner
+#: lee en medio («FORMATO DE RELACIÓN / Tesal / [ / S / O / DIARIA DE PAGOS»).
+_TITULO_DE_LA_RELACION_DIARIA = re.compile(
+    r"F[O0]RMAT[O0]\s*D[EF]\s*RELACI[O0][NM][\s\S]{0,40}?D[I1L]AR[I1L]A\s*D\w?\W{0,2}\s*PAG[O0][S5]"
+)
+#: Lo que puede seguir al título en su renglón: nada, o su «No.». Otra palabra
+#: es otro formato que empieza igual: «… DIARIA DE PAGOS ANULADOS».
+_RESTO_DEL_TITULO = re.compile(r"\s*(?:N\W?[O0°º](?![A-Z]).*|[\W\d_]*)")
+#: El número de la planilla pegado al título: «No. 8055349», «No. 8055:348».
+_NUMERO_DE_LA_PLANILLA = re.compile(r"\s*N\W?[O0°º]\W{0,3}\s*\d{3,}\W?\d{2,}")
+#: Lo que sólo imprime su tabla o su pie: «VR. PAGADO», «ABONO A DEUDA», «MES
+#: APLICADO», «Valor Recaudado», «Valor a consignar», la nota «Cualquier
+#: enmendadura anula el registro» y el visto bueno del «Pyme/Recaudador».
+_MARCAS_DE_LA_RELACION_DIARIA = re.compile(
+    r"\bVR\W{0,2}\s*PAGAD[O0]\b|\bAB[O0]N[O0]\s+A\s+DEUDA\b|\bMES\s+APLICAD[O0]\b"
+    r"|\bVAL[O0]R\s+RECAUDAD[O0]\b|\bVAL[O0]R\s+A\s+C[O0]NSIGNAR\b"
+    r"|\bENMENDADURA\s+ANULA\s+EL\s+REGISTR[O0]\b|\bPYME\W{0,2}\s*RECAUDAD[O0]R\b"
+)
+
+
+def _sin_tildes(texto: str) -> str:
+    """En mayúsculas y sin tildes, con sus renglones."""
+    return "".join(c for c in unicodedata.normalize("NFD", texto) if not unicodedata.combining(c)).upper()
+
+
+def titulo_por_su_formato(texto: str) -> str | None:
+    """El título de un formato que se reconoce por sus marcas impresas, o ``None``.
+
+    Hoy uno solo, el FORMATO DE RELACION DIARIA DE PAGOS (el operador,
+    2026-11-26). Se reconoce por su título -- «FORMATO DE RELACIÓN» y «DIARIA
+    DE PAGOS», aunque el escáner los parta o los rompa -- y por algo que sólo él
+    imprime, para no confundirlo con otro: una marca de su tabla o de su pie, o
+    el número de la planilla pegado al título. Esto último hace falta: la OCR
+    de casa leyó de UPD2995828 pág. 4 sólo el recuadro del título, y la misma
+    planilla habría salido con dos nombres en la caja.
+
+    Sólo nombra, como todo título impreso: no corta ni decide el RE.
+    """
+    renglones = [r for r in (texto or "").splitlines() if r.strip()][:RENGLONES_DEL_FORMATO]
+    cabeza = _sin_tildes("\n".join(renglones))
+    hallado = _TITULO_DE_LA_RELACION_DIARIA.search(cabeza)
+    if hallado is None:
+        return None
+    resto = cabeza[hallado.end() :].split("\n", 1)[0]
+    if not _RESTO_DEL_TITULO.fullmatch(resto):
+        return None
+    todo = re.sub(r"\s+", " ", _sin_tildes(texto or ""))
+    if _NUMERO_DE_LA_PLANILLA.match(resto) or _MARCAS_DE_LA_RELACION_DIARIA.search(todo):
+        return RELACION_DIARIA_DE_PAGOS
+    return None
+
 
 def _plano(texto: str) -> str:
     sin_tildes = unicodedata.normalize("NFD", texto).encode("ascii", "ignore").decode()
@@ -119,7 +185,13 @@ def _candidato(original: str) -> tuple[int, str] | None:
 
 
 def titulo_impreso(texto: str) -> str | None:
-    """El título que imprime la hoja en su encabezado, o ``None`` si no imprime ninguno."""
+    """El título que imprime la hoja en su encabezado, o ``None`` si no imprime ninguno.
+
+    El formato que se reconoce por sus marcas lleva su título entero, aunque el
+    escáner lo parta en dos renglones (``titulo_por_su_formato``, 2026-11-26).
+    """
+    if por_su_formato := titulo_por_su_formato(texto):
+        return por_su_formato
     renglones = [r for r in (texto or "").splitlines() if r.strip()][:RENGLONES_DEL_ENCABEZADO]
     mejor: tuple[int, int, str] | None = None
     for posicion, renglon in enumerate(renglones):

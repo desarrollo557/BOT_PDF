@@ -195,6 +195,11 @@ CATALOGO: tuple[TipoDocumental, ...] = (
     # del operador (2026-11-24, 4251481). Sólo lo pone su formato
     # (``asunto_del_documento.RELACION_DE_PAGOS``).
     TipoDocumental("RELACION DE PAGOS RECIBIDOS"),
+    # La planilla del recaudador «FORMATO DE RELACIÓN DIARIA DE PAGOS No. …»,
+    # por dictado del operador (2026-11-26, UPD2995828: salía «01_DOCUMENTO.pdf»).
+    # Sin frases ni IA: sólo la pone su título impreso
+    # (``titulo_impreso.RELACION_DIARIA_DE_PAGOS``).
+    TipoDocumental("FORMATO DE RELACION DIARIA DE PAGOS"),
     TipoDocumental(
         "DECLARACION BAJO GRAVEDAD DE JURAMENTO",
         (

@@ -34,6 +34,8 @@ import re
 import unicodedata
 from collections.abc import Sequence
 
+from .titulo_impreso import RELACION_DIARIA_DE_PAGOS
+
 #: Lo más largo que se deja ser a un título. Un índice no es un resumen: lo
 #: que pase de aquí se corta en la última palabra entera.
 MAX_TITULO = 110
@@ -791,9 +793,18 @@ _CONSECUTIVO_MESUC = re.compile(r"\bM\W?E\W?S\W?U\W?C\W{0,3}\s*\d{3,6}\b")
 #: Que la carta va al usuario: su saludo, o la oficina comercial que la firma.
 _CARTA_AL_USUARIO = re.compile(r"\bESTIMAD[OA]S?\s+USUARI|\bOFICINA\s+COMERCIAL\b")
 #: Los nombres que dictó el operador para un papel por su formato: el nombrado
-#: no se los discute a la IA ni al catálogo.
+#: no se los discute a la IA ni al catálogo. También el FORMATO DE RELACION
+#: DIARIA DE PAGOS (2026-11-26), que se reconoce por su título impreso
+#: (``titulo_impreso.titulo_por_su_formato``): sólo nombra, no va en
+#: ``titulo_del_documento``, que también decide cortes.
 NOMBRES_DEL_OPERADOR = frozenset(
-    {CONTESTACION_A_RECLAMACION, RESPUESTA_A_USUARIO, NOTA_CREDITO_DEL_ASEO, RELACION_DE_PAGOS}
+    {
+        CONTESTACION_A_RECLAMACION,
+        RESPUESTA_A_USUARIO,
+        NOTA_CREDITO_DEL_ASEO,
+        RELACION_DE_PAGOS,
+        RELACION_DIARIA_DE_PAGOS,
+    }
 )
 #: El formato que reconoce ``titulo_del_documento`` y el nombre que lleva por
 #: él: la auditoría de la entrega avisa si el PDF se llama de otro modo.

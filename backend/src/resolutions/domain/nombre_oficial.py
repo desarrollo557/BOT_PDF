@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 
 from .asunto_del_documento import (
     AUTORIZACION_DEL_ASEO,
@@ -42,6 +42,7 @@ from .asunto_del_documento import (
     es_constancia_de_recepcion,
 )
 from .catalogo import CATALOGO, FRASES
+from .titulo_impreso import RELACION_DIARIA_DE_PAGOS
 
 #: Los títulos que el bot conoce y su nombre en el catálogo del cliente.
 AL_CATALOGO: dict[str, str] = {
@@ -69,8 +70,29 @@ AL_CATALOGO.update(MISMO_TIPO)
 def tipo_unificado(nombre: str | None) -> str | None:
     """El nombre del tipo, con el de su par si el catálogo trae dos para el mismo documento."""
     return MISMO_TIPO.get(_plano(nombre or ""), nombre) if nombre else nombre
-#: Los tipos del catálogo que sólo pone el formato del papel, nunca la IA.
-SOLO_POR_SU_FORMATO = frozenset({"RECLAMACION", NOTA_CREDITO_DEL_ASEO, RELACION_DE_PAGOS})
+#: Los tipos del catálogo que sólo pone el formato del papel, nunca la IA. Fuera
+#: de la lista que se le da a la IA, que así no cambia: lo ya nombrado se sigue
+#: leyendo de la caché sin pagar otra vez.
+SOLO_POR_SU_FORMATO = frozenset(
+    {"RECLAMACION", NOTA_CREDITO_DEL_ASEO, RELACION_DE_PAGOS, RELACION_DIARIA_DE_PAGOS}
+)
+#: Los nombres que no nombran nada: los que se le pondrían a un documento cuando
+#: no se sabe qué es. Lo dictó el operador el 2026-11-26 ante «01_DOCUMENTO.pdf»
+#: de UPD2995828: «no quiero nombres genéricos como no sé, documento, anexo… sino
+#: originales evidenciados en el mismo documento». La IA nunca nombra con uno
+#: (``nombre_de_la_ia``), y el documento que quedó con uno vuelve a buscar el
+#: suyo (``correspondencia``). El tipo del catálogo que el papel imprime --
+#: «ANEXOS» -- sigue valiendo cuando lo pone el catálogo.
+NOMBRES_GENERICOS = frozenset(
+    {
+        "DOCUMENTO", "DOCUMENTOS", "DOCUMENTO SIN TITULO", "DOCUMENTO DESCONOCIDO",
+        "DOCUMENTO NO IDENTIFICADO", "OTRO DOCUMENTO", "NO SE", "NO LO SE", "NO SE SABE",
+        "ANEXO", "ANEXOS", "DESCONOCIDO", "DESCONOCIDA", "OTRO", "OTRA", "OTROS", "OTRAS",
+        "SIN TITULO", "SIN NOMBRE", "SIN TIPO", "SIN INFORMACION", "N A", "NA", "NO APLICA",
+        "NINGUNO", "NINGUNA", "VARIOS", "INDETERMINADO", "NO IDENTIFICADO", "ILEGIBLE",
+        "HOJA", "PAGINA", "ARCHIVO",
+    }
+)
 #: El reclamo por consumo estimado, como lo escribe el cliente en su asunto:
 #: «RECLAMO POR COBRO DE SERVICIO ENERGIA POR ESTIMADO» (UPD3102756 pág. 8).
 _POR_ESTIMADO = re.compile(r"\bESTIMAD[OA]S?\b")
@@ -316,7 +338,30 @@ def nombre_de_la_ia(respuesta: str | None) -> str | None:
     if nombre.startswith(("NO PUEDO", "NO ES POSIBLE", "LO SIENTO", "DOCUMENTO ILEGIBLE")):
         return None
     tipo = next((t for t in CATALOGO if t.nombre == nombre or nombre in t.frases), None)
-    return tipo.nombre if tipo else nombre
+    nombrado = tipo.nombre if tipo else nombre
+    # Ni uno genérico: «DOCUMENTO», «NO SE», «ANEXO»… no nombran nada (el
+    # operador, 2026-11-26). Sin él, el documento sigue con lo que ya tenía.
+    return None if es_nombre_generico(nombrado) else nombrado
+
+
+def es_nombre_generico(nombre: str | None) -> bool:
+    """Si el nombre no nombra nada: vacío, «DOCUMENTO», «NO SÉ», «ANEXO» a secas, «N/A»… (``NOMBRES_GENERICOS``)."""
+    plano = re.sub(r"\s+", " ", re.sub(r"[^A-Z0-9 ]+", " ", _plano(nombre or ""))).strip()
+    return not plano or plano in NOMBRES_GENERICOS
+
+
+def nombre_documental(nombre: str | None, *, vetados: Collection[str] = ()) -> str | None:
+    """El nombre con su forma oficial (``nombre_oficial``) si nombra algo; ``None`` si es genérico o está vetado.
+
+    Para lo que nombra la IA porque el papel no dijo nada (el operador,
+    2026-11-26: «que la IA lo determine, pero necesito que no sea genérico, que
+    sea un nombre documental»). ``vetados``: los que ese documento no puede
+    tomar, como el de un anexo para el que no es ese anexo.
+    """
+    oficial = nombre_oficial(nombre)
+    if not oficial or es_nombre_generico(oficial) or oficial in vetados:
+        return None
+    return oficial
 
 
 def _del_catalogo_en(asunto: str, empieza: str) -> str | None:

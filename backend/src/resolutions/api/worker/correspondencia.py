@@ -4108,11 +4108,15 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # leer, su caja y sus páginas, a revisión.
         impreso = titulo_impreso(textos.get(primera, "") or "")
         if impreso is None:
-            if not fuente_de_encabezados:
-                fuente_de_encabezados.append(PyMuPDFPageSource(tmp_path, taller.name))
-            impreso = _titulo_del_encabezado(
-                fuente_de_encabezados[0], primera, lector_de_encabezados, lector_de_pago_de_encabezados
-            )
+            # Una sola lectura de la franja por hoja: la segunda pasada de lo que
+            # F6 dejó sin nombre no la vuelve a leer (2026-11-26).
+            if primera not in titulos_de_la_franja:
+                if not fuente_de_encabezados:
+                    fuente_de_encabezados.append(PyMuPDFPageSource(tmp_path, taller.name))
+                titulos_de_la_franja[primera] = _titulo_del_encabezado(
+                    fuente_de_encabezados[0], primera, lector_de_encabezados, lector_de_pago_de_encabezados
+                )
+            impreso = titulos_de_la_franja[primera]
         if impreso:
             return replace(g, kind=impreso)
         # Lo que el documento dice de sí mismo en su «ASUNTO:» o «REF.:» --
@@ -4129,10 +4133,11 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         asunto = asunto_del_documento([textos.get(p, "") or "" for p in titulares], None)
         if asunto and not asunto.startswith("QUE "):
             return replace(g, kind=asunto[:MAX_ASUNTO_EN_EL_NOMBRE].rsplit(" ", 1)[0] if len(asunto) > MAX_ASUNTO_EN_EL_NOMBRE else asunto)
-        sin_titulo.append(primera)
+        if primera not in sin_titulo:
+            sin_titulo.append(primera)
         return replace(g, kind=nombre_por_su_origen(taller.name, g.page_numbers))
 
-    def nombre_estandar(g):
+    def nombre_estandar(g, *, tras_f6: bool = False):
         """El nombre del archivo por el estándar: un tipo del catálogo del cliente.
 
         Lo dictó el operador el 2026-10-22: «que los nombres o los tipos de
@@ -4146,11 +4151,23 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
            IA lee el cuerpo del documento con el catálogo delante.
         3. Si tampoco, el nombre libre: el título impreso, el asunto o el que
            propuso la IA; y si nada, su caja y sus páginas, a revisión.
+
+        Lo que la IA nombra porque el papel no dijo nada pasa por su nombre
+        oficial y nunca es genérico (el operador, 2026-11-26). ``tras_f6`` es el
+        documento al que F6 le quitó el nombre de su anexo y dejó en
+        «DOCUMENTO»: lo que su papel diga ser -- su título impreso, su asunto --
+        no se lo discute la IA, y nunca vuelve al nombre de un anexo.
         """
         nombrado = tipo_del_archivo(g)
         if entregado_por is Agrupacion.MES:
             return nombrado
         nombre = estandarizar(nombrado.kind)
+        sin_nombre = g.page_numbers[0] in sin_titulo or next(
+            (x for x in g.page_numbers if x not in guias and x not in delanteras), g.page_numbers[0]
+        ) in sin_titulo
+        if tras_f6 and not sin_nombre:
+            unificado = _tipo_unificado(nombre)
+            return replace(nombrado, kind=nombrado.kind if unificado in TIPOS_DE_SOPORTE else unificado)
         # El nombre que dio el operador a la contestación no se le discute a la
         # IA, ni el de la carta «MESUC» al usuario: la IA la llamaba RECURSO DE
         # QUEJA (920933, 2026-11-24).
@@ -4189,34 +4206,62 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
         # la solicitud que lleva dentro (2026-11-24, 4251482).
         if g.page_numbers and g.page_numbers[0] in caratulas:
             sin_anexos = [g.page_numbers[0]]
-        de_la_ia = _nombre_con_la_ia(
-            fuente_de_encabezados[0],
-            sin_anexos or propias or list(g.page_numbers),
-            textos,
-            lector_de_pago_de_encabezados,
-            nombrador,
-        )
-        sin_nombre = g.page_numbers[0] in sin_titulo or next(
-            (x for x in g.page_numbers if x not in guias and x not in delanteras), g.page_numbers[0]
-        ) in sin_titulo
+        # Una sola petición por documento: la segunda pasada de lo que F6 dejó
+        # sin nombre no vuelve a preguntar (2026-11-26).
+        para_la_ia = sin_anexos or propias or list(g.page_numbers)
+        clave = tuple(sorted(para_la_ia))
+        if clave not in nombres_de_la_ia:
+            nombres_de_la_ia[clave] = _nombre_con_la_ia(
+                fuente_de_encabezados[0],
+                para_la_ia,
+                textos,
+                lector_de_pago_de_encabezados,
+                nombrador,
+            )
+        de_la_ia = nombres_de_la_ia[clave]
+        if sin_nombre or tras_f6:
+            # Lo que nombra la IA porque el papel no dijo nada: con su nombre
+            # oficial, nunca genérico y, tras F6, nunca el de un anexo.
+            de_la_ia = nombre_documental(de_la_ia, vetados=TIPOS_DE_SOPORTE if tras_f6 else ())
         # El mismo documento con un solo nombre: PETICION es DERECHO DE
         # PETICION (2026-11-24, 4251556).
-        from ...domain.nombre_oficial import tipo_unificado
-
         if de_la_ia and (de_la_ia in POR_NOMBRE or sin_nombre):
             for pagina in g.page_numbers:
                 if pagina in sin_titulo:
                     sin_titulo.remove(pagina)
-            return replace(nombrado, kind=tipo_unificado(de_la_ia))
-        return replace(nombrado, kind=tipo_unificado(nombre))
+            return replace(nombrado, kind=_tipo_unificado(de_la_ia))
+        return replace(nombrado, kind=_tipo_unificado(nombre))
 
+    def con_nombre_documental(g):
+        """El documento que F6 dejó con un nombre genérico vuelve a buscar el suyo (el operador, 2026-11-26).
+
+        F6 le quita a un documento el nombre de su anexo y, si su cabecera no
+        dice qué escrito es, lo dejaba en «DOCUMENTO», después de que la
+        cascada de nombres ya había corrido: UPD2995828 salió
+        «01_DOCUMENTO.pdf» (el catálogo leyó FACTURA en «VR. A PAGAR
+        FACTURA», y su hoja imprime «FORMATO DE RELACIÓN DIARIA DE PAGOS»). Se
+        nombra otra vez, en el orden que pidió el operador: el título impreso
+        de su papel o su asunto; si no dice nada, la IA si se eligió; y si
+        tampoco, su caja y sus páginas, a Revisión. Por mes no: el archivo es un
+        mes. Lo que ya tiene un nombre, incluido un tipo del catálogo, no se toca.
+        """
+        if entregado_por is Agrupacion.MES or g.kind in POR_NOMBRE or not es_nombre_generico(g.kind):
+            return g
+        return nombre_estandar(g, tras_f6=True)
+
+    from ...application.anexos_declarados import TIPOS_DE_SOPORTE
     from ...domain.asunto_del_documento import (
         CONTESTACION_A_RECLAMACION,
         NOMBRES_DEL_OPERADOR,
         es_contestacion_a_reclamacion,
     )
     from ...domain.catalogo import POR_NOMBRE
-    from ...domain.nombre_oficial import estandarizar
+    from ...domain.nombre_oficial import (
+        es_nombre_generico,
+        estandarizar,
+        nombre_documental,
+    )
+    from ...domain.nombre_oficial import tipo_unificado as _tipo_unificado
     from ...domain.titulo_impreso import nombre_por_su_origen, titulo_impreso
 
     fuente_de_encabezados: list = []
@@ -4228,19 +4273,27 @@ def _segmentar(payload: dict, task, *, avisos: Sequence[str] = (), temporales: l
     lector_de_pago_de_encabezados = taller.lector_de_pago()
     nombrador = taller.nombrador()
     sin_titulo: list[int] = []
+    #: Lo leído en la franja de cada hoja y lo que la IA llamó a cada documento,
+    #: por sus hojas: se lee y se pregunta una sola vez.
+    titulos_de_la_franja: dict[int, str | None] = {}
+    nombres_de_la_ia: dict[tuple[int, ...], str | None] = {}
     try:
         grupos = replace(grupos, groups=[nombre_estandar(g) for g in grupos.groups])
+        # Las hojas de cada PDF, en el orden del papel. Un documento con hojas que
+        # no van seguidas -- el acuerdo con la Habeas Data de arriba -- recibía la
+        # que se le unió al final: 1, 6…14, 2 (1001508/UPD3102736).
+        grupos = replace(grupos, groups=[replace(g, page_numbers=sorted(g.page_numbers)) for g in grupos.groups])
+        # F6. El nombre. Ningún documento se llama como su anexo: el que abre con
+        # un reclamo y trae una cédula detrás es el reclamo, no un «DOCUMENTO DE
+        # IDENTIDAD».
+        grupos = nombrar_sin_soporte(grupos, textos)
+        # F6'. Y lo que F6 dejó en «DOCUMENTO» vuelve a buscar su nombre: el
+        # título impreso, su asunto, la IA si se eligió, o su caja y sus páginas
+        # (el operador, 2026-11-26: «no quiero nombres genéricos»).
+        grupos = replace(grupos, groups=[con_nombre_documental(g) for g in grupos.groups])
     finally:
         for fuente in fuente_de_encabezados:
             fuente.close()
-    # Las hojas de cada PDF, en el orden del papel. Un documento con hojas que
-    # no van seguidas -- el acuerdo con la Habeas Data de arriba -- recibía la
-    # que se le unió al final: 1, 6…14, 2 (1001508/UPD3102736).
-    grupos = replace(grupos, groups=[replace(g, page_numbers=sorted(g.page_numbers)) for g in grupos.groups])
-    # F6. El nombre. Ningún documento se llama como su anexo: el que abre con
-    # un reclamo y trae una cédula detrás es el reclamo, no un «DOCUMENTO DE
-    # IDENTIDAD».
-    grupos = nombrar_sin_soporte(grupos, textos)
     # F6a. El contrato de transacción nunca lleva pagaré (el operador,
     # 2026-11-24): el seguro final. El pagaré, sus cartas y la cédula de detrás
     # que hubieran quedado dentro salen como «PAGARE».
