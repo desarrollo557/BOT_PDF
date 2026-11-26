@@ -323,7 +323,8 @@ class TestInventarioDeProcesos:
             for fila in hoja.iter_rows()
             if fila[1].value and str(fila[1].value).endswith(".pdf")
         ]
-        assert [(f[1], f[2], f[4], f[5], f[8]) for f in filas] == [
+        # f[10] es «Estado»: desde el 2026-11-17 van delante «Fechas» y «Nombres».
+        assert [(f[1], f[2], f[4], f[5], f[10]) for f in filas] == [
             ("UPD2326299.pdf", "Caja de correspondencia", "Por trámite", 5, "Listo"),
             ("UPD2326300.pdf", "Caja de correspondencia", "Por documento", 0, "Falló"),
         ]
