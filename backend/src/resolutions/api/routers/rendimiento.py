@@ -9,11 +9,16 @@ En Docker el equipo es lo que ve el contenedor -- la máquina virtual de Docker
 Desktop, que reparte los núcleos y la memoria del PC --. Se lee de ``/proc``,
 sin dependencias; donde no hay ``/proc`` (el servicio en Windows sin Docker),
 lo que no se puede medir va como ``None`` y la pantalla dice «—».
+
+Lo del equipo -- CPU, memoria, carga y núcleos -- lo mide desde el 2026-11-27
+``adapters.recursos_del_equipo``, el mismo que pone los recursos de cada PC en
+su latido de la corrida compartida. Con su propio ``MedidorDeCpu``: el latido
+tiene el suyo, y ninguno le roba al otro la muestra anterior. Las respuestas
+no cambian.
 """
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from collections import deque
@@ -21,6 +26,7 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+from ...adapters import recursos_del_equipo
 from ..contexto import Ctx
 from ..jobs import JobState
 
@@ -32,42 +38,8 @@ VENTANA = 60.0
 _cerrojo = threading.Lock()
 #: (instante, páginas leídas, documentos terminados) de cada consulta reciente.
 _muestras: deque[tuple[float, int, int]] = deque(maxlen=240)
-#: Los contadores de CPU de la consulta anterior: (total, ocioso).
-_cpu_antes: tuple[int, int] | None = None
-
-
-def _cpu() -> float | None:
-    """El uso de CPU del equipo desde la consulta anterior, en %."""
-    global _cpu_antes
-    try:
-        campos = Path("/proc/stat").read_text(encoding="ascii").splitlines()[0].split()[1:]
-    except (OSError, IndexError):
-        return None
-    valores = [int(v) for v in campos]
-    ocioso = valores[3] + (valores[4] if len(valores) > 4 else 0)
-    total = sum(valores)
-    with _cerrojo:
-        antes, _cpu_antes = _cpu_antes, (total, ocioso)
-    if antes is None or total <= antes[0]:
-        return None
-    return round(100 * (1 - (ocioso - antes[1]) / (total - antes[0])), 1)
-
-
-def _memoria() -> tuple[int, int] | None:
-    """(usada, total) en bytes, de ``/proc/meminfo``."""
-    try:
-        lineas = Path("/proc/meminfo").read_text(encoding="ascii").splitlines()
-    except OSError:
-        return None
-    datos = {}
-    for linea in lineas:
-        nombre, _, resto = linea.partition(":")
-        partes = resto.split()
-        if partes:
-            datos[nombre] = int(partes[0]) * 1024
-    if "MemTotal" not in datos or "MemAvailable" not in datos:
-        return None
-    return datos["MemTotal"] - datos["MemAvailable"], datos["MemTotal"]
+#: La CPU desde la consulta anterior de esta pantalla, con su propia muestra.
+_medidor_de_cpu = recursos_del_equipo.MedidorDeCpu()
 
 
 def _memoria_del_bot() -> int | None:
@@ -104,13 +76,6 @@ def _proporcional(proceso: Path) -> int:
     return 0
 
 
-def _carga() -> float | None:
-    try:
-        return round(os.getloadavg()[0], 2)
-    except (AttributeError, OSError):
-        return None
-
-
 def _ritmo(paginas: int, terminados: int) -> tuple[float | None, float | None]:
     """Páginas y documentos por minuto en la última ``VENTANA``."""
     ahora = time.monotonic()
@@ -137,12 +102,12 @@ async def rendimiento(ctx: Ctx) -> dict[str, object]:
     paginas = sum(trabajo.progress.pages_done for trabajo in trabajos)
     terminados = sum(1 for trabajo in trabajos if trabajo.state is JobState.DONE)
     por_minuto, documentos_por_minuto = _ritmo(paginas, terminados)
-    memoria = _memoria()
+    memoria = recursos_del_equipo.memoria()
     return {
         "equipo": {
-            "cpu": _cpu(),
-            "nucleos": os.cpu_count(),
-            "carga": _carga(),
+            "cpu": _medidor_de_cpu.medir(),
+            "nucleos": recursos_del_equipo.nucleos(),
+            "carga": recursos_del_equipo.carga(),
             "memoria_usada": memoria[0] if memoria else None,
             "memoria_total": memoria[1] if memoria else None,
         },

@@ -11,6 +11,14 @@
    * mientras va una orden. Con la corrida terminada es la foto de cuando este
    * equipo se retiró, y se dice así. Las palabras, el orden y a quién se le
    * ofrece cada botón están en `$lib/equipos`.
+   *
+   * Desde el 2026-11-27 dice también quién es el principal -- el primero en
+   * lanzar, o quien lo releva si cae, que escribe los Excel generales y cierra
+   * la corrida --, la velocidad en PDF por minuto -- la de ahora y la
+   * acumulada, en total y por PC -- y los recursos de cada PC, con el aviso del
+   * servicio si el principal no es el que más tiene. El operador: «llevar un
+   * promedio de velocidad de procesamiento de archivos por minuto contando los
+   * PC activos». Con la foto no se pinta nada de «ahora»: ya no lo hay.
    */
   import { onMount, untrack } from 'svelte';
 
@@ -19,18 +27,23 @@
   import { confirmar } from '$lib/confirmar.svelte';
   import {
     accionesDe,
+    alertaDeRecursos,
     cifra,
     estadoDe,
     falloDeLaOrden,
     FOTO_AL_RETIRARSE,
     haceCuanto,
     idCorto,
+    lineasDeVelocidad,
     objetivosDePararTodos,
+    partesDeRecursos,
+    porMinuto,
     porQueAparte,
     preguntaDeParar,
     preguntaDePararTodos,
+    promedioDe,
+    recursosEnAlerta,
     resumen,
-    ritmo,
     rotuloDe,
     separar
   } from '$lib/equipos';
@@ -65,7 +78,21 @@
   const foto = $derived(datos !== null && !(activa && datos.activa));
   const grupos = $derived(separar(datos?.equipos ?? []));
   const frase = $derived(!foto && grupos.deEsta.length ? resumen(grupos.deEsta) : null);
+  /** La velocidad y el principal; con la foto, sin las de ahora. */
+  const lineas = $derived(datos ? lineasDeVelocidad(datos, !foto) : []);
   const objetivos = $derived(objetivosDePararTodos(grupos.deEsta, sePuedeOrdenar));
+
+  /** El espacio que no parte la línea. */
+  const NO_PARTE = '\u00a0';
+
+  /**
+   * Los recursos de un PC en una casilla que puede ir en dos líneas, partidas
+   * sólo entre un trozo y otro: dentro de cada trozo los espacios no parten, y
+   * el punto se queda al final de la línea («RAM 12,4 / 15,5 GB ·»).
+   */
+  function enTrozos(partes: readonly string[]): string {
+    return partes.map((parte) => parte.replace(/ /g, NO_PARTE)).join(`${NO_PARTE}· `);
+  }
 
   /*
    * Mientras va una orden no se pregunta, y la lista que devuelve la orden --
@@ -181,6 +208,14 @@
     {#if idCorto(equipo)}
       <span class="arranque">{idCorto(equipo)}</span>
     {/if}
+    {#if equipo.principal}
+      <span
+        class="pill pill-good pill-sm"
+        title="Escribe los Excel generales y cierra la corrida. Es el primero que lanzó o, si ese ya no puede, el que lleva más tiempo en la corrida."
+      >
+        Principal
+      </span>
+    {/if}
     {#if equipo.este}
       <span class="pill pill-sm">este equipo</span>
     {/if}
@@ -205,6 +240,24 @@
   {/if}
 {/snippet}
 
+{#snippet recursos(equipo: EquipoDeLaCorrida)}
+  {@const partes = partesDeRecursos(equipo.recursos)}
+  {@const alerta = alertaDeRecursos(equipo.recursos)}
+  {#if partes.length}
+    <!-- Justo de RAM o de disco: el tono de aviso y el ⚠, que no dependa sólo
+         del color, y el porqué al pasar y para quien lee la pantalla. El ⚠ va
+         pegado al primer trozo: la línea no se parte detrás de él. -->
+    <span class="recursos" class:alerta={recursosEnAlerta(equipo.recursos)} title={alerta ?? undefined}>
+      {#if alerta}<span aria-hidden="true">⚠&nbsp;</span>{/if}{enTrozos(partes)}
+      {#if alerta}
+        <span class="sr-only">. {alerta}</span>
+      {/if}
+    </span>
+  {:else}
+    —
+  {/if}
+{/snippet}
+
 <section class="equipos" aria-label="Equipos conectados a la corrida">
   <header class="cabeza">
     <span class="caps">Equipos conectados</span>
@@ -219,6 +272,28 @@
       </button>
     {/if}
   </header>
+
+  {#if lineas.length}
+    <!-- La velocidad de la corrida y quién es el principal (2026-11-27): cifras
+         con su filete, no cajas. Los totales los suma el servicio. -->
+    <dl class="cifras">
+      {#each lineas as linea (linea.clave)}
+        <div class="stat">
+          <dt class="stat-label">{linea.rotulo}</dt>
+          <dd class="stat-value tabular">{linea.valor}</dd>
+          {#if linea.nota}
+            <dd class="stat-note">{linea.nota}</dd>
+          {/if}
+        </div>
+      {/each}
+    </dl>
+  {/if}
+  {#if datos?.aviso_de_recursos}
+    <!-- «El principal … tiene menos RAM … que …: conviene lanzar primero en el
+         PC con más recursos.» No cambia quién es el principal: lo es el
+         primero en lanzar. -->
+    <p class="nota warn" role="status">{datos.aviso_de_recursos}</p>
+  {/if}
 
   {#if errorDeLaOrden}
     <p class="inline-error" role="alert">{errorDeLaOrden}</p>
@@ -244,7 +319,11 @@
               <th scope="col">Estado</th>
               <th scope="col" class="cifra">Hechos</th>
               <th scope="col" class="cifra">En curso</th>
-              <th scope="col" class="cifra">Ritmo</th>
+              {#if !foto}
+                <th scope="col" class="cifra" title="PDF por minuto en sus últimos 10 minutos">Ahora</th>
+              {/if}
+              <th scope="col" class="cifra" title="PDF por minuto desde que se unió a la corrida">Desde que se unió</th>
+              <th scope="col">Recursos</th>
               <th scope="col">Latido</th>
               <th scope="col" class="derecha">Acciones</th>
             </tr>
@@ -262,7 +341,11 @@
                 </td>
                 <td class="cifra tabular">{cifra(equipo.hechos)}</td>
                 <td class="cifra tabular">{cifra(equipo.en_curso)}</td>
-                <td class="cifra tabular">{ritmo(equipo.pdf_por_hora)}</td>
+                {#if !foto}
+                  <td class="cifra tabular">{porMinuto(equipo.pdf_por_minuto)}</td>
+                {/if}
+                <td class="cifra tabular">{porMinuto(promedioDe(equipo))}</td>
+                <td class="tabular">{@render recursos(equipo)}</td>
                 <td class="tabular">{haceCuanto(equipo.quieto_hace)}</td>
                 <td class="derecha">
                   {#if acciones.calma || acciones.ya}
@@ -375,6 +458,29 @@
     margin-left: auto;
   }
 
+  /* La velocidad y el principal (2026-11-27): cifras con su filete, que con el
+     ancho del teléfono bajan a otra línea. */
+  .cifras {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-6);
+    margin: 0;
+  }
+  .cifras dd {
+    margin: 0;
+  }
+  /* Un escalón por debajo de las de un trabajo: van dentro de esta caja. Un
+     nombre largo («DESKTOP-UMCOEU8 (35cf6a)») se parte antes que salirse. */
+  .cifras .stat-value {
+    font-size: var(--text-lg);
+    overflow-wrap: anywhere;
+  }
+  /* El aviso de recursos, del tamaño de la tabla. */
+  .equipos > .nota {
+    margin: 0;
+    font-size: var(--text-sm);
+  }
+
   .equipos > .inline-error {
     margin: 0;
   }
@@ -385,7 +491,11 @@
   }
 
   /* Con el ancho del teléfono la tabla se desliza dentro de su caja; la página, nunca. */
+  /* Posicionada: el texto `sr-only` de dentro es `position: absolute` y, sin
+     un ancestro posicionado, se salía de la caja y hacía deslizar la página
+     entera (390 → 700 px en un teléfono, 2026-11-27). */
   .caja {
+    position: relative;
     max-width: 100%;
     overflow-x: auto;
   }
@@ -418,9 +528,16 @@
   .tabla .cifra {
     text-align: right;
   }
+  /* Las acciones, pegadas a la derecha: con las columnas de velocidad y
+     recursos la tabla mide ~1.100 px y «Parar ya» quedaba fuera de la vista en
+     pantallas de 1366-1600 px (2026-11-27). */
   .tabla .derecha {
+    position: sticky;
+    right: 0;
     padding-right: 0;
+    padding-left: var(--space-3);
     text-align: right;
+    background: var(--surface-2);
   }
 
   .quien {
@@ -454,6 +571,17 @@
     font-size: var(--text-xs);
     color: var(--muted);
     white-space: normal;
+  }
+  /* Los recursos pueden ir en dos líneas, partidas sólo entre un trozo y otro
+     (`enTrozos`), para que las acciones no se vayan a la derecha de la caja;
+     con poco ancho, la columna no baja de esto. */
+  .recursos {
+    display: block;
+    min-width: 15rem;
+    white-space: normal;
+  }
+  .recursos.alerta {
+    color: var(--warning-ink);
   }
   .acciones {
     display: inline-flex;

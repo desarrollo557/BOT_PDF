@@ -4,28 +4,41 @@
  * desconectarlos». Esto fija las palabras de cada estado, el ritmo y el
  * resumen, quién va aparte, a quién se le ofrece cada botón -- manda
  * `se_puede_parar` del servicio -- y las dos llamadas al servicio.
+ *
+ * Desde el 2026-11-27 (revisión 27), también la velocidad en PDF por minuto
+ * con un decimal y la coma («1,5 PDF/min»; antes «88 PDF/h»), la fila de
+ * cifras de arriba -- ahora, promedio por PC, acumulado y el principal --, que
+ * con la corrida terminada no dice nada de «ahora», y los recursos de cada PC
+ * con su aviso: la RAM al 90 % o más, o menos de 10 GB libres en el disco.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, equiposDeLaCorrida, pararEquipo, setIdentidad } from './api';
 import {
   accionesDe,
+  alertaDeRecursos,
   cifra,
   estadoDe,
   falloDeLaOrden,
   haceCuanto,
   idCorto,
+  lineasDeVelocidad,
+  type LineaDeVelocidad,
   notaDeDetenida,
   notaDeParando,
   objetivosDePararTodos,
+  partesDeRecursos,
+  porMinuto,
   porQueAparte,
   preguntaDeParar,
   preguntaDePararTodos,
+  promedioDe,
+  recursosDe,
+  recursosEnAlerta,
   resumen,
-  ritmo,
   rotuloDe,
   separar
 } from './equipos';
-import type { EquipoDeLaCorrida, EquiposDeLaCorrida } from './types';
+import type { EquipoDeLaCorrida, EquiposDeLaCorrida, RecursosDelEquipo, VelocidadDeLaCorrida } from './types';
 
 function equipo(cambios: Partial<EquipoDeLaCorrida> = {}): EquipoDeLaCorrida {
   const nombre = cambios.equipo ?? 'COORDINADORTIC';
@@ -48,22 +61,41 @@ function equipo(cambios: Partial<EquipoDeLaCorrida> = {}): EquipoDeLaCorrida {
     orden: null,
     se_puede_parar: true,
     por_que_no: null,
+    // Lo de la revisión 27 (2026-11-27): 141 entregados en 96 minutos.
+    principal: false,
+    entregados: 141,
+    pdf_por_minuto: 1.47,
+    pdf_por_minuto_promedio: 1.47,
+    recursos: null,
     ...cambios
   };
+}
+
+/** El mismo equipo como lo daba un servicio anterior a la revisión 27: sin los campos nuevos. */
+function deUnServicioAnterior(nuevo: EquipoDeLaCorrida): EquipoDeLaCorrida {
+  const anterior = { ...nuevo };
+  for (const campo of ['principal', 'entregados', 'pdf_por_minuto', 'pdf_por_minuto_promedio', 'recursos'] as const) {
+    delete anterior[campo];
+  }
+  return anterior;
 }
 
 /** Lo que contesta el servicio a una orden para un equipo que ya no late. */
 const YA_NO_LATE =
   '«COORDINADORTIC-1e52b0» ya no late: sus PDF los toman los demás solos y su latido se borra a los 3 minutos.';
 
-/** Los seis de la corrida de la mañana, con su ritmo medido (PDF/h). */
+/**
+ * Los seis de la corrida de la mañana, con su ritmo medido: por hora, como lo
+ * daba el servicio anterior (suman 1.096), y por minuto (suman 18,27). El
+ * principal es el SIAR que lanzó primero.
+ */
 const LOS_SEIS = [
-  equipo({ equipo: 'COORDINADORTIC', pdf_por_hora: 88 }),
-  equipo({ equipo: 'SIAR', id: 'SIAR-6ad99c', pdf_por_hora: 122 }),
-  equipo({ equipo: 'DESKTOP-UMCOEU8', pdf_por_hora: 154 }),
-  equipo({ equipo: 'VISUALIZADOR', pdf_por_hora: 156 }),
-  equipo({ equipo: 'DESARROLLADOR', id: 'DESARROLLADOR-fa12b8', pdf_por_hora: 177, este: true }),
-  equipo({ equipo: 'SIAR', id: 'SIAR-ad21be', pdf_por_hora: 399 })
+  equipo({ equipo: 'COORDINADORTIC', pdf_por_hora: 88, pdf_por_minuto: 1.47 }),
+  equipo({ equipo: 'SIAR', id: 'SIAR-6ad99c', pdf_por_hora: 122, pdf_por_minuto: 2.03 }),
+  equipo({ equipo: 'DESKTOP-UMCOEU8', pdf_por_hora: 154, pdf_por_minuto: 2.57 }),
+  equipo({ equipo: 'VISUALIZADOR', pdf_por_hora: 156, pdf_por_minuto: 2.6 }),
+  equipo({ equipo: 'DESARROLLADOR', id: 'DESARROLLADOR-fa12b8', pdf_por_hora: 177, pdf_por_minuto: 2.95, este: true }),
+  equipo({ equipo: 'SIAR', id: 'SIAR-ad21be', pdf_por_hora: 399, pdf_por_minuto: 6.65, principal: true })
 ];
 
 describe('el estado de cada equipo, en palabras', () => {
@@ -136,12 +168,26 @@ describe('las cifras de la tabla', () => {
     expect(haceCuanto(Number.NaN)).toBe('—');
   });
 
-  it('el ritmo con el punto de miles, o una raya mientras no se sabe', () => {
-    expect(ritmo(88.1)).toBe('88 PDF/h');
-    expect(ritmo(1096.4)).toBe('1.096 PDF/h');
-    expect(ritmo(null)).toBe('—');
+  it('la velocidad por minuto con un decimal y la coma, o una raya mientras no se sabe', () => {
+    expect(porMinuto(1.5)).toBe('1,5 PDF/min');
+    expect(porMinuto(3)).toBe('3,0 PDF/min');
+    expect(porMinuto(18.27)).toBe('18,3 PDF/min');
+    expect(porMinuto(1234.56)).toBe('1.234,6 PDF/min');
+    expect(porMinuto(null)).toBe('—');
+    expect(porMinuto(undefined)).toBe('—');
+    expect(porMinuto(Number.NaN)).toBe('—');
     expect(cifra(12345)).toBe('12.345');
     expect(cifra(undefined)).toBe('—');
+  });
+
+  it('el promedio desde que se unió; con un servicio anterior, su ritmo por hora entre 60', () => {
+    expect(promedioDe(equipo({ pdf_por_minuto_promedio: 2.98 }))).toBe(2.98);
+    // Sus 5 primeros minutos: el null del servicio de hoy se queda en null.
+    expect(promedioDe(equipo({ pdf_por_minuto_promedio: null, pdf_por_hora: 120 }))).toBeNull();
+    const anterior = deUnServicioAnterior(equipo({ pdf_por_hora: 120 }));
+    expect(promedioDe(anterior)).toBe(2);
+    expect(porMinuto(promedioDe(anterior))).toBe('2,0 PDF/min');
+    expect(promedioDe(deUnServicioAnterior(equipo({ pdf_por_hora: null })))).toBeNull();
   });
 
   it('el arranque se lee aparte del nombre', () => {
@@ -153,23 +199,117 @@ describe('las cifras de la tabla', () => {
 });
 
 describe('el resumen de arriba', () => {
-  it('«6 vivos · 1.096 PDF/h» con los seis de la mañana', () => {
-    expect(resumen(LOS_SEIS)).toBe('6 vivos · 1.096 PDF/h');
+  it('«6 vivos · 18,3 PDF/min» con los seis de la mañana', () => {
+    expect(resumen(LOS_SEIS)).toBe('6 vivos · 18,3 PDF/min');
   });
 
-  it('cuenta los caídos aparte y su ritmo no suma', () => {
+  it('cuenta los caídos aparte y su velocidad no suma', () => {
     const conUnCaido = [...LOS_SEIS, equipo({ equipo: 'VISUALIZADOR', id: 'VISUALIZADOR-84235e', vivo: false })];
-    expect(resumen(conUnCaido)).toBe('6 vivos · 1 caído · 1.096 PDF/h');
+    expect(resumen(conUnCaido)).toBe('6 vivos · 1 caído · 18,3 PDF/min');
   });
 
-  it('sin ritmo todavía, sólo los vivos; los terminados y los de otra corrida no cuentan', () => {
+  it('sin velocidad todavía, sólo los vivos; los terminados y los de otra corrida no cuentan', () => {
     expect(
       resumen([
-        equipo({ pdf_por_hora: null }),
+        equipo({ pdf_por_minuto: null, pdf_por_hora: null }),
         equipo({ equipo: 'SIAR', estado: 'terminado', vivo: false }),
         equipo({ equipo: 'ANALISSIG', de_esta_corrida: false })
       ])
     ).toBe('1 vivo');
+  });
+
+  it('con un servicio anterior, que no la da por minuto, su ritmo por hora entre 60', () => {
+    // Los 1.096 PDF/h de la mañana son 18,3 PDF/min.
+    expect(resumen(LOS_SEIS.map(deUnServicioAnterior))).toBe('6 vivos · 18,3 PDF/min');
+    // Un null del servicio de hoy es «todavía no»: no se rellena con el ritmo por hora.
+    expect(resumen([equipo({ pdf_por_minuto: null, pdf_por_hora: 120 })])).toBe('1 vivo');
+  });
+});
+
+const GB = 1024 ** 3;
+
+/** Nada medido: así llega lo que el PC no pudo medir. */
+const NADA: RecursosDelEquipo = {
+  nucleos: null,
+  cpu: null,
+  carga: null,
+  memoria_usada: null,
+  memoria_total: null,
+  disco_libre: null,
+  disco_total: null,
+  disco: null
+};
+
+/** Un PC holgado: 12 núcleos, la RAM que ve Docker y el C: del equipo. */
+const HOLGADO: RecursosDelEquipo = {
+  nucleos: 12,
+  cpu: 72.6,
+  carga: 11.5,
+  memoria_usada: 12.4 * GB,
+  memoria_total: 15.5 * GB,
+  disco_libre: 120.7 * GB,
+  disco_total: 476 * GB,
+  disco: '/equipo/c'
+};
+
+describe('los recursos de cada PC', () => {
+  it('en una línea: núcleos, RAM, disco libre y CPU, en GB y con la coma', () => {
+    expect(recursosDe(HOLGADO)).toBe('12 núcleos · RAM 12,4 / 15,5 GB · disco 120 GB libres · CPU 73 %');
+    expect(partesDeRecursos(HOLGADO)).toEqual([
+      '12 núcleos',
+      'RAM 12,4 / 15,5 GB',
+      'disco 120 GB libres',
+      'CPU 73 %'
+    ]);
+  });
+
+  it('lo que no se midió no sale; sin nada, una raya', () => {
+    expect(recursosDe({ ...HOLGADO, nucleos: 1, memoria_usada: null, disco_libre: null, cpu: null })).toBe(
+      '1 núcleo · RAM 15,5 GB'
+    );
+    expect(recursosDe({ ...HOLGADO, nucleos: null, memoria_total: null, cpu: null })).toBe(
+      'RAM 12,4 GB en uso · disco 120 GB libres'
+    );
+    expect(recursosDe(NADA)).toBe('—');
+    expect(partesDeRecursos(NADA)).toEqual([]);
+    expect(recursosDe(null)).toBe('—');
+    expect(recursosDe(undefined)).toBe('—');
+  });
+
+  it('lo libre del disco, hacia abajo: con un decimal por debajo de 10 GB y con el punto de miles', () => {
+    expect(recursosDe({ ...NADA, disco_libre: 8.57 * GB })).toBe('disco 8,5 GB libres');
+    expect(recursosDe({ ...NADA, disco_libre: 1536.9 * GB })).toBe('disco 1.536 GB libres');
+  });
+
+  it('los GB sin «,0», como el aviso del servicio: «16 GB», no «16,0 GB»', () => {
+    expect(recursosDe({ ...NADA, memoria_usada: 12 * GB, memoria_total: 16 * GB })).toBe('RAM 12 / 16 GB');
+    expect(recursosDe({ ...NADA, memoria_usada: 6.1 * GB, memoria_total: 7.7 * GB })).toBe('RAM 6,1 / 7,7 GB');
+    expect(recursosDe({ ...NADA, disco_libre: 8 * GB })).toBe('disco 8 GB libres');
+  });
+
+  it('justo de RAM (90 % o más) o de disco (menos de 10 GB libres): se marca y se dice por qué', () => {
+    expect(recursosEnAlerta(HOLGADO)).toBe(false);
+    expect(alertaDeRecursos(HOLGADO)).toBeNull();
+
+    const sinRam = { ...HOLGADO, memoria_usada: 14.5 * GB };
+    expect(recursosEnAlerta(sinRam)).toBe(true);
+    expect(alertaDeRecursos(sinRam)).toBe('La RAM está al 93 %.');
+    expect(alertaDeRecursos({ ...HOLGADO, memoria_usada: 9 * GB, memoria_total: 10 * GB })).toBe(
+      'La RAM está al 90 %.'
+    );
+    expect(recursosEnAlerta({ ...HOLGADO, memoria_usada: 8.99 * GB, memoria_total: 10 * GB })).toBe(false);
+
+    // Hacia abajo, como se pinta: 9,96 GB libres son «9,9», no «10».
+    expect(alertaDeRecursos({ ...HOLGADO, disco_libre: 9.96 * GB })).toBe('Quedan 9,9 GB libres en el disco.');
+    expect(recursosEnAlerta({ ...HOLGADO, disco_libre: 10 * GB })).toBe(false);
+    expect(alertaDeRecursos({ ...sinRam, disco_libre: 8.5 * GB })).toBe(
+      'La RAM está al 93 % y quedan 8,5 GB libres en el disco.'
+    );
+
+    // Sin el total de la RAM no hay porcentaje: no se avisa de lo que no se sabe.
+    expect(recursosEnAlerta({ ...sinRam, memoria_total: null })).toBe(false);
+    expect(recursosEnAlerta(NADA)).toBe(false);
+    expect(recursosEnAlerta(null)).toBe(false);
   });
 });
 
@@ -345,14 +485,140 @@ function json(status: number, cuerpo: unknown): Response {
   return new Response(JSON.stringify(cuerpo), { status, headers: { 'content-type': 'application/json' } });
 }
 
+/** Sin ninguna velocidad todavía. */
+const SIN_VELOCIDAD: VelocidadDeLaCorrida = {
+  pc_activos: 0,
+  actual: { total: null, por_pc: null },
+  acumulada: { total: null, por_pc: null }
+};
+
+/**
+ * Lo que contesta el servicio (revisión 27) con los seis de la mañana. Las
+ * cifras de `velocidad` son las del ejemplo del contrato: las suma el servicio,
+ * no la pantalla.
+ */
 const LISTA: EquiposDeLaCorrida = {
   compartida: true,
   corrida: '20261126-094756-d1057b',
   version: 'ddebddab810d',
   este: 'DESARROLLADOR-fa12b8',
   activa: true,
+  principal: 'SIAR-ad21be',
+  velocidad: {
+    pc_activos: 6,
+    actual: { total: 18.4, por_pc: 3.07 },
+    acumulada: { total: 17.9, por_pc: 2.98 }
+  },
+  aviso_de_recursos:
+    'El principal SIAR (ad21be) tiene menos RAM (8 GB) que COORDINADORTIC (16 GB): conviene lanzar primero en el PC con más recursos.',
   equipos: LOS_SEIS
 };
+
+/** Lo que contesta para una corrida que va sola. */
+const SOLA: EquiposDeLaCorrida = {
+  compartida: false,
+  corrida: null,
+  version: 'ddebddab810d',
+  este: null,
+  activa: true,
+  principal: null,
+  velocidad: SIN_VELOCIDAD,
+  aviso_de_recursos: null,
+  equipos: []
+};
+
+function cifraDe(lineas: LineaDeVelocidad[], clave: LineaDeVelocidad['clave']): LineaDeVelocidad | undefined {
+  return lineas.find((linea) => linea.clave === clave);
+}
+
+describe('la fila de cifras de arriba (2026-11-27)', () => {
+  it('ahora entre los PC activos, el promedio por PC, lo acumulado y el principal', () => {
+    expect(lineasDeVelocidad(LISTA)).toEqual([
+      { clave: 'ahora', rotulo: 'Ahora', valor: '18,4 PDF/min', nota: 'entre 6 PC' },
+      { clave: 'por-pc', rotulo: 'Ahora por PC', valor: '3,1 PDF/min', nota: 'lo que procesa cada PC ahora' },
+      {
+        clave: 'acumulado',
+        rotulo: 'Acumulado',
+        valor: '17,9 PDF/min',
+        nota: '3,0 PDF/min por PC, desde que se unió cada uno'
+      },
+      {
+        clave: 'principal',
+        rotulo: 'Principal',
+        valor: 'SIAR (ad21be)',
+        nota: 'escribe los Excel generales y cierra la corrida'
+      }
+    ]);
+  });
+
+  it('el principal que es este equipo lo dice; sin principal, una raya mientras la corrida sigue', () => {
+    expect(cifraDe(lineasDeVelocidad({ ...LISTA, principal: 'DESARROLLADOR-fa12b8' }), 'principal')).toEqual({
+      clave: 'principal',
+      rotulo: 'Principal',
+      valor: 'DESARROLLADOR (fa12b8)',
+      nota: 'es este equipo: escribe los Excel generales y cierra la corrida'
+    });
+    // Si la cabecera no lo trae, vale la marca de su fila.
+    expect(cifraDe(lineasDeVelocidad({ ...LISTA, principal: null }), 'principal')?.valor).toBe('SIAR (ad21be)');
+    const sinPrincipal = { ...LISTA, principal: null, equipos: LOS_SEIS.map((e) => ({ ...e, principal: false })) };
+    expect(cifraDe(lineasDeVelocidad(sinPrincipal), 'principal')).toEqual({
+      clave: 'principal',
+      rotulo: 'Principal',
+      valor: '—',
+      nota: 'eligiendo… (se están uniendo o deteniendo)'
+    });
+    // Sin nadie activo, sí: ninguno vivo.
+    const sinNadie = { ...sinPrincipal, velocidad: SIN_VELOCIDAD };
+    expect(cifraDe(lineasDeVelocidad(sinNadie), 'principal')?.nota).toBe('ninguno vivo ahora');
+  });
+
+  it('mientras ninguno lleva sus primeros minutos, «midiendo…»; en 1 PC, «en 1 PC»', () => {
+    const midiendo = lineasDeVelocidad({ ...LISTA, velocidad: { ...SIN_VELOCIDAD, pc_activos: 3 } });
+    expect(midiendo.slice(0, 3).map((linea) => [linea.valor, linea.nota])).toEqual([
+      ['—', 'midiendo…'],
+      ['—', 'midiendo…'],
+      ['—', 'midiendo…']
+    ]);
+    expect(cifraDe(lineasDeVelocidad({ ...LISTA, velocidad: SIN_VELOCIDAD }), 'ahora')?.nota).toBe('ningún PC activo');
+    const uno = lineasDeVelocidad({
+      ...LISTA,
+      velocidad: { pc_activos: 1, actual: { total: 2.5, por_pc: 2.5 }, acumulada: { total: 2.4, por_pc: null } }
+    });
+    expect(cifraDe(uno, 'ahora')).toEqual({ clave: 'ahora', rotulo: 'Ahora', valor: '2,5 PDF/min', nota: 'en 1 PC' });
+    expect(cifraDe(uno, 'acumulado')?.nota).toBe('desde que se unió cada PC');
+  });
+
+  it('el total se reparte entre los PC con cifra y dice cuántos siguen midiendo', () => {
+    const tres = lineasDeVelocidad({
+      ...LISTA,
+      velocidad: {
+        pc_activos: 3,
+        actual: { total: 6, por_pc: 3, pc: 2 },
+        acumulada: { total: 2.98, por_pc: 2.98, pc: 1 }
+      }
+    });
+    expect(cifraDe(tres, 'ahora')?.nota).toBe('entre 2 PC (1 midiendo)');
+    expect(cifraDe(tres, 'por-pc')?.valor).toBe('3,0 PDF/min');
+  });
+
+  it('con la corrida terminada no hay «ahora»: sólo lo acumulado y el principal, si se saben', () => {
+    expect(lineasDeVelocidad(LISTA, false).map((linea) => linea.clave)).toEqual(['acumulado', 'principal']);
+    // El servicio retirado da a todos por no vivos: sin cifras ni principal, no queda fila.
+    const retirada = {
+      ...LISTA,
+      activa: false,
+      principal: null,
+      velocidad: SIN_VELOCIDAD,
+      equipos: LOS_SEIS.map((e) => ({ ...e, vivo: false, principal: false }))
+    };
+    expect(lineasDeVelocidad(retirada, false)).toEqual([]);
+  });
+
+  it('una corrida que va sola, o un servicio anterior, no tiene fila', () => {
+    expect(lineasDeVelocidad(SOLA)).toEqual([]);
+    expect(lineasDeVelocidad({ ...LISTA, principal: undefined, velocidad: undefined })).toEqual([]);
+  });
+});
 
 describe('las llamadas al servicio', () => {
   afterEach(() => {

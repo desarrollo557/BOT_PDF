@@ -22,6 +22,12 @@ lo que tenía reclamado se puede tomar. **La ficha** de cada reclamo es la
 barrera contra el equipo que vuelve después de darlo por caído: antes de
 entregar se relee el reclamo, y si ya no lleva su ficha, no entrega.
 
+**El principal** (2026-11-27) es el equipo que empezó la corrida --
+``corrida.json`` guarda su id en ``creada_por_id`` --, o quien le sigue si se
+cae o se retira (``application.coordinacion.principal_de``). El latido lleva
+además lo que este equipo entregó, su velocidad de ahora en PDF por minuto y
+los recursos de su PC.
+
 Ver ``application.coordinacion`` para la parte que no toca el disco.
 """
 
@@ -34,6 +40,7 @@ import logging
 import os
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -42,6 +49,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from ..application.coordinacion import (
+    MINUTOS_DE_LA_VENTANA,
     MODOS_DE_PARAR,
     SEGUNDOS_DEL_LATIDO,
     SEGUNDOS_PARA_DARLO_POR_CAIDO,
@@ -54,6 +62,9 @@ from ..application.coordinacion import (
     equipo_preferido,
     la_orden_que_manda,
     opciones_distintas,
+    pdf_por_minuto,
+    principal_de,
+    recursos_en_la_pantalla,
 )
 
 logger = logging.getLogger(__name__)
@@ -290,6 +301,7 @@ class Coordinacion:
         sin_latido_propio: float = SEGUNDOS_SIN_LATIDO_PROPIO,
         reloj: Callable[[], float] = time.monotonic,
         dormir: Callable[[float], None] = time.sleep,
+        medir_recursos: Callable[[], Mapping[str, object]] | None = None,
     ) -> None:
         self.raiz = Path(raiz)
         self.area = self.raiz / AREA
@@ -356,6 +368,21 @@ class Coordinacion:
         self._foto: dict[str, dict] = {}
         self._corrida_de_la_foto: str | None = None
         self._latido_propio: dict | None = None
+        #: La velocidad (2026-11-27): los PDF que este equipo procesó y entregó
+        #: -- no lo que reclamó y ya estaba entregado, que sí suma en
+        #: ``hechos`` --, y el instante de su reloj monótono de cada entrega de
+        #: la ventana (``MINUTOS_DE_LA_VENTANA``) y del momento en que se unió.
+        self.entregados = 0
+        self._entregas: deque[float] = deque()
+        self._unido_en: float | None = None
+        self._cerrojo_de_la_velocidad = threading.Lock()
+        #: Lo que mide los recursos de este PC para su latido (2026-11-27): la
+        #: corrida lo inyecta con ``adapters.recursos_del_equipo.medir``. Sin
+        #: él, el latido no los lleva. Mide en su propio hilo
+        #: (``_midiendo``): lo último medido espera en ``_recursos``.
+        self.medir_recursos = medir_recursos
+        self._recursos: dict | None = None
+        self._hilo_de_los_recursos: threading.Thread | None = None
 
     @property
     def retirado(self) -> bool:
@@ -468,7 +495,11 @@ class Coordinacion:
                         "origen": origen,
                         "opciones": {k: v for k, v in opciones.items() if v not in (None, "")},
                         "version": self.version,
+                        # El nombre, para el texto; el id, para saber quién es
+                        # el principal (2026-11-27): el nombre solo es ambiguo,
+                        # hay dos PC «SIAR».
                         "creada_por": self.equipo,
+                        "creada_por_id": self.id,
                         "creada": _ahora_iso(),
                     }
                     _escribir_entero(self.area / "corrida.json", corrida)
@@ -476,7 +507,9 @@ class Coordinacion:
                 for carpeta in ("reclamos", "fallidos", "roles"):
                     (self._de_la_corrida / carpeta).mkdir(parents=True, exist_ok=True)
                 # Desde aquí cuenta su ritmo en el monitoreo: el de «se unió».
+                # Y su velocidad de ahora, con el reloj monótono (2026-11-27).
                 self.unido = _ahora_iso()
+                self._unido_en = self._reloj()
                 self.estado = "procesando"
                 self._latir()
         except BaseException:
@@ -516,6 +549,11 @@ class Coordinacion:
         self._hilo.start()
         self._hilo_de_la_mirada = threading.Thread(target=self._mirando, name=f"mirada-{self.id}", daemon=True)
         self._hilo_de_la_mirada.start()
+        if self.medir_recursos is not None:
+            self._hilo_de_los_recursos = threading.Thread(
+                target=self._midiendo, name=f"recursos-{self.id}", daemon=True
+            )
+            self._hilo_de_los_recursos.start()
 
     def _latiendo(self) -> None:
         """Sólo el latido propio, a ritmo fijo: lo que tarda uno se descuenta del siguiente."""
@@ -539,6 +577,42 @@ class Coordinacion:
             if vueltas % LATIDOS_ENTRE_VOLCADOS == 0:
                 self._volcar_el_diario()
 
+    def _midiendo(self) -> None:
+        """Los recursos de este PC, al arrancar y cada latido, en su propio hilo (2026-11-27).
+
+        Ni en el hilo del latido ni en el de la mirada: el latido va solo, a
+        ritmo fijo (2026-11-25), y mirar el disco de ``/equipo/c`` pasa por el
+        Windows del equipo. Si esa lectura se queda esperando, sólo se quedan
+        quietos los recursos; el latido -- que dice a los demás que este
+        equipo sigue vivo -- y la mirada siguen.
+        """
+        self._medir_los_recursos()
+        while not self._parar.wait(self.latido):
+            self._medir_los_recursos()
+
+    def _medir_los_recursos(self) -> None:
+        """Mide y lo deja para el próximo latido. Medir nunca tumba nada: si falla, ``None``."""
+        medir = self.medir_recursos
+        if medir is None:
+            return
+        try:
+            self._recursos = recursos_en_la_pantalla(medir())
+        except Exception:  # noqa: BLE001 - los recursos son para mirar: su fallo no para la corrida
+            logger.debug("no se pudieron medir los recursos de %s", self.id, exc_info=True)
+            self._recursos = None
+
+    def _velocidad_de_ahora(self) -> float | None:
+        """Los PDF por minuto que entregó este equipo en la ventana (``application.coordinacion.pdf_por_minuto``)."""
+        with self._cerrojo_de_la_velocidad:
+            ahora = self._reloj()
+            self._olvidar_las_entregas_viejas(ahora)
+            return pdf_por_minuto(self._entregas, ahora=ahora, unido=self._unido_en)
+
+    def _olvidar_las_entregas_viejas(self, ahora: float) -> None:
+        """Fuera de la ventana ya no cuentan: la memoria no crece con la corrida. Con su cerrojo tomado."""
+        while self._entregas and ahora - self._entregas[0] > MINUTOS_DE_LA_VENTANA * 60:
+            self._entregas.popleft()
+
     def _latir(self) -> None:
         self._contador += 1
         en_curso = sorted(self.en_curso.values())
@@ -557,6 +631,11 @@ class Coordinacion:
             # El monitoreo (2026-11-26): desde cuándo está y qué orden de parar cumple.
             "unido": self.unido,
             "orden": self.orden,
+            # 2026-11-27: lo que procesó y entregó, su velocidad de ahora (con
+            # su reloj monótono: la hora de cada PC no entra) y su PC.
+            "entregados": self.entregados,
+            "pdf_por_minuto": self._velocidad_de_ahora(),
+            "recursos": self._recursos,
             "escrito": _ahora_iso(),
         }
         try:
@@ -723,10 +802,46 @@ class Coordinacion:
             "hechos": self.hechos,
             "unido": self.unido,
             "orden": self.orden,
+            "entregados": self.entregados,
+            "pdf_por_minuto": self._velocidad_de_ahora(),
+            "recursos": self._recursos,
             "vivo": not retirado,
             "quieto_hace": max(0.0, ahora - self._ultimo_latido),
         }
         return todos
+
+    # -- el principal (2026-11-27) ------------------------------------------------
+    #
+    # El operador: «que donde se ejecute primero sea el principal». Hace las
+    # tareas pesadas -- los Excel generales de a mitad de corrida, el cierre y la
+    # auditoría final -- (``api/folders.py``).
+
+    def principal(self) -> str | None:
+        """El id del principal de esta corrida según la última foto (``latidos``), sin E/S.
+
+        El que creó la corrida, o quien le sigue (``principal_de``). ``None``
+        sin corrida o retirado este equipo: entonces nadie sale vivo.
+        """
+        corrida = self.corrida or {}
+        return principal_de(
+            self.latidos(),
+            creador_id=corrida.get("creada_por_id"),
+            creador_nombre=corrida.get("creada_por"),
+            corrida=corrida.get("id"),
+        )
+
+    def soy_principal(self) -> bool:
+        """Si este equipo es el principal de su corrida, sin E/S."""
+        return not self.retirado and self.principal() == self.id
+
+    def mirar_ahora(self) -> None:
+        """Mira ya los latidos de los demás, sin esperar a la mirada de su hilo. Con E/S: desde un hilo.
+
+        Para lo que no puede decidirse con una foto de hace un latido: un
+        principal que se acaba de retirar seguiría vivo en ella, y el que llega
+        al cierre se retiraría dejándoselo a nadie.
+        """
+        self._mirar_a_los_demas()
 
     def parar(self) -> None:
         """Deja de latir y se retira: los demás no lo esperan.
@@ -1026,9 +1141,20 @@ class Coordinacion:
 
         Con el trabajo que lo entregó: el equipo que cierra arma con ellos una
         sola auditoría de la corrida, con lo de todos los equipos.
+
+        Sólo con ``trabajo`` cuenta para la velocidad (2026-11-27): es lo que
+        este equipo procesó y entregó. Sin él es un PDF que reclamó y ya estaba
+        entregado (``api/folders.py``, ``_tomar_el_pdf``): suma en ``hechos``,
+        como siempre, pero no es trabajo de este PC.
         """
         self.en_curso.pop(reclamo.clave, None)
         self.hechos += 1
+        if trabajo:
+            with self._cerrojo_de_la_velocidad:
+                ahora = self._reloj()
+                self.entregados += 1
+                self._entregas.append(ahora)
+                self._olvidar_las_entregas_viejas(ahora)
         if not self._marcar_hecho(reclamo, trabajo):
             # El destino no contestó: se reintenta con la mirada. Si no, el
             # reclamo seguía «en curso» de un equipo vivo, los demás lo esperaban
@@ -1120,7 +1246,14 @@ class Coordinacion:
     # -- roles ------------------------------------------------------------------
 
     def tomar_rol(self, nombre: str) -> bool:
-        """Un papel que sólo hace un equipo por corrida (cerrar, auditar). ``True`` si es de este."""
+        """Un papel que sólo hace un equipo por corrida (cerrar, auditar). ``True`` si es de este.
+
+        El de un caído se toma, y desde el 2026-11-27 también el de uno que se
+        retiró sin acabarlo (``_se_fue``): un principal detenido mientras
+        esperaba a los demás para cerrar dejaba el rol a su nombre, y para la
+        mirada de los otros seguía vivo hasta 90 s después de su último latido.
+        El siguiente que llegaba al cierre se retiraba sin cerrar.
+        """
         if self.por_que_no_vale() is not None:
             return False
         ruta = self._de_la_corrida / "roles" / f"{nombre}.json"
@@ -1133,10 +1266,18 @@ class Coordinacion:
                 continue
             if actual.get("id") == self.id:
                 return True
-            if self.vivo(str(actual.get("id"))):
+            dueno = str(actual.get("id"))
+            if self.vivo(dueno) and not self._se_fue(dueno):
                 return False
             self._quitar_huerfano(ruta, actual)
         return False
+
+    def _se_fue(self, id_: str) -> bool:
+        """Si el equipo ``id_`` se retiró, sin duda: con su latido ilegible (la red), no se sabe y no."""
+        try:
+            return self._se_retiro(id_)
+        except OSError:
+            return False
 
     def lo_hecho_en_la_corrida(self) -> tuple[list[str], dict[str, str]]:
         """Los trabajos de todos los PDF entregados en esta corrida, y los que fallaron (ruta → motivo).

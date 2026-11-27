@@ -54,6 +54,32 @@ conectados y poder desconectarlos»):
   su hilo -- que no se para -- espera a que acabe antes de soltar el reclamo:
   otro equipo no la entrega encima («(2)») y el PDF se cuenta una vez; si ya
   dejó su constancia completa, queda «hecho»; y la espera tiene tope.
+
+El PC principal, la velocidad por minuto y los recursos de cada PC (2026-11-27:
+«que donde se ejecute primero sea el principal»; «un promedio de velocidad de
+procesamiento de archivos por minuto contando los PC activos»):
+
+- ``TestElPrincipal``: la parte pura. El que creó la corrida, si vive en ella
+  sin decir «terminado» ni tener una orden de parar; si no, el que se unió
+  antes y a igualdad el id menor; sin ``creada_por_id``, por su nombre.
+- ``TestLaVelocidadPorMinuto``: la de ahora (ventana de diez minutos o desde
+  que se unió, nada antes de dos), la acumulada (nada antes de cinco) y la
+  cabecera con los PC activos, sumando sólo los que tienen cifra.
+- ``TestElAvisoDeRecursos``: primero la RAM (con 1 GB de margen), si no los
+  núcleos; sólo contra PC activos; nada sin los recursos del principal.
+- ``TestLaListaConElPrincipal``: la lista con el principal, la velocidad, los
+  recursos limpios y el aviso; la corrida que va sola, entera.
+- ``TestElPrincipalEnLaCoordinacion``: ``corrida.json`` guarda el id de quien
+  la empezó; ``principal()`` sin E/S; la sucesión al retirarse y con la orden
+  de parar; el latido lleva lo entregado, la velocidad y los recursos; lo
+  reclamado que ya estaba entregado (``_tomar_el_pdf``, ``terminar`` sin
+  trabajo) no cuenta; medir que falla no tumba el latido; y el rol «cierre» de
+  un principal que se retiró sin cerrar se hereda.
+- ``TestElPrincipalEnUnaCorridaDeVerdad``: tres ``FolderRunner``. Sólo el
+  principal escribe los generales de a mitad de corrida; el que no lo es y
+  acaba primero no cierra, se retira, y cierra el principal; el principal
+  parado con calma a mitad deja que cierre el siguiente. En todas, cada PDF una
+  vez y un solo cierre.
 """
 
 from __future__ import annotations
@@ -63,6 +89,7 @@ import contextlib
 import threading
 import time
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -86,13 +113,20 @@ from resolutions.application.coordinacion import (
     NO_ESTA_EN_LA_CORRIDA,
     OrdenNoPermitida,
     Vida,
+    aviso_de_recursos,
     carpeta_de,
     clave_de,
+    equipo_en_palabras,
     equipo_preferido,
     la_orden_que_manda,
     opciones_distintas,
     pdf_por_hora,
+    pdf_por_minuto,
+    pdf_por_minuto_promedio,
+    principal_de,
+    resumen_de_la_corrida_sola,
     resumen_de_los_equipos,
+    velocidad_de_la_corrida,
 )
 
 OPCIONES = {"task": "segment", "tipo": "auto", "lectura": "mistral", "agrupar": "documento"}
@@ -835,9 +869,9 @@ class TestDosCorridasDeVerdad:
         entregados = sorted(p.name for p in destino.rglob("*.pdf") if "_reemplazados" not in p.parts)
         assert len(entregados) == 18, entregados
         assert buscar_repetidos(destino) == []
-        # Uno solo cerró, con lo de los dos contado.
-        cerraron = [r for r in (primera, segunda) if not any("los cierra otro equipo" in a for a in r.avisos)]
-        assert len(cerraron) == 1
+        # Uno solo cerró, con lo de los dos contado: el principal, el que empezó la corrida (2026-11-27).
+        cerraron = [_cerro_uno_solo((primera, segunda), destino)]
+        assert cerraron == [_el_creador((primera, segunda), destino)]
         # Lo suyo procesado, y lo de los demás contado como ya entregado: los
         # Excel generales del que cierra llevan los 18.
         assert cerraron[0].processed + cerraron[0].ya_entregados == 18
@@ -948,11 +982,9 @@ class TestDosCorridasDeVerdad:
         entregados = sorted(p.name for p in destino.rglob("*.pdf") if "_reemplazados" not in p.parts)
         assert len(entregados) == 36 and len(set(entregados)) == 36, entregados
         assert buscar_repetidos(destino) == []
-        # Uno solo cerró, con los 36 contados y los 36 trabajos de la corrida.
-        cerraron = [
-            c for c in corridas if c.state is RunState.DONE and not any("los cierra otro equipo" in a for a in c.avisos)
-        ]
-        assert len(cerraron) == 1
+        # Uno solo cerró, con los 36 contados y los 36 trabajos de la corrida:
+        # el principal (2026-11-27).
+        cerraron = [_cerro_uno_solo(corridas, destino)]
         assert cerraron[0].processed + cerraron[0].ya_entregados == 36
         trabajos, _ = cerraron[0].coordinacion.lo_hecho_en_la_corrida()
         assert len(set(trabajos)) == 36
@@ -1387,8 +1419,37 @@ def _entregados(destino: Path) -> list[str]:
     return sorted(p.name for p in destino.rglob("*.pdf") if "_reemplazados" not in p.parts)
 
 
+#: Lo que dice el equipo que termina su parte y no cierra: otro ya tenía el rol
+#: «cierre», o no es el principal (2026-11-27).
+NO_CIERRA = ("los cierra otro equipo", "la cierra el principal")
+
+
 def _cerraron(corridas) -> list:
-    return [c for c in corridas if c.state is RunState.DONE and not any("los cierra otro equipo" in a for a in c.avisos)]
+    return [
+        c for c in corridas
+        if c.state is RunState.DONE and not any(frase in aviso for aviso in c.avisos for frase in NO_CIERRA)
+    ]
+
+
+def _el_creador(corridas, destino: Path):
+    """La corrida del equipo que empezó la corrida compartida: el principal mientras siga en ella (2026-11-27).
+
+    Por ``corrida.json`` y no por el orden de lanzamiento: con la máquina
+    cargada, el segundo en lanzar puede tomar antes el turno de la corrida.
+    """
+    creada_por_id = (_leido(destino / AREA / "corrida.json") or {}).get("creada_por_id")
+    return next(c for c in corridas if c.coordinacion is not None and c.coordinacion.id == creada_por_id)
+
+
+def _cerro_uno_solo(corridas, destino: Path):
+    """Un solo cierre, el que dice ``corrida.json``; y si el que la empezó la terminó, fue él (2026-11-27)."""
+    cerraron = _cerraron(corridas)
+    assert len(cerraron) == 1, [c.avisos for c in corridas]
+    assert _leido(destino / AREA / "corrida.json")["cerrada_por"] == cerraron[0].coordinacion.id
+    creador = _el_creador(corridas, destino)
+    if creador.state is RunState.DONE:
+        assert cerraron == [creador], "cerró uno que no era el principal"
+    return cerraron[0]
 
 
 class TestPararUnEquipoDesdeElMonitoreo:
@@ -1463,8 +1524,8 @@ class TestPararUnEquipoDesdeElMonitoreo:
         entregados = _entregados(destino)
         assert len(entregados) == 36 and len(set(entregados)) == 36, entregados
         assert buscar_repetidos(destino) == []
-        cerraron = _cerraron(corridas)
-        assert len(cerraron) == 1
+        # Uno solo, el principal (2026-11-27).
+        cerraron = [_cerro_uno_solo(corridas, destino)]
         assert cerraron[0].processed + cerraron[0].ya_entregados == 36
         assert _todos_retirados(destino)
         assert not list((destino / AREA / "ordenes").glob("*.json"))
@@ -1501,7 +1562,7 @@ class TestPararUnEquipoDesdeElMonitoreo:
         entregados = _entregados(destino)
         assert len(entregados) == 36 and len(set(entregados)) == 36, entregados
         assert buscar_repetidos(destino) == []
-        assert len(_cerraron(corridas)) == 1
+        _cerro_uno_solo(corridas, destino)
         assert _todos_retirados(destino)
         assert not list((destino / AREA / "ordenes").glob("*.json"))
 
@@ -1986,3 +2047,648 @@ class TestDetenerAMitadDeUnaEntrega:
         # Esperó la entrega hasta el tope, y no más: soltó el reclamo y se retiró.
         assert retirada, "«Detener» se quedó colgado de una entrega que no acababa"
         assert 0.4 <= tardo < 10, f"se retiró a los {tardo:.1f} s"
+
+
+# -- el PC principal, la velocidad por minuto y los recursos (2026-11-27) ---------------
+
+#: La corrida de las pruebas puras del principal.
+CORRIDA_DEL_PRINCIPAL = "20261127-080000-abc123"
+GB = 1024**3
+
+
+def _un_latido(id_: str, **datos) -> dict:
+    """El latido de un equipo de ``CORRIDA_DEL_PRINCIPAL`` como lo da ``Coordinacion.latidos``."""
+    return {
+        "id": id_,
+        "equipo": id_.rpartition("-")[0],
+        "version": "v1",
+        "corrida": CORRIDA_DEL_PRINCIPAL,
+        "estado": "procesando",
+        "vivo": True,
+        "hechos": 0,
+        "en_curso": [],
+        "unido": "2026-11-27T08:00:00-05:00",
+        "escrito": "2026-11-27T09:00:00-05:00",
+        "quieto_hace": 1.0,
+        "orden": None,
+        **datos,
+    }
+
+
+class TestElPrincipal:
+    def test_el_que_empezo_la_corrida_es_el_principal(self):
+        latidos = {
+            "SIAR-ad21be": _un_latido("SIAR-ad21be", unido="2026-11-27T08:05:00-05:00"),
+            # Con el reloj atrasado, otro PC puede decir que se unió antes: manda quién la creó.
+            "COORDINADORTIC-1e52b0": _un_latido("COORDINADORTIC-1e52b0", unido="2026-11-27T08:00:00-05:00"),
+        }
+        assert principal_de(
+            latidos, creador_id="SIAR-ad21be", creador_nombre="SIAR", corrida=CORRIDA_DEL_PRINCIPAL
+        ) == "SIAR-ad21be"
+
+    @pytest.mark.parametrize("como", ["caido", "terminado", "con_calma", "con_ya", "de_otra_corrida", "retirado"])
+    def test_si_el_creador_no_puede_serlo_sigue_el_que_se_unio_antes(self, como):
+        latidos = {
+            "PC3-cccccc": _un_latido("PC3-cccccc", unido="2026-11-27T08:02:00-05:00"),
+            "PC4-aaaaaa": _un_latido("PC4-aaaaaa", unido="2026-11-27T08:01:00-05:00"),
+            "PC2-bbbbbb": _un_latido("PC2-bbbbbb", unido="2026-11-27T08:01:00-05:00"),
+        }
+        como_esta = {
+            "caido": {"vivo": False},
+            "terminado": {"estado": "terminado"},
+            # Con una orden de parar se va: si siguiera de principal, nadie cerraría.
+            "con_calma": {"orden": {"modo": "calma", "por": "PC3-cccccc"}},
+            "con_ya": {"orden": {"modo": "ya", "por": "PC3-cccccc"}},
+            "de_otra_corrida": {"corrida": "otra"},
+        }
+        if como != "retirado":  # el que se retiró borró su latido: ni está
+            latidos["PC1-111111"] = _un_latido("PC1-111111", **como_esta[como])
+        # El que se unió antes; a igualdad, el id menor.
+        assert principal_de(
+            latidos, creador_id="PC1-111111", creador_nombre="PC1", corrida=CORRIDA_DEL_PRINCIPAL
+        ) == "PC2-bbbbbb"
+
+    def test_la_sucesion_compara_las_horas_con_su_zona_y_sin_hora_va_al_final(self):
+        latidos = {
+            "PC2-bbbbbb": _un_latido("PC2-bbbbbb", unido="2026-11-27T08:01:00-05:00"),
+            # Las 13:00:30 en UTC son las 08:00:30 en Colombia: antes que PC2.
+            "PC3-cccccc": _un_latido("PC3-cccccc", unido="2026-11-27T13:00:30+00:00"),
+            "PC0-000000": _un_latido("PC0-000000", unido="ayer"),
+            "PC1-111111": _un_latido("PC1-111111", unido=None),
+        }
+        assert principal_de(
+            latidos, creador_id="PC9-999999", creador_nombre="PC9", corrida=CORRIDA_DEL_PRINCIPAL
+        ) == "PC3-cccccc"
+        sin_hora = {id_: latido for id_, latido in latidos.items() if id_ in ("PC0-000000", "PC1-111111")}
+        assert principal_de(
+            sin_hora, creador_id="PC9-999999", creador_nombre="PC9", corrida=CORRIDA_DEL_PRINCIPAL
+        ) == "PC0-000000"
+
+    def test_sin_creada_por_id_se_busca_por_su_nombre(self):
+        # Una corrida de una versión que sólo guardaba el nombre, y hay dos «SIAR».
+        latidos = {
+            "SIAR-6ad99c": _un_latido("SIAR-6ad99c", unido="2026-11-27T08:03:00-05:00"),
+            "SIAR-ad21be": _un_latido("SIAR-ad21be", unido="2026-11-27T08:01:00-05:00"),
+            "ANALISSIG-000000": _un_latido("ANALISSIG-000000", unido="2026-11-27T08:00:00-05:00"),
+        }
+        assert principal_de(
+            latidos, creador_id=None, creador_nombre="SIAR", corrida=CORRIDA_DEL_PRINCIPAL
+        ) == "SIAR-ad21be"
+        # Nadie con ese nombre, o ni el nombre: la sucesión.
+        assert principal_de(
+            latidos, creador_id=None, creador_nombre="VISUALIZADOR", corrida=CORRIDA_DEL_PRINCIPAL
+        ) == "ANALISSIG-000000"
+        assert principal_de(
+            latidos, creador_id=None, creador_nombre=None, corrida=CORRIDA_DEL_PRINCIPAL
+        ) == "ANALISSIG-000000"
+
+    def test_sin_corrida_o_sin_nadie_que_pueda_serlo_no_hay_principal(self):
+        latidos = {
+            "PC1-111111": _un_latido("PC1-111111", vivo=False),
+            # El que se está uniendo todavía no está en la corrida.
+            "PC2-222222": _un_latido("PC2-222222", corrida=None, estado="uniéndose", unido=None),
+        }
+        assert principal_de(
+            latidos, creador_id="PC1-111111", creador_nombre="PC1", corrida=CORRIDA_DEL_PRINCIPAL
+        ) is None
+        assert principal_de({}, creador_id="PC1-111111", creador_nombre="PC1", corrida=CORRIDA_DEL_PRINCIPAL) is None
+        vivo = {"PC1-111111": _un_latido("PC1-111111")}
+        assert principal_de(vivo, creador_id="PC1-111111", creador_nombre="PC1", corrida=None) is None
+
+    def test_el_equipo_en_palabras_lleva_su_arranque(self):
+        assert equipo_en_palabras("SIAR-ad21be") == "SIAR (ad21be)"
+        assert equipo_en_palabras("DESKTOP-UMCOEU8-abc123") == "DESKTOP-UMCOEU8 (abc123)"
+        assert equipo_en_palabras("raro") == "raro"
+
+
+class TestLaVelocidadPorMinuto:
+    def test_la_de_ahora_cuenta_la_ventana_de_diez_minutos(self):
+        # Unido en el instante 0: los dos primeros minutos no dicen nada.
+        assert pdf_por_minuto([30.0, 60.0], ahora=119.0, unido=0.0) is None
+        assert pdf_por_minuto([30.0], ahora=1000.0, unido=None) is None
+        # A los 3 minutos, la ventana es lo que lleva unido: 6 PDF en 3 min.
+        assert pdf_por_minuto([10.0 * n for n in range(1, 7)], ahora=180.0, unido=0.0) == 2.0
+        # A los 20 minutos, sólo los últimos diez: uno por minuto.
+        entregas = [60.0 * n - 30 for n in range(1, 21)]
+        assert pdf_por_minuto(entregas, ahora=1200.0, unido=0.0) == 1.0
+        assert pdf_por_minuto(entregas[:5], ahora=1200.0, unido=0.0) == 0.0
+        # Con dos decimales.
+        assert pdf_por_minuto([170.0], ahora=180.0, unido=0.0) == 0.33
+
+    def test_la_acumulada_es_desde_que_se_unio_con_su_reloj(self):
+        assert pdf_por_minuto_promedio(150, "2026-11-27T08:00:00-05:00", "2026-11-27T08:50:00-05:00") == 3.0
+        assert pdf_por_minuto_promedio(7, "2026-11-27T08:00:00-05:00", "2026-11-27T08:30:00-05:00") == 0.23
+        # Menos de cinco minutos unido -- el arranque dentro --: todavía no dice nada.
+        assert pdf_por_minuto_promedio(10, "2026-11-27T08:00:00-05:00", "2026-11-27T08:04:59-05:00") is None
+        assert pdf_por_minuto_promedio(10, None, "2026-11-27T09:00:00-05:00") is None
+        assert pdf_por_minuto_promedio(10, "ayer", "hoy") is None
+
+    def test_la_cabecera_suma_los_activos_que_tienen_cifra(self):
+        def fila(id_: str, ahora, acumulada, **datos) -> dict:
+            return {
+                "id": id_, "de_esta_corrida": True, "vivo": True, "estado": "procesando",
+                "pdf_por_minuto": ahora, "pdf_por_minuto_promedio": acumulada, **datos,
+            }
+
+        equipos = [
+            fila("A", 3.07, 2.98),
+            fila("B", 2.93, None),
+            # Recién unido: es un PC activo, todavía sin cifra; no baja el promedio de los demás.
+            fila("C", None, None, estado="uniéndose"),
+            # Caído, de otra corrida o terminado: no son activos.
+            fila("D", 50.0, 50.0, vivo=False),
+            fila("E", 50.0, 50.0, de_esta_corrida=False),
+            fila("F", 50.0, 50.0, estado="terminado"),
+        ]
+        assert velocidad_de_la_corrida(equipos) == {
+            "pc_activos": 3,
+            "actual": {"total": 6.0, "por_pc": 3.0, "pc": 2},
+            "acumulada": {"total": 2.98, "por_pc": 2.98, "pc": 1},
+        }
+        assert velocidad_de_la_corrida([]) == {
+            "pc_activos": 0,
+            "actual": {"total": None, "por_pc": None, "pc": 0},
+            "acumulada": {"total": None, "por_pc": None, "pc": 0},
+        }
+
+
+def _con_recursos(id_: str, *, ram: int | None = None, nucleos: int | None = None, **datos) -> dict:
+    """Una fila de la pantalla con sus recursos, como la deja ``recursos_en_la_pantalla``."""
+    return {
+        "id": id_,
+        "equipo": id_.rpartition("-")[0],
+        "vivo": True,
+        "de_esta_corrida": True,
+        "estado": "procesando",
+        "recursos": {"nucleos": nucleos, "memoria_total": ram},
+        **datos,
+    }
+
+
+class TestElAvisoDeRecursos:
+    FINAL = ": conviene lanzar primero en el PC con más recursos."
+
+    def test_el_principal_con_menos_ram_que_otro(self):
+        equipos = [
+            _con_recursos("SIAR-ad21be", ram=8 * GB, nucleos=12),
+            _con_recursos("COORDINADORTIC-1e52b0", ram=16 * GB, nucleos=12),
+            # Con más núcleos, pero manda la RAM.
+            _con_recursos("VISUALIZADOR-ff0e6a", ram=12 * GB, nucleos=16),
+        ]
+        assert aviso_de_recursos(equipos, "SIAR-ad21be") == (
+            "El principal SIAR (ad21be) tiene menos RAM (8 GB) que COORDINADORTIC (1e52b0) (16 GB)" + self.FINAL
+        )
+
+    def test_con_casi_la_misma_ram_cuentan_los_nucleos(self):
+        equipos = [
+            _con_recursos("SIAR-ad21be", ram=int(7.6 * GB), nucleos=4),
+            # Menos de 1 GB de diferencia: lo que se reserva el sistema, no otro PC.
+            _con_recursos("COORDINADORTIC-1e52b0", ram=int(8.2 * GB), nucleos=12),
+        ]
+        assert aviso_de_recursos(equipos, "SIAR-ad21be") == (
+            "El principal SIAR (ad21be) tiene menos núcleos (4) que COORDINADORTIC (1e52b0) (12)" + self.FINAL
+        )
+
+    def test_dos_pc_con_el_mismo_nombre_se_dicen_por_su_arranque(self):
+        # Los dos, como en el resto de la pantalla: «SIAR (6ad99c)», no el id crudo.
+        equipos = [_con_recursos("SIAR-ad21be", ram=8 * GB), _con_recursos("SIAR-6ad99c", ram=int(15.5 * GB))]
+        assert aviso_de_recursos(equipos, "SIAR-ad21be") == (
+            "El principal SIAR (ad21be) tiene menos RAM (8 GB) que SIAR (6ad99c) (15,5 GB)" + self.FINAL
+        )
+
+    def test_sin_nada_que_avisar(self):
+        principal = _con_recursos("SIAR-ad21be", ram=16 * GB, nucleos=12)
+        iguales = [principal, _con_recursos("PC2-222222", ram=16 * GB, nucleos=12)]
+        assert aviso_de_recursos(iguales, "SIAR-ad21be") is None
+        # Más recursos en uno caído, en uno de otra corrida o en uno que no los dice: no cuentan.
+        otros = [
+            principal,
+            _con_recursos("PC3-333333", ram=64 * GB, nucleos=64, vivo=False),
+            _con_recursos("PC4-444444", ram=64 * GB, nucleos=64, de_esta_corrida=False),
+            _con_recursos("PC5-555555", recursos=None),
+        ]
+        assert aviso_de_recursos(otros, "SIAR-ad21be") is None
+        # Sin principal, o con un principal que no dice sus recursos: no hay con qué comparar.
+        assert aviso_de_recursos(iguales, None) is None
+        sin_los_suyos = [{**principal, "recursos": None}, _con_recursos("PC2-222222", ram=64 * GB, nucleos=64)]
+        assert aviso_de_recursos(sin_los_suyos, "SIAR-ad21be") is None
+
+
+class TestLaListaConElPrincipal:
+    def test_la_cabecera_y_cada_fila_traen_lo_nuevo(self):
+        recursos = {
+            "nucleos": 12, "cpu": 73.04, "carga": 11.5, "memoria_usada": 6 * GB, "memoria_total": 8 * GB,
+            "disco_libre": 120 * GB, "disco_total": 500 * GB, "disco": "/equipo/c", "otra": "no sale",
+        }
+        latidos = {
+            "SIAR-ad21be": _un_latido(
+                "SIAR-ad21be", entregados=150, hechos=160, pdf_por_minuto=3.2, recursos=recursos,
+                escrito="2026-11-27T08:50:00-05:00",
+            ),
+            "COORDINADORTIC-1e52b0": _un_latido(
+                "COORDINADORTIC-1e52b0", entregados=20, pdf_por_minuto=1.8,
+                recursos={**recursos, "memoria_total": 16 * GB, "cpu": "mucho", "nucleos": True, "disco": 7},
+                unido="2026-11-27T08:10:00-05:00", escrito="2026-11-27T08:50:00-05:00",
+            ),
+            # El latido de una versión anterior: sin entregados, sin velocidad y sin recursos.
+            "VIEJO-000000": _un_latido("VIEJO-000000", unido="2026-11-27T08:20:00-05:00", pdf_por_minuto="rápido"),
+        }
+        resumen = resumen_de_los_equipos(
+            latidos, este="COORDINADORTIC-1e52b0", corrida=CORRIDA_DEL_PRINCIPAL, version="v1", activa=True,
+            creador_id="SIAR-ad21be", creador_nombre="SIAR",
+        )
+        assert resumen["principal"] == "SIAR-ad21be"
+        assert [e["id"] for e in resumen["equipos"] if e["principal"]] == ["SIAR-ad21be"]
+        fila = {e["id"]: e for e in resumen["equipos"]}
+        siar = fila["SIAR-ad21be"]
+        assert siar["entregados"] == 150 and siar["hechos"] == 160
+        assert siar["pdf_por_minuto"] == 3.2 and siar["pdf_por_minuto_promedio"] == 3.0
+        # Las claves del contrato, nada más, y las cifras redondeadas.
+        assert siar["recursos"] == {
+            "nucleos": 12, "cpu": 73.0, "carga": 11.5, "memoria_usada": 6 * GB, "memoria_total": 8 * GB,
+            "disco_libre": 120 * GB, "disco_total": 500 * GB, "disco": "/equipo/c",
+        }
+        coordinador = fila["COORDINADORTIC-1e52b0"]
+        # Lo que no es una cifra -- ni un texto, en el disco -- no sale.
+        assert coordinador["recursos"]["cpu"] is None and coordinador["recursos"]["nucleos"] is None
+        assert coordinador["recursos"]["disco"] is None and coordinador["recursos"]["memoria_total"] == 16 * GB
+        assert coordinador["pdf_por_minuto_promedio"] == 0.5
+        viejo = fila["VIEJO-000000"]
+        assert viejo["entregados"] == 0 and viejo["recursos"] is None
+        assert viejo["pdf_por_minuto"] is None and viejo["pdf_por_minuto_promedio"] is None
+        assert resumen["velocidad"] == {
+            "pc_activos": 3,
+            "actual": {"total": 5.0, "por_pc": 2.5, "pc": 2},
+            "acumulada": {"total": 3.5, "por_pc": 1.75, "pc": 2},
+        }
+        assert resumen["aviso_de_recursos"] == (
+            "El principal SIAR (ad21be) tiene menos RAM (8 GB) que COORDINADORTIC (1e52b0) (16 GB): "
+            "conviene lanzar primero en el PC con más recursos."
+        )
+        # Con la corrida terminada (la foto): nadie vivo, ni principal ni velocidad.
+        foto = {id_: {**latido, "vivo": False} for id_, latido in latidos.items()}
+        terminada = resumen_de_los_equipos(
+            foto, este="COORDINADORTIC-1e52b0", corrida=CORRIDA_DEL_PRINCIPAL, version="v1", activa=False,
+            creador_id="SIAR-ad21be", creador_nombre="SIAR",
+        )
+        assert terminada["principal"] is None and terminada["aviso_de_recursos"] is None
+        assert terminada["velocidad"]["pc_activos"] == 0 and terminada["velocidad"]["actual"]["total"] is None
+        assert not any(e["principal"] for e in terminada["equipos"])
+
+    def test_la_corrida_que_va_sola(self):
+        assert resumen_de_la_corrida_sola(version="v1", activa=True) == {
+            "compartida": False,
+            "corrida": None,
+            "version": "v1",
+            "este": None,
+            "activa": True,
+            "principal": None,
+            "velocidad": {
+                "pc_activos": 0,
+                "actual": {"total": None, "por_pc": None, "pc": 0},
+                "acumulada": {"total": None, "por_pc": None, "pc": 0},
+            },
+            "aviso_de_recursos": None,
+            "equipos": [],
+        }
+
+
+class TestElPrincipalEnLaCoordinacion:
+    def test_la_corrida_guarda_el_id_de_quien_la_empezo_y_ese_es_el_principal(self, tmp_path, monkeypatch):
+        from resolutions.adapters import coordinacion_en_disco
+
+        # Dos PC con el mismo nombre: el nombre solo no dice cuál la empezó.
+        uno, otro = equipo(tmp_path, "SIAR"), equipo(tmp_path, "SIAR")
+        try:
+            corrida = _leido(tmp_path / AREA / "corrida.json")
+            assert corrida["creada_por"] == "SIAR" and corrida["creada_por_id"] == uno.id != otro.id
+            assert _esperar(lambda: otro.principal() == uno.id)
+            assert uno.principal() == uno.id and uno.soy_principal() and not otro.soy_principal()
+            # Sin E/S: se pregunta en cada escritura de los generales y en la pantalla.
+            caer(uno)
+            uno._parar.clear()
+            caer(otro)
+            otro._parar.clear()
+
+            def prohibido(*_args, **_kwargs):
+                raise AssertionError("principal() no lee el destino")
+
+            monkeypatch.setattr(coordinacion_en_disco, "_leer", prohibido)
+            monkeypatch.setattr(coordinacion_en_disco.Path, "glob", prohibido)
+            monkeypatch.setattr(coordinacion_en_disco.Path, "read_text", prohibido)
+            assert otro.principal() == uno.id and uno.soy_principal() and not otro.soy_principal()
+        finally:
+            monkeypatch.undo()
+            uno.parar()
+            otro.parar()
+
+    def test_si_el_principal_se_retira_lo_es_el_siguiente(self, tmp_path):
+        uno, otro, tercero = equipo(tmp_path, "PC1"), equipo(tmp_path, "PC2"), equipo(tmp_path, "PC3")
+        try:
+            assert _esperar(lambda: otro.principal() == uno.id == tercero.principal())
+            uno.parar()
+            otro.mirar_ahora()
+            tercero.mirar_ahora()
+            # El que se unió antes; si fue en el mismo segundo, el id menor.
+            siguiente = min((otro, tercero), key=lambda c: (datetime.fromisoformat(c.unido), c.id))
+            assert otro.principal() == siguiente.id == tercero.principal()
+            assert [otro.soy_principal(), tercero.soy_principal()].count(True) == 1
+            assert not uno.soy_principal()
+        finally:
+            for coordinacion in (uno, otro, tercero):
+                coordinacion.parar()
+
+    def test_con_la_orden_de_parar_deja_de_ser_el_principal(self, tmp_path):
+        uno, otro = equipo(tmp_path, "PC1"), equipo(tmp_path, "PC2")
+        try:
+            # Los dos se ven ya unidos: el que se une late primero sin corrida.
+            assert _esperar(
+                lambda: otro.principal() == uno.id
+                and (uno.latidos().get(otro.id) or {}).get("corrida") == uno.corrida["id"]
+            )
+            uno.ordenar_parar(uno.id, "calma", "prueba")
+            # Él lo sabe en el acto; el otro, en cuanto lee la orden en su latido.
+            assert not uno.soy_principal() and uno.principal() == otro.id
+            assert _esperar(lambda: otro.soy_principal())
+        finally:
+            uno.parar()
+            otro.parar()
+
+    def test_el_latido_lleva_lo_entregado_la_velocidad_y_los_recursos(self, tmp_path):
+        reloj = Reloj()
+        medidos = {
+            "nucleos": 12, "cpu": 50.0, "carga": None, "memoria_usada": 6 * GB, "memoria_total": 8 * GB,
+            "disco_libre": 100 * GB, "disco_total": 500 * GB, "disco": "/equipo/c",
+        }
+        uno = Coordinacion(
+            tmp_path, equipo="PC1", version="v1", latido=LATIDO, reloj=reloj, medir_recursos=lambda: medidos
+        )
+        uno.unirse(OPCIONES, origen="MAGANGUE")
+        ruta = tmp_path / AREA / "equipos" / f"{uno.id}.json"
+        try:
+            tomados = [uno.reclamar(f"NIC{n}/UPD{n}.pdf") for n in range(3)]
+            uno.terminar(tomados[0], trabajo="trabajo-0")
+            uno.terminar(tomados[1], trabajo="trabajo-1")
+            # Reclamado y ya entregado (sin trabajo): suma en «hechos», no en lo que entregó.
+            uno.terminar(tomados[2])
+            assert uno.hechos == 3 and uno.entregados == 2
+            # Recién unido, la velocidad de ahora todavía no dice nada.
+            uno._latir()
+            assert _leido(ruta)["pdf_por_minuto"] is None
+            # A los 3 minutos de su reloj: 2 PDF en 3 min.
+            reloj.ahora += 180
+            uno._latir()
+            latido = _leido(ruta)
+            assert latido["entregados"] == 2 and latido["hechos"] == 3 and latido["pdf_por_minuto"] == 0.67
+            assert _esperar(lambda: (_leido(ruta) or {}).get("recursos") == medidos)
+            propio = uno.latidos()[uno.id]
+            assert propio["entregados"] == 2 and propio["pdf_por_minuto"] == 0.67 and propio["recursos"] == medidos
+            # Pasada la ventana de diez minutos sin entregar nada, la de ahora es cero.
+            reloj.ahora += 11 * 60
+            assert uno.latidos()[uno.id]["pdf_por_minuto"] == 0.0 and not uno._entregas
+        finally:
+            uno.parar()
+
+    def test_lo_reclamado_que_ya_estaba_entregado_no_cuenta_en_la_velocidad(self, tmp_path, monkeypatch):
+        # ``_tomar_el_pdf`` lo reclamó, pero su constancia ya estaba vigente:
+        # lo entregó otro equipo, o una corrida anterior. Queda «hecho» sin
+        # trabajo -- el tercer sitio que llama a ``terminar`` -- y no es
+        # trabajo de este PC.
+        from resolutions.api.constancia import Vigencia
+
+        origen, destino = tmp_path / "MAGANGUE", tmp_path / "destino"
+        (origen / "8400000").mkdir(parents=True)
+        pdf = origen / "8400000" / "UPD8400000.pdf"
+        pdf.write_bytes(b"%PDF-1.4 vigente")
+        destino.mkdir()
+        motor = _un_motor(tmp_path)
+        coordinacion = equipo(destino, "PC1")
+        corrida = FolderRun(id="vigente", source=origen, destination=destino, state=RunState.PROCESSING)
+        corrida.coordinacion = coordinacion
+        monkeypatch.setattr(motor, "_vigencia", lambda run, path: (Vigencia.VIGENTE, None))
+        try:
+            procesarlo, _ = motor._tomar_el_pdf(corrida, pdf, "8400000/UPD8400000.pdf")
+            assert not procesarlo and corrida.ya_entregados == 1
+            assert coordinacion.hechos == 1 and coordinacion.entregados == 0 and not coordinacion._entregas
+            assert coordinacion.estado_de("8400000/UPD8400000.pdf").estado == "hecho"
+        finally:
+            coordinacion.parar()
+
+    def test_medir_que_falla_no_tumba_el_latido(self, tmp_path):
+        def roto():
+            raise RuntimeError("sin /proc")
+
+        uno = Coordinacion(tmp_path, equipo="PC1", version="v1", latido=LATIDO, medir_recursos=roto)
+        uno.unirse(OPCIONES, origen="MAGANGUE")
+        ruta = tmp_path / AREA / "equipos" / f"{uno.id}.json"
+        try:
+            antes = _leido(ruta)["contador"]
+            assert _esperar(lambda: (_leido(ruta) or {}).get("contador", 0) > antes + 3)
+            assert _leido(ruta)["recursos"] is None
+            assert uno._hilo.is_alive() and uno._hilo_de_la_mirada.is_alive()
+            assert uno._hilo_de_los_recursos.is_alive()
+            # Lo que no se puede pasar a JSON tampoco: se limpia antes de escribirlo.
+            uno.medir_recursos = lambda: {"nucleos": 4, "disco": Path("/equipo/c"), "cpu": object()}
+            assert _esperar(lambda: (((_leido(ruta) or {}).get("recursos")) or {}).get("nucleos") == 4)
+            recursos = _leido(ruta)["recursos"]
+            assert recursos["disco"] is None and recursos["cpu"] is None
+            assert uno._hilo.is_alive()
+        finally:
+            uno.parar()
+
+    def test_el_rol_cierre_de_un_principal_que_se_retiro_se_hereda(self, tmp_path):
+        uno, otro = equipo(tmp_path, "PC1"), equipo(tmp_path, "PC2")
+        try:
+            assert uno.tomar_rol("cierre")
+            assert _esperar(lambda: uno.id in otro.latidos())
+            # Con su dueño vivo, el rol no se toma.
+            assert not otro.tomar_rol("cierre")
+            # La mirada de «otro», quieta: no llega a ver el latido «terminado».
+            caer(otro)
+            otro._parar.clear()
+            uno.parar()
+            # Para su «Vida» sigue vivo -- no han pasado 90 s --, pero ya no está en el destino.
+            assert otro.vivo(uno.id)
+            assert otro.tomar_rol("cierre")
+        finally:
+            uno.parar()
+            otro.parar()
+
+
+class TestElPrincipalEnUnaCorridaDeVerdad:
+    """``FolderRunner`` reales sobre el mismo origen y destino, con el primero en lanzar de principal."""
+
+    @staticmethod
+    def _llegadas_al_cierre(motores: list[FolderRunner]) -> list[tuple[int, object]]:
+        """Quién llega al cierre y qué decide: ``(n, "llega")`` y después ``(n, cierra)``."""
+        llegadas: list[tuple[int, object]] = []
+        for n, motor in enumerate(motores):
+            esperar = motor._esperar_el_cierre
+
+            async def anotando(run, n=n, esperar=esperar):
+                llegadas.append((n, "llega"))
+                cierra = await esperar(run)
+                llegadas.append((n, cierra))
+                return cierra
+
+            motor._esperar_el_cierre = anotando
+        return llegadas
+
+    @staticmethod
+    async def _lanzar(motores: list[FolderRunner], origen: Path, destino: Path, **opciones) -> list:
+        """Uno tras otro, cada uno con el anterior ya unido: el primero en lanzar empieza la corrida.
+
+        Con una espera fija, en una máquina cargada el segundo podía tomar antes
+        el turno de la corrida y empezarla él.
+        """
+        corridas = []
+        for motor in motores:
+            corrida = motor.start(str(origen), str(destino), **opciones)
+            corridas.append(corrida)
+            assert await _hasta(lambda corrida=corrida: corrida.coordinacion is not None, segundos=30)
+        assert _el_creador(corridas, destino) is corridas[0]
+        return corridas
+
+    @staticmethod
+    def _una_vez_y_un_cierre(corridas, destino: Path, *, pdfs: int, cierra) -> None:
+        """Cada PDF entregado una vez, nada repetido y un solo cierre, el de ``cierra``, con todo contado."""
+        entregados = _entregados(destino)
+        assert len(entregados) == pdfs and len(set(entregados)) == pdfs, entregados
+        assert buscar_repetidos(destino) == []
+        assert _cerraron(corridas) == [cierra]
+        assert _leido(destino / AREA / "corrida.json")["cerrada_por"] == cierra.coordinacion.id
+        assert cierra.processed + cierra.ya_entregados == pdfs
+        trabajos, fallidos = cierra.coordinacion.lo_hecho_en_la_corrida()
+        assert len(set(trabajos)) == pdfs and not fallidos
+        assert _todos_retirados(destino)
+
+    def test_solo_el_principal_escribe_los_generales_a_mitad_y_cierra(self, tmp_path, monkeypatch):
+        from resolutions.api import folders
+
+        monkeypatch.setenv("BOTPDF_COORDINACION", "si")
+        # Los de a mitad, en cada pedido y no cada 15 min: así se ve quién los escribe.
+        monkeypatch.setattr(folders, "INVENTARIO_GENERAL_CADA_COMPARTIDA", 0.0)
+        origen, destino = _origen_y_destino(tmp_path, 8100, nics=8, upds=3)
+        motores = TestPararUnEquipoDesdeElMonitoreo._motores(tmp_path, 3)
+        escritos: list[tuple[int, bool]] = []
+        for n, motor in enumerate(motores):
+            escribir = motor._escribir_generales
+
+            def anotando(run, con_indice=True, n=n, escribir=escribir):
+                escritos.append((n, con_indice))
+                escribir(run, con_indice=con_indice)
+
+            motor._escribir_generales = anotando
+
+        async def correr():
+            # De dos en dos: el principal entrega varias veces con los demás ya unidos.
+            corridas = await self._lanzar(motores, origen, destino, paralelo=2)
+            await TestPararUnEquipoDesdeElMonitoreo._hasta_que_terminen(corridas)
+            return corridas
+
+        corridas = asyncio.run(correr())
+        for corrida in corridas:
+            assert corrida.state is RunState.DONE, corrida.error
+        principal = corridas[0]
+        assert _leido(destino / AREA / "corrida.json")["creada_por_id"] == principal.coordinacion.id
+        # Sólo el principal escribió los generales: a mitad, sin el índice general; al cerrar, con todo.
+        assert {n for n, _ in escritos} == {0}, escritos
+        assert (0, False) in escritos and escritos[-1] == (0, True)
+        # Los demás terminaron su parte, lo dijeron y se retiraron.
+        quien = equipo_en_palabras(principal.coordinacion.id)
+        for corrida in corridas[1:]:
+            assert any(f"La corrida la cierra el principal {quien}" in aviso for aviso in corrida.avisos), corrida.avisos
+        self._una_vez_y_un_cierre(corridas, destino, pdfs=24, cierra=principal)
+
+    def test_un_no_principal_que_acaba_primero_no_cierra_y_cierra_el_principal(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOTPDF_COORDINACION", "si")
+        origen, destino = _origen_y_destino(tmp_path, 8200, nics=6, upds=2)
+        motores = TestPararUnEquipoDesdeElMonitoreo._motores(tmp_path, 2, tarda=0.1)
+        llegadas = self._llegadas_al_cierre(motores)
+        # El principal llega al cierre cuando el otro ya llegó: así el otro acaba primero.
+        esperar = motores[0]._esperar_el_cierre
+
+        async def despues_del_otro(run):
+            limite = time.monotonic() + 30
+            while (1, "llega") not in llegadas and time.monotonic() < limite:
+                await asyncio.sleep(0.02)
+            return await esperar(run)
+
+        motores[0]._esperar_el_cierre = despues_del_otro
+
+        async def correr():
+            corridas = await self._lanzar(motores, origen, destino)
+            await TestPararUnEquipoDesdeElMonitoreo._hasta_que_terminen(corridas)
+            return corridas
+
+        corridas = asyncio.run(correr())
+        principal, otro = corridas
+        assert principal.state is RunState.DONE, principal.error
+        assert otro.state is RunState.DONE, otro.error
+        # El otro acabó primero: esperó a que el principal empezara a cerrar (por si
+        # no pudiera), no tomó el rol, lo dijo y se retiró; cerró el principal.
+        assert llegadas[:2] == [(1, "llega"), (0, "llega")]
+        assert sorted(llegadas[2:], key=str) == sorted([(1, False), (0, True)], key=str)
+        quien = equipo_en_palabras(principal.coordinacion.id)
+        assert any(f"La corrida la cierra el principal {quien}" in aviso for aviso in otro.avisos), otro.avisos
+        assert otro.coordinacion.retirado
+        self._una_vez_y_un_cierre(corridas, destino, pdfs=12, cierra=principal)
+
+    def test_si_el_principal_se_detiene_justo_antes_de_cerrar_cierra_el_que_esperaba(self, tmp_path, monkeypatch):
+        # El otro acabó primero y espera; el principal se detiene al llegar al
+        # cierre. Antes el otro ya se había retirado y nadie cerraba: ahora el
+        # que esperaba pasa a ser el principal y cierra (2026-11-27).
+        monkeypatch.setenv("BOTPDF_COORDINACION", "si")
+        origen, destino = _origen_y_destino(tmp_path, 8400, nics=6, upds=2)
+        motores = TestPararUnEquipoDesdeElMonitoreo._motores(tmp_path, 2, tarda=0.1)
+        llegadas = self._llegadas_al_cierre(motores)
+        esperar = motores[0]._esperar_el_cierre
+
+        async def detenido_antes_de_cerrar(run):
+            limite = time.monotonic() + 30
+            while (1, "llega") not in llegadas and time.monotonic() < limite:
+                await asyncio.sleep(0.02)
+            motores[0].stop(run.id)
+            return await esperar(run)
+
+        motores[0]._esperar_el_cierre = detenido_antes_de_cerrar
+
+        async def correr():
+            corridas = await self._lanzar(motores, origen, destino)
+            await TestPararUnEquipoDesdeElMonitoreo._hasta_que_terminen(corridas)
+            return corridas
+
+        corridas = asyncio.run(correr())
+        principal, otro = corridas
+        assert principal.state is RunState.STOPPED
+        assert otro.state is RunState.DONE, otro.error
+        assert (1, True) in llegadas and (0, True) not in llegadas
+        self._una_vez_y_un_cierre(corridas, destino, pdfs=12, cierra=otro)
+
+    def test_el_principal_parado_con_calma_a_mitad_deja_que_cierre_el_siguiente(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOTPDF_COORDINACION", "si")
+        origen, destino = _origen_y_destino(tmp_path, 8300)
+        motores = TestPararUnEquipoDesdeElMonitoreo._motores(tmp_path, 3)
+        llegadas = self._llegadas_al_cierre(motores)
+
+        async def correr():
+            corridas = await self._lanzar(motores, origen, destino, paralelo=2)
+            await TestPararUnEquipoDesdeElMonitoreo._hasta_que_lea(corridas[0])
+            # Desde su propia pantalla: «Parar con calma» al principal, a mitad de corrida.
+            motores[0].ordenar_parar(corridas[0].id, corridas[0].coordinacion.id, "calma", "prueba")
+            await TestPararUnEquipoDesdeElMonitoreo._hasta_que_terminen(corridas)
+            return corridas
+
+        corridas = asyncio.run(correr())
+        principal, *demas = corridas
+        assert principal.state is RunState.STOPPED and principal.parando["modo"] == "calma"
+        for corrida in demas:
+            assert corrida.state is RunState.DONE, corrida.error
+        # El principal no cerró; cerró el siguiente de la sucesión: de los que
+        # quedaban, el que se unió antes (en el mismo segundo, el id menor).
+        assert (0, True) not in llegadas
+        siguiente = min(demas, key=lambda c: (datetime.fromisoformat(c.coordinacion.unido), c.coordinacion.id))
+        (el_otro,) = [c for c in demas if c is not siguiente]
+        quien = equipo_en_palabras(siguiente.coordinacion.id)
+        assert any(f"La corrida la cierra el principal {quien}" in aviso for aviso in el_otro.avisos), el_otro.avisos
+        self._una_vez_y_un_cierre(corridas, destino, pdfs=36, cierra=siguiente)

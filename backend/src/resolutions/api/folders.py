@@ -34,7 +34,9 @@ from ..application.coordinacion import (
     NO_ES_COMPARTIDA,
     NO_ESTA_EN_LA_CORRIDA,
     OrdenNoPermitida,
+    equipo_en_palabras,
     por_que_no_se_puede_parar,
+    resumen_de_la_corrida_sola,
     resumen_de_los_equipos,
 )
 from ..application.orden_del_recorrido import lo_pendiente_primero, nombre_de_la_carpeta
@@ -141,12 +143,13 @@ WATCH_INTERVAL = 5.0
 #: acaba de terminar sí se escribe siempre, y al terminar, detener o vaciarse
 #: una carpeta vigilada se escriben todos.
 INVENTARIO_GENERAL_CADA = 45.0
-#: Y con varios equipos sobre el mismo destino: los escribe uno solo (el del
-#: rol «generales»), y menos a menudo. Los siete reescribían los mismos Excel
-#: cada 45 s, cada reescritura miraba unos 6 000 índices de NIC y tardaba más
-#: de 10 min, y los otros seis preguntaban por el turno una vez por segundo:
-#: cerca de un millón de idas y vueltas al día contra el destino (2026-11-25).
-#: Los definitivos, con todo, los escribe al cerrar el que cierra.
+#: Y con varios equipos sobre el mismo destino: los escribe uno solo -- el
+#: principal desde el 2026-11-27; antes, el del rol «generales» --, y menos a
+#: menudo. Los siete reescribían los mismos Excel cada 45 s, cada reescritura
+#: miraba unos 6 000 índices de NIC y tardaba más de 10 min, y los otros seis
+#: preguntaban por el turno una vez por segundo: cerca de un millón de idas y
+#: vueltas al día contra el destino (2026-11-25). Los definitivos, con todo,
+#: los escribe el principal al cerrar.
 INVENTARIO_GENERAL_CADA_COMPARTIDA = 15 * 60.0
 #: Cuánto espera el turno de los generales quien escribe los de a mitad de
 #: corrida: si está ocupado, ya los está escribiendo otro.
@@ -1443,6 +1446,7 @@ class FolderRunner:
         -- no garantiza la creación exclusiva --, con ``auto`` sigue sola y lo
         avisa; con ``si``, no corre.
         """
+        from ..adapters import recursos_del_equipo
         from ..adapters.coordinacion_en_disco import (
             Coordinacion,
             CoordinacionRechazada,
@@ -1460,7 +1464,17 @@ class FolderRunner:
             )
             if valor is not None
         }
-        coordinacion = Coordinacion(run.destination, version=version_del_bot(), **ritmo)
+        # Los recursos de este PC en su latido (2026-11-27), con su propio
+        # medidor de CPU. El disco: el C: del equipo en Docker, o si no, el de
+        # la carpeta de datos del bot (la de sus «outputs»).
+        medir_recursos = partial(
+            recursos_del_equipo.medir,
+            self._settings.output_dir.parent,
+            cpu=recursos_del_equipo.MedidorDeCpu(),
+        )
+        coordinacion = Coordinacion(
+            run.destination, version=version_del_bot(), medir_recursos=medir_recursos, **ritmo
+        )
         try:
             corrida = coordinacion.unirse(opciones_de(run), origen=run.source.name or str(run.source))
         except DestinoNoCompartible as error:
@@ -1570,6 +1584,7 @@ class FolderRunner:
             # Con varios equipos, cierra uno solo -- la auditoría y los Excel
             # generales finales --, y cuando los demás ya terminaron: así lo
             # tiene todo contado (lo suyo y lo de ellos) y nadie lo pisa después.
+            # Desde el 2026-11-27 es el principal (``_esperar_el_cierre``).
             cierra = True
             if run.coordinacion is not None and run.active:
                 cierra = await self._esperar_el_cierre(run)
@@ -1652,8 +1667,9 @@ class FolderRunner:
     def _dejar_escrito_al_detener(self, run: FolderRun) -> None:
         """Lo inventariado hasta aquí, escrito: detener a la mitad no pierde lo leído.
 
-        Con otros equipos, como a mitad de corrida: los escribe el del rol
-        «generales», y los definitivos el que cierre.
+        Con otros equipos, como a mitad de corrida: los generales los escribe
+        sólo el principal (2026-11-27) -- uno que no lo es y se detiene no los
+        toca --, y los definitivos el principal que cierre.
         """
         self._escribir_inventario_de_actas(run)
         self._escribir_todo_lo_general(run, a_mitad=run.coordinacion is not None)
@@ -1946,7 +1962,18 @@ class FolderRunner:
         return True
 
     async def _esperar_el_cierre(self, run: FolderRun) -> bool:
-        """Si este equipo cierra la corrida compartida: el primero que acaba, y espera a los demás."""
+        """Si este equipo cierra la corrida compartida: el principal, y espera a los demás.
+
+        El operador, 2026-11-27: el principal -- el primero en lanzar, que
+        «deberá tener más capacidad de recursos» -- hace las tareas pesadas.
+        Hasta entonces cerraba el primero que acababa. Uno que no es el
+        principal termina su parte, lo dice y se retira, como hacía el que no
+        tomaba el rol. Si el principal se cae o se retira sin cerrar, el
+        siguiente de la sucesión (``principal_de``) que llega aquí cierra: el
+        rol de un caído o de un retirado se hereda (``tomar_rol``). Si ya no
+        queda nadie para cerrar, relanzar la carpeta empieza una corrida nueva
+        que cierra.
+        """
         coordinacion = run.coordinacion
         if run.parando is not None:
             # Con la orden de «Parar con calma» no cierra (2026-11-26): la
@@ -1957,6 +1984,46 @@ class FolderRunner:
                 await asyncio.sleep(self.ESPERA_AL_VACIARSE)
             await asyncio.sleep(0)
             return False
+        try:
+            # Una mirada ahora y no la foto de hace un latido: un principal que
+            # se acaba de retirar seguiría vivo en ella, y éste se iría
+            # dejándole el cierre a nadie.
+            await asyncio.to_thread(coordinacion.mirar_ahora)
+        except Exception:  # noqa: BLE001 - sin poder mirar, decide la última foto
+            logger.warning("no se pudo mirar a los demás equipos antes del cierre", exc_info=True)
+        # Uno que no es el principal no se retira hasta que el principal empiece
+        # a cerrar: si se fueran todos y el principal se cayera o se detuviera
+        # en su última vuelta, nadie cerraría (lo encontró la revisión,
+        # 2026-11-27). Mientras espera no trabaja; si el principal desaparece, la
+        # sucesión lo nombra a él y cierra él.
+        while True:
+            principal = coordinacion.principal()
+            if principal is None or principal == coordinacion.id:
+                break
+            if (coordinacion.latidos().get(principal) or {}).get("estado") == "cerrando":
+                # Antes de decir «cerrando»: éste no cierra, y en la lista de
+                # equipos no tiene que salir como el que cierra.
+                self._avisar(
+                    run,
+                    f"Este equipo terminó su parte. La corrida la cierra el principal "
+                    f"{equipo_en_palabras(principal)}: la auditoría y los Excel generales finales.",
+                )
+                return False
+            if not run.active or run.parando is not None:
+                return False
+            run.etapa = "Esperando al principal"
+            run.etapa_detalle = (
+                f"el principal {equipo_en_palabras(principal)} cierra la corrida; "
+                "este equipo espera por si no pudiera"
+            )
+            self._publish(run)
+            await asyncio.sleep(self.ESPERA_DE_LOS_OTROS)
+            try:
+                await asyncio.to_thread(coordinacion.mirar_ahora)
+            except Exception:  # noqa: BLE001 - sin poder mirar, decide la última foto
+                logger.debug("no se pudo mirar a los demás equipos esperando al principal", exc_info=True)
+        if run.etapa == "Esperando al principal":
+            run.etapa, run.etapa_detalle = "", ""
         coordinacion.estado = "cerrando"
         if not await asyncio.to_thread(coordinacion.tomar_rol, "cierre"):
             self._avisar(run, "Este equipo terminó su parte; la auditoría y los Excel generales los cierra otro equipo.")
@@ -2986,7 +3053,9 @@ class FolderRunner:
         """Los equipos de la corrida compartida, para el monitoreo; ``None`` si la corrida no existe.
 
         Sin E/S: lo que vio la última mirada de la coordinación
-        (``Coordinacion.latidos``), que es de hace un latido como mucho.
+        (``Coordinacion.latidos``), que es de hace un latido como mucho. Con el
+        principal, la velocidad y el aviso de recursos (2026-11-27), sacados de
+        esa misma foto y de quién empezó la corrida (``corrida.json``).
         """
         from .corrida_compartida import version_del_bot
 
@@ -2995,20 +3064,16 @@ class FolderRunner:
             return None
         coordinacion = run.coordinacion
         if coordinacion is None:
-            return {
-                "compartida": False,
-                "corrida": None,
-                "version": version_del_bot(),
-                "este": None,
-                "activa": run.active,
-                "equipos": [],
-            }
+            return resumen_de_la_corrida_sola(version=version_del_bot(), activa=run.active)
+        corrida = coordinacion.corrida or {}
         return resumen_de_los_equipos(
             coordinacion.latidos(),
             este=coordinacion.id,
-            corrida=(coordinacion.corrida or {}).get("id"),
+            corrida=corrida.get("id"),
             version=coordinacion.version,
             activa=run.active,
+            creador_id=corrida.get("creada_por_id"),
+            creador_nombre=corrida.get("creada_por"),
         )
 
     def ordenar_parar(self, run_id: str, equipo_id: str, modo: str, operador: str | None = None) -> dict:
@@ -4191,11 +4256,16 @@ class FolderRunner:
         """Los Excel generales de la raíz del destino.
 
         ``a_mitad``: los que se escriben mientras la carpeta corre. Con otros
-        equipos sobre el mismo destino, sólo los escribe el que tiene el rol
-        «generales» (si cae, lo toma otro), sin el índice general -- que mira
-        el índice de cada NIC -- y sin esperar el turno más de
-        ``ESPERA_DEL_TURNO_A_MITAD``. Los definitivos, con todo, los escribe el
-        que cierra la corrida.
+        equipos sobre el mismo destino, sólo los escribe el principal
+        (2026-11-27; si cae o se retira, quien le sigue), sin el índice
+        general -- que mira el índice de cada NIC -- y sin esperar el turno más
+        de ``ESPERA_DEL_TURNO_A_MITAD``. Los definitivos, con todo, los escribe
+        el principal al cerrar la corrida.
+
+        Antes los escribía el primero que tomaba el rol «generales», que nunca
+        se soltaba: podía quedarse en un PC con pocos recursos, o en uno que ya
+        no estaba. Ahora no hay rol: el principal escribe con el turno de los
+        generales (``cerrojo("generales")``), como antes, y los demás ni lo piden.
         """
         coordinacion = run.coordinacion
         compartida = coordinacion is not None and not coordinacion.retirado
@@ -4210,18 +4280,19 @@ class FolderRunner:
         # (el modo «auto» con un solo PC), como siempre: con el índice y el FUID.
         a_mitad = a_mitad and compartida and len(coordinacion.equipos_vivos()) > 1
         if a_mitad and not coordinacion.puede_entregar():
-            # Con el latido propio atrasado otro puede haber tomado el rol.
+            # Con el latido propio atrasado, los demás pueden haberlo dado por
+            # caído y tener ya otro principal.
             run.generales_en = time.monotonic()
             return
-        if a_mitad:
-            try:
-                escribe = coordinacion.tomar_rol("generales")
-            except OSError:
-                escribe = False
-            if not escribe:
-                # Los escribe otro equipo: éste no pregunta por el turno.
-                run.generales_en = time.monotonic()
-                return
+        if a_mitad and coordinacion.principal() not in (None, coordinacion.id):
+            # Los escribe el principal: éste no pregunta por el turno y los
+            # vuelve a pedir en su plazo, por si entretanto le toca serlo. Sin
+            # principal -- con «Parar todos con calma», la manera de actualizar,
+            # todos tienen orden y nadie lo es -- los escribe cualquiera, de uno
+            # en uno con el turno «generales»: si no, nadie los escribía al
+            # detenerse (2026-11-27).
+            run.generales_en = time.monotonic()
+            return
         turno = (
             coordinacion.cerrojo("generales", espera_maxima=ESPERA_DEL_TURNO_A_MITAD if a_mitad else 10 * 60.0)
             if compartida

@@ -6,8 +6,10 @@ o «Parar ya»; la próxima actualización de los siete PC se hace con «Parar
 todos con calma». Lo que fija cada clase:
 
 - ``TestLaLista``: ``GET /api/folder-runs/{id}/equipos`` contesta 404 de una
-  corrida que no existe y, de una que va sola, ``compartida: false`` y sin
-  equipos.
+  corrida que no existe y, de una que va sola, ``compartida: false``, sin
+  equipos, sin principal y con la velocidad en ceros (2026-11-27). De una
+  compartida, el principal -- el primero en lanzar --, la velocidad por minuto,
+  los recursos de cada PC y el aviso si otro PC tiene más núcleos.
 - ``TestPararUnEquipo``: ``POST /api/folder-runs/{id}/equipos/{equipo}/parar``
   exige haber entrado (401); dice 404, 409 y 422 con su motivo; y sobre una
   corrida compartida de verdad para con calma al propio equipo, contesta la
@@ -15,7 +17,8 @@ todos con calma». Lo que fija cada clase:
   termina detenida diciendo por quién. Al equipo que se retiró después de la
   última mirada -- la lista aún lo da por vivo -- contesta 409 con el motivo,
   no 500: ``OrdenNoPermitida`` es una sola clase.
-- ``TestElServicioLoAnuncia``: la revisión 26 y sus dos capacidades.
+- ``TestElServicioLoAnuncia``: la revisión 26 y sus dos capacidades; la 27,
+  con «pc-principal» y «velocidad-por-minuto».
 
 Las corridas usan un trabajo falso y lento en lugar del pipeline: nada se lee
 ni se paga.
@@ -130,9 +133,82 @@ class TestLaLista:
                 "version": version_del_bot(),
                 "este": None,
                 "activa": True,
+                "principal": None,
+                "velocidad": {
+                    "pc_activos": 0,
+                    "actual": {"total": None, "por_pc": None, "pc": 0},
+                    "acumulada": {"total": None, "por_pc": None, "pc": 0},
+                },
+                "aviso_de_recursos": None,
                 "equipos": [],
             }
         finally:
+            client.post(f"/api/folder-runs/{run_id}/stop")
+
+    def test_una_compartida_trae_el_principal_la_velocidad_y_los_recursos(self, client, motor, tmp_path, monkeypatch):
+        import os
+
+        from resolutions.adapters.coordinacion_en_disco import Coordinacion
+        from resolutions.api.corrida_compartida import opciones_de, version_del_bot
+        from resolutions.application.coordinacion import (
+            CLAVES_DE_LOS_RECURSOS,
+            equipo_en_palabras,
+        )
+
+        monkeypatch.setenv("BOTPDF_COORDINACION", "si")
+        origen, destino = _carpetas(tmp_path, pdfs=0)
+        # Vigilada, para que siga activa mientras se pregunta.
+        run_id = _lanzar(client, origen, destino, watch=True)
+        run = motor.get(run_id)
+        nucleos = os.cpu_count() or 1
+        # Otro PC con más núcleos, que se une después: el principal sigue siendo el primero.
+        otro = None
+        try:
+            assert _esperar(lambda: run.coordinacion is not None), "la corrida no se unió"
+            este = run.coordinacion.id
+
+            def con_recursos() -> dict | None:
+                lista = client.get(f"/api/folder-runs/{run_id}/equipos").json()
+                return lista if (lista["equipos"] and lista["equipos"][0]["recursos"]) else None
+
+            lista = _esperar(con_recursos)
+            assert lista, "el latido no llegó a medir los recursos"
+            assert lista["principal"] == este
+            assert lista["velocidad"]["pc_activos"] == 1 and lista["aviso_de_recursos"] is None
+            (fila,) = lista["equipos"]
+            assert fila["principal"] and fila["entregados"] == 0
+            # Recién unido: ni la velocidad de ahora ni la acumulada dicen nada todavía.
+            assert fila["pdf_por_minuto"] is None and fila["pdf_por_minuto_promedio"] is None
+            recursos = fila["recursos"]
+            assert tuple(recursos) == CLAVES_DE_LOS_RECURSOS
+            assert recursos["nucleos"] == nucleos
+            assert recursos["disco_total"] >= recursos["disco_libre"] > 0 and recursos["disco"]
+
+            otro = Coordinacion(
+                run.destination,
+                equipo="PC2",
+                version=version_del_bot(),
+                latido=0.05,
+                medir_recursos=lambda: {"nucleos": nucleos + 8},
+            )
+            assert otro.unirse(opciones_de(run), origen=run.source.name)["id"] == run.coordinacion.corrida["id"]
+
+            def con_los_dos() -> dict | None:
+                lista = client.get(f"/api/folder-runs/{run_id}/equipos").json()
+                fila = next((e for e in lista["equipos"] if e["id"] == otro.id), None)
+                return lista if (fila and fila["vivo"] and fila["recursos"] and lista["aviso_de_recursos"]) else None
+
+            lista = _esperar(con_los_dos)
+            assert lista, "la lista no llegó a ver al otro con sus recursos"
+            assert lista["principal"] == este and lista["velocidad"]["pc_activos"] == 2
+            assert {e["id"]: e["principal"] for e in lista["equipos"]} == {este: True, otro.id: False}
+            assert lista["aviso_de_recursos"] == (
+                f"El principal {equipo_en_palabras(este)} tiene menos núcleos ({nucleos}) que {equipo_en_palabras(otro.id)} ({nucleos + 8}): "
+                "conviene lanzar primero en el PC con más recursos."
+            )
+        finally:
+            if otro is not None:
+                otro.parar()
             client.post(f"/api/folder-runs/{run_id}/stop")
 
 
@@ -288,3 +364,10 @@ class TestElServicioLoAnuncia:
         salud = client.get("/api/health").json()
         assert salud["api_revision"] >= 26
         assert {"equipos-de-la-corrida", "parar-un-equipo"} <= set(salud["features"])
+
+    def test_la_revision_27_trae_el_principal_y_la_velocidad(self, client):
+        # La pantalla exige la 27 (REQUIRED_API_REVISION) para pintar el principal,
+        # la velocidad por minuto y los recursos de cada PC (2026-11-27).
+        salud = client.get("/api/health").json()
+        assert salud["api_revision"] >= 27
+        assert {"pc-principal", "velocidad-por-minuto"} <= set(salud["features"])

@@ -649,7 +649,7 @@ export async function documentFuidStatus(jobId: string): Promise<FuidStatus> {
  * depending on a new endpoint. A service older than this is not broken, it is
  * stale, and saying which is the difference between a restart and a bug hunt.
  */
-export const REQUIRED_API_REVISION = 26;
+export const REQUIRED_API_REVISION = 27;
 
 export interface Health {
   status: string;
@@ -951,9 +951,10 @@ export function cambiarParalelo(runId: string, paralelo: number): Promise<Folder
 
 /**
  * Quién está conectado a una corrida compartida (2026-11-26): cada equipo con
- * su estado, lo que lleva hecho, su ritmo y su último latido. El servicio la
- * arma con lo que ya miró, sin salir a la red, así que aguanta pedirla cada
- * pocos segundos.
+ * su estado, lo que lleva hecho, su ritmo y su último latido; desde el
+ * 2026-11-27 (revisión 27), también quién es el principal, la velocidad en PDF
+ * por minuto y los recursos de cada PC. El servicio la arma con lo que ya
+ * miró, sin salir a la red, así que aguanta pedirla cada pocos segundos.
  */
 export async function equiposDeLaCorrida(
   runId: string,

@@ -20,7 +20,7 @@ router = APIRouter()
 #: running across an update answers 404 to every new route and 405 to every new
 #: method -- which reads as a broken request rather than as a stale service.
 #: The screen compares this against what it was built for and says so plainly.
-API_REVISION = 26
+API_REVISION = 27
 
 #: What this revision can do, so the screen can name what is missing rather than
 #: only that something is.
@@ -107,6 +107,15 @@ API_FEATURES = (
     # contra un servicio anterior lo dice el aviso de servicio desactualizado;
     # la lista de equipos falla con su error y, sin lista, no hay botones.
     "parar-un-equipo",
+    # La lista de equipos dice quién es el PC principal -- el primero en lanzar,
+    # o quien le sigue --, que escribe los Excel generales de a mitad de
+    # corrida y la cierra, y avisa si otro PC tiene más RAM o más núcleos
+    # (2026-11-27). Y los recursos de cada PC: núcleos, CPU, RAM y disco.
+    "pc-principal",
+    # Y la velocidad en PDF por minuto: la de ahora (los últimos diez minutos)
+    # y la acumulada, de cada PC, en total y por PC activo. La pantalla exige la
+    # revisión 27 (REQUIRED_API_REVISION) para pintarlas.
+    "velocidad-por-minuto",
 )
 
 @router.get("/api/health")

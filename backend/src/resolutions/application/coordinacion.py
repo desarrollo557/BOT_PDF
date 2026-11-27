@@ -9,11 +9,18 @@ vivo --; el disco lo pone ``adapters.coordinacion_en_disco``.
 Nada de esto se fía del reloj de pared de otro equipo: dos PC de la red pueden
 llevar la hora con minutos de diferencia. Un equipo está vivo mientras el
 contador de su latido cambia, medido con el reloj monótono de quien lo mira.
+
+Desde el 2026-11-27 la corrida tiene un **principal** (``principal_de``): el
+equipo que la empezó, o quien le sigue si se cae o se retira. Hace las tareas
+pesadas -- los Excel generales de a mitad de corrida, el cierre y la auditoría
+final --, y el monitoreo enseña la velocidad en PDF por minuto y los recursos
+de cada PC.
 """
 
 from __future__ import annotations
 
 import hashlib
+import math
 import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -40,8 +47,46 @@ SEGUNDOS_DE_MIRADA_ATRASADA = 60.0
 MODOS_DE_PARAR = ("calma", "ya")
 #: Desde cuántos minutos unido se da el ritmo de un equipo: antes, con el
 #: arranque dentro (de 3 a 28 min de «se unió» a «reclamó» el 2026-11-26), la
-#: cifra no dice nada.
+#: cifra no dice nada. Vale también para su velocidad acumulada en PDF por
+#: minuto (``pdf_por_minuto_promedio``, 2026-11-27).
 MINUTOS_PARA_EL_RITMO = 5.0
+
+# -- la velocidad en PDF por minuto (2026-11-27) ------------------------------
+#
+# El operador: «llevar un promedio de velocidad de procesamiento de archivos por
+# minuto contando los PC activos, y un promedio uniéndolo a los PC que están».
+# Hasta aquí sólo había ``pdf_por_hora``, acumulado desde que se unió y con lo
+# reclamado que ya estaba entregado dentro.
+
+#: La velocidad de ahora de un equipo: lo que entregó en los últimos diez
+#: minutos, contado por él con su reloj monótono. Un PDF largo no la hunde ni
+#: el arranque la infla.
+MINUTOS_DE_LA_VENTANA = 10.0
+#: Y desde cuántos minutos unido se da: con uno o dos PDF entregados la cifra
+#: salta de cero a mucho.
+MINUTOS_PARA_LA_VELOCIDAD = 2.0
+
+# -- los recursos de cada PC (2026-11-27) --------------------------------------
+
+#: Lo que lleva cada latido en ``recursos`` y lo que enseña la pantalla, en el
+#: orden del contrato de ``GET /api/folder-runs/{id}/equipos``. Lo mide
+#: ``adapters.recursos_del_equipo``: núcleos, CPU en %, carga, memoria y disco
+#: en bytes, y qué disco se midió («/equipo/c» en Docker).
+CLAVES_DE_LOS_RECURSOS = (
+    "nucleos",
+    "cpu",
+    "carga",
+    "memoria_usada",
+    "memoria_total",
+    "disco_libre",
+    "disco_total",
+    "disco",
+)
+#: Cuánta RAM de más tiene que tener otro PC para avisar que el principal es el
+#: de menos recursos: dos PC iguales no dan la misma memoria total -- lo que se
+#: reservan el sistema y la tarjeta de video --, y un aviso permanente por cien
+#: megas sería ruido. De núcleos, cualquiera de más cuenta.
+RAM_QUE_CUENTA = 1024**3
 
 #: Lo que se le dice al operador cuando no se puede parar un equipo. Los mismos
 #: textos en la respuesta del POST y en el «por qué no» de cada fila.
@@ -230,23 +275,285 @@ def la_orden_que_manda(una: object, otra: object) -> dict | None:
     return dict(elegida) if isinstance(elegida, Mapping) and fuerza(elegida) else None
 
 
+def _segundos_unido(unido: str | None, escrito: str | None) -> float | None:
+    """Los segundos entre ``unido`` y ``escrito``, dos horas que escribe el propio equipo; ``None`` sin ellas."""
+    if not unido or not escrito:
+        return None
+    try:
+        return (datetime.fromisoformat(escrito) - datetime.fromisoformat(unido)).total_seconds()
+    except (TypeError, ValueError):
+        # Una hora que no se entiende, o una con zona y otra sin ella.
+        return None
+
+
 def pdf_por_hora(hechos: int, unido: str | None, escrito: str | None) -> float | None:
     """El ritmo de un equipo desde que se unió: ``hechos`` ÷ (``escrito`` − ``unido``), en PDF por hora.
 
     Las dos horas las escribe el propio equipo en su latido, así que la
     diferencia de hora entre PC no entra. ``None`` sin datos, o con menos de
-    ``MINUTOS_PARA_EL_RITMO`` unido.
+    ``MINUTOS_PARA_EL_RITMO`` unido. Se queda por compatibilidad: la pantalla
+    de 2026-11-27 enseña ``pdf_por_minuto`` y ``pdf_por_minuto_promedio``.
     """
-    if not unido or not escrito:
-        return None
-    try:
-        segundos = (datetime.fromisoformat(escrito) - datetime.fromisoformat(unido)).total_seconds()
-    except (TypeError, ValueError):
-        # Una hora que no se entiende, o una con zona y otra sin ella.
-        return None
-    if segundos < MINUTOS_PARA_EL_RITMO * 60:
+    segundos = _segundos_unido(unido, escrito)
+    if segundos is None or segundos < MINUTOS_PARA_EL_RITMO * 60:
         return None
     return round(max(0, hechos) * 3600 / segundos, 1)
+
+
+def pdf_por_minuto(entregas: Iterable[float], *, ahora: float, unido: float | None) -> float | None:
+    """La velocidad de ahora de un equipo, en PDF por minuto (2026-11-27).
+
+    ``entregas`` son los instantes del reloj monótono del propio equipo en que
+    entregó un PDF que procesó él -- no lo reclamado que ya estaba entregado --,
+    y ``unido`` el instante en que se unió, con el mismo reloj. Lo entregado en
+    la ventana ÷ los minutos de la ventana, que son los últimos
+    ``MINUTOS_DE_LA_VENTANA`` o lo que lleva unido si es menos: recién unido,
+    diez minutos enteros la hundirían. ``None`` con menos de
+    ``MINUTOS_PARA_LA_VELOCIDAD`` unido. Con dos decimales.
+    """
+    if unido is None:
+        return None
+    ventana = min(MINUTOS_DE_LA_VENTANA * 60, ahora - unido)
+    if ventana < MINUTOS_PARA_LA_VELOCIDAD * 60:
+        return None
+    cuantas = sum(1 for instante in entregas if 0 <= ahora - instante <= ventana)
+    return round(cuantas * 60 / ventana, 2)
+
+
+def pdf_por_minuto_promedio(entregados: int, unido: str | None, escrito: str | None) -> float | None:
+    """La velocidad acumulada de un equipo: ``entregados`` ÷ (``escrito`` − ``unido``), en PDF por minuto (2026-11-27).
+
+    Las dos horas, como en ``pdf_por_hora``, las escribe el propio equipo en su
+    latido. Cuenta sólo lo que procesó y entregó él (``entregados``). ``None``
+    sin datos o con menos de ``MINUTOS_PARA_EL_RITMO`` unido. Con dos decimales.
+    """
+    segundos = _segundos_unido(unido, escrito)
+    if segundos is None or segundos < MINUTOS_PARA_EL_RITMO * 60:
+        return None
+    return round(max(0, entregados) * 60 / segundos, 2)
+
+
+def _es_cifra(valor: object) -> bool:
+    """Un número de verdad: ni ``bool``, ni NaN, ni infinito."""
+    return isinstance(valor, (int, float)) and not isinstance(valor, bool) and math.isfinite(valor)
+
+
+def _cifra(valor: object, decimales: int) -> float | None:
+    """Una velocidad del latido de otro equipo: un número no negativo, redondeado; si no, ``None``."""
+    return round(float(valor), decimales) if _es_cifra(valor) and valor >= 0 else None
+
+
+# -- el principal (2026-11-27) ----------------------------------------------------
+#
+# El operador: «necesito que desde el PC principal, que donde se ejecute primero
+# sea el principal, obviamente el principal deberá tener más capacidad de
+# recursos, RAM, disco». Hasta aquí no había principal: los Excel generales de a
+# mitad de corrida los escribía el primero que tomaba el rol «generales» -- que
+# nunca se soltaba --, y cerraba el primero que acababa.
+
+
+def equipo_en_palabras(id_: str) -> str:
+    """«SIAR (ad21be)» para el id «SIAR-ad21be»: el nombre del PC y su arranque.
+
+    El nombre solo es ambiguo -- hay dos PC «SIAR» --, y el id lleva detrás las
+    seis letras del arranque (``Coordinacion.id``), que no tienen guiones.
+    """
+    nombre, guion, arranque = str(id_).rpartition("-")
+    return f"{nombre} ({arranque})" if guion and nombre and arranque else str(id_)
+
+
+def _instante(iso: object) -> float | None:
+    """Una hora ISO de un latido, como número para ordenar; ``None`` si no se entiende."""
+    if not isinstance(iso, str) or not iso:
+        return None
+    try:
+        return datetime.fromisoformat(iso).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _orden_de_sucesion(id_: str, latido: Mapping[str, object]) -> tuple[bool, float, str]:
+    """El que se unió antes, primero; el que no dice cuándo, al final; a igualdad, el id menor."""
+    instante = _instante(latido.get("unido"))
+    return (instante is None, instante or 0.0, str(id_))
+
+
+def _puede_ser_principal(latido: Mapping[str, object], corrida: str) -> bool:
+    """Si un equipo puede ser el principal: vivo en esta corrida, sin decir «terminado» y sin orden de parar.
+
+    El que tiene una orden de parar se va: si siguiera de principal mientras
+    termina lo suyo, el que acaba antes se retiraría dejándole el cierre, y él
+    -- con la orden -- tampoco cierra. Nadie cerraría.
+    """
+    return (
+        latido.get("corrida") == corrida
+        and bool(latido.get("vivo"))
+        and latido.get("estado") not in ("terminado", UNIENDOSE)
+        and _orden_en_la_pantalla(latido.get("orden")) is None
+    )
+
+
+def principal_de(
+    latidos: Mapping[str, Mapping[str, object]],
+    *,
+    creador_id: str | None,
+    creador_nombre: str | None,
+    corrida: str | None,
+) -> str | None:
+    """El id del principal de la corrida compartida; ``None`` sin corrida o sin nadie que pueda serlo.
+
+    ``latidos`` es lo de ``Coordinacion.latidos``: el de cada equipo con
+    ``vivo`` ya calculado por quien mira.
+
+    1. El que la empezó (``creada_por_id`` de ``corrida.json``), si sigue vivo
+       en ella, no dice «terminado» y no tiene una orden de parar.
+    2. Si no, la sucesión: de los que pueden serlo, el que se unió antes
+       (``unido``, la hora del propio equipo); a igualdad, el id menor.
+    3. Una corrida de una versión sin ``creada_por_id``: el creador se busca por
+       su nombre (``creada_por``), y de varios con ese nombre -- hay dos PC
+       «SIAR» --, el que se unió antes. Si no está, la sucesión.
+
+    Es determinista sobre la misma foto: los equipos que ven los mismos latidos
+    eligen el mismo. Si por un momento dos se creen principal, el rol «cierre»
+    -- creado en exclusiva -- y el cerrojo «generales» impiden que trabajen
+    dos a la vez.
+    """
+    if corrida is None:
+        return None
+    candidatos = {str(id_): latido for id_, latido in latidos.items() if _puede_ser_principal(latido, corrida)}
+    if not candidatos:
+        return None
+
+    def sucesion(id_: str) -> tuple[bool, float, str]:
+        return _orden_de_sucesion(id_, candidatos[id_])
+
+    if creador_id:
+        if creador_id in candidatos:
+            return creador_id
+    elif creador_nombre:
+        con_su_nombre = [id_ for id_, latido in candidatos.items() if str(latido.get("equipo") or "") == creador_nombre]
+        if con_su_nombre:
+            return min(con_su_nombre, key=sucesion)
+    return min(candidatos, key=sucesion)
+
+
+# -- los recursos de cada PC y el aviso (2026-11-27) ------------------------------
+
+
+def recursos_en_la_pantalla(valor: object) -> dict[str, object] | None:
+    """Los recursos de un latido con las claves de siempre y sólo cifras; ``None`` si no los trae.
+
+    El latido de otro equipo puede traer cualquier cosa -- uno de una versión
+    anterior no los lleva --: lo que no es una cifra no negativa, ``None``.
+    También limpia lo que mide el propio equipo antes de escribirlo en su
+    latido: lo que no se puede pasar a JSON no llega a tumbarlo.
+    """
+    if not isinstance(valor, Mapping):
+        return None
+    recursos: dict[str, object] = {}
+    for clave in CLAVES_DE_LOS_RECURSOS:
+        dato = valor.get(clave)
+        if clave == "disco":
+            recursos[clave] = dato if isinstance(dato, str) and dato else None
+        elif not _es_cifra(dato) or dato < 0:
+            recursos[clave] = None
+        elif clave == "cpu":
+            recursos[clave] = round(float(dato), 1)
+        elif clave == "carga":
+            recursos[clave] = round(float(dato), 2)
+        else:
+            # Los núcleos y los bytes, enteros.
+            recursos[clave] = int(dato)
+    return recursos
+
+
+def _activos(equipos: Iterable[Mapping[str, object]]) -> list[Mapping[str, object]]:
+    """Los PC activos de la corrida: vivos y de esta corrida -- también el que se une --, sin los terminados."""
+    return [
+        equipo
+        for equipo in equipos
+        if equipo.get("de_esta_corrida") and equipo.get("vivo") and equipo.get("estado") != "terminado"
+    ]
+
+
+def velocidad_de_la_corrida(equipos: Iterable[Mapping[str, object]]) -> dict[str, object]:
+    """La cabecera ``velocidad`` del monitoreo: cuántos PC activos y sus PDF por minuto (2026-11-27).
+
+    ``equipos`` son las filas de la pantalla. ``actual`` suma la velocidad de
+    ahora (``pdf_por_minuto``) de los activos que la tienen, y ``acumulada`` la
+    de desde que se unieron (``pdf_por_minuto_promedio``); ``por_pc`` reparte
+    el total entre los que tienen cifra: un PC recién unido, sin cifra
+    todavía, no baja el promedio de los demás. ``None`` si ninguno la tiene.
+    ``pc`` dice entre cuántos se repartió, para que la pantalla no divida el
+    total entre ``pc_activos`` cuando alguno todavía está midiendo: «6,0 entre
+    3 PC» con «3,0 por PC» no cuadraba (2026-11-27).
+    """
+    activos = _activos(equipos)
+
+    def sumada(clave: str) -> dict[str, float | int | None]:
+        cifras = [float(equipo[clave]) for equipo in activos if _es_cifra(equipo.get(clave))]
+        if not cifras:
+            return {"total": None, "por_pc": None, "pc": 0}
+        total = sum(cifras)
+        return {"total": round(total, 2), "por_pc": round(total / len(cifras), 2), "pc": len(cifras)}
+
+    return {
+        "pc_activos": len(activos),
+        "actual": sumada("pdf_por_minuto"),
+        "acumulada": sumada("pdf_por_minuto_promedio"),
+    }
+
+
+def _gb(bytes_: float) -> str:
+    """Una cantidad de memoria para el operador: «7,7 GB», «16 GB» (de 1024³ bytes, como la pantalla)."""
+    texto = f"{bytes_ / 1024**3:.1f}".replace(".", ",")
+    return f"{texto.removesuffix(',0')} GB"
+
+
+def aviso_de_recursos(equipos: Iterable[Mapping[str, object]], principal: str | None) -> str | None:
+    """Si un PC activo tiene más RAM o más núcleos que el principal, el aviso para el operador; si no, ``None``.
+
+    No cambia quién es el principal -- el operador dijo «el primero que se
+    ejecute» --: dice que convenía lanzar primero en el otro. Primero la RAM
+    (con ``RAM_QUE_CUENTA`` de margen); si no, los núcleos. Del que tiene más,
+    el de más; el nombre de su PC, o su id si hay otro con el mismo nombre.
+    """
+    equipos = list(equipos)
+    del_principal = next((equipo for equipo in equipos if equipo.get("id") == principal), None)
+    suyos = (del_principal or {}).get("recursos")
+    if principal is None or not isinstance(suyos, Mapping):
+        return None
+    otros = [
+        equipo for equipo in _activos(equipos)
+        if equipo.get("id") != principal and isinstance(equipo.get("recursos"), Mapping)
+    ]
+    def nombre(equipo: Mapping[str, object]) -> str:
+        # Como el resto de la pantalla, «SIAR (6ad99c)»: hay dos PC «SIAR».
+        return equipo_en_palabras(str(equipo.get("id")))
+
+    def el_de_mas(clave: str, margen: float) -> Mapping[str, object] | None:
+        propio = suyos.get(clave)
+        if not _es_cifra(propio):
+            return None
+        con_mas = [
+            equipo for equipo in otros
+            if _es_cifra(equipo["recursos"].get(clave)) and equipo["recursos"][clave] - propio >= margen
+        ]
+        return max(con_mas, key=lambda equipo: equipo["recursos"][clave], default=None)
+
+    quien = equipo_en_palabras(principal)
+    cierre = "conviene lanzar primero en el PC con más recursos."
+    if (con_mas := el_de_mas("memoria_total", RAM_QUE_CUENTA)) is not None:
+        return (
+            f"El principal {quien} tiene menos RAM ({_gb(suyos['memoria_total'])}) que "
+            f"{nombre(con_mas)} ({_gb(con_mas['recursos']['memoria_total'])}): {cierre}"
+        )
+    if (con_mas := el_de_mas("nucleos", 1)) is not None:
+        return (
+            f"El principal {quien} tiene menos núcleos ({suyos['nucleos']}) que "
+            f"{nombre(con_mas)} ({con_mas['recursos']['nucleos']}): {cierre}"
+        )
+    return None
 
 
 def por_que_no_se_puede_parar(equipo: Mapping[str, object], *, activa: bool) -> str | None:
@@ -311,10 +618,19 @@ def _de_esta_corrida(latido: Mapping[str, object], corrida: str | None) -> bool:
 
 
 def _equipo_en_la_pantalla(
-    id_: str, latido: Mapping[str, object], *, este: str, corrida: str | None, version: str, activa: bool
+    id_: str,
+    latido: Mapping[str, object],
+    *,
+    este: str,
+    corrida: str | None,
+    version: str,
+    activa: bool,
+    principal: str | None = None,
 ) -> dict[str, object]:
+    """Una fila del monitoreo. Lista blanca: un campo nuevo del latido no sale si no se añade aquí."""
     quieto = latido.get("quieto_hace")
     hechos = _entero(latido.get("hechos"))
+    entregados = _entero(latido.get("entregados"))
     unido = latido.get("unido") if isinstance(latido.get("unido"), str) else None
     escrito = latido.get("escrito") if isinstance(latido.get("escrito"), str) else None
     orden = _orden_en_la_pantalla(latido.get("orden"))
@@ -336,6 +652,18 @@ def _equipo_en_la_pantalla(
         "quieto_hace": round(float(quieto), 1) if isinstance(quieto, (int, float)) else None,
         "pdf_por_hora": pdf_por_hora(hechos, unido, escrito),
         "orden": orden,
+        # 2026-11-27: el principal, la velocidad en PDF por minuto -- la de
+        # ahora la calcula el propio equipo, con su reloj monótono; la
+        # acumulada, con sus dos horas -- y los recursos de su PC.
+        "principal": principal is not None and id_ == principal,
+        "entregados": entregados,
+        "pdf_por_minuto": _cifra(latido.get("pdf_por_minuto"), 2),
+        # Un latido sin «entregados» (de una versión anterior) no dice cuántos
+        # entregó: su velocidad acumulada no es cero, es desconocida.
+        "pdf_por_minuto_promedio": (
+            pdf_por_minuto_promedio(entregados, unido, escrito) if "entregados" in latido else None
+        ),
+        "recursos": recursos_en_la_pantalla(latido.get("recursos")),
     }
     por_que_no = por_que_no_se_puede_parar(equipo, activa=activa)
     if por_que_no is None and orden is not None and orden["modo"] == "ya":
@@ -353,6 +681,8 @@ def resumen_de_los_equipos(
     corrida: str | None,
     version: str,
     activa: bool,
+    creador_id: str | None = None,
+    creador_nombre: str | None = None,
 ) -> dict[str, object]:
     """Los equipos de una corrida compartida, como los enseña el monitoreo.
 
@@ -362,9 +692,17 @@ def resumen_de_los_equipos(
     uniendo, que todavía late sin corrida --, luego los vivos, luego el
     propio, y después por nombre y por id: los latidos que quedaron de otra
     corrida o de otra versión van al final, aparte y sin acciones.
+
+    Desde el 2026-11-27, con ``creador_id`` y ``creador_nombre`` -- los de
+    ``corrida.json`` --, la cabecera dice quién es el ``principal``
+    (``principal_de``, sobre esta misma foto), la ``velocidad`` de la corrida
+    (``velocidad_de_la_corrida``) y el ``aviso_de_recursos``.
     """
+    principal = principal_de(latidos, creador_id=creador_id, creador_nombre=creador_nombre, corrida=corrida)
     equipos = [
-        _equipo_en_la_pantalla(str(id_), latido, este=este, corrida=corrida, version=version, activa=activa)
+        _equipo_en_la_pantalla(
+            str(id_), latido, este=este, corrida=corrida, version=version, activa=activa, principal=principal
+        )
         for id_, latido in latidos.items()
     ]
     equipos.sort(
@@ -382,5 +720,23 @@ def resumen_de_los_equipos(
         "version": version,
         "este": este,
         "activa": activa,
+        "principal": principal,
+        "velocidad": velocidad_de_la_corrida(equipos),
+        "aviso_de_recursos": aviso_de_recursos(equipos, principal),
         "equipos": equipos,
+    }
+
+
+def resumen_de_la_corrida_sola(*, version: str, activa: bool) -> dict[str, object]:
+    """Lo que contesta el monitoreo de una corrida que va sola: sin equipos, sin principal y sin velocidad."""
+    return {
+        "compartida": False,
+        "corrida": None,
+        "version": version,
+        "este": None,
+        "activa": activa,
+        "principal": None,
+        "velocidad": velocidad_de_la_corrida([]),
+        "aviso_de_recursos": None,
+        "equipos": [],
     }

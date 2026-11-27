@@ -17,7 +17,9 @@ Lo que fija cada clase:
 - ``TestElExpedienteSinReleer``: sin un RE corregible no se abre ningún PDF; con
   las citas guardadas en la constancia se corrige igual, sin abrirlos.
 - ``TestLosGeneralesDeUnoSolo``: con varios equipos, los de a mitad de corrida
-  los escribe sólo el del rol «generales», sin el índice general.
+  los escribe sólo el principal (2026-11-27; antes, el del rol «generales»),
+  sin el índice general y sin pedir ningún rol; uno que no lo es, tampoco al
+  detenerse.
 - ``TestLaSegundaPasada``: los reclamos de los demás se miran antes de encolar;
   lo hecho se cuenta, y el que cierra lee su constancia.
 - ``TestElArchivoRetenido``: EAGAIN y EBUSY del cliente SMB se reintentan.
@@ -637,13 +639,28 @@ class TestElExpedienteSinReleer:
 class _CoordinacionDePrueba:
     """Lo que la corrida le pide a la coordinación, sin disco: para las decisiones de cada equipo."""
 
-    def __init__(self, *, rol: bool, estados: dict[str, object] | None = None, vivos: int = 3) -> None:
-        self.rol = rol
+    id = "PC0"
+
+    def __init__(
+        self, *, principal: bool, estados: dict[str, object] | None = None, vivos: int = 3, sin_principal: bool = False
+    ) -> None:
+        self.es_principal = principal
+        #: Con «Parar todos con calma» nadie es principal: ``principal()`` es ``None``.
+        self.sin_principal = sin_principal
         self.estados = estados or {}
         self.retirado = False
         self.desplazado = False
         self.vivos = vivos
         self.roles_pedidos: list[str] = []
+        self.turnos_pedidos: list[str] = []
+
+    def principal(self) -> str | None:
+        if self.sin_principal:
+            return None
+        return self.id if self.es_principal else "PC1"
+
+    def soy_principal(self) -> bool:
+        return self.principal() == self.id
 
     def vigente(self) -> bool:
         return True
@@ -659,9 +676,10 @@ class _CoordinacionDePrueba:
 
     def tomar_rol(self, nombre: str) -> bool:
         self.roles_pedidos.append(nombre)
-        return self.rol
+        return self.es_principal
 
     def cerrojo(self, nombre: str, **_):
+        self.turnos_pedidos.append(nombre)
         return contextlib.nullcontext()
 
     def estado_de(self, relativa: str):
@@ -675,22 +693,45 @@ class TestLosGeneralesDeUnoSolo:
         run.coordinacion = coordinacion
         return run
 
-    def test_a_mitad_los_escribe_solo_el_del_rol_y_sin_el_indice_general(self, ajustes, tmp_path, monkeypatch):
+    def test_a_mitad_los_escribe_solo_el_principal_y_sin_el_indice_general(self, ajustes, tmp_path, monkeypatch):
         motor = _motor(ajustes, {})
         escritos: list[bool] = []
         monkeypatch.setattr(motor, "_escribir_generales", lambda run, con_indice=True: escritos.append(con_indice))
         monkeypatch.setattr(motor, "_escribir_control", lambda run: None)
-        # Sin el rol: no escribe, ni pregunta por el turno, y no lo reintenta en el acto.
-        run = self._corrida(tmp_path, _CoordinacionDePrueba(rol=False))
+        # El que no es el principal: no escribe, ni pregunta por el turno, y no lo reintenta en el acto.
+        otro = _CoordinacionDePrueba(principal=False)
+        run = self._corrida(tmp_path, otro)
         motor._escribir_todo_lo_general(run, a_mitad=True)
-        assert escritos == [] and run.generales_en > 0
-        # Con el rol: escribe, sin el índice general.
-        run = self._corrida(tmp_path, _CoordinacionDePrueba(rol=True))
+        assert escritos == [] and run.generales_en > 0 and otro.turnos_pedidos == []
+        # Tampoco al detenerse (2026-11-27): lo inventariado lo escribe el principal.
+        for lo_demas in ("_escribir_inventario_de_actas", "_write_manifest", "_limpiar_las_copias"):
+            monkeypatch.setattr(motor, lo_demas, lambda run, **_: None)
+        motor._dejar_escrito_al_detener(run)
+        assert escritos == [] and otro.turnos_pedidos == []
+        # El principal: escribe con el turno de los generales, sin el índice general.
+        principal = _CoordinacionDePrueba(principal=True)
+        run = self._corrida(tmp_path, principal)
         motor._escribir_todo_lo_general(run, a_mitad=True)
-        assert escritos == [False]
+        assert escritos == [False] and principal.turnos_pedidos == ["generales"]
         # Los definitivos (el que cierra): con todo.
         motor._escribir_todo_lo_general(run)
         assert escritos == [False, True]
+        # Ya no hay rol «generales»: nadie lo pide (se quedaba para siempre en un equipo).
+        assert otro.roles_pedidos == [] and principal.roles_pedidos == []
+
+    def test_sin_principal_los_escribe_cualquiera_con_el_turno(self, ajustes, tmp_path, monkeypatch):
+        # «Parar todos con calma» -- la manera de actualizar -- deja a todos con
+        # orden y a nadie de principal: los generales de a mitad y al detenerse
+        # los escribe cualquiera, de uno en uno con el turno «generales». Antes
+        # de este arreglo nadie los escribía (2026-11-27).
+        motor = _motor(ajustes, {})
+        escritos: list[bool] = []
+        monkeypatch.setattr(motor, "_escribir_generales", lambda run, con_indice=True: escritos.append(con_indice))
+        monkeypatch.setattr(motor, "_escribir_control", lambda run: None)
+        nadie = _CoordinacionDePrueba(principal=False, sin_principal=True)
+        run = self._corrida(tmp_path, nadie)
+        motor._escribir_todo_lo_general(run, a_mitad=True)
+        assert escritos == [False] and nadie.turnos_pedidos == ["generales"]
 
     def test_un_equipo_solo_los_escribe_como_siempre(self, ajustes, tmp_path, monkeypatch):
         motor = _motor(ajustes, {})
@@ -700,8 +741,9 @@ class TestLosGeneralesDeUnoSolo:
         run = self._corrida(tmp_path, None)
         motor._escribir_todo_lo_general(run, a_mitad=True)
         assert escritos == [True]
-        # Con la coordinación en «auto» pero solo en el destino: también con todo.
-        run = self._corrida(tmp_path, _CoordinacionDePrueba(rol=True, vivos=1))
+        # Con la coordinación en «auto» pero solo en el destino: también con todo,
+        # sea o no el principal (solo, lo es).
+        run = self._corrida(tmp_path, _CoordinacionDePrueba(principal=False, vivos=1))
         motor._escribir_todo_lo_general(run, a_mitad=True)
         assert escritos == [True, True]
 
@@ -716,7 +758,7 @@ class TestLaSegundaPasada:
             "1/FALLO.pdf": Ajeno(equipo="PC4", estado="falló", error="Mistral no respondió"),
         }
         run = FolderRun(id="r1", source=origen, destination=destino, task="segment")
-        run.coordinacion = _CoordinacionDePrueba(rol=False, estados=estados)
+        run.coordinacion = _CoordinacionDePrueba(principal=False, estados=estados)
         segunda = [origen / "1" / nombre for nombre in ("HECHO.pdf", "EN-CURSO.pdf", "FALLO.pdf", "LIBRE.pdf")]
         quedan = motor._clasificar_la_segunda_pasada(run, segunda)
         assert [p.name for p in quedan] == ["LIBRE.pdf"]

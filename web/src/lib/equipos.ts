@@ -8,9 +8,16 @@
  * si se le puede ordenar parar -- las da el servicio
  * (`GET /api/folder-runs/{id}/equipos`); aquí se arman las frases, el orden y a
  * quién se le ofrece cada botón.
+ *
+ * Desde el 2026-11-27, también la velocidad en PDF por minuto -- la de ahora y
+ * la acumulada, en total y por PC --, quién es el principal y los recursos de
+ * cada PC. El operador: «llevar un promedio de velocidad de procesamiento de
+ * archivos por minuto contando los PC activos», y el principal «deberá tener
+ * más capacidad de recursos, RAM, disco». Las sumas, los promedios y el aviso
+ * los hace el servicio; aquí, otra vez, sólo las palabras.
  */
 import type { Pregunta } from './confirmar.svelte';
-import type { EquipoDeLaCorrida, OrdenDeParar } from './types';
+import type { EquipoDeLaCorrida, EquiposDeLaCorrida, OrdenDeParar, RecursosDelEquipo } from './types';
 
 /** El tono del punto de estado; la palabra de al lado dice siempre cuál es. */
 export type Tono = 'good' | 'warn' | 'bad';
@@ -32,6 +39,13 @@ export interface AccionesDelEquipo {
 }
 
 const MILES = new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 });
+/** Siempre un decimal, con la coma: «1,5», «18,4», «3,0». */
+const UN_DECIMAL = new Intl.NumberFormat('es-CO', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+
+/** El número, o null si no lo hay: null, ausente, NaN o infinito. */
+function numero(valor: number | null | undefined): number | null {
+  return valor != null && Number.isFinite(valor) ? valor : null;
+}
 
 /** «uniéndose» y «uniendose» son lo mismo: se compara sin tildes ni mayúsculas. */
 function plano(texto: string | null | undefined): string {
@@ -63,10 +77,120 @@ export function haceCuanto(segundos: number | null | undefined): string {
   return `hace ${Math.floor(s / 3600)} h`;
 }
 
-/** «88 PDF/h», «1.096 PDF/h»; «—» mientras el servicio no lo sabe (menos de 5 min en la corrida). */
-export function ritmo(pdfPorHora: number | null | undefined): string {
-  if (pdfPorHora == null || !Number.isFinite(pdfPorHora)) return '—';
-  return `${MILES.format(Math.round(pdfPorHora))} PDF/h`;
+/**
+ * «1,5 PDF/min», «18,4 PDF/min»: la velocidad con un decimal y la coma. Era
+ * «88 PDF/h» hasta el 2026-11-27, cuando el operador la pidió por minuto. «—»
+ * mientras el servicio no la sabe.
+ */
+export function porMinuto(pdfPorMinuto: number | null | undefined): string {
+  const valor = numero(pdfPorMinuto);
+  return valor == null ? '—' : `${UN_DECIMAL.format(valor)} PDF/min`;
+}
+
+/** Lo de un servicio anterior al 2026-11-27, que sólo daba el ritmo por hora: entre 60. */
+function porHoraEnMinutos(equipo: EquipoDeLaCorrida): number | null {
+  const porHora = numero(equipo.pdf_por_hora);
+  return porHora == null ? null : porHora / 60;
+}
+
+/**
+ * Lo que procesa ahora, en PDF por minuto: lo de sus últimos 10 min, o null en
+ * sus 2 primeros minutos. Sólo si el servicio no lo trae -- uno anterior --,
+ * su ritmo por hora entre 60: un null del servicio de hoy no se rellena.
+ */
+function ahoraDe(equipo: EquipoDeLaCorrida): number | null {
+  return equipo.pdf_por_minuto === undefined ? porHoraEnMinutos(equipo) : numero(equipo.pdf_por_minuto);
+}
+
+/**
+ * Su promedio desde que se unió, en PDF por minuto; null en sus 5 primeros
+ * minutos. Con un servicio anterior, su ritmo por hora entre 60, que era lo
+ * mismo contado con lo hecho.
+ */
+export function promedioDe(equipo: EquipoDeLaCorrida): number | null {
+  return equipo.pdf_por_minuto_promedio === undefined
+    ? porHoraEnMinutos(equipo)
+    : numero(equipo.pdf_por_minuto_promedio);
+}
+
+// -- los recursos de cada PC (2026-11-27) -----------------------------------------------
+//
+// El operador: el principal «deberá tener más capacidad de recursos, RAM,
+// disco». Cada latido trae lo que el PC midió de sí mismo; las cifras van en
+// base 1024 y con coma, como `tamanoLegible` de `velocidad.ts`.
+
+const GB = 1024 ** 3;
+/** Con menos de esto libre en el disco, el PC va justo. */
+const DISCO_JUSTO = 10 * GB;
+/** Y con la RAM a este porcentaje o más. */
+const RAM_JUSTA = 90;
+/** Hasta un decimal, como el aviso de recursos del servicio: «12,4», «16». */
+const HASTA_UN_DECIMAL = new Intl.NumberFormat('es-CO', { maximumFractionDigits: 1 });
+
+/** Bytes en GB, como los dice el aviso del servicio («16 GB», «7,7 GB»): «12,4», «16». */
+function gigas(bytes: number): string {
+  return HASTA_UN_DECIMAL.format(bytes / GB);
+}
+
+/**
+ * Lo libre del disco en GB, hacia abajo para no prometer lo que no hay: «120»;
+ * por debajo de 10, con su decimal: «8,5».
+ */
+function gigasLibres(bytes: number): string {
+  const gb = Math.max(0, bytes) / GB;
+  return gb < 10 ? HASTA_UN_DECIMAL.format(Math.floor(gb * 10) / 10) : MILES.format(Math.floor(gb));
+}
+
+/**
+ * Los recursos de un PC en trozos, en este orden: «12 núcleos», «RAM 12,4 /
+ * 15,5 GB», «disco 120 GB libres» y «CPU 73 %». Lo que no se midió no sale.
+ */
+export function partesDeRecursos(recursos: RecursosDelEquipo | null | undefined): string[] {
+  if (!recursos) return [];
+  const partes: string[] = [];
+  const nucleos = numero(recursos.nucleos);
+  if (nucleos != null) partes.push(`${MILES.format(nucleos)} ${nucleos === 1 ? 'núcleo' : 'núcleos'}`);
+  const usada = numero(recursos.memoria_usada);
+  const total = numero(recursos.memoria_total);
+  if (usada != null && total != null) partes.push(`RAM ${gigas(usada)} / ${gigas(total)} GB`);
+  else if (total != null) partes.push(`RAM ${gigas(total)} GB`);
+  else if (usada != null) partes.push(`RAM ${gigas(usada)} GB en uso`);
+  const libre = numero(recursos.disco_libre);
+  if (libre != null) partes.push(`disco ${gigasLibres(libre)} GB libres`);
+  const cpu = numero(recursos.cpu);
+  if (cpu != null) partes.push(`CPU ${MILES.format(cpu)} %`);
+  return partes;
+}
+
+/** «12 núcleos · RAM 12,4 / 15,5 GB · disco 120 GB libres · CPU 73 %»; «—» si no midió nada. */
+export function recursosDe(recursos: RecursosDelEquipo | null | undefined): string {
+  const partes = partesDeRecursos(recursos);
+  return partes.length ? partes.join(' · ') : '—';
+}
+
+/**
+ * Por qué un PC va justo, en palabras: «La RAM está al 93 %.», «Quedan 8,5 GB
+ * libres en el disco.» o las dos juntas; null si va holgado o no se sabe. Justo
+ * es con la RAM al 90 % o más, o con menos de 10 GB libres en el disco.
+ */
+export function alertaDeRecursos(recursos: RecursosDelEquipo | null | undefined): string | null {
+  if (!recursos) return null;
+  const avisos: string[] = [];
+  const usada = numero(recursos.memoria_usada);
+  const total = numero(recursos.memoria_total);
+  const porcentaje = usada != null && total != null && total > 0 ? (100 * usada) / total : null;
+  // Hacia abajo, como lo libre del disco: un 89,9 % no se dice 90 %.
+  if (porcentaje != null && porcentaje >= RAM_JUSTA) avisos.push(`la RAM está al ${Math.floor(porcentaje)} %`);
+  const libre = numero(recursos.disco_libre);
+  if (libre != null && libre < DISCO_JUSTO) avisos.push(`quedan ${gigasLibres(libre)} GB libres en el disco`);
+  if (!avisos.length) return null;
+  const frase = avisos.join(' y ');
+  return `${frase[0].toUpperCase()}${frase.slice(1)}.`;
+}
+
+/** Si un PC va justo de RAM o de disco: su casilla de recursos se marca en la tabla. */
+export function recursosEnAlerta(recursos: RecursosDelEquipo | null | undefined): boolean {
+  return alertaDeRecursos(recursos) !== null;
 }
 
 /** Quién dio la orden: el equipo desde el que se dio, si no su id, si no el operador. */
@@ -186,20 +310,107 @@ export function separar(equipos: readonly EquipoDeLaCorrida[]): {
 }
 
 /**
- * «6 vivos · 1.096 PDF/h», con «1 caído» si lo hay: sólo los de esta corrida
- * que no se retiraron, y el ritmo sumado de los vivos que ya lo tienen.
+ * «6 vivos · 18,3 PDF/min», con «1 caído» si lo hay: sólo los de esta corrida
+ * que no se retiraron, y lo que procesan ahora, sumado, los vivos que ya lo
+ * tienen. Hasta el 2026-11-27 decía «1.096 PDF/h».
  */
 export function resumen(equipos: readonly EquipoDeLaCorrida[]): string {
   const enLaCorrida = equipos.filter((equipo) => esDeEstaCorrida(equipo) && !terminado(equipo));
   const vivos = enLaCorrida.filter((equipo) => equipo.vivo);
   const caidos = enLaCorrida.length - vivos.length;
-  const ritmos = vivos.flatMap((equipo) =>
-    equipo.pdf_por_hora != null && Number.isFinite(equipo.pdf_por_hora) ? [equipo.pdf_por_hora] : []
-  );
+  const ritmos = vivos.flatMap((equipo) => {
+    const ahora = ahoraDe(equipo);
+    return ahora == null ? [] : [ahora];
+  });
   const partes = [`${vivos.length} ${vivos.length === 1 ? 'vivo' : 'vivos'}`];
   if (caidos) partes.push(`${caidos} ${caidos === 1 ? 'caído' : 'caídos'}`);
-  if (ritmos.length) partes.push(ritmo(ritmos.reduce((suma, valor) => suma + valor, 0)));
+  if (ritmos.length) partes.push(porMinuto(ritmos.reduce((suma, valor) => suma + valor, 0)));
   return partes.join(' · ');
+}
+
+/** Una cifra de la fila de arriba: rótulo, valor y la nota de debajo. */
+export interface LineaDeVelocidad {
+  clave: 'ahora' | 'por-pc' | 'acumulado' | 'principal';
+  rotulo: string;
+  valor: string;
+  nota: string | null;
+}
+
+/** El principal entre los equipos de la lista: por el id de la cabecera o, si no está, por su marca. */
+function principalDe(datos: EquiposDeLaCorrida): EquipoDeLaCorrida | null {
+  return (
+    datos.equipos.find((equipo) => equipo.id === datos.principal) ??
+    datos.equipos.find((equipo) => equipo.principal) ??
+    null
+  );
+}
+
+/**
+ * La fila de cifras de la corrida compartida (2026-11-27): «Ahora: 18,4
+ * PDF/min entre 6 PC», «Promedio por PC: 3,1 PDF/min», «Acumulado: 17,9
+ * PDF/min» (con lo que toca a cada PC en la nota) y «Principal: SIAR
+ * (ad21be)». Los totales y los promedios son del servicio (`velocidad`): aquí
+ * sólo se dicen.
+ *
+ * Con `enVivo` falso -- la corrida terminada, la foto -- no hay «ahora»: sólo
+ * lo acumulado y el principal, si se saben. Una corrida que va sola, o un
+ * servicio anterior, no tiene fila.
+ */
+export function lineasDeVelocidad(datos: EquiposDeLaCorrida, enVivo = true): LineaDeVelocidad[] {
+  if (!datos.compartida) return [];
+  const lineas: LineaDeVelocidad[] = [];
+  const velocidad = datos.velocidad;
+  if (velocidad) {
+    const activos = velocidad.pc_activos;
+    // Sin cifra: o ninguno lleva sus 2 min (5 para la acumulada), o no queda ninguno.
+    const sinCifra = activos > 0 ? 'midiendo…' : 'ningún PC activo';
+    if (enVivo) {
+      const total = numero(velocidad.actual.total);
+      const porPc = numero(velocidad.actual.por_pc);
+      // Entre cuántos se repartió de verdad: un PC recién unido todavía mide y
+      // no entra en el promedio; dividir el total entre todos los activos no
+      // cuadraba con «por PC» (2026-11-27).
+      const conCifra = typeof velocidad.actual.pc === 'number' ? velocidad.actual.pc : activos;
+      const midiendo = Math.max(0, activos - conCifra);
+      let nota = conCifra === 1 ? 'en 1 PC' : `entre ${MILES.format(conCifra)} PC`;
+      if (midiendo > 0) nota += ` (${MILES.format(midiendo)} midiendo)`;
+      lineas.push({
+        clave: 'ahora',
+        rotulo: 'Ahora',
+        valor: porMinuto(total),
+        nota: total == null ? sinCifra : nota
+      });
+      lineas.push({
+        clave: 'por-pc',
+        rotulo: 'Ahora por PC',
+        valor: porMinuto(porPc),
+        nota: porPc == null ? sinCifra : 'lo que procesa cada PC ahora'
+      });
+    }
+    const acumulado = numero(velocidad.acumulada.total);
+    if (enVivo || acumulado != null) {
+      const porPc = numero(velocidad.acumulada.por_pc);
+      let nota = sinCifra;
+      if (acumulado != null) {
+        nota = porPc == null ? 'desde que se unió cada PC' : `${porMinuto(porPc)} por PC, desde que se unió cada uno`;
+      }
+      lineas.push({ clave: 'acumulado', rotulo: 'Acumulado', valor: porMinuto(acumulado), nota });
+    }
+  }
+  if (datos.principal !== undefined) {
+    const principal = principalDe(datos);
+    const quien = principal ? rotuloDe(principal) : datos.principal;
+    if (quien || enVivo) {
+      // Sin principal con PC vivos: se están uniendo o todos tienen orden de
+      // parar (el paso de «Parar todos con calma»); decir «ninguno vivo» engañaba.
+      let nota = (velocidad?.pc_activos ?? 0) > 0 ? 'eligiendo… (se están uniendo o deteniendo)' : 'ninguno vivo ahora';
+      if (quien) {
+        nota = `${principal?.este ? 'es este equipo: ' : ''}escribe los Excel generales y cierra la corrida`;
+      }
+      lineas.push({ clave: 'principal', rotulo: 'Principal', valor: quien ?? '—', nota });
+    }
+  }
+  return lineas;
 }
 
 /**

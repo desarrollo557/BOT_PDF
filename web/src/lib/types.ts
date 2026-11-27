@@ -967,6 +967,67 @@ export interface EquipoDeLaCorrida {
   /** Si se le puede ordenar parar; si no, `por_que_no` lo dice en palabras. */
   se_puede_parar: boolean;
   por_que_no: string | null;
+  /**
+   * Si es el principal (2026-11-27): el primero en lanzar la corrida -- si
+   * cae, el que lleva más tiempo en ella --, que escribe los Excel generales y
+   * la cierra. Ausente en un servicio anterior.
+   */
+  principal?: boolean;
+  /**
+   * Los PDF que este equipo procesó y entregó, sin los que encontró ya
+   * entregados. Ausente en un servicio anterior.
+   */
+  entregados?: number;
+  /**
+   * Lo que procesa ahora, en PDF por minuto: los últimos 10 min, o desde que se
+   * unió si va menos; null en sus 2 primeros minutos. Ausente en un servicio
+   * anterior.
+   */
+  pdf_por_minuto?: number | null;
+  /**
+   * Su promedio desde que se unió, en PDF por minuto y con su propio reloj;
+   * null en sus 5 primeros minutos. Ausente en un servicio anterior.
+   */
+  pdf_por_minuto_promedio?: number | null;
+  /** Lo que midió de sí mismo en su último latido; null si no midió. Ausente en un servicio anterior. */
+  recursos?: RecursosDelEquipo | null;
+}
+
+/**
+ * Lo que mide un equipo de sí mismo en cada latido (2026-11-27): la RAM, el
+ * disco y la CPU, para ver si el principal es el que más tiene. Lo que no se
+ * pudo medir llega en null.
+ */
+export interface RecursosDelEquipo {
+  nucleos: number | null;
+  /** El uso de la CPU, de 0 a 100. */
+  cpu: number | null;
+  /** La carga media del último minuto; null donde no se mide (Windows). */
+  carga: number | null;
+  /** Bytes de RAM en uso y en total: la que ve Docker, que es lo que el bot puede usar. */
+  memoria_usada: number | null;
+  memoria_total: number | null;
+  /** Bytes libres y en total del disco medido. */
+  disco_libre: number | null;
+  disco_total: number | null;
+  /** Qué disco se midió: «/equipo/c» (el C: del equipo) o la carpeta de datos. */
+  disco: string | null;
+}
+
+/**
+ * La velocidad de una corrida compartida, en PDF por minuto (2026-11-27). El
+ * operador: «llevar un promedio de velocidad de procesamiento de archivos por
+ * minuto contando los PC activos». Cada una con el total de los PC que ya la
+ * tienen y lo que toca a cada uno; null si ninguno la tiene todavía.
+ */
+export interface VelocidadDeLaCorrida {
+  /** Los vivos de esta corrida, sin los que terminaron. `pc` de cada cifra: entre cuántos se
+   * repartió (los que ya tienen cifra); ausente en un servicio anterior. */
+  pc_activos: number;
+  /** La de ahora: los últimos 10 min de cada PC. */
+  actual: { total: number | null; por_pc: number | null; pc?: number };
+  /** La acumulada: lo que entregó cada PC desde que se unió. */
+  acumulada: { total: number | null; por_pc: number | null; pc?: number };
 }
 
 /** Quién está conectado a la corrida compartida (2026-11-26), en el orden en que se enseña. */
@@ -978,6 +1039,19 @@ export interface EquiposDeLaCorrida {
   /** El id de este equipo; null si la corrida no es compartida. */
   este: string | null;
   activa: boolean;
+  /**
+   * El id del principal (2026-11-27); null si la corrida va sola o si ningún
+   * vivo puede serlo. Ausente en un servicio anterior.
+   */
+  principal?: string | null;
+  /** La velocidad de ahora y la acumulada. Ausente en un servicio anterior. */
+  velocidad?: VelocidadDeLaCorrida;
+  /**
+   * «El principal SIAR (ad21be) tiene menos RAM (8 GB) que COORDINADORTIC (16
+   * GB): conviene lanzar primero en el PC con más recursos.»; null si no hace
+   * falta. Ausente en un servicio anterior.
+   */
+  aviso_de_recursos?: string | null;
   equipos: EquipoDeLaCorrida[];
 }
 

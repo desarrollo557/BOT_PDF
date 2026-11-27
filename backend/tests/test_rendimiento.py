@@ -3,6 +3,10 @@
 El operador lo pidió para «tener todo muy bien controlado»: ese mismo día el
 otro equipo se ahogó con diez PDF de 200 MB a la vez y sólo se supo por los
 registros del servicio.
+
+Desde el 2026-11-27 lo del equipo lo mide ``adapters.recursos_del_equipo`` (ver
+``test_recursos_del_equipo.py``), con un medidor de CPU propio de esta
+pantalla: las respuestas no cambian.
 """
 
 from __future__ import annotations
@@ -11,12 +15,13 @@ import sys
 
 import pytest
 
+from resolutions.adapters import recursos_del_equipo
 from resolutions.api.routers import rendimiento
 
 
 @pytest.fixture(autouse=True)
 def _desde_cero(monkeypatch):
-    monkeypatch.setattr(rendimiento, "_cpu_antes", None)
+    monkeypatch.setattr(rendimiento, "_medidor_de_cpu", recursos_del_equipo.MedidorDeCpu())
     rendimiento._muestras.clear()
 
 
@@ -36,6 +41,22 @@ class TestElEndpoint:
             # En el contenedor se mide todo; en Windows sin Docker, lo que no hay es None.
             assert segunda["equipo"]["memoria_total"] > segunda["equipo"]["memoria_usada"] > 0
             assert segunda["bot"]["memoria"] > 0
+        else:
+            assert segunda["equipo"]["cpu"] is None and segunda["equipo"]["memoria_total"] is None
+        assert segunda["equipo"]["nucleos"] == recursos_del_equipo.nucleos()
+
+    def test_la_cpu_de_la_pantalla_no_le_roba_la_muestra_al_latido(self, client, tmp_path, monkeypatch):
+        # Antes la muestra anterior era una variable global: el latido de la
+        # corrida compartida, midiendo también, se la habría llevado.
+        (tmp_path / "stat").write_text("cpu  100 0 100 800 0 0 0 0 0 0\n", encoding="ascii")
+        monkeypatch.setattr(recursos_del_equipo, "PROC", tmp_path)
+        del_latido = recursos_del_equipo.MedidorDeCpu()
+        assert del_latido.medir() is None
+        client.get("/api/rendimiento")
+        (tmp_path / "stat").write_text("cpu  150 0 150 900 0 0 0 0 0 0\n", encoding="ascii")
+        assert client.get("/api/rendimiento").json()["equipo"]["cpu"] == 50.0
+        # El del latido compara con su propia muestra, no con la de la pantalla.
+        assert del_latido.medir() == 50.0
 
 
 class TestElRitmo:
