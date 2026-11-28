@@ -22,6 +22,7 @@ escribe, no se mueve y no se borra.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import logging
 import os
@@ -31,10 +32,12 @@ import sys
 import threading
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+
+from .copia_vigilada import CopiaSinAvance, Vigilancia, vigilado
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +66,17 @@ ESPERAS_SIN_CREDITOS = (0.5, 1.0, 2.0, 4.0, 8.0)
 #: mientras se copiaba, nadie más podía abrirlo (2026-10-29). El bot sólo lee,
 #: y la copia se comprueba por tamaño al terminar.
 COMPARTIDO = "rwd"
+#: Cuánto se espera, como mucho, el listado de una carpeta pedido por delante
+#: (``iterar_carpetas``): uno tarda 21 ms; cinco minutos es un servidor colgado.
+SEGUNDOS_PARA_LISTAR = 300.0
+#: El tiempo de recepción del cliente SMB (``smbprotocol`` 1.17, variable de
+#: entorno experimental que lee al crear cada conexión). Con el servidor
+#: callado ese tiempo, el cliente le manda un eco; si tampoco lo contesta en
+#: otro tanto, cierra la conexión y suelta las peticiones que la esperaban.
+#: Por omisión son 600 s: veinte minutos colgado antes de enterarse. Aquí 120,
+#: cuatro minutos; el operador puede fijar otro en el entorno (2026-11-28).
+SEGUNDOS_DE_RECEPCION = "120"
+os.environ.setdefault("SMB_EXPERIMENTAL_TRANSPORT_RECEIVE_TIMEOUT", SEGUNDOS_DE_RECEPCION)
 
 
 class CredencialesDeRed(Exception):
@@ -81,6 +95,16 @@ class CredencialesDeRed(Exception):
 
 class RedNoDisponible(OSError):
     """El servidor no contesta o el recurso compartido no existe."""
+
+
+class RedSinAvance(RedNoDisponible, TimeoutError):
+    """La red dejó de contestar a mitad de una copia o de un listado (2026-11-28).
+
+    También un ``TimeoutError``: un fallo pasajero que se reintenta
+    (``api/reintentos.es_transitorio``), y no un PDF dañado.
+    """
+
+    para_el_operador = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -708,6 +732,14 @@ def iterar_carpetas(
             p, carpeta, listado = ventana.popleft()
             # La que sale deja sitio a la siguiente: siempre «tope» por delante.
             pedir_la_siguiente()
+            # Con tope (2026-11-28): un servidor colgado dejaba el recorrido
+            # esperando este listado para siempre. Pasado, sube como fallo de
+            # la red -- el recorrido entero se reintenta -- y no como una
+            # carpeta que no se deja leer: ésa se saltaría.
+            if not wait([listado], timeout=SEGUNDOS_PARA_LISTAR).done:
+                raise RedSinAvance(
+                    f"El servidor {p.servidor} no contestó en {SEGUNDOS_PARA_LISTAR:.0f} s al listar {carpeta}"
+                )
             try:
                 entradas = listado.result()
             except Exception as error:  # noqa: BLE001 - se avisa o se traduce
@@ -875,13 +907,90 @@ def traer(
     tiene su turno --, y después en cada bloque. Si la copia se repite -- la
     red se cortó --, vuelve a empezar de 0. Para que la pantalla diga cuánto
     lleva bajado (el operador, 2026-11-09).
-    """
-    import time
 
+    Vigilada (2026-11-28, ``copia_vigilada``): si pasan dos minutos sin mover
+    un byte, ``RedSinAvance`` -- pasajero, se reintenta -- en vez de esperar
+    para siempre a un servidor que no contesta.
+    """
     import smbclient
 
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    parcial = destino.with_name(destino.name + ".part")
+    def bajar(vigilancia: Vigilancia) -> int:
+        def copiar(p: Partes, cuenta: dict) -> int:
+            vigilancia.latir()
+            with smbclient.open_file(p.unc, mode="rb", share_access=COMPARTIDO, **cuenta) as origen:
+                _volcar(origen, destino, vigilancia, al_copiar, al_avanzar)
+            vigilancia.latir()
+            return int(smbclient.stat(p.unc, **cuenta).st_size)
+
+        p = partes(ruta)
+        return _con_su_turno(p.servidor if p else "", vigilancia, lambda: _llamar(ruta, copiar))
+
+    return _traer_vigilado(ruta, destino, bajar)
+
+
+def traer_del_sistema(
+    ruta: str | Path,
+    destino: Path,
+    al_copiar: Callable[[int, float, float], None] | None = None,
+    *,
+    al_avanzar: Callable[[int, int], None] | None = None,
+) -> Path:
+    """Como ``traer``, pero el archivo lo abre el sistema: una carpeta de red en Windows (2026-11-28).
+
+    En Windows, sin Docker, «\\\\servidor\\recurso\\…» o una unidad de red («Z:»)
+    las abre el sistema, y el worker leía el PDF directamente de la red: una
+    red que se quedaba callada lo congelaba dentro del lector nativo, donde ni
+    la orden de parar llega. Copiado antes a local, con la copia vigilada, la
+    red sólo se espera aquí, donde un corte es un fallo pasajero que se reintenta.
+    """
+    ruta = str(ruta)
+
+    def bajar(vigilancia: Vigilancia) -> int:
+        def copiar() -> int:
+            vigilancia.latir()
+            with open(ruta, "rb") as origen:
+                _volcar(origen, destino, vigilancia, al_copiar, al_avanzar)
+            vigilancia.latir()
+            return os.stat(ruta).st_size
+
+        return _con_su_turno(_servidor_de(ruta), vigilancia, copiar)
+
+    return _traer_vigilado(ruta, destino, bajar)
+
+
+def _servidor_de(ruta: str) -> str:
+    """El servidor de una ruta de red («200.100.20.97») o su unidad («z:»): con quién se comparte el turno."""
+    p = partes(ruta)
+    if p is not None:
+        return p.servidor
+    unidad = re.match(r"^([A-Za-z]:)", ruta)
+    return unidad.group(1).lower() if unidad else ""
+
+
+def _con_su_turno(servidor: str, vigilancia: Vigilancia, hacer: Callable[[], int]) -> int:
+    """``hacer`` con el turno de descarga del servidor; esperarlo no cuenta como estar colgado."""
+    turno = _turno_de_descarga(servidor)
+    with vigilancia.esperando():
+        turno.acquire()
+    try:
+        return hacer()
+    finally:
+        turno.release()
+
+
+def _parcial_de(destino: Path) -> Path:
+    return destino.with_name(destino.name + ".part")
+
+
+def _volcar(
+    origen,
+    destino: Path,
+    vigilancia: Vigilancia,
+    al_copiar: Callable[[int, float, float], None] | None,
+    al_avanzar: Callable[[int, int], None] | None,
+) -> None:
+    """Copia ``origen`` (ya abierto) en el «.part» de ``destino``, latiendo con cada bloque."""
+    import time
 
     def avisar(copiados: int, total: int) -> None:
         if al_avanzar is None:
@@ -889,35 +998,45 @@ def traer(
         try:
             al_avanzar(copiados, total)
         except Exception:  # noqa: BLE001 - avisar nunca tumba una descarga
-            logger.debug("no se pudo avisar del avance de %s", ruta, exc_info=True)
+            logger.debug("no se pudo avisar del avance de %s", destino, exc_info=True)
 
-    def copiar(p: Partes, cuenta: dict) -> int:
-        with smbclient.open_file(p.unc, mode="rb", share_access=COMPARTIDO, **cuenta) as origen, parcial.open("wb") as copia:
-            total = _tamano_abierto(origen)
-            inicio = time.monotonic()
-            copiados = 0
+    parcial = _parcial_de(destino)
+    with parcial.open("wb") as copia:
+        total = _tamano_abierto(origen)
+        inicio = time.monotonic()
+        copiados = 0
+        avisar(copiados, total)
+        while bloque := origen.read(BLOQUE):
+            # Si ya la abandonaron por no avanzar, no escribe nada más.
+            vigilancia.latir()
+            copia.write(bloque)
+            copiados += len(bloque)
             avisar(copiados, total)
-            while bloque := origen.read(BLOQUE):
-                copia.write(bloque)
-                copiados += len(bloque)
-                avisar(copiados, total)
-            fin = time.monotonic()
-        if al_copiar is not None:
-            try:
-                al_copiar(parcial.stat().st_size, inicio, fin)
-            except Exception:  # noqa: BLE001 - medir nunca tumba una descarga
-                logger.debug("no se pudo anotar la velocidad de %s", ruta, exc_info=True)
-        return int(smbclient.stat(p.unc, **cuenta).st_size)
+        fin = time.monotonic()
+    if al_copiar is not None:
+        try:
+            al_copiar(parcial.stat().st_size, inicio, fin)
+        except Exception:  # noqa: BLE001 - medir nunca tumba una descarga
+            logger.debug("no se pudo anotar la velocidad de %s", destino, exc_info=True)
 
-    p = partes(ruta)
+
+def _traer_vigilado(ruta: str, destino: Path, bajar: Callable[[Vigilancia], int]) -> Path:
+    """La copia de ``bajar`` -- que devuelve el tamaño del original -- vigilada, comprobada y renombrada."""
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    parcial = _parcial_de(destino)
     try:
-        with _turno_de_descarga(p.servidor if p else ""):
-            tamano = _llamar(ruta, copiar)
+        try:
+            tamano = vigilado(bajar, que=f"La descarga de {ruta}")
+        except CopiaSinAvance as error:
+            raise RedSinAvance(str(error)) from error
         if parcial.stat().st_size != tamano:
             raise RedNoDisponible(f"La copia de {ruta} quedó incompleta; la red se cortó")
         os.replace(parcial, destino)
     finally:
-        parcial.unlink(missing_ok=True)
+        # Abandonada, la copia puede tener todavía el «.part» abierto (Windows no
+        # deja borrarlo): queda para la limpieza de las copias de la corrida.
+        with contextlib.suppress(OSError):
+            parcial.unlink(missing_ok=True)
     return destino
 
 

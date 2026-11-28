@@ -24,6 +24,7 @@ from uuid import uuid4
 
 from ..adapters import red_smb
 from ..adapters.coordinacion_en_disco import CerrojoOcupado, ReclamoPerdido
+from ..adapters.copia_vigilada import EscrituraVigilada, Vigilancia, vigilado
 from ..adapters.excel_inventory import (
     NOMBRE_DEL_CONTROL_DE_ENTREGA,
     NOMBRE_DEL_INVENTARIO_DE_PROCESOS,
@@ -209,6 +210,15 @@ ESPERA_TRAS_TROPIEZO = 30.0
 
 class EntregaIncompleta(RuntimeError):
     """La copia al destino no terminó: el documento cuenta como fallido."""
+
+    para_el_operador = True
+
+
+class SinRespuestaDeLaRed(TimeoutError):
+    """Lo que un PDF hacía contra la red -- bajarlo, entregarlo -- pasó de su tope (2026-11-28).
+
+    Un ``TimeoutError``: un fallo pasajero que vuelve en la vuelta de reintento.
+    """
 
     para_el_operador = True
 
@@ -434,6 +444,9 @@ class FolderRun:
     #: ``domain/ritmo.py`` y ``adapters/acceso.py``.
     origen_de_red: bool | None = None
     destino_de_red: bool | None = None
+    #: Si los PDF de un origen de red que abre el sistema (Windows: «\\servidor\…»
+    #: o «Z:») se procesan desde una copia local (2026-11-28). Se mira una vez.
+    copia_del_sistema: bool | None = None
     ritmo_de_lectura: Ritmo = field(default_factory=Ritmo, repr=False)
     ritmo_de_escritura: Ritmo = field(default_factory=Ritmo, repr=False)
     #: La prueba del arranque: su estado («midiendo», «hecha») y lo que dio.
@@ -886,6 +899,31 @@ _FIN_DEL_LISTADO = object()
 _NADA_TODAVIA = object()
 
 
+class _EsperaSinAvance:
+    """Cuánto lleva una espera de la corrida compartida sin que nada cambie (2026-11-28).
+
+    ``vencida`` anota lo que se ve: si cambió, o si ``avanza``, el reloj vuelve
+    a empezar. Dice si pasó ``tope`` sin ningún cambio.
+    """
+
+    def __init__(self, tope: float) -> None:
+        self.tope = tope
+        self._visto: object = None
+        self._desde = time.monotonic()
+
+    def vencida(self, visto: object, *, avanza: bool = False) -> bool:
+        ahora = time.monotonic()
+        if avanza or visto != self._visto:
+            self._visto, self._desde = visto, ahora
+            return False
+        return ahora - self._desde >= self.tope
+
+
+def _lo_que_cambia(id_: str, latido: Mapping[str, object]) -> tuple:
+    """Del latido de un equipo, lo que cambia cuando trabaja: lo hecho, lo que tiene en curso y su estado."""
+    return (id_, latido.get("hechos"), latido.get("en_curso_n"), tuple(latido.get("en_curso") or ()), latido.get("estado"))
+
+
 @dataclass(frozen=True, slots=True)
 class _FalloDelListado:
     """Lo que falló al listar el origen: sale por quien lee, detrás de lo ya listado."""
@@ -904,7 +942,17 @@ class _ListadoEnSuHilo:
     al listar sale por ``siguiente`` en su orden, detrás de lo ya listado.
     ``cerrar`` lo detiene: lo que tenía por delante se tira, y el hilo se va en
     cuanto vuelve del listado en que estaba.
+
+    Si el hilo lleva ``SEGUNDOS_SIN_NADA`` sin dar nada y sigue vivo -- colgado
+    en un listado de la red que no vuelve --, ``siguiente`` da el fallo del
+    listado (``TimeoutError``, un fallo de la red) en vez de esperarlo para
+    siempre: el recorrido se reintenta como cuando la unidad se desconecta
+    (2026-11-28).
     """
+
+    #: Lo más que se espera a que el listado dé algo: una carpeta de red tarda
+    #: 21 ms en listarse, así que diez minutos sin un solo PDF es un listado colgado.
+    SEGUNDOS_SIN_NADA = 600.0
 
     def __init__(self, fuente: Iterator, *, tope: int) -> None:
         self._cola: Queue = Queue(maxsize=max(1, tope))
@@ -941,8 +989,10 @@ class _ListadoEnSuHilo:
         """Lo siguiente: un (ruta, huella), ``_FIN_DEL_LISTADO`` o un ``_FalloDelListado``.
 
         Con ``espera``, como mucho esos segundos: pasados sin nada, ``_NADA_TODAVIA``.
+        Sin ella, como mucho ``SEGUNDOS_SIN_NADA``: pasados, el fallo del listado.
         """
-        limite = None if espera is None else time.monotonic() + espera
+        desde = time.monotonic()
+        limite = None if espera is None else desde + espera
         while True:
             paso = 0.5 if limite is None else min(0.5, max(0.0, limite - time.monotonic()))
             try:
@@ -954,6 +1004,15 @@ class _ListadoEnSuHilo:
             if not self._hilo.is_alive() and self._cola.empty():
                 # Se fue sin decir nada (no debería pasar): se recorre otra vez.
                 return _FalloDelListado(FolderError("El listado del origen se cortó sin terminar"))
+            if time.monotonic() - desde >= self.SEGUNDOS_SIN_NADA:
+                # Vivo y callado: un listado de la red que no vuelve. Se abandona
+                # (``cerrar`` lo para cuando vuelva) y se recorre otra vez.
+                return _FalloDelListado(
+                    TimeoutError(
+                        f"El listado del origen lleva {self.SEGUNDOS_SIN_NADA / 60:.0f} min sin dar nada: "
+                        "la red no contesta"
+                    )
+                )
 
     def cerrar(self) -> None:
         """Detiene el listado y tira lo que tenía por delante."""
@@ -1437,7 +1496,7 @@ class FolderRunner:
         except Exception:  # noqa: BLE001 - retirarse nunca tumba la corrida
             logger.warning("no se pudo retirar de la corrida compartida de %s", run.destination, exc_info=True)
 
-    def _unirse_a_la_corrida(self, run: FolderRun) -> None:
+    def _unirse_a_la_corrida(self, run: FolderRun, abandonada: threading.Event | None = None) -> None:
         """Se une a la corrida de los demás equipos sobre este destino, o la empieza.
 
         Las opciones y la versión del bot tienen que ser las de la corrida: si
@@ -1445,6 +1504,9 @@ class FolderRunner:
         carpeta saldría con otras reglas. Si el destino no deja coordinarse
         -- no garantiza la creación exclusiva --, con ``auto`` sigue sola y lo
         avisa; con ``si``, no corre.
+
+        ``abandonada``: quien esperaba esta unión ya no la espera (tardó más que
+        ``ESPERA_DE_LA_UNION``): si al final se une, se retira en el acto.
         """
         from ..adapters import recursos_del_equipo
         from ..adapters.coordinacion_en_disco import (
@@ -1475,6 +1537,9 @@ class FolderRunner:
         coordinacion = Coordinacion(
             run.destination, version=version_del_bot(), medir_recursos=medir_recursos, **ritmo
         )
+        # Si lo suyo avanza, en su latido (2026-11-28): los que lo esperan no
+        # cierran sin él mientras un libro largo sigue leyéndose.
+        coordinacion.medir_el_avance = partial(self._sin_avance_de_lo_suyo, run)
         try:
             corrida = coordinacion.unirse(opciones_de(run), origen=run.source.name or str(run.source))
         except DestinoNoCompartible as error:
@@ -1484,11 +1549,12 @@ class FolderRunner:
             return
         except CoordinacionRechazada as error:
             raise FolderError(str(error)) from None
-        if not run.active:
+        if not run.active or (abandonada is not None and abandonada.is_set()):
             # Se detuvo mientras se unía («Detener», o una orden recibida en la
             # unión): unirse tarda de segundos a minutos. Se retira ya; si no,
             # quedaba latiendo «procesando» sin nadie que la parara, y el que
-            # cierra la esperaba para siempre (2026-11-26).
+            # cierra la esperaba para siempre (2026-11-26). Lo mismo si la
+            # corrida dejó de esperar la unión y siguió sola (2026-11-28).
             coordinacion.parar()
             return
         run.coordinacion = coordinacion
@@ -1513,7 +1579,7 @@ class FolderRunner:
         try:
             if run.coordinacion is None and run.state is not RunState.FAILED:
                 try:
-                    await asyncio.to_thread(self._unirse_a_la_corrida, run)
+                    await self._unirse_con_tope(run)
                 except FolderError as error:
                     # No se reintenta: con otras opciones u otra versión, otra
                     # vuelta daría lo mismo. Se dice por qué y se para.
@@ -1526,14 +1592,19 @@ class FolderRunner:
                 # Los folios del inventario del cliente, para las filas de los
                 # PDF inventariados enteros (opción B, 2026-10-30), y la caja de
                 # cada UPD, para la fila cuya ruta no la dice.
-                run.folios_del_cliente, run.cajas_del_cliente = await asyncio.to_thread(
-                    por_upd_de_la_carpeta_de_origen, str(run.source)
+                run.folios_del_cliente, run.cajas_del_cliente = await self._dato_del_origen(
+                    run,
+                    partial(por_upd_de_la_carpeta_de_origen, str(run.source)),
+                    "los folios y la caja del inventario del cliente",
+                    ({}, {}),
                 )
                 run.folios_mirados = True
             if not run.oficina_mirada:
                 # Antes del primer PDF: cada trabajo la lleva a la cabecera de
                 # su FUID. Puede ir por la red, así que en un hilo.
-                run.oficina = await asyncio.to_thread(oficina_de_la_carpeta_de_origen, str(run.source))
+                run.oficina = await self._dato_del_origen(
+                    run, partial(oficina_de_la_carpeta_de_origen, str(run.source)), "la oficina productora", None
+                )
                 run.oficina_mirada = True
                 self._publish(run)
             if not run.midiendo:
@@ -1663,6 +1734,59 @@ class FolderRunner:
             run.error = explicar_fallo(error)
             run.finished_at = _now()
             self._publish(run)
+
+    #: Lo más que se espera la unión a la corrida compartida: dentro espera hasta
+    #: cinco minutos el turno de la corrida (``Coordinacion.unirse``).
+    ESPERA_DE_LA_UNION = 10 * 60.0
+    #: Y lo que se lee del origen antes del primer PDF (los Excel del cliente).
+    ESPERA_DE_LOS_DATOS_DEL_ORIGEN = 5 * 60.0
+
+    async def _unirse_con_tope(self, run: FolderRun) -> None:
+        """``_unirse_a_la_corrida`` con tope (2026-11-28): un destino que no contesta no deja la corrida sin empezar.
+
+        Pasado ``ESPERA_DE_LA_UNION``, como con un destino que no deja
+        coordinarse: con ``auto`` sigue sola y lo avisa; con ``si``, no corre. Si
+        la unión acaba llegando, se retira en el acto (``abandonada``).
+        """
+        from .corrida_compartida import modo
+
+        abandonada = threading.Event()
+        uniendo = asyncio.ensure_future(asyncio.to_thread(self._unirse_a_la_corrida, run, abandonada))
+        hecho, _ = await asyncio.wait({uniendo}, timeout=self.ESPERA_DE_LA_UNION)
+        if hecho:
+            uniendo.result()
+            return
+        abandonada.set()
+        uniendo.add_done_callback(lambda tarea: tarea.cancelled() or tarea.exception())
+        minutos = self.ESPERA_DE_LA_UNION / 60
+        if modo() == "si":
+            raise FolderError(
+                f"El destino no contestó en {minutos:.0f} min al unirse a la corrida compartida. "
+                "Revise la red y vuelva a lanzar la carpeta."
+            )
+        self._avisar(
+            run,
+            f"El destino no contestó en {minutos:.0f} min al unirse a la corrida compartida. "
+            "Esta corrida sigue sola, sin repartir con otros equipos.",
+        )
+
+    async def _dato_del_origen(self, run: FolderRun, leer: Callable[[], object], que: str, sin_el: object) -> object:
+        """Lo que ``leer`` saca del origen antes del primer PDF, o ``sin_el`` si tarda más que el tope (2026-11-28).
+
+        Son datos para las filas y las cabeceras, no para entregar: sin ellos
+        la corrida sigue, y se avisa. El hilo que no vuelve se abandona.
+        """
+        leyendo = asyncio.ensure_future(asyncio.to_thread(leer))
+        hecho, _ = await asyncio.wait({leyendo}, timeout=self.ESPERA_DE_LOS_DATOS_DEL_ORIGEN)
+        if hecho:
+            return leyendo.result()
+        leyendo.add_done_callback(lambda tarea: tarea.cancelled() or tarea.exception())
+        self._avisar(
+            run,
+            f"No se pudo leer {que} del origen en {self.ESPERA_DE_LOS_DATOS_DEL_ORIGEN / 60:.0f} min "
+            "(la red no contesta): la corrida sigue sin ese dato.",
+        )
+        return sin_el
 
     def _dejar_escrito_al_detener(self, run: FolderRun) -> None:
         """Lo inventariado hasta aquí, escrito: detener a la mitad no pierde lo leído.
@@ -1841,8 +1965,14 @@ class FolderRunner:
         return not coordinacion.me_toca_primero(str(self._relative(run, path)))
 
     async def _esperar_a_los_otros_equipos(self, run: FolderRun) -> bool:
-        """Espera lo que otros equipos tienen en curso; toma lo de los caídos. Dice si procesó algo."""
+        """Espera lo que otros equipos tienen en curso; toma lo de los caídos. Dice si procesó algo.
+
+        Con tope (2026-11-28): si nada cambia -- ni un PDF de ellos termina, ni
+        su latido dice que lo suyo avanza -- en ``_tope_de_la_compartida``, se
+        deja de esperar y se cierra con la lista de lo que siguen teniendo.
+        """
         hubo = False
+        espera = _EsperaSinAvance(self._tope_de_la_compartida())
         while run.active and run.ajenos:
             libres, contados = await asyncio.to_thread(self._mirar_los_ajenos, run)
             if contados:
@@ -1853,6 +1983,9 @@ class FolderRunner:
                 await self._consumir_en_paralelo(run, libres)
                 continue
             if run.ajenos:
+                if espera.vencida((frozenset(run.ajenos), self._foto_de_los_otros(run)), avanza=self._otros_avanzan(run)):
+                    self._dejar_de_esperar_a_los_otros(run, espera.tope)
+                    break
                 run.etapa = "Esperando a otros equipos"
                 run.etapa_detalle = f"{len(run.ajenos)} PDF en curso en otros equipos"
                 self._publish(run)
@@ -1995,12 +2128,23 @@ class FolderRunner:
         # a cerrar: si se fueran todos y el principal se cayera o se detuviera
         # en su última vuelta, nadie cerraría (lo encontró la revisión,
         # 2026-11-27). Mientras espera no trabaja; si el principal desaparece, la
-        # sucesión lo nombra a él y cierra él.
+        # sucesión lo nombra a él y cierra él. Y si el principal sigue vivo pero
+        # nada suyo cambia en ``_tope_de_la_compartida`` -- colgado --, cierra
+        # éste (2026-11-28): el rol de cerrar es de uno solo (``tomar_rol``).
+        espera = _EsperaSinAvance(self._tope_de_la_compartida())
         while True:
             principal = coordinacion.principal()
             if principal is None or principal == coordinacion.id:
                 break
-            if (coordinacion.latidos().get(principal) or {}).get("estado") == "cerrando":
+            del_principal = coordinacion.latidos().get(principal) or {}
+            if espera.vencida(_lo_que_cambia(principal, del_principal), avanza=self._avanza(del_principal)):
+                self._avisar(
+                    run,
+                    f"El principal {equipo_en_palabras(principal)} lleva {espera.tope / 60:.0f} min sin avanzar "
+                    "ni empezar a cerrar: cierra la corrida este equipo.",
+                )
+                break
+            if del_principal.get("estado") == "cerrando":
                 # Antes de decir «cerrando»: éste no cierra, y en la lista de
                 # equipos no tiene que salir como el que cierra.
                 self._avisar(
@@ -2028,7 +2172,14 @@ class FolderRunner:
         if not await asyncio.to_thread(coordinacion.tomar_rol, "cierre"):
             self._avisar(run, "Este equipo terminó su parte; la auditoría y los Excel generales los cierra otro equipo.")
             return False
+        espera = _EsperaSinAvance(self._tope_de_la_compartida())
         while run.active and not await asyncio.to_thread(coordinacion.los_demas_terminaron):
+            if espera.vencida(self._foto_de_los_otros(run), avanza=self._otros_avanzan(run)):
+                # Colgados, o el destino sin dejarse leer (2026-11-28): se cierra
+                # con lo que hay y se dice quién quedaba. Lo entregado está en el
+                # disco; lo que no, se procesa al relanzar la carpeta.
+                self._avisar(run, self._quienes_siguen(run, espera.tope))
+                break
             run.etapa = "Esperando a otros equipos"
             run.etapa_detalle = "este equipo cierra la corrida cuando los demás terminen"
             self._publish(run)
@@ -2042,6 +2193,94 @@ class FolderRunner:
         if run.etapa == "Esperando a otros equipos":
             run.etapa, run.etapa_detalle = "", ""
         return True
+
+    #: Lo más que se espera a otros equipos sin que nada cambie; ``None``: el de
+    #: los ajustes (``_tope_de_la_compartida``). Las pruebas lo acortan.
+    TOPE_DE_LA_COMPARTIDA: float | None = None
+
+    def _tope_de_la_compartida(self) -> float:
+        """Dos veces el tope sin avance de un documento más la espera máxima del turno de una carpeta.
+
+        Un PDF de otro equipo que no avanza lo corta su vigilante en
+        ``minutos_sin_avance``, y una entrega espera su turno como mucho
+        ``ESPERA_MAXIMA_DEL_CERROJO``: pasado eso sin que nada cambie, nadie
+        está trabajando en él.
+        """
+        if self.TOPE_DE_LA_COMPARTIDA is not None:
+            return self.TOPE_DE_LA_COMPARTIDA
+        from ..adapters.coordinacion_en_disco import ESPERA_MAXIMA_DEL_CERROJO
+
+        minutos = float(getattr(self._settings, "minutos_sin_avance", 0) or 0) or 20.0
+        return 2 * minutos * 60 + ESPERA_MAXIMA_DEL_CERROJO
+
+    def _avanza(self, latido: Mapping[str, object]) -> bool:
+        """Si el latido de un equipo dice que lo suyo avanza: un documento suyo dio noticias hace poco."""
+        sin_avance = latido.get("sin_avance")
+        if not isinstance(sin_avance, int | float):
+            return False
+        limite = float(getattr(self._settings, "minutos_sin_avance", 0) or 0) or 20.0
+        return float(sin_avance) < limite * 60
+
+    def _otros_avanzan(self, run: FolderRun) -> bool:
+        """Si algún otro equipo vivo de la corrida dice que lo suyo avanza (sin leer el disco)."""
+        coordinacion = run.coordinacion
+        return any(
+            datos.get("vivo") and self._avanza(datos)
+            for id_, datos in coordinacion.latidos().items()
+            if id_ != coordinacion.id
+        )
+
+    @staticmethod
+    def _foto_de_los_otros(run: FolderRun) -> tuple:
+        """Lo que cambia cuando otro equipo trabaja: lo hecho, lo que tiene en curso y su estado."""
+        coordinacion = run.coordinacion
+        return tuple(
+            sorted(
+                _lo_que_cambia(id_, datos)
+                for id_, datos in coordinacion.latidos().items()
+                if id_ != coordinacion.id and datos.get("vivo")
+            )
+        )
+
+    def _dejar_de_esperar_a_los_otros(self, run: FolderRun, tope: float) -> None:
+        """Los PDF que otros equipos tienen sin avanzar pasan a fallidos en otro equipo, con su lista en los avisos."""
+        pendientes = sorted((str(self._relative(run, Path(clave))), equipo) for clave, equipo in run.ajenos.items())
+        self._avisar(
+            run,
+            f"Se dejó de esperar a otros equipos: {len(pendientes)} PDF siguen en curso en ellos sin avanzar "
+            f"desde hace {tope / 60:.0f} min. La corrida cierra sin ellos; relanzar la carpeta los procesa.",
+        )
+        for relativa, equipo in pendientes:
+            run.fallidos_en_otro[relativa] = f"{equipo}: seguía en curso sin avanzar al cerrar"
+        run.ajenos.clear()
+
+    @staticmethod
+    def _quienes_siguen(run: FolderRun, tope: float) -> str:
+        """El aviso de cerrar sin esperar más: qué equipos seguían y con qué PDF."""
+        coordinacion = run.coordinacion
+        siguen = [
+            f"{equipo_en_palabras(id_)} ({', '.join(datos.get('en_curso') or []) or 'sin PDF en curso'})"
+            for id_, datos in coordinacion.latidos().items()
+            if id_ != coordinacion.id and datos.get("vivo") and datos.get("estado") != "terminado"
+        ]
+        quienes = "; ".join(siguen) or "equipos cuyo latido no se pudo leer"
+        return (
+            f"Se cierra la corrida sin esperar más: en {tope / 60:.0f} min nada cambió en {quienes}. "
+            "Lo que no hayan entregado se procesa al relanzar la carpeta."
+        )
+
+    def _sin_avance_de_lo_suyo(self, run: FolderRun) -> float | None:
+        """Los segundos sin noticias del documento de esta corrida que avanzó más recientemente; ``None`` si no lee ninguno.
+
+        Va en el latido de este equipo (``Coordinacion.medir_el_avance``): quien
+        lo espera distingue un libro largo que avanza de uno colgado.
+        """
+        silencios = []
+        for job_id in list(run.en_curso):
+            job = self._registry.get(job_id)
+            if job is not None and job.state is JobState.RUNNING and job.progress.last_event_monotonic is not None:
+                silencios.append(job.progress.silent_seconds)
+        return min(silencios) if silencios else None
 
     def _recontar_lo_de_los_otros(self, run: FolderRun) -> bool:
         contados = False
@@ -3246,7 +3485,16 @@ class FolderRunner:
             # otro `await`, así que los trabajos salen en el orden de la carpeta.
             try:
                 async with run.orden_de_toma:
-                    procesarlo, contado = await asyncio.to_thread(self._tomar_el_pdf, run, path, relativa)
+                    # Con tope (2026-11-28): un destino colgado retenía la fila de
+                    # la toma, y con ella a todos los trabajadores del equipo.
+                    tomando = asyncio.ensure_future(asyncio.to_thread(self._tomar_el_pdf, run, path, relativa))
+                    hecho, _ = await asyncio.wait({tomando}, timeout=self.ESPERA_DE_LA_TOMA)
+                if not hecho:
+                    tomando.add_done_callback(partial(self._soltar_lo_tomado_tarde, run, path))
+                    raise SinRespuestaDeLaRed(
+                        f"El destino no contestó en {self.ESPERA_DE_LA_TOMA:.0f} s al reclamarlo; se reintenta al final."
+                    )
+                procesarlo, contado = tomando.result()
             except Exception as error:  # noqa: BLE001 - el destino que no contesta: se reintenta luego
                 self._avisar(run, f"No se pudo reclamar «{relativa}» en el destino: {explicar_fallo(error)}")
                 run.failed += 1
@@ -3353,16 +3601,26 @@ class FolderRunner:
                 # turno de descarga, y lo bajado, la velocidad y lo que falta
                 # mientras baja (el operador, 2026-11-09). Sin esto enseñaba
                 # «En cola 0/?» como si no tuviera relación con la corrida.
+                if not red_smb.por_smb(path):
+                    # El original lo abre el sistema: el que otro programa tiene
+                    # abierto, o el que todavía se está copiando a la carpeta, se
+                    # espera antes de bajarlo (abajo sólo se espera el que se lee
+                    # en su sitio).
+                    await asyncio.to_thread(_esperar_a_que_se_libere, path)
+                    huella = await asyncio.to_thread(_esperar_a_que_termine_de_copiarse, path) or huella
                 avance = AvanceDeLaDescarga(total=job.bytes)
                 self._registry.anotar_descarga(job.id, avance.esperando())
                 self._registry.publish(job)
                 try:
-                    await asyncio.to_thread(
-                        red_smb.traer,
-                        str(path),
-                        local,
-                        self._al_bajar(run, path),
-                        al_avanzar=self._al_avanzar(avance, partial(self._registry.anotar_descarga, job.id)),
+                    await self._con_tope(
+                        asyncio.to_thread(
+                            self._traer_de(path),
+                            str(path),
+                            local,
+                            self._al_bajar(run, path),
+                            al_avanzar=self._al_avanzar(avance, partial(self._registry.anotar_descarga, job.id)),
+                        ),
+                        f"La descarga de «{relativa}»",
                     )
                 finally:
                     self._registry.anotar_descarga(job.id, None)
@@ -3385,8 +3643,28 @@ class FolderRunner:
             if job.state is JobState.DONE:
                 run.processed += 1
                 run.resolutions += len(((job.report or {}).get("groups")) or [])
-                escribiendo = asyncio.create_task(asyncio.to_thread(self._deliver, run, job, path, huella))
-                entrega = await asyncio.shield(escribiendo)
+                for vez in range(self.VECES_QUE_SE_RECOPIA + 1):
+                    escribiendo = asyncio.create_task(asyncio.to_thread(self._deliver, run, job, path, huella))
+                    try:
+                        entrega = await self._con_tope(escribiendo, f"La entrega de «{relativa}»", tope=self.TOPE_DE_LA_ENTREGA)
+                        break
+                    except CerrojoOcupado as error:
+                        # El turno de su carpeta no llegó (otro equipo, u otra
+                        # entrega de éste, lo retiene): se reintenta la entrega,
+                        # no la lectura. Fallido, la vuelta final lo releía y lo
+                        # volvía a pagar entero (2026-11-28).
+                        escribiendo = None
+                        if vez >= self.VECES_QUE_SE_RECOPIA or not run.active:
+                            raise
+                        espera = float(getattr(self._settings, "espera_de_reintento", 15.0) or 0)
+                        self._avisar(
+                            run, f"«{relativa}»: {error}. Se reintenta la entrega en {espera:.0f} s, sin volver a leerlo."
+                        )
+                        await asyncio.sleep(espera)
+                    except SinRespuestaDeLaRed:
+                        # Lo que sigue escribiendo en su hilo no es una entrega.
+                        self._no_quedo_entregado(run, job, path)
+                        raise
                 escribiendo = None
                 if entrega.ya_estaba is not None:
                     # Otro equipo lo entregó entero mientras éste lo leía (lo
@@ -3422,13 +3700,24 @@ class FolderRunner:
                 escribiendo = asyncio.create_task(
                     asyncio.to_thread(self._dejar_constancia, run, job, path, huella, entrega)
                 )
-                cerrada = await asyncio.shield(escribiendo)
+                try:
+                    cerrada = await self._con_tope(escribiendo, f"La constancia de «{relativa}»")
+                except SinRespuestaDeLaRed:
+                    self._no_quedo_entregado(run, job, path)
+                    raise
                 escribiendo = None
                 if cerrada:
                     reclamo = run.reclamos.pop(str(path), None)
                     if reclamo is not None:
                         # «Hecho» para los demás equipos: ninguno lo vuelve a tomar.
-                        await asyncio.to_thread(run.coordinacion.terminar, reclamo, trabajo=job.id)
+                        try:
+                            await self._con_tope(
+                                asyncio.to_thread(run.coordinacion.terminar, reclamo, trabajo=job.id),
+                                f"Marcar «{relativa}» como hecho",
+                            )
+                        except SinRespuestaDeLaRed as error:
+                            # Ya está entregado con su constancia: quien lo reclame la verá.
+                            self._avisar(run, f"{error} Ya está entregado; los demás equipos lo verán por su constancia.")
                 elif run.coordinacion is not None:
                     # Sin su constancia completa no es una entrega: se suelta con
                     # el motivo y se rehace (lo entregado se aparta al rehacerlo).
@@ -3452,7 +3741,13 @@ class FolderRunner:
                         f"«{relativa}» no se pudo dividir ({no_se_dividio}); el original se dejó en su sitio.",
                     )
                 else:
-                    await asyncio.to_thread(self._dispose, run, path, huella)
+                    try:
+                        await self._con_tope(
+                            asyncio.to_thread(self._dispose, run, path, huella), f"Apartar el original de «{relativa}»"
+                        )
+                    except SinRespuestaDeLaRed as error:
+                        # Entregado: el original sólo se queda donde estaba.
+                        self._avisar(run, f"{error} El original se dejó en su sitio.")
                 if control is not None:
                     await self._comprobar_el_destino(run, path, control, local)
             elif job.state is JobState.CANCELLED:
@@ -3568,6 +3863,57 @@ class FolderRunner:
     #: Cuánto espera, como mucho, «Detener» (o «Parar ya») a que acabe lo que
     #: un PDF ya escribía en el destino en su hilo, antes de soltar su reclamo.
     ESPERA_DE_LA_ENTREGA_AL_DETENER = 120.0
+    #: Lo más que un PDF retiene su ranura bajando de la red, apartando el
+    #: original o marcándose hecho (2026-11-28). La copia en sí late cada bloque
+    #: y se corta a los dos minutos sin avanzar (``adapters/copia_vigilada.py``):
+    #: esto es lo de alrededor -- el turno de descarga, un listado, un archivo
+    #: que el sistema no suelta --.
+    TOPE_DE_LA_RED = 30 * 60.0
+    #: Y entregando: dentro espera hasta media hora el turno de su carpeta entre
+    #: equipos (``ESPERA_MAXIMA_DEL_CERROJO``), y después copia.
+    TOPE_DE_LA_ENTREGA = 60 * 60.0
+    #: Lo más que se espera reclamar un PDF en el destino compartido.
+    ESPERA_DE_LA_TOMA = 120.0
+
+    async def _con_tope(self, trabajo: Awaitable, que: str, *, tope: float | None = None):
+        """Lo que devuelve ``trabajo`` -- un hilo que habla con la red --, o ``SinRespuestaDeLaRed`` pasado el tope.
+
+        Un hilo colgado en la red no se puede parar: se deja y se sigue, para
+        que no retenga la ranura de la corrida para siempre. Lo que devuelva o
+        lance después se recoge sin que nadie lo espere. Cancelar a quien
+        espera no lo cancela (como ``asyncio.shield``): lo que escribe en el
+        destino termina en su hilo.
+        """
+        tope = self.TOPE_DE_LA_RED if tope is None else tope
+        tarea = asyncio.ensure_future(trabajo)
+        hecho, _ = await asyncio.wait({tarea}, timeout=tope)
+        if hecho:
+            return tarea.result()
+        tarea.add_done_callback(lambda t: t.cancelled() or t.exception())
+        raise SinRespuestaDeLaRed(f"{que} lleva {tope / 60:.0f} min sin terminar: la red no contesta.")
+
+    def _soltar_lo_tomado_tarde(self, run: FolderRun, path: Path, tomando: asyncio.Future) -> None:
+        """El reclamo que llegó después de dejar de esperarlo se suelta: si no, nadie lo procesaba.
+
+        Se quedaba a nombre de este equipo «en curso» y su vuelta de reintento
+        lo encontraba como de otro trabajador de aquí (2026-11-28).
+        """
+        if tomando.cancelled() or tomando.exception() is not None:
+            return
+        procesarlo, _ = tomando.result()
+        reclamo = run.reclamos.pop(str(path), None) if procesarlo else None
+        if reclamo is None or run.coordinacion is None:
+            return
+        logger.warning("«%s» se reclamó tarde: se suelta para tomarlo otra vez", path.name)
+        asyncio.get_running_loop().run_in_executor(None, run.coordinacion.soltar, reclamo)
+
+    @staticmethod
+    def _no_quedo_entregado(run: FolderRun, job: Job, path: Path) -> None:
+        """Lo que se contó como procesado y al final no quedó entregado: lo cuenta quien lo rehaga."""
+        run.processed -= 1
+        run.resolutions -= len(((job.report or {}).get("groups")) or [])
+        run.incompletas.add(str(path))
+        run.entregas_incompletas = len(run.incompletas)
 
     async def _esperar_lo_que_escribe(self, escribiendo: asyncio.Task, relativa: str) -> bool:
         """Espera, con tope, lo que un PDF cancelado escribía en el destino en su hilo. Dice si quedó entregado entero.
@@ -3797,16 +4143,24 @@ class FolderRunner:
                     self._publish(run)
 
         try:
-            await asyncio.to_thread(
-                red_smb.traer,
-                str(path),
-                local,
-                self._al_bajar(run, path),
-                al_avanzar=self._al_avanzar(avance, anotar),
+            await self._con_tope(
+                asyncio.to_thread(
+                    self._traer_de(path),
+                    str(path),
+                    local,
+                    self._al_bajar(run, path),
+                    al_avanzar=self._al_avanzar(avance, anotar),
+                ),
+                f"La descarga de «{relativa}»",
             )
         finally:
             run.bajando.pop(relativa, None)
             self._publish(run)
+
+    @staticmethod
+    def _traer_de(path: Path) -> Callable[..., Path]:
+        """Con qué se baja a local un PDF de la red: el cliente SMB propio (Docker) o el sistema (Windows)."""
+        return red_smb.traer if red_smb.por_smb(path) else red_smb.traer_del_sistema
 
     @staticmethod
     def _al_avanzar(avance: AvanceDeLaDescarga, entregar: Callable[[dict], None]) -> Callable[[int, int], None]:
@@ -3859,16 +4213,48 @@ class FolderRunner:
         La copia conserva la ruta entera del servidor -- «…/200.100.20.97/afinia/
         REPOSITORIO/AFINIA/BOLIVAR SUR/COMERCIAL/MAGANGUE/210847/UPD….pdf» --
         porque el Índice Electrónico lee de ella el municipio y el NIC.
+
+        Desde el 2026-11-28 también la red que abre el sistema -- Windows, con
+        «\\\\servidor\\…» o una unidad de red --: el worker leía el PDF de la red
+        y una red callada lo congelaba dentro del lector nativo. Copiado antes
+        (``red_smb.traer_del_sistema``, vigilado), un corte es un fallo pasajero.
+        De una unidad de red se conserva la ruta sin la letra. Si con la
+        carpeta de copias delante la ruta no cabe en Windows, se lee de la red
+        como antes.
         """
-        partes = red_smb.partes(path) if red_smb.por_smb(path) else None
-        if partes is None:
+        if red_smb.por_smb(path):
+            partes = red_smb.partes(path)
+        elif self._de_la_red_del_sistema(run):
+            partes = None
+        else:
             return path
         base = Path(self._settings.upload_dir) / self.CARPETA_DE_COPIAS / run.id
-        copia = base.joinpath(partes.servidor, partes.recurso, *partes.resto.split("\\"))
+        if partes is not None:
+            copia = base.joinpath(partes.servidor, partes.recurso, *partes.resto.split("\\"))
+        elif (unc := red_smb.partes(path)) is not None:
+            copia = base.joinpath(unc.servidor, unc.recurso, *unc.resto.split("\\"))
+        else:
+            ruta = Path(path)
+            unidad = ruta.drive.rstrip(":\\/") or "raiz"
+            copia = base.joinpath(unidad, *ruta.parts[1:])
+        if partes is None and os.name == "nt" and len(str(copia)) + len(".part") > LARGO_DE_RUTA_EN_WINDOWS:
+            return path
         # Segunda llave: pase lo que pase con la ruta, la copia no sale de aquí.
         if base.resolve() not in copia.resolve().parents:
             raise FolderError(f"La ruta de red no es válida: {path}")
         return copia
+
+    def _de_la_red_del_sistema(self, run: FolderRun) -> bool:
+        """Si el origen es de red y lo abre el sistema (no el cliente SMB propio): se mira una vez por corrida."""
+        if run.copia_del_sistema is None:
+            from ..adapters import acceso
+
+            try:
+                run.copia_del_sistema = not red_smb.por_smb(run.source) and acceso.es_de_red(run.source)
+            except Exception:  # noqa: BLE001 - sin saberlo, se lee como siempre
+                logger.debug("no se pudo saber si %s es de red", run.source, exc_info=True)
+                run.copia_del_sistema = False
+        return bool(run.copia_del_sistema)
 
     @staticmethod
     def _borrar_la_copia(path: Path, local: Path) -> None:
@@ -3882,7 +4268,7 @@ class FolderRunner:
 
     def _limpiar_las_copias(self, run: FolderRun) -> None:
         """Al terminar o detener una corrida de red, nada suyo queda en la carpeta de copias."""
-        if red_smb.por_smb(run.source):
+        if red_smb.por_smb(run.source) or run.copia_del_sistema:
             shutil.rmtree(
                 Path(self._settings.upload_dir) / self.CARPETA_DE_COPIAS / run.id, ignore_errors=True
             )
@@ -7188,6 +7574,32 @@ def _explicar_la_entrega(error: BaseException, ruta: Path) -> str:
     return _por_lo_largo(error, ruta) or explicar_fallo(error)
 
 
+#: De a cuánto se copia al destino.
+BLOQUE_DE_COPIA = 1024 * 1024
+
+
+def _copiar_vigilado(desde: Path, hasta: Path, que: str) -> None:
+    """``desde`` en ``hasta`` -- un «.part» de nombre único --, bloque a bloque y vigilada (``adapters/copia_vigilada.py``).
+
+    Si la abandonan por no avanzar, su hilo borra el «.part» en cuanto la red le
+    devuelve el control: desde aquí no se puede, Windows no borra un archivo
+    abierto. Es de esta copia y de nadie más (``_parcial_de``).
+    """
+
+    def volcar(vigilancia: Vigilancia) -> None:
+        try:
+            with open(desde, "rb") as origen, open(hasta, "wb") as copia:
+                shutil.copyfileobj(origen, EscrituraVigilada(copia, vigilancia), BLOQUE_DE_COPIA)
+            # Abandonada mientras tanto: lo copiado ya no es de nadie.
+            vigilancia.latir()
+        except BaseException:
+            with contextlib.suppress(OSError):
+                hasta.unlink(missing_ok=True)
+            raise
+
+    vigilado(volcar, que=que)
+
+
 def _copiar(desde: Path, hasta: Path, medir: Callable[[int, float, float], None] | None = None) -> None:
     """Copia entera o nada: primero a «.part» y luego, comprobada, a su nombre.
 
@@ -7206,7 +7618,9 @@ def _copiar(desde: Path, hasta: Path, medir: Callable[[int, float, float], None]
             # Sin copiar fechas ni permisos (``copy2``): nadie las mira --la
             # constancia comprueba tamaños-- y en un destino de red eran uno o
             # dos cambios de atributos de casi un segundo por archivo (2026-11-25).
-            shutil.copyfile(desde, parcial)
+            # Vigilada (2026-11-28): un destino de red que se queda callado
+            # dejaba la entrega esperando para siempre con el cerrojo tomado.
+            _copiar_vigilado(desde, parcial, f"La copia de «{hasta.name}» al destino")
             fin = time.monotonic()
             tamano = parcial.stat().st_size
             if tamano != desde.stat().st_size:
@@ -7268,10 +7682,18 @@ def _copiar_directo(
             error.filename = str(hasta)
             raise
         inicio = time.monotonic()
-        try:
+
+        # Vigilada (2026-11-28): sin mover un byte en dos minutos, un fallo de
+        # la red que ``_copiar_con_reintentos`` ya sabe esperar. El archivo lo
+        # cierra el hilo de la copia: cerrarlo desde aquí esperaría a la
+        # escritura colgada.
+        def volcar(vigilancia: Vigilancia, destino=destino) -> int:
             with destino, desde.open("rb") as origen:
-                shutil.copyfileobj(origen, destino, 1024 * 1024)
-                copiados = destino.tell()
+                shutil.copyfileobj(origen, EscrituraVigilada(destino, vigilancia), BLOQUE_DE_COPIA)
+                return destino.tell()
+
+        try:
+            copiados = vigilado(volcar, que=f"La copia de «{hasta.name}» al destino")
             if copiados != esperado:
                 raise OSError(errno.EIO, "la copia quedó incompleta", str(hasta))
         except BaseException as error:

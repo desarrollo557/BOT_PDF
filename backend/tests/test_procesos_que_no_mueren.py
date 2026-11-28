@@ -40,15 +40,59 @@ def test_un_evento_malformado_no_mata_la_cola_de_progreso():
     assert registro.aplicados == [bueno]
 
 
-def test_si_la_cola_se_cae_queda_en_el_registro_a_la_vista(caplog):
-    class _Caida:
+def test_si_la_cola_se_cae_queda_en_el_registro_a_la_vista(caplog, monkeypatch):
+    """Y no se rinde (2026-11-28): antes salía ante el primer fallo y nadie recibía más avances."""
+    from resolutions.api import main
+
+    monkeypatch.setattr(main, "PRIMERA_ESPERA_DE_LAS_NOTICIAS", 0.01)
+    monkeypatch.setattr(main, "ESPERA_MAXIMA_DE_LAS_NOTICIAS", 0.02)
+    evento = object()
+
+    class _CaeYVuelve:
+        def __init__(self):
+            self.pendientes = [EOFError("el Manager se fue"), EOFError("sigue caído"), evento, None]
+
         def get(self):
-            raise EOFError("el Manager se fue")
+            siguiente = self.pendientes.pop(0)
+            if isinstance(siguiente, Exception):
+                raise siguiente
+            return siguiente
 
+    registro = _Registro(None)
     with caplog.at_level("WARNING", logger="resolutions.api.main"):
-        asyncio.run(_drain_progress(SimpleNamespace(progress_queue=_Caida(), registry=_Registro(None))))
+        asyncio.run(_drain_progress(SimpleNamespace(progress_queue=_CaeYVuelve(), registry=registro)))
 
-    assert any("cola de progreso" in registro.message for registro in caplog.records)
+    assert sum("cola de progreso" in linea.message for linea in caplog.records) == 2
+    assert registro.aplicados == [evento]
+
+
+def test_la_cola_que_falla_se_vuelve_a_leer_desde_otro_hilo(monkeypatch):
+    """El enlace con el Manager es de cada hilo: uno roto no se arregla leyendo otra vez desde él."""
+    import threading
+
+    from resolutions.api import main
+
+    monkeypatch.setattr(main, "PRIMERA_ESPERA_DE_LAS_NOTICIAS", 0.01)
+    evento = object()
+
+    class _RotaEnSuHilo:
+        def __init__(self):
+            self.rotos: set[int] = set()
+            self.entregados = 0
+
+        def get(self):
+            hilo = threading.get_ident()
+            if not self.rotos:
+                self.rotos.add(hilo)
+            if hilo in self.rotos:
+                raise BrokenPipeError("el enlace de este hilo con el Manager se rompió")
+            self.entregados += 1
+            return evento if self.entregados == 1 else None
+
+    registro = _Registro(None)
+    asyncio.run(_drain_progress(SimpleNamespace(progress_queue=_RotaEnSuHilo(), registry=registro)))
+
+    assert registro.aplicados == [evento]
 
 
 def test_un_trabajo_que_falla_antes_de_empezar_no_se_queda_en_cola(tmp_path):

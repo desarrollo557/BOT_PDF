@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import nullcontext
 
 from ..application.control import Cancelled, RunState
@@ -230,6 +231,9 @@ async def _correr(ctx: Contexto, job: Job, hilos: int | None) -> None:
         for intento in range(1, maximo + 1):
             job.intentos = intento
             pool = ctx.pool
+            # El turno de la IA de ahora: rehacer el pool lo cambia por uno nuevo
+            # (``main._rehacer_pool``), y el reintento no puede llevarse el viejo.
+            payload["turnos_de_ia"] = getattr(ctx, "turnos_de_ia", None)
             try:
                 # Dentro del `try`: con el pool roto, mandar el trabajo ya falla,
                 # y antes ese fallo dejaba el trabajo «en curso» para siempre.
@@ -341,6 +345,12 @@ async def _esperar(ctx: Contexto, job: Job, futuro, pool=None) -> dict:
             # documento sigue en el worker hasta que atienda la orden.
             hecho, _ = await asyncio.wait({futuro}, timeout=min(_VIGILANCIA, limite) if limite else None)
             if hecho:
+                if futuro.cancelled() and ctx.controls.get(job.id) != str(RunState.CANCELLED):
+                    # Nadie lo canceló: el pool se cambió con este documento todavía
+                    # en su cola (otro se congeló, ``rehacer_pool(matar=True)``).
+                    # Es un pool roto y se reintenta en el nuevo; tomado por una
+                    # cancelación, el documento acababa «cancelado» sin leerse.
+                    raise BrokenProcessPool("el pool de procesos se cambió con este documento en la cola")
                 return futuro.result()
             # Desde la última noticia del worker, o desde que se mandó si aún no
             # dio ninguna. El worker late en cuanto tiene proceso (2026-11-27):
@@ -354,7 +364,7 @@ async def _esperar(ctx: Contexto, job: Job, futuro, pool=None) -> dict:
             tope = limite if empezado else limite * _VECES_EN_LA_COLA
             if limite and job.state is JobState.RUNNING and silencio >= tope:
                 ctx.controls[job.id] = str(RunState.CANCELLED)
-                loop.create_task(_soltar(ctx, job, futuro))
+                loop.create_task(_soltar(ctx, job, futuro, pool))
                 if _pool_congelado(ctx, job, limite):
                     # No es este PDF: ninguno de los que corren avanza. Se matan
                     # los procesos y se levanta otro pool; los demás fallan con
@@ -374,7 +384,7 @@ async def _esperar(ctx: Contexto, job: Job, futuro, pool=None) -> dict:
     except asyncio.CancelledError:
         ctx.controls[job.id] = str(RunState.CANCELLED)
         ctx.registry.mark_cancelled(job)
-        loop.create_task(_soltar(ctx, job, futuro))
+        loop.create_task(_soltar(ctx, job, futuro, pool))
         raise
 
 
@@ -396,14 +406,73 @@ def _pool_congelado(ctx: Contexto, job: Job, limite: float) -> bool:
     return bool(otros) and all(otro.progress.silent_seconds >= limite / 2 for otro in otros)
 
 
-async def _soltar(ctx: Contexto, job: Job, futuro) -> None:
-    """Espera a que el worker suelte un documento abandonado, y limpia."""
+#: Cuánto se espera a que el worker suelte un documento cortado antes de
+#: mirar si su proceso se quedó congelado (``_soltar``).
+ESPERA_AL_SOLTAR = 120.0
+
+
+async def _soltar(ctx: Contexto, job: Job, futuro, pool=None) -> None:
+    """Espera a que el worker suelte un documento abandonado, y limpia.
+
+    El worker atiende la orden de parar entre página y página. Congelado en el
+    lector nativo o en una expresión regular sin fin, no la atiende nunca: su
+    proceso del pool quedaba ocupado hasta reiniciar el servicio, y unos pocos
+    así dejaban la corrida sin procesos (2026-11-28). Si en ``ESPERA_AL_SOLTAR``
+    no lo suelta, se cambia el pool matando sus procesos -- el de un proceso
+    no se puede matar solo: un ``ProcessPoolExecutor`` con un proceso muerto
+    queda roto entero --, pero sólo cuando ningún otro documento en curso
+    avanza: lo que sí avanza no se tira. Mientras alguno avance, se vuelve a
+    mirar cada poco; los que estaban dentro fallan con «pool roto» y se
+    reintentan en el acto en el pool nuevo.
+    """
+    rehacer = getattr(ctx, "rehacer_pool", None)
     try:
-        await futuro
+        hecho, _ = await asyncio.wait({futuro}, timeout=ESPERA_AL_SOLTAR)
+        while not hecho:
+            # Con el pool ya cambiado no se toca nada: sus procesos se terminaron
+            # y el documento fallará con «pool roto» enseguida.
+            if (
+                rehacer is not None
+                and pool is not None
+                and getattr(ctx, "pool", None) is pool
+                and not _alguno_avanza(ctx, job)
+            ):
+                logger.error(
+                    "«%s» no soltó su proceso en %.0f s tras cortarlo y nada más avanza: se cambia el pool",
+                    job.filename,
+                    ESPERA_AL_SOLTAR,
+                )
+                rehacer(pool, matar=True)
+                rehacer = None
+            # Se limpia cuando lo suelta: quitar antes la orden de cancelar lo
+            # dejaba leyendo.
+            hecho, _ = await asyncio.wait({futuro}, timeout=_VIGILANCIA)
+        futuro.exception()
     except BaseException:  # noqa: BLE001 - lo que diga ya no le importa a nadie
         logger.debug("el trabajo %s soltado terminó con error", job.id, exc_info=True)
     finally:
         _limpiar(ctx, job)
+
+
+def _alguno_avanza(ctx: Contexto, job: Job) -> bool:
+    """Si otro documento en curso avanza (o no se puede saber).
+
+    Avanza el que dio noticias en la mitad del tope sin avance, la misma vara
+    que ``_pool_congelado``; con el latido (``application/latido.py``), uno
+    sano da noticias cada pocos segundos. Uno que todavía espera proceso en la
+    cola del pool no avanza ni pierde nada: el pool nuevo lo recibe.
+    """
+    listar = getattr(getattr(ctx, "registry", None), "snapshot", None)
+    if listar is None:
+        return True  # sin poder mirarlo, no se toca el pool
+    limite = float(getattr(ctx.settings, "minutos_sin_avance", 0) or 0) * 60
+    vara = limite / 2 if limite else 600.0
+    for otro in listar():
+        if otro.id == job.id or otro.state is not JobState.RUNNING:
+            continue
+        if otro.progress.last_event_monotonic is not None and otro.progress.silent_seconds < vara:
+            return True
+    return False
 
 
 def _limpiar(ctx: Contexto, job: Job) -> None:

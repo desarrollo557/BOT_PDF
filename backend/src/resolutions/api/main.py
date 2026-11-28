@@ -15,6 +15,7 @@ import os
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 from uuid import uuid4
 
@@ -163,6 +164,43 @@ def _nuevo_pool(settings: Settings) -> ProcessPoolExecutor:
     )
 
 
+def _rehacer_pool(ctx: Contexto, roto, matar: bool = False) -> None:
+    """Otro pool en lugar del que se rompió, una sola vez aunque fallen varios.
+
+    Un proceso que muere -- memoria, un fallo nativo de MuPDF -- deja el
+    pool entero inservible, y antes todos los PDF que quedaban en la
+    carpeta fallaban en segundos hasta reiniciar el servicio. Quien llega
+    con el pool ya cambiado no hace nada: otro trabajo lo rehízo antes.
+
+    ``matar`` es para el pool congelado (ningún documento avanza): sus
+    procesos siguen vivos pero no devuelven nada, así que se terminan; lo
+    que tenían dentro falla como «pool roto» y se reintenta en el nuevo.
+
+    Con el pool, el turno común de la IA (2026-11-28): un proceso que murió
+    -- o que se mató aquí -- con un turno tomado no lo devuelve nunca, y
+    cada petición de después esperaba callada hasta ``turnos.ESPERA_MAXIMA``.
+    Los procesos del pool viejo ya no están; el semáforo nuevo empieza entero.
+    """
+    if ctx.pool is not roto:
+        return
+    logger.error("el pool de procesos se %s; se levanta otro", "congeló" if matar else "rompió")
+    ctx.pool = _nuevo_pool(ctx.settings)
+    try:
+        ctx.turnos_de_ia = ctx.manager.BoundedSemaphore(ctx.settings.ia_a_la_vez)
+    except Exception:  # noqa: BLE001 - sin semáforo nuevo sigue el de antes, que espera con tope
+        logger.warning("no se pudo renovar el turno común de la IA", exc_info=True)
+    if matar:
+        for proceso in list((getattr(roto, "_processes", None) or {}).values()):
+            try:
+                proceso.terminate()
+            except Exception:  # noqa: BLE001 - el que ya no está, no hace falta
+                logger.debug("no se pudo terminar un proceso del pool", exc_info=True)
+    try:
+        roto.shutdown(wait=False, cancel_futures=True)
+    except Exception:  # noqa: BLE001 - ya estaba roto
+        logger.debug("no se pudo cerrar el pool roto", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ctx: Contexto = app.state.contexto
@@ -185,34 +223,7 @@ async def lifespan(app: FastAPI):
     # core left to accept uploads while the pool is saturated.
     ctx.pool = _nuevo_pool(ctx.settings)
 
-    def rehacer_pool(roto, matar: bool = False) -> None:
-        """Otro pool en lugar del que se rompió, una sola vez aunque fallen varios.
-
-        Un proceso que muere -- memoria, un fallo nativo de MuPDF -- deja el
-        pool entero inservible, y antes todos los PDF que quedaban en la
-        carpeta fallaban en segundos hasta reiniciar el servicio. Quien llega
-        con el pool ya cambiado no hace nada: otro trabajo lo rehízo antes.
-
-        ``matar`` es para el pool congelado (ningún documento avanza): sus
-        procesos siguen vivos pero no devuelven nada, así que se terminan; lo
-        que tenían dentro falla como «pool roto» y se reintenta en el nuevo.
-        """
-        if ctx.pool is not roto:
-            return
-        logger.error("el pool de procesos se %s; se levanta otro", "congeló" if matar else "rompió")
-        ctx.pool = _nuevo_pool(ctx.settings)
-        if matar:
-            for proceso in list((getattr(roto, "_processes", None) or {}).values()):
-                try:
-                    proceso.terminate()
-                except Exception:  # noqa: BLE001 - el que ya no está, no hace falta
-                    logger.debug("no se pudo terminar un proceso del pool", exc_info=True)
-        try:
-            roto.shutdown(wait=False, cancel_futures=True)
-        except Exception:  # noqa: BLE001 - ya estaba roto
-            logger.debug("no se pudo cerrar el pool roto", exc_info=True)
-
-    ctx.rehacer_pool = rehacer_pool
+    ctx.rehacer_pool = partial(_rehacer_pool, ctx)
     # Con «spawn» por lo mismo que el pool: un «fork» desde este proceso, con
     # sus decenas de hilos, puede heredar un cerrojo tomado (``ARRANQUE``).
     ctx.manager = multiprocessing.get_context(ARRANQUE).Manager()
@@ -443,6 +454,16 @@ if (frontend_root / "index.html").exists():
     app.mount("/", _Pantalla(directory=str(frontend_root), html=True), name="frontend")
 
 
+#: La primera espera y la más larga entre dos intentos de leer la cola de
+#: progreso cuando falla: crece al doble con cada fallo seguido.
+PRIMERA_ESPERA_DE_LAS_NOTICIAS = 1.0
+ESPERA_MAXIMA_DE_LAS_NOTICIAS = 30.0
+
+
+def _hilo_de_noticias() -> ThreadPoolExecutor:
+    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="noticias")
+
+
 async def _drain_progress(ctx: Contexto) -> None:
     """Move worker events onto the registry as fast as they arrive.
 
@@ -454,38 +475,49 @@ async def _drain_progress(ctx: Contexto) -> None:
     lleno las noticias no se leían. Todos los documentos salían «Sin novedades»
     y a los veinte minutos el vigilante mataba documentos sanos y los mandaba a
     reprocesar, OCR de pago incluido (2026-10-28).
+
+    Y si leer la cola falla, no se rinde (2026-11-28): antes salía ante el primer
+    fallo y no volvía, y desde ese momento ningún trabajo recibía avances -- el
+    vigilante los cortaba a los veinte minutos y tumbaba el pool --. Ahora lo
+    registra, espera (1 s, luego el doble, hasta 30 s) y lo vuelve a intentar
+    desde otro hilo: el enlace con el Manager es de cada hilo, y uno nuevo se
+    conecta de nuevo. Sólo lo para el apagado (la cancelación) o el ``None``
+    que cierra la cola.
     """
     loop = asyncio.get_running_loop()
     queue = ctx.progress_queue
-    hilo = ThreadPoolExecutor(max_workers=1, thread_name_prefix="noticias")
+    hilo = _hilo_de_noticias()
+    espera = 0.0
     try:
-        await _vaciar_las_noticias(ctx, loop, queue, hilo)
+        while True:
+            try:
+                event = await loop.run_in_executor(hilo, queue.get)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - se registra y se vuelve a intentar
+                primera = espera == 0.0
+                espera = min(ESPERA_MAXIMA_DE_LAS_NOTICIAS, max(PRIMERA_ESPERA_DE_LAS_NOTICIAS, espera * 2))
+                # Tiene que verse en el registro, no quedar en DEBUG: mientras
+                # falle, ningún trabajo recibe avances.
+                logger.warning(
+                    "no se pudo leer la cola de progreso; se vuelve a intentar en %.0f s. "
+                    "Si no se recupera, reinicie el servicio: los trabajos no reciben avances",
+                    espera,
+                    exc_info=primera,
+                )
+                hilo.shutdown(wait=False, cancel_futures=True)
+                hilo = _hilo_de_noticias()
+                await asyncio.sleep(espera)
+                continue
+            espera = 0.0
+            if event is None:
+                return
+            try:
+                ctx.registry.apply_progress(event)
+            except Exception:  # noqa: BLE001 - un evento raro no deja a todos sin noticias
+                logger.exception("no se pudo aplicar un evento de progreso: %r", event)
     finally:
         hilo.shutdown(wait=False, cancel_futures=True)
-
-
-async def _vaciar_las_noticias(ctx: Contexto, loop, queue, hilo: ThreadPoolExecutor) -> None:
-    while True:
-        try:
-            event = await loop.run_in_executor(hilo, queue.get)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - el Manager se fue
-            # Casi siempre es el apagado. Si no lo es, ningún trabajo vuelve a
-            # recibir noticias y el vigilante los da por atascados: tiene que
-            # verse en el registro, no quedar en DEBUG.
-            logger.warning(
-                "la cola de progreso se cerró; si el servicio no se estaba apagando, "
-                "reinícielo: los trabajos ya no reciben avances",
-                exc_info=True,
-            )
-            return
-        if event is None:
-            return
-        try:
-            ctx.registry.apply_progress(event)
-        except Exception:  # noqa: BLE001 - un evento raro no deja a todos sin noticias
-            logger.exception("no se pudo aplicar un evento de progreso: %r", event)
 
 
 async def _publish_progress(ctx: Contexto) -> None:

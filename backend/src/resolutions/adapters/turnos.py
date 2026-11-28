@@ -8,6 +8,13 @@ parecía viva y no avanzaba. Ahora se espera un turno como mucho
 ``ESPERA_MAXIMA`` segundos; si no llega, se llama igual y se avisa en el
 registro. Pasarse un poco del tope es un 429 que los adaptadores ya saben
 esperar; quedarse parado no lo arregla nadie.
+
+Un minuto y no diez (2026-11-28): la espera es callada -- no late, porque
+esperar un turno no es trabajar (``application/latido.py``) --, y diez minutos
+por petición con un turno perdido dejaban el trabajo «sin novedades» media
+hora. Además, el servicio cambia el semáforo por uno nuevo cada vez que
+rehace el pool (``api/main.py``): los turnos que se llevaron los procesos
+muertos no se arrastran.
 """
 
 from __future__ import annotations
@@ -18,7 +25,8 @@ from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
-ESPERA_MAXIMA = 600.0
+#: Lo más que se espera un turno antes de llamar sin él.
+ESPERA_MAXIMA = 60.0
 
 
 @contextmanager

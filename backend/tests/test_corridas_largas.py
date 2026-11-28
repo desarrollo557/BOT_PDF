@@ -862,12 +862,13 @@ class TestLaEntregaIncompleta:
         hasta = tmp_path / "dest" / "x.pdf"
         hasta.parent.mkdir()
 
-        def copia_cortada(origen, destino, **_):
-            Path(destino).write_bytes(b"01234")
+        def copia_cortada(origen, destino, *_):
+            destino.write(origen.read(5))
 
-        # ``copyfile`` y no ``copy2`` desde el 2026-11-26: copiar las fechas eran
-        # uno o dos cambios de atributos por archivo en un destino de red.
-        monkeypatch.setattr(folders.shutil, "copyfile", copia_cortada)
+        # Sin copiar fechas ni permisos desde el 2026-11-26 (eran uno o dos
+        # cambios de atributos por archivo en un destino de red), y bloque a
+        # bloque, vigilada, desde el 2026-11-28 (``adapters/copia_vigilada.py``).
+        monkeypatch.setattr(folders.shutil, "copyfileobj", copia_cortada)
         with pytest.raises(OSError):
             folders._copiar(desde, hasta)
         assert not hasta.exists()

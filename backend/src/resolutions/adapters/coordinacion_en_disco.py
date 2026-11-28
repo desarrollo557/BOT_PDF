@@ -383,6 +383,11 @@ class Coordinacion:
         self.medir_recursos = medir_recursos
         self._recursos: dict | None = None
         self._hilo_de_los_recursos: threading.Thread | None = None
+        #: Cuántos segundos lleva sin noticias el documento de este equipo que
+        #: más recientemente avanzó, o ``None`` si no tiene ninguno leyéndose
+        #: (2026-11-28). La corrida lo inyecta; va en el latido para que quien
+        #: espera a este equipo distinga un libro largo que avanza de uno colgado.
+        self.medir_el_avance: Callable[[], float | None] | None = None
 
     @property
     def retirado(self) -> bool:
@@ -636,6 +641,7 @@ class Coordinacion:
             "entregados": self.entregados,
             "pdf_por_minuto": self._velocidad_de_ahora(),
             "recursos": self._recursos,
+            "sin_avance": self._sin_avance(),
             "escrito": _ahora_iso(),
         }
         try:
@@ -645,6 +651,17 @@ class Coordinacion:
                 self._latido_propio = datos
         except OSError:
             logger.warning("no se pudo escribir el latido de %s", self.id, exc_info=True)
+
+    def _sin_avance(self) -> float | None:
+        """Lo que dice ``medir_el_avance``, redondeado; ``None`` si no hay o falla."""
+        if self.medir_el_avance is None:
+            return None
+        try:
+            segundos = self.medir_el_avance()
+        except Exception:  # noqa: BLE001 - medir nunca tumba el latido
+            logger.debug("no se pudo medir el avance de este equipo", exc_info=True)
+            return None
+        return None if segundos is None else round(float(segundos), 1)
 
     def _latidos_de_otros(self) -> dict[str, dict]:
         latidos: dict[str, dict] = {}
@@ -1359,7 +1376,7 @@ class Coordinacion:
         clave = clave_de(nombre)
         with self._mutex:
             local = self._cerrojos.setdefault(clave, _CerrojoLocal())
-        local.rlock.acquire()
+        self._esperar_el_turno_local(local, nombre, espera_maxima, cancelado)
         try:
             ruta = self.area / "cerrojos" / f"{clave}.lock"
             if local.cuenta == 0:
@@ -1373,6 +1390,27 @@ class Coordinacion:
                     self._soltar_el_cerrojo(ruta, local.ficha)
         finally:
             local.rlock.release()
+
+    @staticmethod
+    def _esperar_el_turno_local(
+        local: _CerrojoLocal, nombre: str, espera_maxima: float, cancelado: Callable[[], bool] | None
+    ) -> None:
+        """El turno de ``nombre`` dentro de este proceso, con el mismo tope que el del disco (2026-11-28).
+
+        Sin tope, un hilo de este equipo que se quedó con el turno -- una
+        entrega colgada en la red -- dejaba a los demás hilos esperándolo para
+        siempre, con su PDF ya leído y su ranura tomada. Pasado
+        ``espera_maxima``, o si se cancela, ``CerrojoOcupado``: el fallo que la
+        entrega ya sabe tratar.
+        """
+        limite = time.monotonic() + espera_maxima
+        while not local.rlock.acquire(timeout=max(0.0, min(1.0, limite - time.monotonic()))):
+            if cancelado is not None and cancelado():
+                raise CerrojoOcupado(f"se canceló esperando el turno de «{nombre}»")
+            if time.monotonic() >= limite:
+                raise CerrojoOcupado(
+                    f"«{nombre}» sigue ocupado por otra entrega de este equipo tras {espera_maxima / 60:.0f} min"
+                )
 
     def _tomar_el_cerrojo(
         self, ruta: Path, nombre: str, espera_maxima: float, cancelado: Callable[[], bool] | None
