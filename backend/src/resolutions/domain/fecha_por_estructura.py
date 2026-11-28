@@ -607,8 +607,12 @@ _DIAS_DE_LA_SEMANA = re.compile(
 #: (1016215, UPD2437946 p1, 2026-11-11), que salía «S.F.». Sólo con la fecha en
 #: letras, ya normalizada a «15 de Julio de 2021»: un punto seguido de cifras es
 #: también el final de una frase que cita un número.
+#: Con cuantificadores posesivos (2026-11-27): con la forma de antes una racha de
+#: letras pegadas -- el OCR de un código de barras, «IIIIlll…» -- se podía partir
+#: en palabras de todas las maneras posibles: 80 letras tardaban 12 s y 300, más
+#: de una hora, con el proceso congelado y sin latido.
 _LUGAR_PUNTO_Y_FECHA = re.compile(
-    r"\b([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ]+(?:\s*[-–]?\s*[A-Za-zÁÉÍÓÚÑáéíóúñ]+){0,5})\.\s+"
+    r"\b([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ]++(?:\s*+[-–]?\s*+[A-Za-zÁÉÍÓÚÑáéíóúñ]++){0,5})\.\s+"
     r"(\d{1,2}\s+de\s+[A-Za-záéíóúñ]+\s+del?\s+\d{4})"
 )
 #: Y sin nada entre la ciudad y la fecha: «Magangué 29 de agosto de 2022», la

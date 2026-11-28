@@ -406,23 +406,563 @@ _EXAMEN_ANTIGUO = re.compile(
 )
 
 
+#: La carta con que un graduado autoriza a otro: «… autorizo a TATIANA … para
+#: recibir en mi nombre los certificados … y mi Acta de Grado …». Nombra el
+#: acta de grado y los «días del mes» de su fecha, pero no es un acta (1990-1994
+#: TOMO I pág. 139, 2026-11-27). El acta dice «quien autorizó el acto».
+_CARTA_QUE_AUTORIZA = re.compile(r"\bAUTORIZO\s+(?:A|AL|A\s+LA)\b.{0,160}?\bPARA\s+(?:QUE\s+)?(?:ME\s+)?(?:RECIB|RECLAM|RETIR)|\bEN\s+MI\s+NOMBRE\b")
+
+
 def clase_de_hoja(texto: str) -> str:
     """Qué es una hoja de un libro de grados: el acta de un graduado, una hoja de
     la ceremonia, o la continuación de lo anterior (su reverso, una nota)."""
+    plano = _plano(texto)
+    if _CARTA_QUE_AUTORIZA.search(plano) and sum(1 for marca in _CUERPO_DEL_ACTA if marca in plano) < CUERPO_MINIMO:
+        # La carta: la reparte ``tipo_de_hoja`` con el acta de su graduado.
+        return SIGUE
     if apertura(texto):
         return GRADUADO
-    if _EXAMEN_ANTIGUO.search(_sin_cortes(_plano(texto))):
+    if _EXAMEN_ANTIGUO.search(_sin_cortes(plano)):
         return GRADUADO
-    plano = _plano(texto)
     if sum(1 for marca in _CUERPO_DEL_ACTA if marca in plano) >= CUERPO_MINIMO:
+        return GRADUADO
+    if es_acta_del_consejo_directivo(texto):
+        # La forma de 1980, antes que la ceremonia: cita «según Resolución No.
+        # 527» y se tomaba por la resolución de los grados (2026-11-27).
         return GRADUADO
     if _DE_LA_CEREMONIA.search(plano):
         return CEREMONIA
     return SIGUE
 
 
+# -- lo que el libro de grados trae cosido entre las actas (Odontología 3194-3198) --
+#
+# Medido el 2026-11-27 hoja por hoja sobre los ocho libros «ACTAS DECADA.» de
+# 1980 a 1999 (1.302 hojas): además de las actas del formulario, el libro trae
+# las copias autenticadas del acta del Consejo Directivo de 1980 que gradúa a un
+# alumno, las portadas «ACTAS UNIVERSIDAD DE CARTAGENA» de cada ceremonia, las
+# listas de alumnos del semestre o de la promoción, la constancia de
+# calificaciones de un alumno y las cartas y poderes con que un graduado
+# autoriza a otro a recibir su diploma. Hasta hoy todo lo que no era un acta
+# iba pegado al graduado de delante: la lista de 47 alumnos, en el PDF de uno.
+
+#: El acta del Consejo Directivo que gradúa a un alumno, la forma de 1980 que el
+#: libro de 1980-1984 trae en copias autenticadas: «ACTA No. 782 … se reunieron
+#: en el Decanato … los Honorables Miembros del Consejo Directivo … se nombró una
+#: comisión de examinadores para que verificaran las calificaciones de la
+#: alumna MERCY NAIZZIR DIAZ, la cual fue de (3,45) … se le hará entrega del
+#: Diploma de Grado que la acredita como ODONTOLOGO CIRUJANO». Una por alumno.
+_MARCAS_DEL_ACTA_DEL_CONSEJO = (
+    re.compile(r"CONSEJO\s+DIRECTIVO"),
+    re.compile(r"EXAMINADORES"),
+    re.compile(r"(?:CALIFICACIONES|NOTAS)\s+D\w{0,3}\b"),
+    re.compile(r"DIPLOMA"),
+)
+#: Cuántas de las cuatro marcas hacen falta: el OCR de la copia se come alguna.
+MARCAS_DEL_ACTA_DEL_CONSEJO = 3
+#: «ACTA No. 782.-», «ACTA Hb. 807», «ACIANO. 774» (el OCR del membrete).
+_NUMERO_DEL_ACTA_DEL_CONSEJO = re.compile(r"\bAC\w{0,3}\W{0,3}[NH]\w?\W{0,3}\s*(\d{2,4})\b")
+#: El alumno: «las calificaciones dela alumna MERCY NAIZZIR - DIAZ, la cual…»,
+#: «las notas de: MARIA TERESA CHAVEZ ANGULO, la cual…».
+_ALUMNO_DEL_CONSEJO = re.compile(
+    r"(?:CALIFICACIONES|NOTAS)\s+DE\W{0,3}(?:L\W{0,2}(?:A\s+)?ALUMN[AO]S?\W{0,3}|LA\s+ALUMNA\W{0,3}|EL\s+ALUMNO\W{0,3})?"
+)
+#: El título: «que la acredita como ODONTOLOGO CIRUJANO».
+_TITULO_DEL_CONSEJO = re.compile(r"ACREDITA\s+COMO\s+([A-Z][A-Z ]{4,40}?)(?=\s*[,.;]|\s+(?:PARA|SE|Y|EN)\b)")
+
+
+def es_acta_del_consejo_directivo(texto: str) -> bool:
+    """Si la hoja es el acta del Consejo Directivo que gradúa a un alumno (la forma de 1980)."""
+    plano = _sin_cortes(_plano(texto))
+    return sum(1 for marca in _MARCAS_DEL_ACTA_DEL_CONSEJO if marca.search(plano)) >= MARCAS_DEL_ACTA_DEL_CONSEJO
+
+
+def numero_del_acta_del_consejo(texto: str) -> str | None:
+    """El número del acta del Consejo Directivo, «782», si la hoja es una y lo trae arriba."""
+    if not es_acta_del_consejo_directivo(texto):
+        return None
+    numero = _NUMERO_DEL_ACTA_DEL_CONSEJO.search(_plano(texto)[:600])
+    return numero.group(1) if numero and numero.group(1).strip("0") else None
+
+
+def acta_del_consejo_directivo(texto: str) -> tuple[str | None, str | None, str | None]:
+    """El número, el alumno y el título del acta del Consejo Directivo; ``(None, None, None)`` si no es una."""
+    if not es_acta_del_consejo_directivo(texto):
+        return None, None, None
+    # El salto de renglón con guion parte el nombre: «MERCY NAIZZIR - DIAZ»; y
+    # el nombre acaba en «la cual fue de…» aunque el OCR se coma la coma:
+    # «TERESA ANGULO)!^ CUAL FUE DE».
+    plano = re.sub(r"(\w)\s+-\s+(?=\w)", r"\1 ", _sin_cortes(_plano(texto)))
+    plano = re.sub(r"[)\]!^]*\s+(?:LA\s+)?CUAL\b", ", LA CUAL", plano)
+    nombre = None
+    for marca in _ALUMNO_DEL_CONSEJO.finditer(plano):
+        nombre = _nombre_tras(plano[marca.end() :])
+        if nombre:
+            break
+    titulo = _TITULO_DEL_CONSEJO.search(plano)
+    return numero_del_acta_del_consejo(texto), nombre, titulo.group(1).strip() if titulo else None
+
+
+#: Las clases que ``tipo_de_hoja`` añade a las de ``clase_de_hoja``.
+LISTA = "lista"
+PORTADA = "portada"
+DOCUMENTO = "documento"
+CALIFICACIONES_DEL_ALUMNO = "calificaciones"
+
+#: La portada de cada ceremonia: «ACTAS UNIVERSIDAD DE CARTAGENA», a veces con
+#: «NO 198… DE MARZO» a mano. Pocas letras y «ACTAS».
+_PORTADA_DEL_LIBRO = re.compile(r"\bACTAS\b")
+LETRAS_DE_LA_PORTADA_DEL_LIBRO = 120
+
+
+def es_portada(texto: str) -> bool:
+    """Si la hoja es la portada «ACTAS» de una ceremonia: pocas letras, «ACTAS» y ningún cuerpo de acta."""
+    plano = _plano(texto)
+    letras = sum(1 for letra in plano if letra.isalpha())
+    return letras <= LETRAS_DE_LA_PORTADA_DEL_LIBRO and bool(_PORTADA_DEL_LIBRO.search(plano)) and not _CUERPO.search(plano)
+
+
+#: Lo que se lee mal de las palabras de la cabeza de una lista: «SEiESTBE»,
+#: «^^^MESTfE», «PERIDO», «USIA DEL» (LISTA DEL), «ODONTOUDGIA».
+PARECIDO_DE_LA_CABEZA = 0.6
+#: Cuánto de la hoja se mira para buscar la cabeza de la lista.
+LETRAS_DE_LA_CABEZA_DE_LA_LISTA = 700
+_ORDINALES_DEL_SEMESTRE = {
+    "PRIMER": "I", "PRIMERO": "I", "SEGUNDO": "II", "TERCER": "III", "TERCERO": "III", "CUARTO": "IV",
+    "QUINTO": "V", "SEXTO": "VI", "SEPTIMO": "VII", "OCTAVO": "VIII", "NOVENO": "IX", "DECIMO": "X",
+}
+_ROMANOS = ("I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X")
+_PERIODOS = {"PRIMER": 1, "PRIMERO": 1, "1ER": 1, "LER": 1, "1O": 1, "1": 1, "SEGUNDO": 2, "2O": 2, "2": 2}
+#: «PROMOCION 17 DE DICIEMBRE DE 1999», «PROMOCIÓN 20 DE DICIEMBRE DE 1996». No
+#: la que se cita en un texto: «… egresada de la promoción del 16 de diciembre»
+#: (la constancia de recibo del acta, 1990-1994 TOMO II pág. 74).
+_PROMOCION = re.compile(
+    r"(?<!LA )(?<!DE )\bPROMOCI\w{0,3}N\W+(?:DEL?\W+)?(?:(?P<dia>\d{1,2})\W+DE\W+)?(?P<mes>[A-Z]{4,10})\W+(?:DE(?:L)?\W+)?"
+    r"(?P<anio>(?:19|20)\d\d|1\W\d{3})\b"
+)
+#: «EGRESADOS EL 12 DE DICIEMBRE DE 1997».
+_EGRESADOS_EL = re.compile(
+    r"\bEGRESADOS\s+EL\s+(?P<dia>\d{1,2})\W+DE\W+(?P<mes>[A-Z]{4,10})\W+(?:DE\W+)?(?P<anio>(?:19|20)\d\d)\b"
+)
+#: Las listas que dicen lo que son con su título: «RELACION DE EGRESADOS QUE
+#: ENTREGARON LAS BANDAS», «LISTA DE ALUMNOS QUE TIENEN DEUDAS PENDIENTES».
+_LISTA_CON_SU_TITULO = re.compile(
+    r"\b(?P<titulo>(?:RELACION|LISTA)\s+DE\s+(?:EGRESADOS|ALUMNOS|ESTUDIANTES|GRADUADOS)\s+QUE\s+[A-Z ]{3,70}?)"
+    r"(?=\s*(?:[.,;:(]|\bFECHA\b|\bNOMBRE\b|\bVALOR\b|\bCODIGO\b|\d|$))"
+)
+#: «CONTINUACION DE LA LISTA DE ALUMNOS…»: la segunda hoja de una lista.
+_CONTINUA_LA_LISTA = re.compile(r"\bCON\w{4,9}\s+DE\s+LA\W{0,3}LIST\w*")
+#: Un renglón de una lista de alumnos: el código del estudiante -- «8910001»,
+#: «528710027», «52199810009», «79-0110» -- junto a un nombre en mayúsculas.
+_CODIGO_DE_ALUMNO = re.compile(r"(?<![\d.,'])(?:\d{6,11}|\d{2}-\d{4})(?![\d.,'])")
+_RENGLON_NUMERADO_DE_LA_LISTA = re.compile(r"(?m)^\W{0,3}\d{1,3}\s*[.\-)]\s*-?\s*[A-ZÁÉÍÓÚÑ]{3,}")
+#: Desde cuántos renglones una hoja es una lista y no un acta con su cédula.
+RENGLONES_DE_UNA_LISTA = 8
+#: El título de la lista que no dice cuál es: la de códigos sin cabeza legible.
+LISTA_DE_ALUMNOS = "LISTA DE ALUMNOS"
+
+
+def _parecida(palabra: str, otra: str) -> bool:
+    return difflib.SequenceMatcher(None, palabra, otra).ratio() >= PARECIDO_DE_LA_CABEZA
+
+
+def _anio_de_la_lista(trozo: str) -> str | None:
+    """El año de la cabeza de una lista: «1.984», «1986», «I986» (la I por 1), «P./84».
+
+    Un año ilegible -- «1.93^», «1387» -- no se adivina aquí: lo completa la
+    aplicación con las actas de su ceremonia.
+    """
+    anio = re.search(r"(?<!\d)[1I]\W?(9\d\d)(?!\d)", trozo)
+    if anio:
+        return f"1{anio.group(1)}"
+    anio = re.search(r"(?<!\d)(20[0-2]\d)(?!\d)", trozo)
+    if anio:
+        return anio.group(1)
+    corto = re.search(r"/\W{0,2}([5-9]\d)\b", trozo)
+    return f"19{corto.group(1)}" if corto else None
+
+
+def _la_mas_parecida(palabra: str, opciones: Collection[str], minimo: float) -> str | None:
+    """La opción que más se parece a la palabra, si se parece ``minimo`` o más; la exacta primero."""
+    if palabra in opciones:
+        return palabra
+    mejor = max(opciones, key=lambda opcion: difflib.SequenceMatcher(None, palabra, opcion).ratio())
+    return mejor if difflib.SequenceMatcher(None, palabra, mejor).ratio() >= minimo else None
+
+
+#: Hasta cuántas palabras de «SEMESTRE» se busca «LISTA» o «ALUMNOS»: la capa
+#: pone a veces «LISTA DEL» diez palabras detrás (1985-1986-1987 TOMO I pág. 2).
+PALABRAS_DE_LA_CABEZA = 12
+#: Cuánto se tiene que parecer el ordinal del semestre o del periodo: «DECIMa»
+#: es DECIMO; con 0,6 DECIMO se parecía a SEPTIMO (2026-11-27).
+PARECIDO_DEL_ORDINAL = 0.7
+
+
+def _periodo_de(candidata: str) -> int | None:
+    if candidata in _PERIODOS:
+        return _PERIODOS[candidata]
+    if len(candidata) < 5:
+        return None
+    parecida = _la_mas_parecida(candidata, [opcion for opcion in _PERIODOS if len(opcion) >= 6], PARECIDO_DEL_ORDINAL)
+    return _PERIODOS[parecida] if parecida else None
+
+
+def _cabeza_del_semestre(cabeza: str) -> str | None:
+    """«LISTA DE ALUMNOS IX SEMESTRE DE ODONTOLOGIA - 1 PERIODO 1984», de la cabeza de la hoja; ``None`` si no lo es.
+
+    La cabeza lleva «SEMESTRE» y «LISTA» o «ALUMNOS», bien o mal leídos y en
+    cualquier orden (la capa pone a veces «LISTA DEL» detrás). Del semestre, el
+    ordinal de delante; del periodo, el que va antes de «PERIODO» o tras «AL»;
+    el año, detrás.
+    """
+    palabras = [(hallada.group(0), hallada.start()) for hallada in re.finditer(r"[A-Z0-9]+", cabeza)]
+    donde = next(
+        (i for i, (palabra, _) in enumerate(palabras) if 6 <= len(palabra) <= 10 and _parecida(palabra, "SEMESTRE")), None
+    )
+    if donde is None:
+        return None
+    # «LISTA» o «ALUMNOS» cerca, o la columna «COD.» de los códigos: «USIA DEL
+    # DECIMa SEiESTBE … COD. No.» (1985-1986-1987 TOMO I pág. 243).
+    cerca = palabras[max(0, donde - PALABRAS_DE_LA_CABEZA) : donde + PALABRAS_DE_LA_CABEZA + 1]
+    if not any(len(palabra) >= 4 and (_parecida(palabra, "LISTA") or _parecida(palabra, "ALUMNOS")) for palabra, _ in cerca) and not any(
+        palabra in ("COD", "CODIGO") for palabra, _ in palabras
+    ):
+        return None
+    semestre = None
+    for palabra, _ in reversed(palabras[max(0, donde - 3) : donde]):
+        if palabra in _ROMANOS:
+            semestre = palabra
+            break
+        if len(palabra) >= 5 and (ordinal := _la_mas_parecida(palabra, _ORDINALES_DEL_SEMESTRE, PARECIDO_DEL_ORDINAL)):
+            semestre = _ORDINALES_DEL_SEMESTRE[ordinal]
+            break
+    detras = [palabra for palabra, _ in palabras[donde + 1 : donde + 16]]
+    periodo = None
+    for indice, palabra in enumerate(detras):
+        es_periodo = palabra in ("P", "PERIDO") or (len(palabra) >= 5 and _parecida(palabra, "PERIODO"))
+        tras_al = indice > 0 and detras[indice - 1] == "AL"
+        candidatas = detras[max(0, indice - 2) : indice] if es_periodo else ([palabra] if tras_al else [])
+        periodo = next((cual for candidata in reversed(candidatas) if (cual := _periodo_de(candidata))), None)
+        if periodo or es_periodo:
+            break
+    anio = _anio_de_la_lista(cabeza[palabras[donde][1] :])
+    titulo = " ".join([LISTA_DE_ALUMNOS, *([semestre] if semestre else []), "SEMESTRE DE ODONTOLOGIA"])
+    cola = " ".join([*([f"{periodo} PERIODO"] if periodo else []), *([anio] if anio else [])])
+    return f"{titulo} - {cola}" if cola else titulo
+
+
+def titulo_de_la_lista(texto: str) -> str | None:
+    """El título impreso de una lista de alumnos, normalizado; ``None`` si la hoja no dice ser una.
+
+    «LISTA DEL DECIMO SEMESTRE DE ODONTOLOGIA, CORRESPONDIENTE AL PRIMER
+    PERIODO DE 1986» es «LISTA DE ALUMNOS X SEMESTRE DE ODONTOLOGIA - 1 PERIODO
+    1986»; «ALUMNOS X SEMESTRE DE ODONTOLOGIA 2o. periodo de 1996», lo mismo;
+    «PROMOCION 17 DE DICIEMBRE DE 1999», «PROMOCION 17-12-1999»; «EGRESADOS EL
+    12 DE DICIEMBRE DE 1997», «EGRESADOS 12-12-1997» (2026-11-27). Lo que el
+    papel no deja leer -- el semestre, el periodo, el año -- no entra. La hoja
+    que continúa una lista (``continua_la_lista``) también devuelve lo que su
+    cabeza diga de ella.
+    """
+    plano = _plano(texto)
+    cabeza = plano[:LETRAS_DE_LA_CABEZA_DE_LA_LISTA]
+    if promocion := _PROMOCION.search(cabeza):
+        mes = _mes(promocion.group("mes"))
+        anio = re.sub(r"\D", "", promocion.group("anio"))
+        if mes:
+            fecha = f"{int(promocion.group('dia')):02d}-{mes:02d}-{anio}" if promocion.group("dia") else f"{mes:02d}-{anio}"
+            delante = "LISTA DE EGRESADOS - " if re.search(r"LISTA\s+DE\s+EGRESADOS\W+$", cabeza[: promocion.start()]) else ""
+            return f"{delante}PROMOCION {fecha}"
+    if egresados := _EGRESADOS_EL.search(cabeza):
+        mes = _mes(egresados.group("mes"))
+        if mes:
+            return f"EGRESADOS {int(egresados.group('dia')):02d}-{mes:02d}-{egresados.group('anio')}"
+    if con_titulo := _LISTA_CON_SU_TITULO.search(cabeza):
+        return " ".join(con_titulo.group("titulo").split())
+    return _cabeza_del_semestre(cabeza)
+
+
+def continua_la_lista(texto: str) -> bool:
+    """Si la hoja dice seguir la lista de la anterior: «CONTINUACION DE LA LISTA DE ALUMNOS…»."""
+    return bool(_CONTINUA_LA_LISTA.search(_plano(texto)[:LETRAS_DE_LA_CABEZA_DE_LA_LISTA]))
+
+
+_DEL_TITULO_DEL_SEMESTRE = re.compile(
+    r"^LISTA DE ALUMNOS(?: (?P<semestre>[IVX]+))? SEMESTRE DE ODONTOLOGIA"
+    r"(?: - (?:(?P<periodo>\d) PERIODO)? ?(?P<anio>\d{4})?)?$"
+)
+
+
+def titulo_de_las_hojas(titulos: Sequence[str | None]) -> str | None:
+    """El título de una lista de varias hojas: el de su primera hoja con título, completado con lo que digan las demás.
+
+    «LISTA DEL … SEMESTRE … AL 1er. PERIODO DE 1.93^» y su continuación «… IX
+    SEMESTRE … 1er. P./84» son «LISTA DE ALUMNOS IX SEMESTRE DE ODONTOLOGIA - 1
+    PERIODO 1984» (1985-1986-1987 TOMO I, págs. 2-3).
+    """
+    leidos = [titulo for titulo in titulos if titulo]
+    if not leidos:
+        return None
+    partes = [hallado for titulo in leidos if (hallado := _DEL_TITULO_DEL_SEMESTRE.match(titulo))]
+    if not partes or not _DEL_TITULO_DEL_SEMESTRE.match(leidos[0]):
+        return leidos[0]
+
+    def primero(campo: str) -> str | None:
+        return next((parte.group(campo) for parte in partes if parte.group(campo)), None)
+
+    semestre, periodo, anio = primero("semestre"), primero("periodo"), primero("anio")
+    titulo = " ".join([LISTA_DE_ALUMNOS, *([semestre] if semestre else []), "SEMESTRE DE ODONTOLOGIA"])
+    cola = " ".join([*([f"{periodo} PERIODO"] if periodo else []), *([anio] if anio else [])])
+    return f"{titulo} - {cola}" if cola else titulo
+
+
+#: Un renglón que es sólo el puesto de la lista: «12.», «13o» (la capa pone los
+#: números en una columna y los nombres en otra).
+_PUESTO_SOLO = re.compile(r"(?m)^\W{0,2}\d{1,3}\s*[.o]\s*$")
+
+
+def es_lista_de_alumnos(texto: str) -> bool:
+    """Si la hoja es una lista de personas aunque su cabeza no se lea: ocho renglones o más con su código o su número."""
+    codigos = len(_CODIGO_DE_ALUMNO.findall(texto))
+    numerados = len(_RENGLON_NUMERADO_DE_LA_LISTA.findall(unicodedata.normalize("NFC", texto).upper()))
+    puestos = len(_PUESTO_SOLO.findall(texto))
+    return max(codigos, numerados, puestos) >= RENGLONES_DE_UNA_LISTA
+
+
+#: La constancia de calificaciones de un alumno, cosida en el libro de actas
+#: (1996-1998-1999 TOMO I pág. 3): «HACE CONSTAR Que, ____ cursó y aprobó en
+#: esta Facultad … con las siguientes calificaciones», y su hoja de
+#: «Continuación Calificaciones de …».
+_CONSTANCIA_DE_CALIFICACIONES = re.compile(r"HACE\W{0,3}CONSTAR.{0,400}?CURS\w*\W+(?:Y\W+)?APROB|\bHA\s+CURSADO\b")
+_CONTINUACION_DE_CALIFICACIONES = re.compile(r"\bCON\w{4,10}\s+(?:DE\s+)?CA\w{3,14}\s+DE\b")
+_ALUMNO_DE_LA_CONSTANCIA = re.compile(r"HACE\W{0,3}CONSTAR\W{0,6}QUE\W{1,3}")
+_ANIO_DE_LAS_NOTAS = re.compile(r"\bSEMESTRE\W{0,3}(?:DE\W+)?(?P<anio>(?:19|20)\d\d)\b|\bANO\W{0,3}(?P<otro>(?:19|20)\d\d)\b")
+
+
+@dataclass(frozen=True, slots=True)
+class CalificacionesDelAlumno:
+    """La constancia de calificaciones de un alumno: su nombre, si va a máquina, y los años de sus notas."""
+
+    nombre: str | None
+    anio_inicial: int | None
+    anio_final: int | None
+
+
+def calificaciones_del_alumno(paginas: Sequence[str]) -> CalificacionesDelAlumno | None:
+    """Si las hojas son la constancia de calificaciones de un alumno: su nombre y sus años; ``None`` si no lo son."""
+    planos = [_plano(texto) for texto in paginas]
+    if not any(_CONSTANCIA_DE_CALIFICACIONES.search(plano) or _CONTINUACION_DE_CALIFICACIONES.search(plano) for plano in planos):
+        return None
+    nombre = None
+    for plano in planos:
+        if marca := _ALUMNO_DE_LA_CONSTANCIA.search(plano):
+            # «Que, LIZELIA M. ALFARO ZOLA, cursó…»; a mano sobre la raya, la capa no lo trae.
+            nombre = _nombre_tras(plano[marca.end() :])
+        elif marca := _CONTINUACION_DE_CALIFICACIONES.search(plano):
+            nombre = nombre or _nombre_tras(plano[marca.end() :])
+        if nombre:
+            break
+    anios = sorted(
+        int(hallado.group("anio") or hallado.group("otro")) for plano in planos for hallado in _ANIO_DE_LAS_NOTAS.finditer(plano)
+    )
+    return CalificacionesDelAlumno(nombre, anios[0] if anios else None, anios[-1] if anios else None)
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentoDeUnaPersona:
+    """Una carta, un poder o una constancia de una persona, cosida entre las actas."""
+
+    #: Lo que es, para su nombre: «AUTORIZACION PARA RECIBIR EL DIPLOMA».
+    clase: str
+    nombre: str | None
+    cedula: str | None
+    #: Una copia de la cédula nunca va sola: va con el acta de su dueño.
+    anexo: bool = False
+
+
+AUTORIZACION = "AUTORIZACION PARA RECIBIR EL DIPLOMA"
+PAZ_Y_SALVO = "CONSTANCIA DE PAZ Y SALVO"
+RECIBO_DEL_ACTA = "CONSTANCIA DE RECIBO DEL ACTA DE GRADO"
+COPIA_DE_LA_CEDULA = "COPIA DE LA CEDULA"
+#: «Yo, JULIO ALEJANDRO DE LA OSSA SALCEDO, identificado…» o «… autorizo a…».
+_AUTORIZA = re.compile(r"\bAUTORIZ\w*|\bCONFIERO\s+PODER|\bPODER\s+(?:ESPECIAL|AMPLIO)|^\W*PODER\b|\W\sPODER\s")
+_PARA_QUE = re.compile(r"RECLAM|RETIR|RECIB|DILIGENCIAS|ACTA\s+DE\s+GRADO|DIPLOMA")
+_QUIEN_ESCRIBE = re.compile(r"\bYO\b\W{0,3}(?=[A-Z])")
+_MAYOR_DE_EDAD = re.compile(r"((?:[A-Z]{2,}\W{1,3}){2,6}?)(?:MAYOR\s+DE\s+EDAD|IDENTIFICAD[AO])")
+_QUIEN_FIRMA = re.compile(r"\bATENTAMENTE\W{0,4}")
+_PAZ_Y_SALVO = re.compile(r"PAZ\s+Y\s+SALVO")
+_EL_SENOR_DE_LA_CONSTANCIA = re.compile(r"\bEL\s+SENOR\s*(?:\(\W{0,2}SRTA\W{0,3}\)\s*)?\W{0,3}(?:DOCTOR\W+|DR\W+)?")
+_RECIBO_DEL_ACTA = re.compile(r"HE\s+RECIBIDO\s+EL\s+ACTA\s+DE\s+GRADO")
+_COPIA_DE_LA_CEDULA = re.compile(r"IDENTIFICACION\s+PERSONAL|CEDULA\s+DE\s+CIUDADANIA.{0,120}(?:APELLIDOS|NOMBRES|NACIMIENTO)")
+_APELLIDOS_Y_NOMBRES = re.compile(r"APELLIDOS\W+(?P<apellidos>(?:[A-Z]{2,}\W{1,3}){1,3}?)NOMBRES\W+(?P<nombres>(?:[A-Z]{2,}\W{0,3}){1,3})")
+_CEDULA_DEL_DOCUMENTO = re.compile(r"(?:C\W?C\W{0,3}|CEDULA\s+DE\s+CIUDADANIA\W{0,3}(?:N\w{0,6}\W{0,3})?)(?:#\W*)?(\d{1,3}(?:\W?\d{3}){2,3})")
+#: Lo que no es de un nombre aunque vaya detrás: «RAMON GONZALEZ VALLEJO no (a)».
+_COLA_QUE_NO_ES_NOMBRE = {"NO", "EGRESADO", "EGRESADA", "IDENTIFICADO", "IDENTIFICADA", "ALUMNO", "ALUMNA", "VECINO", "VECINA"}
+
+
+def _sin_cola(nombre: str | None) -> str | None:
+    palabras = (nombre or "").split()
+    while palabras and palabras[-1] in _COLA_QUE_NO_ES_NOMBRE:
+        palabras.pop()
+    return " ".join(palabras) if len(palabras) >= 2 else None
+
+
+def _cifras_de_la_cedula(plano: str, desde: int = 0) -> str | None:
+    hallada = _CEDULA_DEL_DOCUMENTO.search(plano, desde)
+    return re.sub(r"\D", "", hallada.group(1)) if hallada else None
+
+
+def documento_de_una_persona(texto: str) -> DocumentoDeUnaPersona | None:
+    """Si la hoja es una carta, un poder o una constancia de una persona: qué es y de quién; ``None`` si no.
+
+    El graduado que autoriza a otro a recibir su diploma -- «Yo, JULIO
+    ALEJANDRO DE LA OSSA SALCEDO … autorizo al señor MARLON ENRIQUE COHEN
+    ARTEAGA … para reclamar mi acta de grado» (1996-1998-1999 TOMO II pág. 1) --,
+    el que confiere poder -- «AMANDA BEATRIZ MULETT MENDOZA, mayor de edad …
+    confiero poder especial» --, la constancia de paz y salvo de un egresado y la
+    copia de una cédula. De quién es lo dice quien escribe o la constancia, no
+    a quien se autoriza.
+    """
+    plano = _plano(texto)
+    if _COPIA_DE_LA_CEDULA.search(plano):
+        partes = _APELLIDOS_Y_NOMBRES.search(plano)
+        nombre = (
+            _sin_cola(" ".join([*re.findall(r"[A-Z]{2,}", partes.group("nombres")), *re.findall(r"[A-Z]{2,}", partes.group("apellidos"))]))
+            if partes
+            else None
+        )
+        return DocumentoDeUnaPersona(COPIA_DE_LA_CEDULA, nombre, _cifras_de_la_cedula(plano), anexo=True)
+    # «HACE C O N S T A R» espaciado no se lee como CONSTAR: basta «el Señor (Srta.)».
+    if _PAZ_Y_SALVO.search(plano) and (_CONSTANCIA.search(plano) or _EL_SENOR_DE_LA_CONSTANCIA.search(plano)):
+        marca = _EL_SENOR_DE_LA_CONSTANCIA.search(plano)
+        nombre = _sin_cola(_nombre_tras(plano[marca.end() :])) if marca else None
+        return DocumentoDeUnaPersona(PAZ_Y_SALVO, nombre, None)
+    if _RECIBO_DEL_ACTA.search(plano):
+        return DocumentoDeUnaPersona(RECIBO_DEL_ACTA, None, _cifras_de_la_cedula(plano))
+    if not (_AUTORIZA.search(plano) and _PARA_QUE.search(plano)):
+        return None
+    nombre = None
+    desde = 0
+    if quien := _QUIEN_ESCRIBE.search(plano):
+        nombre, desde = _sin_cola(_nombre_tras(plano[quien.end() :])), quien.end()
+    # Quien se identifica antes de autorizar es quien escribe; el que se
+    # identifica después es el autorizado («autorizar a la Dra. NELLYS …,
+    # identificada con…»), que no es del libro.
+    autoriza = _AUTORIZA.search(plano)
+    if not nombre and (mayor := _MAYOR_DE_EDAD.search(plano, 0, autoriza.start() if autoriza else len(plano))):
+        nombre = _sin_cola(" ".join(re.findall(r"[A-Z]{2,}", mayor.group(1))[-4:]))
+        desde = mayor.end()
+    if not nombre and (firma := _QUIEN_FIRMA.search(plano)):
+        nombre, desde = _sin_cola(_nombre_tras(plano[firma.end() :])), firma.end()
+    return DocumentoDeUnaPersona(AUTORIZACION, nombre, _cifras_de_la_cedula(plano, desde))
+
+
+def tipo_de_hoja(texto: str) -> str:
+    """La clase de la hoja con lo que el libro trae entre las actas: ``LISTA``, ``PORTADA``, ``DOCUMENTO`` o ``CALIFICACIONES_DEL_ALUMNO``.
+
+    Primero lo de siempre (``clase_de_hoja``): el acta y la hoja de la
+    ceremonia no cambian. Sólo la hoja que antes «seguía» a la anterior se
+    mira otra vez -- y la de la ceremonia que es una lista con su título --.
+    """
+    clase = clase_de_hoja(texto)
+    if clase == GRADUADO:
+        return GRADUADO
+    # La constancia de calificaciones dice «… semestre de Odontología»: antes que la lista.
+    if clase == SIGUE and calificaciones_del_alumno([texto]) is not None:
+        return CALIFICACIONES_DEL_ALUMNO
+    if clase == SIGUE and (titulo_de_la_lista(texto) is not None or continua_la_lista(texto)):
+        return LISTA
+    if clase == CEREMONIA:
+        return CEREMONIA
+    if es_portada(texto):
+        return PORTADA
+    if documento_de_una_persona(texto) is not None:
+        return DOCUMENTO
+    if es_lista_de_alumnos(texto):
+        return LISTA
+    return SIGUE
+
+
+#: Cuánto se tienen que parecer dos palabras de dos nombres para ser la misma
+#: mal leída: «MULSCT» es MULET, «IULFONSO» es ALFONSO (2026-11-27).
+PARECIDO_DE_UNA_PALABRA_DEL_NOMBRE = 0.7
+
+
+#: Lo que precede a un nombre y no es de él: «(Srta.) Doctor RAUL ESPINOSA».
+_TRATAMIENTOS = {"SRTA", "SRITA", "SENOR", "SENORA", "SENORITA", "DOCTOR", "DOCTORA", "DRA"}
+
+
+def _palabras_del_nombre(nombre: str | None) -> list[str]:
+    return [
+        p for p in re.findall(r"[A-Z]{3,}", _plano(nombre or "")) if p not in _ENLACES_DEL_NOMBRE and p not in _TRATAMIENTOS
+    ]
+
+
+def _la_misma_lista(una: str | None, otra: str | None) -> bool:
+    """Si dos hojas seguidas son de la misma lista: el mismo título, o uno que no lo dice o que sólo dice menos."""
+    if una is None or otra is None or una == otra:
+        return True
+    partes = [_DEL_TITULO_DEL_SEMESTRE.match(una), _DEL_TITULO_DEL_SEMESTRE.match(otra)]
+    if not all(partes):
+        return False
+    return all(
+        partes[0].group(campo) is None or partes[1].group(campo) is None or partes[0].group(campo) == partes[1].group(campo)  # type: ignore[union-attr]
+        for campo in ("semestre", "periodo", "anio")
+    )
+
+
+def palabras_en_comun(uno: str | None, otro: str | None, parecido: float = PARECIDO_DE_UNA_PALABRA_DEL_NOMBRE) -> int:
+    """Cuántas palabras de un nombre están, bien o mal leídas, en el otro."""
+    otras = _palabras_del_nombre(otro)
+    return sum(
+        1
+        for palabra in _palabras_del_nombre(uno)
+        if any(difflib.SequenceMatcher(None, palabra, otra).ratio() >= parecido for otra in otras)
+    )
+
+
+#: Para decir que un documento no tiene nada que ver con el graduado de delante
+#: hace falta más que el parecido de una palabra: ELENA se parece a MILENA.
+PARECIDO_PARA_NADA_QUE_VER = 0.85
+
+
+def misma_cedula(una: str | None, otra: str | None) -> bool:
+    """Si dos cédulas leídas son la misma: las mismas cifras, o una cambiada si son igual de largas."""
+    a, b = re.sub(r"\D", "", una or ""), re.sub(r"\D", "", otra or "")
+    if len(a) < 6 or len(b) < 6:
+        return False
+    return a == b or (len(a) == len(b) and sum(x != y for x, y in zip(a, b, strict=True)) <= 1)
+
+
+def es_de_la_persona(nombre: str | None, cedula: str | None, de_nombre: str | None, de_cedula: str | None) -> bool:
+    """Si un documento es de la persona de un acta: su cédula, o dos palabras del nombre (la mitad o más)."""
+    if misma_cedula(cedula, de_cedula):
+        return True
+    comunes = palabras_en_comun(nombre, de_nombre)
+    return comunes >= 2 and comunes * 2 >= min(len(_palabras_del_nombre(nombre)), len(_palabras_del_nombre(de_nombre)))
+
+
+@dataclass(slots=True)
+class _TramoDelLibro:
+    desde: int
+    hasta: int
+    ceremonia: bool
+    clase: str
+    #: El título de la lista, o el número del acta del Consejo Directivo.
+    titulo: str | None = None
+    #: De quién es: el graduado de su acta, o quien escribe el documento.
+    nombre: str | None = None
+    cedula: str | None = None
+    #: Del documento suelto: si sólo va como anexo (la copia de la cédula).
+    anexo: bool = False
+
+
+def _persona_del_acta(texto: str) -> tuple[str | None, str | None]:
+    acta = leer_acta_de_grado([texto])
+    return acta.nombre, acta.cedula
+
+
 def actas_de_grado_del_pdf(
-    paginas: Sequence[str], foliadas: Collection[int] | None = None
+    paginas: Sequence[str], foliadas: Collection[int] | None = None, *, conocidas: Collection[str] = ()
 ) -> ActasDelPdf:
     """Cómo se reparte un libro de actas de grado: un tramo por graduado.
 
@@ -443,35 +983,143 @@ def actas_de_grado_del_pdf(
 
     Cada tramo dice cuántas páginas lleva (``hojas``), que es lo que va en
     «No. de folios»: una, o dos con su vuelto.
+
+    Lo que el libro trae cosido entre las actas (Odontología 3194-3198,
+    2026-11-27; ``tipo_de_hoja``):
+
+    * **la lista de alumnos o de la promoción** va en su tramo, con sus hojas
+      de continuación: es un documento con su título y su fila;
+    * **la portada «ACTAS»** de cada ceremonia, en el suyo, sin fila;
+    * **la copia del acta del Consejo Directivo** de 1980 es el acta de su
+      alumno, y la segunda copia de la misma acta (su número) va con ella;
+    * **la carta, el poder o la constancia de una persona** van con el acta de
+      delante si son de su graduado o no se lee de quién son (los anexos
+      siguen la secuencia); con la de detrás si son del graduado de ésa; si
+      no son de ninguno de los dos, en su propio tramo, con su fila. La copia
+      de una cédula nunca va sola;
+    * **la constancia de calificaciones** de un alumno, igual: con su acta si
+      es suya, si no, en su tramo.
+
+    ``conocidas`` son los nombres y apellidos hispanos de la lista del bot: un
+    documento sólo se separa de su vecina si nombra a alguien de verdad
+    («CLAUDIA ROMERO FLOREZ»), no si el OCR dejó su nombre en letras sueltas
+    («EFBAUI JAJITODIO OLAIFFIE CASTILLO», el poder de EFRAIN ANTONIO OLARTE).
     """
     total = len(paginas)
     con_folio = set(foliadas) if foliadas is not None else None
-    tramos: list[list] = []  # desde, hasta, ceremonia
+    tramos: list[_TramoDelLibro] = []
     for numero, texto in enumerate(paginas, start=1):
-        clase = clase_de_hoja(texto)
+        tipo = tipo_de_hoja(texto)
         sin_folio = con_folio is not None and numero not in con_folio
-        if clase == GRADUADO:
+        anterior = tramos[-1] if tramos else None
+        if tipo == GRADUADO:
             # El acta de un graduado es su documento aunque su folio no se vea:
-            # pegarla a la anterior juntaría a dos graduados en una fila.
-            tramos.append([numero, numero, False])
-        elif clase == CEREMONIA and tramos and (sin_folio or (con_folio is None and tramos[-1][2])):
-            tramos[-1][1] = numero
-        elif clase == CEREMONIA or not tramos:
+            # pegarla a la anterior juntaría a dos graduados en una fila. Salvo
+            # la segunda copia de la misma acta del Consejo Directivo: su número
+            # es el de un solo alumno (1980-1984 TOMO I, págs. 18-19, la 782).
+            del_consejo = numero_del_acta_del_consejo(texto)
+            if del_consejo and anterior is not None and anterior.clase == GRADUADO and anterior.titulo == del_consejo:
+                anterior.hasta = numero
+                continue
+            nombre, cedula = _persona_del_acta(texto)
+            tramos.append(_TramoDelLibro(numero, numero, False, GRADUADO, del_consejo, nombre, cedula))
+        elif tipo == LISTA:
+            titulo = titulo_de_la_lista(texto)
+            de_su_lista = (
+                anterior is not None
+                and anterior.clase == LISTA
+                and (continua_la_lista(texto) or _la_misma_lista(anterior.titulo, titulo))
+            )
+            # La hoja de una resolución o de un listado que sigue con sus nombres.
+            de_su_ceremonia = titulo is None and anterior is not None and anterior.clase == CEREMONIA
+            if de_su_lista or de_su_ceremonia:
+                anterior.hasta = numero  # type: ignore[union-attr]
+                if de_su_lista and anterior is not None:
+                    anterior.titulo = titulo_de_las_hojas([anterior.titulo, titulo])
+            else:
+                tramos.append(_TramoDelLibro(numero, numero, True, LISTA, titulo))
+        elif tipo == PORTADA:
+            if anterior is not None and anterior.clase == PORTADA:
+                anterior.hasta = numero
+            else:
+                tramos.append(_TramoDelLibro(numero, numero, True, PORTADA))
+        elif tipo == CEREMONIA and anterior is not None and (
+            sin_folio or (con_folio is None and anterior.ceremonia) or _sigue_la_resolucion(texto, anterior)
+        ):
+            anterior.hasta = numero
+        elif tipo == CEREMONIA or anterior is None and tipo == SIGUE:
             # Una hoja de la ceremonia con su folio abre su documento: el
             # listado, la resolución. Y lo que va antes de todo -- una portada
             # sin texto -- es de la ceremonia que empieza.
-            tramos.append([numero, numero, True])
+            tramos.append(
+                _TramoDelLibro(numero, numero, True, CEREMONIA, numero_de_la_resolucion(texto) if tipo == CEREMONIA else None)
+            )
+        elif tipo in (DOCUMENTO, CALIFICACIONES_DEL_ALUMNO):
+            if tipo == DOCUMENTO:
+                documento = documento_de_una_persona(texto)
+                nombre, cedula, anexo = (documento.nombre, documento.cedula, documento.anexo) if documento else (None, None, True)
+            else:
+                calificaciones = calificaciones_del_alumno([texto])
+                nombre, cedula, anexo = (calificaciones.nombre if calificaciones else None), None, False
+            tramos.append(_TramoDelLibro(numero, numero, True, tipo, None, nombre, cedula, anexo))
         else:
             # El vuelto, una nota a mano: de la hoja anterior.
-            tramos[-1][1] = numero
+            anterior.hasta = numero  # type: ignore[union-attr]
+    tramos = _documentos_en_su_sitio(tramos, conocidas)
     if not tramos:
         return ActasDelPdf(tramos=(TramoDeActa(1, max(1, total)),))
     return ActasDelPdf(
         tramos=tuple(
-            TramoDeActa(desde, hasta, ceremonia=ceremonia, hojas=hasta - desde + 1)
-            for desde, hasta, ceremonia in tramos
+            TramoDeActa(tramo.desde, tramo.hasta, ceremonia=tramo.ceremonia, hojas=tramo.hasta - tramo.desde + 1)
+            for tramo in tramos
         )
     )
+
+
+def _documentos_en_su_sitio(tramos: list[_TramoDelLibro], conocidas: Collection[str] = ()) -> list[_TramoDelLibro]:
+    """Cada carta, poder o constancia suelta, con el acta de su persona o en su propio tramo.
+
+    Con la de delante si es de su graduado, si no se lee de quién es o si es
+    sólo un anexo -- la copia de una cédula --: los anexos siguen la secuencia.
+    Con la de detrás si es del graduado de ésa y no se parece en nada al de
+    delante. Si no es de ninguno de los dos, se queda en su tramo y lleva su
+    fila: nunca dos personas en un PDF. Las hojas que la siguen sin abrir nada
+    van con ella.
+    """
+    resultado: list[_TramoDelLibro] = []
+    for indice, tramo in enumerate(tramos):
+        if tramo.clase not in (DOCUMENTO, CALIFICACIONES_DEL_ALUMNO):
+            resultado.append(tramo)
+            continue
+        anterior = resultado[-1] if resultado else None
+        siguiente = tramos[indice + 1] if indice + 1 < len(tramos) else None
+        delante = anterior is not None and anterior.nombre is not None and es_de_la_persona(
+            tramo.nombre, tramo.cedula, anterior.nombre, anterior.cedula
+        )
+        # Si el graduado de delante no se lee, no se sabe: ante la duda se une.
+        # Si lo de delante no es de nadie -- una lista, una portada --, nada.
+        if anterior is None or (anterior.nombre is None and anterior.clase != GRADUADO):
+            nada_que_ver = True
+        elif anterior.nombre is None:
+            nada_que_ver = False
+        else:
+            nada_que_ver = palabras_en_comun(tramo.nombre, anterior.nombre, PARECIDO_PARA_NADA_QUE_VER) == 0 and not misma_cedula(
+                tramo.cedula, anterior.cedula
+            )
+        detras = (
+            siguiente is not None
+            and siguiente.clase == GRADUADO
+            and es_de_la_persona(tramo.nombre, tramo.cedula, siguiente.nombre, siguiente.cedula)
+        )
+        palabras = _palabras_del_nombre(tramo.nombre)
+        legible = len([p for p in palabras if p in conocidas] if conocidas else palabras) >= 2
+        if detras and nada_que_ver and siguiente is not None:
+            siguiente.desde = tramo.desde
+        elif anterior is not None and (delante or not legible or tramo.anexo or not nada_que_ver):
+            anterior.hasta = tramo.hasta
+        else:
+            resultado.append(tramo)
+    return resultado
 
 
 def mejor_lectura(capa: str, formulario: str) -> str:
@@ -501,20 +1149,142 @@ def leer_acta_de_grado(paginas: Sequence[str]) -> ActaDeConsejo:
         None,
     )
     if hoja is None:
+        encabezado = encabezado_de_la_ceremonia(paginas)
+        # La carta o la constancia de una persona: de quién es y su cédula, que
+        # su fila del FUID lleva (2026-11-27).
+        documento = (
+            documento_de_una_persona(paginas[0] or "")
+            if paginas and str(encabezado or "").startswith(_ENCABEZADOS_DE_DOCUMENTO)
+            else None
+        )
         return ActaDeConsejo(
             rotulo=ROTULO_DE_CEREMONIA,
-            fecha=_fecha_de_la_ceremonia(paginas),
+            nombre=documento.nombre if documento else None,
+            cedula=documento.cedula if documento else None,
+            # La lista, con la de su título: la de un periodo es su año
+            # (2026-11-27); un listado de nombres no tiene otra.
+            fecha=fecha_de_la_lista(encabezado) if es_encabezado_de_lista(encabezado) else _fecha_de_la_ceremonia(paginas),
             # Lo que dice ser la hoja: la resolución de los grados o la
             # ceremonia con sus actas (2026-11-12). La hoja de la ceremonia no
             # tiene sesión; el campo lo lleva.
-            sesion=encabezado_de_la_ceremonia(paginas),
+            sesion=encabezado,
         )
     pagina, texto = hoja
     return completar_acta(ActaDeConsejo(rotulo=ROTULO, pagina=pagina), texto)
 
 
+#: Lo que abre el encabezado de un documento del libro que no es un acta ni una
+#: hoja de la ceremonia, y que por eso lleva su fila en el FUID (2026-11-27).
+_ENCABEZADOS_DE_LISTA = ("LISTA DE ", "PROMOCION ", "EGRESADOS ", "RELACION DE ")
+_ENCABEZADOS_DE_DOCUMENTO = (AUTORIZACION, PAZ_Y_SALVO, RECIBO_DEL_ACTA)
+#: La constancia de calificaciones que no es de ningún graduado del libro:
+#: «CALIFICACIONES - NOMBRE», una fila de calificaciones.
+ROTULO_DE_CALIFICACIONES = "CALIFICACIONES"
+
+
+def es_encabezado_de_lista(encabezado: object) -> bool:
+    """Si el encabezado de una hoja de la ceremonia es el de una lista de alumnos o de la promoción."""
+    return str(encabezado or "").startswith(_ENCABEZADOS_DE_LISTA)
+
+
+def es_encabezado_con_fila(encabezado: object) -> bool:
+    """Si la hoja que no es un acta es un documento con su fila: una lista, una carta, una constancia.
+
+    La portada y la hoja que sólo lista a los graduandos de la ceremonia siguen
+    sin fila (2026-11-12); la resolución de los grados, con la suya.
+    """
+    texto = str(encabezado or "")
+    return es_encabezado_de_lista(texto) or texto.startswith(_ENCABEZADOS_DE_DOCUMENTO)
+
+
+def fecha_de_la_lista(encabezado: object) -> date | None:
+    """La fecha de una lista por su título: el día de la promoción, o el 1 de enero de su año."""
+    texto = str(encabezado or "")
+    if completa := re.search(r"\b(\d{2})-(\d{2})-(\d{4})\b", texto):
+        try:
+            return date(int(completa.group(3)), int(completa.group(2)), int(completa.group(1)))
+        except ValueError:
+            return None
+    if mes := re.search(r"\b(\d{2})-(\d{4})\b", texto):
+        return date(int(mes.group(2)), int(mes.group(1)), 1) if 1 <= int(mes.group(1)) <= 12 else None
+    if anio := re.search(r"\b((?:19|20)\d\d)\b", texto):
+        return date(int(anio.group(1)), 1, 1)
+    return None
+
+
+def fechas_extremas_de_la_lista(encabezado: object, fecha: date | None) -> tuple[date | None, date | None]:
+    """Las fechas extremas de una lista: la de su promoción en las dos; de un mes o de un año, su primer y su último día.
+
+    Lo dijo el operador para la lista de la promoción (2026-11-27): «la
+    promoción completa en las dos; si solo hay periodo o año, 01/01 y 31/12 de
+    ese año».
+    """
+    texto = str(encabezado or "")
+    if fecha is None:
+        return None, None
+    if re.search(r"\b\d{2}-\d{2}-\d{4}\b", texto):
+        return fecha, fecha
+    if re.search(r"\b\d{2}-\d{4}\b", texto):
+        siguiente = date(fecha.year + (fecha.month == 12), fecha.month % 12 + 1, 1)
+        return fecha.replace(day=1), date.fromordinal(siguiente.toordinal() - 1)
+    return date(fecha.year, 1, 1), date(fecha.year, 12, 31)
+
+
+def _encabezado_de_lo_cosido(paginas: Sequence[str]) -> str | None:
+    """El encabezado de un tramo que abre una lista, una carta o una constancia de calificaciones (2026-11-27)."""
+    if not paginas:
+        return None
+    primera = tipo_de_hoja(paginas[0] or "")
+    if primera == LISTA:
+        titulos = [titulo_de_la_lista(texto or "") for texto in paginas if tipo_de_hoja(texto or "") == LISTA]
+        return titulo_de_las_hojas(titulos) or LISTA_DE_ALUMNOS
+    if primera == CALIFICACIONES_DEL_ALUMNO:
+        calificaciones = calificaciones_del_alumno(paginas)
+        nombre = calificaciones.nombre if calificaciones else None
+        return " - ".join([ROTULO_DE_CALIFICACIONES, *([nombre] if nombre else [])])
+    if primera == DOCUMENTO and (documento := documento_de_una_persona(paginas[0] or "")) is not None:
+        return " - ".join([documento.clase, *([documento.nombre] if documento.nombre else [])])
+    return None
+
+
 #: «RESOLUCIÓN No. 01633», en la cabeza de la hoja.
 _RESOLUCION_DE_GRADOS = re.compile(r"RESOLUCI[O0]N\s+N\W?[O0]?\W{0,3}\s*([0-9OIl]{3,6})\b")
+#: El número a máquina que la capa pone detrás del «de 1.9» impreso del
+#: formulario: «Resolución No. de 1.9 0 289» es la 0289 (1980-1984 TOMO I
+#: pág. 31, 2026-11-27).
+_RESOLUCION_DEL_FORMULARIO = re.compile(r"RESOLUCI[O0]N\s+N\W?[O0]?\W{0,3}\s*DE\s+1\W?9\W{0,3}\s*(\d{1,2}\s?\d{3})\b")
+#: «Resolución No. de 1.9 Hoja 2»: la segunda hoja de la resolución, con el
+#: membrete repetido.
+_HOJA_DE_LA_RESOLUCION = re.compile(r"\bHOJA\W{0,3}(?:N\W{0,3}[O0]?\W{0,3})?[2-9]\b")
+
+
+def numero_de_la_resolucion(texto: str) -> str | None:
+    """El número de la resolución que nombra la cabeza de la hoja: «0289», «912»; ``None`` si no lo dice."""
+    cabeza = _plano(" ".join((texto or "").split())[:1200])
+    hallada = min(
+        (encontrada for encontrada in (_RESOLUCION_DE_GRADOS.search(cabeza), _RESOLUCION_DEL_FORMULARIO.search(cabeza)) if encontrada),
+        key=lambda encontrada: encontrada.start(),
+        default=None,
+    )
+    if hallada is None:
+        return None
+    return re.sub(r"\s", "", hallada.group(1)).replace("O", "0").replace("I", "1").replace("l", "1")
+
+
+def _sigue_la_resolucion(texto: str, anterior: _TramoDelLibro) -> bool:
+    """Si la hoja de la ceremonia es la siguiente de la resolución de delante: su mismo número o «Hoja 2».
+
+    Cada hoja repite el membrete «Resolución No. … de 1.97…»: las tres de la
+    resolución de 1972 que abre «ACTAS DE GRADO 1960-1965», y la «Hoja 2» de la
+    0289 (1980-1984 TOMO I pág. 32), son una resolución y no tres (2026-11-27).
+    """
+    if anterior.clase != CEREMONIA or anterior.titulo is None:
+        return False
+    cabeza = _plano(" ".join((texto or "").split())[:400])
+    numero = numero_de_la_resolucion(texto)
+    return numero == anterior.titulo or (numero is None and bool(_HOJA_DE_LA_RESOLUCION.search(cabeza)))
+
+
 #: «"Por medio de la cual se autorizan grados secretariales"».
 _EPIGRAFE = re.compile(r"POR\s+MEDIO\s+DE\s+LA\s+CUAL\s+[A-Z ,]{5,120}?(?=\W{0,3}\s*(?:EL\s+RECTOR|CONSIDERANDO|$))")
 #: «Actas de Grado No. 05418726 a 05418731».
@@ -530,14 +1300,21 @@ def encabezado_de_la_ceremonia(paginas: Sequence[str]) -> str | None:
     lista de cédulas y nombres, salía «CEREMONIA DE GRADO» como la hoja de la
     ceremonia. Ahora es «RESOLUCION 01633 - POR MEDIO DE LA CUAL SE AUTORIZAN
     GRADOS SECRETARIALES»; y la ceremonia, «CEREMONIA DE GRADO - ACTAS 05418726
-    A 05418731». ``None`` si no dice ninguna de las dos.
+    A 05418731». Desde el 2026-11-27, también lo cosido entre las actas: la
+    lista con su título («LISTA DE ALUMNOS IX SEMESTRE DE ODONTOLOGIA - 1
+    PERIODO 1984», «PROMOCION 17-12-1999»), la carta o la constancia de una
+    persona («AUTORIZACION PARA RECIBIR EL DIPLOMA - NOMBRE») y la constancia de
+    calificaciones de un alumno («CALIFICACIONES - NOMBRE»). ``None`` si no dice
+    nada de eso: la portada, la hoja que sólo lista a los graduandos.
     """
     from .title import lo_que_resuelve
 
     for texto in paginas:
         cabeza = _plano(" ".join((texto or "").split())[:1200])
-        if (resolucion := _RESOLUCION_DE_GRADOS.search(cabeza)) and "RESUELVE" in _plano(texto or ""):
-            numero = resolucion.group(1).replace("O", "0").replace("I", "1").replace("l", "1")
+        # La primera que nombra la cabeza: «Resolución No. de 1.9 0 289 … mediante
+        # Resolución No. 014 del 21 de febrero» es la 0289.
+        numero = numero_de_la_resolucion(texto or "")
+        if numero and "RESUELVE" in _plano(texto or ""):
             # El asunto de una resolución de la Universidad es la resolución
             # más lo que resuelve (el operador, 2026-11-03 en la caja 3303 y
             # 2026-11-12 para todas sus habilidades); sin RESUELVE legible, su
@@ -548,7 +1325,9 @@ def encabezado_de_la_ceremonia(paginas: Sequence[str]) -> str | None:
             return " - ".join([f"{ROTULO_DE_RESOLUCION} {numero}", *([resumen] if resumen else [])])
         if actas := _ACTAS_DE_LA_CEREMONIA.search(cabeza):
             return f"{ROTULO_DE_CEREMONIA} - ACTAS {actas.group(1)} A {actas.group(2)}"
-    return None
+    # Lo que el libro trae cosido entre las actas: la lista, la carta, la
+    # constancia de calificaciones (Odontología 3194-3198, 2026-11-27).
+    return _encabezado_de_lo_cosido(paginas)
 
 
 def _fecha_de_la_ceremonia(paginas: Sequence[str]) -> date | None:
@@ -644,7 +1423,13 @@ def _nombre_tras(texto: str) -> str | None:
         # Tras una inicial con punto el nombre sólo sigue si aún no tiene
         # apellido o si sigue un enlace: «Jorge H. Navarro Palacio» sigue,
         # «Miguel F. de la Espriella G. Presidió…» acaba en la G.
-        if tras_inicial and len(palabras) >= 2 and limpio not in _ENLACES_DEL_NOMBRE:
+        # Sin contar los enlaces: «EMMA DEL C. VEGA BANDA» sigue tras la inicial
+        # (el acta del Consejo Directivo de 1980, 2026-11-27).
+        if (
+            tras_inicial
+            and len([p for p in palabras if p not in _ENLACES_DEL_NOMBRE]) >= 2
+            and limpio not in _ENLACES_DEL_NOMBRE
+        ):
             break
         tras_inicial = False
         if len(limpio) >= 2 or limpio in _ENLACES_DEL_NOMBRE:
@@ -786,7 +1571,7 @@ def examen_antiguo(texto: str) -> tuple[str | None, str | None]:
     nombre = _nombre_confirmado(_nombre_de_arriba(texto), del_texto)
     preparatorio = _PREPARATORIO.search(plano)
     de_arriba = _PREPARATORIO_DE_ARRIBA.search(plano[: plano.find("CARTAGENA")])
-    grado = _TITULO_ANTIGUO.search(plano)
+    grado = _TITULO_ANTIGUO.search(plano) or _TITULO_DE_ODONTOLOGO.search(plano)
     if preparatorio:
         titulo = f"{preparatorio.group(1)} EXAMEN PREPARATORIO DE GRADO"
     elif de_arriba and de_arriba.group(1) in _ORDINALES:
@@ -814,6 +1599,11 @@ _EXAMEN_FINAL = re.compile(
     r"EXAMEN\s+(?:DE\s+GRADO\s+)?(?:FINAL|GENERAL)|FINAL\s+DE\s+GRADO|(?:TITULO|GRADO)\s+DE\s+DOCTOR"
     r"|MINISTERIO\s+DE\s+LA\s+LEY"
 )
+#: «el examen de Grado del alumno …»: el examen sin preparatorio (Odontología 1960-1971).
+_EXAMEN_DE_GRADO = re.compile(r"\bEXAMEN\s+DE\s+GRADO\b")
+#: «se le confirió el título de Odontólogo»: el título de una palabra, sin «Doctor en».
+_TITULO_DE_ODONTOLOGO = re.compile(r"(?:TITULO|GRADO)\s+DE\s+(ODONTOLOG[OA])\b")
+DOCTOR_EN_ODONTOLOGIA = "DOCTOR EN ODONTOLOGIA"
 #: «DOCTOR EN MEDICINA Y GEOGRAFIA», «PODER EN MEDICINA Y CIRUGIA», «ACTO SIN
 #: MEDICINA Y CUMBRE», «DOCTOR EN MECANICA Y CIENCIA»: la IA lee mal la letra a
 #: mano, y el título que confiere el examen final de la Facultad de Medicina es
@@ -842,9 +1632,16 @@ def examen_de_grado(texto: str) -> str | None:
         return PREPARATORIO
     if _EXAMEN_FINAL.search(plano) or _TITULO_ANTIGUO.search(plano):
         return FINAL
+    if "PREPARATORI" in plano:
+        return PREPARATORIO
+    # «el Jurado Examinador para verificar el examen de Grado del alumno…»
+    # (Odontología, desde 1960) y «el título de Odontólogo»: el examen de grado
+    # sin preparatorio es el que confiere el título (2026-11-27).
+    if _EXAMEN_DE_GRADO.search(plano) or _TITULO_DE_ODONTOLOGO.search(plano):
+        return FINAL
     # Sin nada que lo diga no se adivina: «final» por descarte ponía siete
     # preparatorios de UPD3859999 entre los finales.
-    return PREPARATORIO if "PREPARATORI" in plano else SIN_DECIR
+    return SIN_DECIR
 
 
 #: «1ª furiporatorio», «examen de tercer fuejaroztor al grado»: la IA lee mal
@@ -897,6 +1694,11 @@ def titulo_del_examen(examen: str | None, titulo: str | None) -> str | None:
     # Sin la cola de la frase ni los signos que el OCR no supo leer: «PODER EN
     # MEDICINA Y CIRUGIA? al Señor…».
     limpio = " ".join(re.sub(r"[^A-Z ]", " ", _plano(titulo_limpio(titulo) or titulo)).split())
+    if any(len(palabra) >= 8 and _parecida(palabra, "ODONTOLOGIA") for palabra in limpio.split()):
+        # Los exámenes de Odontología de 1952-1971: «Doctor en Odontología», o
+        # «Odontólogo» a secas. Antes caían en el «Doctor…» de la Medicina, que
+        # es el único título de la caja 3362 (2026-11-27).
+        return DOCTOR_EN_ODONTOLOGIA if limpio.startswith("DOCTOR") or " EN " in f" {limpio} " else "ODONTOLOGO"
     if _EN_MEDICINA_Y.match(limpio) or "MEDICINA" in limpio or limpio.startswith("DOCTOR"):
         # «DOCTOREN», «MEDICINA», «DOCTOR EN MEDICINA»: el título cortado.
         # Siempre «DOCTOR»: la IA leyó «Doctora» en el acta de Gabriel R. Lago
@@ -932,6 +1734,55 @@ def folio_del_texto(texto: str) -> int | None:
 def es_acta_de_examen(acta: object) -> bool:
     """Si el encabezado de una fila es el de un acta de examen: «ACTA DE EXAMEN … DE GRADO»."""
     return str(acta or "").startswith("ACTA DE EXAMEN ")
+
+
+#: «Acta No 132», «Acta Nº 203», «Acta No. 1»: el número del acta de examen de
+#: Odontología, arriba de la hoja (1952-1971). Los de 1924-1946 no lo traen.
+_NUMERO_DEL_EXAMEN = re.compile(r"\bACTA\W{0,3}N\W{0,2}[O0]?\W{0,3}(\d{1,4})\b")
+
+
+def numero_del_examen(texto: str) -> str | None:
+    """El número del acta de examen, de lo que va antes de «En … Cartagena»; ``None`` si no lo trae."""
+    cabeza = _COMIENZO_DEL_ACTA.split(texto or "", maxsplit=1)[0]
+    hallado = _NUMERO_DEL_EXAMEN.search(_plano(cabeza))
+    return hallado.group(1) if hallado and hallado.group(1).strip("0") else None
+
+
+#: «QUINTO EXAMEN PREPARATORIO DE GRADO» en el asunto: «QUINTO PREPARATORIO».
+_EL_PREPARATORIO = re.compile(r"^(\w+) EXAMEN PREPARATORIO")
+
+
+def especialidad_del_examen(titulo: str | None) -> str | None:
+    """Lo que va tras el nombre en el asunto de un examen: el título conferido o cuál preparatorio fue.
+
+    El estándar único de la Universidad (2026-11-27): «NOMBRE - DOCTOR EN
+    ODONTOLOGIA» en el examen final y «NOMBRE - QUINTO PREPARATORIO» en el
+    preparatorio, como cualquier persona: «NOMBRE - ESPECIALIDAD».
+    """
+    if not titulo:
+        return None
+    preparatorio = _EL_PREPARATORIO.match(titulo)
+    return f"{preparatorio.group(1)} PREPARATORIO" if preparatorio else titulo
+
+
+def asunto_del_examen(
+    nombre: str | None,
+    titulo: str | None,
+    *,
+    acta: str | None = None,
+    numero: str | None = None,
+    folio: object = None,
+) -> str:
+    """«JESUS MARIA BARRIOS - QUINTO PREPARATORIO», «FRANCISCO LOPEZ LOPEZ - DOCTOR EN ODONTOLOGIA»: el PDF y el asunto de un examen.
+
+    Reemplaza al de 2026-11-04, «ACTA DE EXAMEN PREPARATORIO DE GRADO - QUINTO
+    PREPARATORIO - NOMBRE»: el operador pidió el 2026-11-27 un solo estándar
+    para todo lo de la Universidad. Sin nombre legible, el examen con su número
+    o su folio: ningún PDF sin algo que lo referencie.
+    """
+    referencia = f"No. {numero}" if numero else (f"FOLIO {folio}" if folio not in (None, "", "N/A") else None)
+    del_acta = " ".join(parte for parte in (acta or "ACTA DE EXAMEN DE GRADO", referencia) if parte)
+    return asunto_del_graduado(nombre, especialidad_del_examen(titulo), acta=del_acta)
 
 
 #: Lo que Windows no admite en el nombre de un archivo.
@@ -988,6 +1839,10 @@ def _sin_cortes(plano: str) -> str:
     return re.sub(r"(\w)-\s+(\w)", r"\1\2", plano)
 
 
+#: Los renglones de arriba del acta de examen de Odontología que no son el alumno.
+_MEMBRETE_DEL_EXAMEN = re.compile(r"^\W*(?:ACTA|REPUBLICA|UNIVERSIDAD|FACULTAD)\b")
+
+
 def _nombre_de_arriba(texto: str) -> str | None:
     """El nombre que la hoja lleva arriba como título: «# Rodrigo de Vivero», «2 Mario Fernández Mendoza».
 
@@ -996,6 +1851,11 @@ def _nombre_de_arriba(texto: str) -> str | None:
     """
     cabeza = re.split(r"\bEn\s+(?:la\s+c\w{4}d\s+de\s+)?Cartagena", texto, maxsplit=1, flags=re.IGNORECASE)[0]
     for renglon in cabeza.splitlines():
+        if _MEMBRETE_DEL_EXAMEN.match(_plano(renglon)):
+            # «Acta No. 1», «República de Colombia - Universidad de Cartagena -
+            # Facultad de Odontología»: el membrete de Odontología, no el alumno
+            # (2026-11-27).
+            continue
         limpio = re.sub(r"\(.*?\)|\d+\S*|#|[^\wÁÉÍÓÚÜÑáéíóúüñ .]", " ", renglon)
         limpio = re.sub(r"\b\w*PREPARATORI\w*\b", " ", limpio, flags=re.IGNORECASE)
         candidato = _nombre_tras(_plano(limpio) + ".")
@@ -1008,6 +1868,13 @@ def _nombre_de_arriba(texto: str) -> str | None:
 _PARTIDA_EN_DOS_RENGLONES = re.compile(r"\b([A-ZÁÉÍÓÚÑ]{2,9})[ \t]*-?[ \t]*\n\s*([A-ZÁÉÍÓÚÑ]{3,})\b")
 
 
+#: «AL-\nVAREZ», «mon -\nSALVE», «so \xad\nCORRO»: un trozo corto, su guion y, en
+#: el renglón siguiente, el resto en mayúsculas.
+_NOMBRE_PARTIDO = re.compile(
+    r"(?<![^\W\d_])(?P<antes>[^\W\d_]{1,8})(?P<espacio>[ \t]?)[-\xad][ \t]*\n\s*(?P<despues>[A-ZÁÉÍÓÚÑ]{2,})"
+)
+
+
 def con_las_palabras_unidas(texto: str) -> str:
     """El texto con las palabras de título partidas entre dos renglones unidas, y sin el guion blando.
 
@@ -1017,7 +1884,18 @@ def con_las_palabras_unidas(texto: str) -> str:
     """
     from .graduado import VOCABULARIO_DE_LOS_TITULOS
 
-    texto = (texto or "").replace("\xad\n", "").replace("\xad", "")
+    # El nombre a máquina partido al final del renglón del formulario: «LIBARDO
+    # AL-» / «VAREZ MANTILLA», «CARLOS MON -» / «SALVE PORTO», «DORIS DEL SO­» /
+    # «CORRO» (1985-1986-1987 TOMO I, 2026-11-27: seis de diez nombres de la
+    # muestra perdían su mitad). Con un espacio antes del guion, no si lo de
+    # delante es un enlace: «DE -» / «CARTAGENA» no es una palabra.
+    def unir_el_nombre(hallado: re.Match[str]) -> str:
+        if hallado.group("espacio") and _plano(hallado.group("antes")) in _ENLACES_DEL_NOMBRE | {"AL", "A", "EL", "EN"}:
+            return hallado.group(0)
+        return hallado.group("antes") + hallado.group("despues")
+
+    texto = _NOMBRE_PARTIDO.sub(unir_el_nombre, texto or "")
+    texto = texto.replace("\xad\n", "").replace("\xad", "")
     # Y la palabra partida con guion al final del renglón: «al estu- / diante»
     # (UPD3859802 pág. 1, la franja del nombre, 2026-11-13).
     texto = re.sub(r"([a-záéíóúñ])-\s*\n\s*([a-záéíóúñ])", r"\1\2", texto)
@@ -1042,20 +1920,27 @@ def completar_acta(acta: ActaDeConsejo, texto: str) -> ActaDeConsejo:
         acta = _con_la_constancia(acta, hecha)
     leido = graduado(texto)
     del_examen, titulo_antiguo = examen_antiguo(texto)
+    # El acta del Consejo Directivo de 1980: su número, su alumno y el título
+    # que le acredita (1980-1984 TOMO I, 2026-11-27).
+    numero_del_consejo, alumno_del_consejo, titulo_del_consejo = acta_del_consejo_directivo(texto)
     # Un acta con número es de grado, no de examen: las de examen no lo traen.
     examen = acta.examen or (None if acta.numero else examen_de_grado(texto))
     nuevo = replace(
         acta,
-        numero=acta.numero or leido.numero,
+        # El acta de examen de Odontología sí lo trae arriba: «Acta No 132» (2026-11-27).
+        numero=acta.numero or numero_del_consejo or (numero_del_examen(texto) if examen is not None else None) or leido.numero,
         fecha=acta.fecha or fecha_de_grado(texto),
         # En el acta antigua el lector moderno toma pedazos del texto corrido
         # («HICHO LO QUE ANTECEDE» por nombre): manda lo que lee el formato antiguo.
-        nombre=acta.nombre or del_examen or leido.nombre,
+        nombre=acta.nombre or del_examen or alumno_del_consejo or leido.nombre,
         # El de un examen, completo: un preparatorio sin el ordinal no lo es.
         titulo=next(
             (
                 titulo
-                for titulo in (titulo_del_examen(examen, otro) for otro in (acta.titulo, titulo_antiguo, leido.titulo))
+                for titulo in (
+                    titulo_del_examen(examen, otro)
+                    for otro in (acta.titulo, titulo_antiguo, titulo_del_consejo, leido.titulo)
+                )
                 if titulo
             ),
             None,

@@ -14,7 +14,8 @@ Un paquete con un módulo por habilidad, y las cuatro con la misma silueta:
 5. **el informe**.
 
 Aquí sólo vive el despachador: decide a qué habilidad va cada trabajo leyendo
-lo que está impreso en una muestra de páginas, nunca el nombre del archivo.
+lo que está impreso -- en una muestra de páginas, o gratis en la capa de texto
+del PDF entero --, y el nombre del archivo sólo cuando el papel no dice nada.
 """
 
 from __future__ import annotations
@@ -24,6 +25,11 @@ import pickle
 from pathlib import Path
 
 from ...application.progress import Stage
+
+# Cuántas veces más hojas de su núcleo necesita otro tipo para contradecir lo
+# que declaró el operador cuando lo declarado también aparece: vive con el
+# resto del patrón (``domain/patrones.py``) y se reexporta aquí.
+from ...domain.patrones import VECES_PARA_CONTRADECIR
 from .correspondencia import _segment_job
 from .inventario import _acta_consejo_job, _inventory_file_job, _inventory_job
 from .kingspan import _kingspan_job
@@ -34,6 +40,7 @@ from .taller import Taller, _anunciar, _boundary_oracle, _control, _reportero, _
 
 __all__ = [
     "FUID_SUFFIX",
+    "VECES_PARA_CONTRADECIR",
     "Taller",
     "process_document_job",
     "_acta_consejo_job",
@@ -118,7 +125,22 @@ def _process_document_job(payload: dict) -> dict:
         tope_de_paginas=ajustes.get("tope_paginas_ocr"),
     )
     payload["consumo"] = consumo
-    report = _despachar(payload)
+    # El latido del trabajo (2026-11-27): cada petición que vuelve, cada
+    # lectura de Tesseract y cada página que se renderiza le dicen al vigilante
+    # que el trabajo sigue vivo, sin cambiar la etapa de la pantalla. Antes,
+    # cientos de lecturas de la IA dentro de una misma etapa eran «sin
+    # novedades» y a los 20 minutos el libro se daba por atascado.
+    from ...application import latido
+
+    latido.activar(lambda: _anunciar(payload, Stage.LATIDO))
+    # El primero, en cuanto el trabajo tiene proceso: desde aquí el vigilante
+    # sabe que empezó y cuenta su silencio de verdad; antes era la espera en la
+    # cola del pool, que no es un atasco (``api/ejecucion._esperar``).
+    _anunciar(payload, Stage.LATIDO)
+    try:
+        report = _despachar(payload)
+    finally:
+        latido.desactivar()
     if isinstance(report, dict):
         report["consumo"] = consumo.as_dict()
         if consumo.ocr_local_fallido:
@@ -146,21 +168,20 @@ def _despachar(payload: dict) -> dict:
     from ...application.tipo_pedido import TipoPedido
 
     task = TaskKind.parse(payload.get("task"))
+    pedido = TipoPedido.parse(payload.get("tipo"))
 
     # Un acta de consejo declarada va a su habilidad con cualquier acción: cada
     # PDF es un acta entera, no hay nada que partir, y lo que se pide de ella
     # es su fila del inventario. Pedirle que la divida no tiene respuesta
     # distinta, así que se hace lo único que tiene sentido y se dice.
-    if TipoPedido.parse(payload.get("tipo")) is TipoPedido.ACTA_CONSEJO:
-        from ...domain.doctype import DocumentType as _Tipo
-
+    if pedido is TipoPedido.ACTA_CONSEJO:
         # Antes de creerle, una mirada gratis al patrón del contenido: en una
         # carpeta con actas de consejo y actas de grado mezcladas, declarar
         # «actas de consejo» mandaba las de grado a una habilidad que no es la
         # suya.
-        otro = _el_patron_lo_contradice(payload, _Tipo.ACTA_CONSEJO)
+        otro = _lo_que_contradice(payload, pedido)
         if otro is not None:
-            return _a_su_habilidad(payload, task, otro, declarado=_Tipo.ACTA_CONSEJO)
+            return _a_su_habilidad(payload, task, otro, declarado=pedido)
         if task.writes_documents:
             _anunciar(
                 payload,
@@ -170,13 +191,22 @@ def _despachar(payload: dict) -> dict:
         return _acta_consejo_job(payload)
 
     # Las actas de grado declaradas van a su habilidad con cualquier acción,
-    # como las de consejo: inventariar, o dividir e inventariar.
-    if TipoPedido.parse(payload.get("tipo")) is TipoPedido.ACTA:
+    # como las de consejo: inventariar, o dividir e inventariar. Salvo que el
+    # papel diga con fuerza otra cosa -- un libro de calificaciones, un tomo de
+    # resoluciones -- en una corrida declarada entera como actas (2026-11-27).
+    if pedido is TipoPedido.ACTA:
+        otro = _lo_que_contradice(payload, pedido)
+        if otro is not None:
+            return _a_su_habilidad(payload, task, otro, declarado=pedido)
         return _actas_de_grado(payload)
 
-    # Historias académicas declaradas: un PDF por estudiante y su fila en el
-    # FUID, sin pasar por el reconocedor, que las toma por matrículas.
-    if TipoPedido.parse(payload.get("tipo")) is TipoPedido.HISTORIA:
+    # Historias académicas o calificaciones declaradas: un PDF por estudiante y
+    # su fila en el FUID, sin pasar por el reconocedor, que las toma por
+    # matrículas. Las dos las parte la misma habilidad; el papel dice cuál es.
+    if pedido in (TipoPedido.HISTORIA, TipoPedido.CALIFICACIONES):
+        otro = _lo_que_contradice(payload, pedido)
+        if otro is not None:
+            return _a_su_habilidad(payload, task, otro, declarado=pedido)
         from .historias import historias_academicas_job
 
         return historias_academicas_job(payload)
@@ -226,8 +256,35 @@ def _despachar(payload: dict) -> dict:
     # ningún PDF de historias, nóminas, certificados ni grados de las otras
     # siete carpetas de la Universidad.
     parece = None
-    if TipoPedido.parse(payload.get("tipo")) is TipoPedido.AUTO:
+    capa: list[str] | None = None
+    if pedido is TipoPedido.AUTO:
         from ...domain.doctype import DocumentType as _Tipo
+
+        # Lo primero, un libro de calificaciones: su evidencia es la más
+        # específica de todas -- la lista de la promoción y cinco alumnos o más
+        # con su constancia o su record en un tercio de las hojas -- y su record
+        # es la misma ficha de las historias, cuyo «Acta Nº» además se lee como
+        # el encabezado de un acta de consejo. Los de 1995-1997 no tenían
+        # habilidad y se partían como resoluciones; los de 1998, 1999 y 2003 se
+        # partían como historias (2026-11-27). La caja de correspondencia
+        # («por continuidad») no pasa por aquí: lo que pidió es justo no leerlo.
+        if task is not TaskKind.SEGMENT:
+            capa = _capa_de_texto(payload)
+        if capa and (evidencia := _libro_de_calificaciones(capa, payload)):
+            from .historias import historias_academicas_job
+
+            _anunciar(payload, Stage.IDENTIFYING, detail="libro de calificaciones: se procesa con «Calificaciones»")
+            payload["reconocimiento"] = {
+                "tipo": str(TipoPedido.CALIFICACIONES),
+                "etiqueta": TipoPedido.CALIFICACIONES.label,
+                "decidido_por": "patron",
+                "por": "contenido",
+                "motivo": evidencia,
+            }
+            # La habilidad que lo parte sabe así qué libro tiene, como si el
+            # operador lo hubiera declarado.
+            payload["tipo"] = str(TipoPedido.CALIFICACIONES)
+            return historias_academicas_job(payload)
 
         parece = _reconocimiento_gratis(payload)
         if parece is not None and parece.tipo is _Tipo.ACTA_CONSEJO:
@@ -250,12 +307,29 @@ def _despachar(payload: dict) -> dict:
     # reconocedor general las toma por matrículas y la ruta vieja entregaba 9
     # PDF donde había 60 estudiantes. Lo pidió el operador el 2026-11-03: «que
     # sepa detectar la habilidad automáticamente».
-    if TipoPedido.parse(payload.get("tipo")) is TipoPedido.AUTO and (familia := _familia_de_historias(payload)):
+    if pedido is TipoPedido.AUTO and (familia := _familia_de_historias(payload, capa)):
         from .historias import historias_academicas_job
 
         _anunciar(payload, Stage.IDENTIFYING, detail=f"{familia}: se procesa con «Historias académicas»")
         payload["reconocimiento"] = {"tipo": "historia-academica", "por": "contenido", "motivo": familia}
         return historias_academicas_job(payload)
+
+    # Un manuscrito cuya capa de texto es basura: ningún tipo tiene evidencia en
+    # ninguna hoja, y sólo la ruta dice lo que es. Los libros de actas de grado
+    # de Odontología de 1952-1959 y 1960-1965 (y los exámenes de la caja 3362)
+    # llegaban igual a actas de grado por el nombre, pero al final del
+    # orquestador, donde una hoja legible -- las tres resoluciones de 1972 con
+    # que empieza el de 1960-1965 -- o una página vacía leída con Tesseract
+    # podían decidir antes que la ruta (2026-11-27).
+    if pedido is TipoPedido.AUTO and capa and (por_la_ruta := _acta_por_la_ruta(capa, payload)):
+        payload["reconocimiento"] = {
+            "tipo": str(TipoPedido.ACTA),
+            "etiqueta": TipoPedido.ACTA.label,
+            "decidido_por": "nombre",
+            "por": "nombre",
+            "motivo": por_la_ruta,
+        }
+        return _actas_de_grado(payload)
 
     if not task.writes_documents:
         # Sin tipo declarado, una mirada gratis al patrón antes del inventario:
@@ -270,7 +344,7 @@ def _despachar(payload: dict) -> dict:
     from ...domain.doctype import DocumentType
 
     # Lo que el operador declaró estar cargando, que manda sobre todo lo demás.
-    declarado = TipoPedido.parse(payload.get("tipo")).document_type
+    declarado = pedido.document_type
 
     # Incluso sobre la acción, y esto hay que justificarlo porque pisa una
     # elección suya. Declarar "esto es un libro de diplomas" y pedir "sepáralo
@@ -318,9 +392,9 @@ def _despachar(payload: dict) -> dict:
     # archivo entero, y quien tiene el libro delante sabe lo que es antes de
     # subirlo.
     if declarado is DocumentType.DIPLOMA:
-        otro = _el_patron_lo_contradice(payload, DocumentType.DIPLOMA)
+        otro = _lo_que_contradice(payload, pedido)
         if otro is not None:
-            return _a_su_habilidad(payload, task, otro, declarado=DocumentType.DIPLOMA)
+            return _a_su_habilidad(payload, task, otro, declarado=pedido)
         _anunciar(
             payload,
             Stage.IDENTIFYING,
@@ -333,7 +407,15 @@ def _despachar(payload: dict) -> dict:
     # Un legajo de resoluciones declarado se parte por su número, sin muestra:
     # reconocido, una resolución que traía un acta de soporte acababa en
     # «Actas de consejo», inventariada entera y con la IA pagada (2026-10-29).
+    # Sí se mira gratis su capa entera: un libro de calificaciones o de actas
+    # de grado dentro de una carpeta declarada «resoluciones» (la PROMOCION
+    # 2003 de Odontología vive en RESOLUCIONES\…\UPD3860100) va a lo suyo. El
+    # acta de soporte de una resolución no llega a arrollar a sus resoluciones,
+    # y el nombre que dice «RESOLUCIONES» sólo cede ante unas calificaciones.
     if declarado is DocumentType.RESOLUCION:
+        otro = _lo_que_contradice(payload, pedido)
+        if otro is not None:
+            return _a_su_habilidad(payload, task, otro, declarado=pedido)
         _anunciar(
             payload,
             Stage.IDENTIFYING,
@@ -412,27 +494,86 @@ def _despachar(payload: dict) -> dict:
     return _split_job(payload, task)
 
 
-#: Cuántas páginas se leen, como mucho, para saber si un PDF es de historias:
+#: Cuántas páginas se leen, como mucho, para saber de qué habilidad es un PDF:
 #: la capa de texto de un libro de 340 páginas se lee en un segundo.
 PAGINAS_PARA_LA_FAMILIA = 600
 
 
-def _familia_de_historias(payload: dict) -> str | None:
-    """Si el PDF es de los que parte «Historias académicas», y cuál; por su capa de texto, gratis."""
+def _capa_de_texto(payload: dict) -> list[str] | None:
+    """La capa de texto del PDF, hasta ``PAGINAS_PARA_LA_FAMILIA`` hojas; ``None`` si no se puede abrir.
+
+    Gratis: sólo el texto que el PDF ya trae, sin leer una imagen. Es lo que
+    miran las preguntas que deciden la habilidad sobre el PDF entero -- un libro
+    de calificaciones, la familia de las historias, lo que contradice lo
+    declarado -- y se lee una sola vez por trabajo.
+    """
     from ...adapters.pymupdf_source import PyMuPDFPageSource
-    from ...domain.historia_medicina import familia_de_historias
 
     try:
         source = PyMuPDFPageSource(Path(payload["source"]), payload.get("filename"))
     except Exception:  # noqa: BLE001 - no poder mirarlo no es motivo para fallar: sigue lo de siempre
-        logger.debug("no se pudo abrir %s para ver si es de historias", payload.get("filename"), exc_info=True)
+        logger.debug("no se pudo abrir %s para leer su capa de texto", payload.get("filename"), exc_info=True)
         return None
     try:
         hasta = min(source.page_count, PAGINAS_PARA_LA_FAMILIA)
-        textos = [source.text_of(numero) or "" for numero in range(1, hasta + 1)]
+        return [source.text_of(numero) or "" for numero in range(1, hasta + 1)]
+    except Exception:  # noqa: BLE001 - una capa que no se deja leer no decide nada
+        logger.debug("no se pudo leer la capa de texto de %s", payload.get("filename"), exc_info=True)
+        return None
     finally:
         source.close()
+
+
+def _familia_de_historias(payload: dict, capa: list[str] | None = None) -> str | None:
+    """Si el PDF es de los que parte «Historias académicas», y cuál; por su capa de texto, gratis."""
+    from ...domain.historia_medicina import familia_de_historias
+
+    textos = capa if capa is not None else _capa_de_texto(payload)
+    if textos is None:
+        return None
     return familia_de_historias(textos, str(payload.get("filename") or ""))
+
+
+def _libro_de_calificaciones(capa: list[str], payload: dict) -> str | None:
+    """Si el PDF es un libro de calificaciones, lo que lo dice; ``None`` si no lo es."""
+    from ...domain.calificaciones import (
+        es_libro_de_calificaciones,
+        evidencia_de_calificaciones,
+    )
+
+    if not es_libro_de_calificaciones(capa, str(payload.get("filename") or "")):
+        return None
+    cuenta = evidencia_de_calificaciones(capa)
+    partes = [
+        f"{veces} {nombre}"
+        for nombre, veces in (
+            ("hoja(s) de la lista de la promoción", cuenta.get("lista", 0)),
+            ("constancias de calificaciones", cuenta.get("constancia", 0)),
+            ("records académicos", cuenta.get("record", 0)),
+        )
+        if veces
+    ]
+    return f"libro de calificaciones: {', '.join(partes) or 'sus hojas'} en {len(capa)} hojas"
+
+
+def _acta_por_la_ruta(capa: list[str], payload: dict) -> str | None:
+    """Si la capa de texto es basura y la ruta dice actas de grado, el motivo; ``None`` si no."""
+    from ...domain.doctype import DocumentType
+    from ...domain.patrones import (
+        capa_que_no_dice_nada,
+        hojas_de_cada_tipo,
+        pista_del_nombre,
+    )
+
+    nombre = str(payload.get("filename") or "")
+    if pista_del_nombre(nombre) is not DocumentType.ACTA:
+        return None
+    if not capa_que_no_dice_nada(capa, hojas_de_cada_tipo(capa)):
+        return None
+    return (
+        f"la capa de texto no dice qué es ({len(capa)} hojas sin evidencia de ningún tipo: un manuscrito); "
+        f"la ruta «{nombre}» dice actas de grado. Conviene revisarlo"
+    )
 
 
 def _recognise(payload: dict):
@@ -522,59 +663,107 @@ def _reconocimiento_gratis(payload: dict):
         return None
 
 
-#: Cuántas veces más páginas de su núcleo necesita otro tipo para contradecir
-#: lo que declaró el operador cuando lo declarado también aparece.
-VECES_PARA_CONTRADECIR = 3
-
-
-def _el_patron_lo_contradice(payload: dict, declarado):
+def _el_patron_lo_contradice(payload: dict, declarado, capa: list[str] | None = None):
     """El tipo que dice el contenido, si dice claramente que no es el declarado.
 
-    Sólo sobre la capa de texto -- veinticuatro páginas ya extraídas, sin leer
-    una imagen --, así que cuesta milisegundos y no gasta nada. Sólo contradice
-    cuando el declarado no tiene una sola página de su núcleo y otro tipo lo
-    tiene en varias: ante la duda manda lo que dijo el operador, que tiene el
-    papel delante. Un escaneo sin capa de texto no contradice nunca.
+    Sólo sobre la capa de texto del PDF entero -- hasta seiscientas hojas ya
+    extraídas, sin leer una imagen --, así que cuesta un segundo y no gasta
+    nada. Contradice cuando otro tipo arrolla a lo declarado: el triple de sus
+    hojas y dos por lo menos (``patrones.lo_que_lo_arrolla``). Ante la duda
+    manda lo que dijo el operador, que tiene el papel delante. Un escaneo sin
+    capa de texto no contradice nunca: lo dice, si acaso, su nombre.
     """
-    from ...adapters.pymupdf_source import PyMuPDFPageSource
-    from ...application.orquestador import muestrear
-    from ...domain.patrones import (
-        PAGINAS_DEL_NUCLEO,
-        PAGINAS_PARA_VETAR,
-        paginas_con_nucleo,
-    )
+    from ...domain.patrones import hojas_de_cada_tipo
 
-    try:
-        source = PyMuPDFPageSource(Path(payload["source"]), payload.get("filename"))
-        try:
-            textos = [texto for _n, texto in muestrear(source, None, paginas=PAGINAS_DEL_NUCLEO)]
-        finally:
-            source.close()
-    except Exception:  # noqa: BLE001 - sin mirar, manda lo declarado
-        logger.debug("no se pudo mirar el patrón de %s", payload.get("filename"), exc_info=True)
+    textos = capa if capa is not None else _capa_de_texto(payload)
+    if textos is None:
+        # Sin mirar, manda lo declarado.
         return None
-    nucleo = paginas_con_nucleo(textos)
-    if not nucleo:
-        # Sin un solo núcleo -- un manuscrito sin capa de texto -- queda el
-        # nombre: «ACTAS DE GRADO 1988-2012» no es un acta de consejo aunque se
-        # haya declarado la carpeta entera como tal.
-        from ...domain.patrones import pista_del_nombre
+    return _lo_arrolla(hojas_de_cada_tipo(textos), declarado, str(payload.get("filename") or ""))
 
-        pista = pista_del_nombre(str(payload.get("filename") or ""))
+
+def _lo_arrolla(hojas, declarado, nombre: str):
+    """El tipo que arrolla a lo declarado; sin evidencia de ningún tipo, el que dice el nombre."""
+    from ...domain.patrones import lo_que_lo_arrolla, pista_del_nombre
+
+    if not hojas:
+        # Sin una sola hoja con evidencia -- un manuscrito sin capa de texto --
+        # queda el nombre: «ACTAS DE GRADO 1988-2012» no es un acta de consejo
+        # aunque se haya declarado la carpeta entera como tal.
+        pista = pista_del_nombre(nombre)
         return pista if pista is not None and pista is not declarado else None
-    # Lo declarado manda salvo que otro tipo lo arrolle: el triple de páginas
-    # con su núcleo. Un libro de actas de grado de 1981 tiene tres constancias
-    # con forma de acta de sesión entre veinticuatro páginas de grado, y eso no
-    # lo convierte en un acta de consejo.
-    propio = nucleo[declarado]
-    rivales = [
-        (veces, str(tipo), tipo)
-        for tipo, veces in nucleo.items()
-        if tipo is not declarado
-        and veces >= PAGINAS_PARA_VETAR
-        and veces >= VECES_PARA_CONTRADECIR * propio
-    ]
-    return max(rivales)[2] if rivales else None
+    # Lo declarado manda salvo que otro tipo lo arrolle. Un libro de actas de
+    # grado de 1981 tiene tres constancias con forma de acta de sesión entre
+    # veinticuatro páginas de grado, y eso no lo convierte en un acta de consejo.
+    return lo_que_lo_arrolla(hojas, declarado)
+
+
+def _lo_que_contradice(payload: dict, pedido):
+    """La habilidad que exige el papel en vez de la declarada, o ``None`` si lo declarado se sostiene.
+
+    El operador, 2026-11-27: «que el bot sepa con mucha, pero mucha precisión
+    qué habilidad tomar automáticamente en el medio del proceso para procesar
+    un PDF con un formato diferente». Con una habilidad declarada para la
+    carpeta entera, cada PDF se mira gratis sobre su capa de texto, y sólo se
+    desvía con evidencia positiva y dominante, nunca por descarte:
+
+    1. **Un libro de calificaciones** -- la lista de su promoción y cinco alumnos
+       o más con su constancia o su record -- es calificaciones aunque se haya
+       declarado otra cosa: la PROMOCION 2003 de Odontología vive en la carpeta
+       de las resoluciones.
+    2. **Historias o calificaciones declaradas** se sostienen con la familia de
+       las historias; las calificaciones que no son un libro, pero sí
+       historias, van a «Historias académicas».
+    3. **Lo que el nombre confirma no se contradice** por el núcleo: un PDF que se
+       llama «RESOLUCIONES DE RECTORIA 03272-03275» declarado como resoluciones
+       es un legajo de resoluciones aunque traiga actas de consejo de soporte
+       (2026-10-29: se fueron a «Actas de consejo»), y uno que se llama
+       «HISTORIAS ACADEMICAS 1993» declarado como historias, unas historias.
+    4. **El núcleo de otro tipo que arrolla** al declarado en el PDF entero
+       (``_el_patron_lo_contradice``), en el orden de «Detectar
+       automáticamente»: el acta de consejo primero; sin una sola hoja de lo
+       declarado, la familia de las historias -- unas matrículas o unas
+       historias van a «Historias académicas», no al legajo de matrículas
+       viejo --; y después lo demás.
+
+    Devuelve una ``TipoPedido`` cuando decide algo más que el núcleo -- las
+    calificaciones, las historias -- y el ``DocumentType`` del núcleo cuando
+    decide él, que va por el mismo camino de siempre (``_a_su_habilidad``).
+    """
+    from ...application.tipo_pedido import TipoPedido
+    from ...domain.calificaciones import es_libro_de_calificaciones
+    from ...domain.doctype import DocumentType
+    from ...domain.historia_academica import plano
+    from ...domain.historia_medicina import NOMBRE_DE_HISTORIAS, familia_de_historias
+    from ...domain.patrones import hojas_de_cada_tipo, pista_del_nombre
+
+    capa = _capa_de_texto(payload)
+    if capa is None:
+        return None
+    nombre = str(payload.get("filename") or "")
+    familia = None
+    if any(texto.strip() for texto in capa):
+        if es_libro_de_calificaciones(capa, nombre):
+            return None if pedido is TipoPedido.CALIFICACIONES else TipoPedido.CALIFICACIONES
+        familia = familia_de_historias(capa, nombre)
+        if pedido in (TipoPedido.HISTORIA, TipoPedido.CALIFICACIONES) and familia:
+            return None if pedido is TipoPedido.HISTORIA else TipoPedido.HISTORIA
+    declarado = pedido.document_type
+    lo_confirma = (declarado is not None and pista_del_nombre(nombre) is declarado) or (
+        pedido is TipoPedido.HISTORIA and bool(NOMBRE_DE_HISTORIAS.search(plano(nombre)))
+    )
+    if lo_confirma:
+        return None
+    hojas = hojas_de_cada_tipo(capa)
+    otro = _lo_arrolla(hojas, declarado, nombre)
+    # En el orden de «Detectar automáticamente»: el acta de consejo antes que
+    # la familia de las historias (sus anexos de matrícula la engañan,
+    # 2026-11-11), y la familia antes que lo demás.
+    if otro is DocumentType.ACTA_CONSEJO:
+        return otro
+    if familia and hojas[declarado] == 0:
+        return TipoPedido.HISTORIA
+    return otro
 
 
 def _a_su_habilidad(payload: dict, task, tipo, *, declarado) -> dict:
@@ -582,21 +771,34 @@ def _a_su_habilidad(payload: dict, task, tipo, *, declarado) -> dict:
 
     Se avisa en la consola y en el informe del documento: cambiar lo que pidió
     el operador sin decirlo es la forma más rápida de que deje de fiarse.
+    ``tipo`` es la ``TipoPedido`` de las calificaciones o las historias, o el
+    ``DocumentType`` que dijo el núcleo; ``declarado``, lo que eligió el operador.
     """
     from ...application.task import TaskKind
     from ...application.tipo_pedido import TipoPedido
     from ...domain.doctype import DocumentType
 
-    pedido = next(
-        (opcion for opcion in TipoPedido if opcion.document_type is tipo), TipoPedido.AUTO
-    )
+    if isinstance(tipo, TipoPedido):
+        pedido, etiqueta = tipo, tipo.label
+    else:
+        pedido = next(
+            (opcion for opcion in TipoPedido if opcion.document_type is tipo), TipoPedido.AUTO
+        )
+        etiqueta = tipo.label
     aviso = (
-        f"se declaró «{declarado.label}», pero el contenido es de {tipo.label}: "
-        f"va a la habilidad de {tipo.label}"
+        f"se declaró «{declarado.label}», pero el contenido es de {etiqueta}: "
+        f"va a la habilidad de {etiqueta}"
     )
     payload = {**payload, "tipo": str(pedido)}
 
-    if tipo is DocumentType.ACTA:
+    if tipo in (TipoPedido.CALIFICACIONES, TipoPedido.HISTORIA):
+        # Las dos las parte la habilidad de las historias, que sabe por el
+        # tipo qué libro tiene delante.
+        from .historias import historias_academicas_job
+
+        def runner(datos):
+            return historias_academicas_job(datos)
+    elif tipo is DocumentType.ACTA:
         # Las actas de grado, a su habilidad: el inventario de actas sin resumen.
 
         def runner(datos):
@@ -621,7 +823,7 @@ def _a_su_habilidad(payload: dict, task, tipo, *, declarado) -> dict:
         report.setdefault("notices", []).append(aviso)
         report["reconocimiento"] = {
             "tipo": str(tipo),
-            "etiqueta": tipo.label,
+            "etiqueta": etiqueta,
             "decidido_por": "patron",
             "motivo": aviso,
             "declarado": str(declarado),

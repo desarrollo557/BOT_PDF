@@ -1103,9 +1103,9 @@ class TestLaIaLeeElActaComoUnaPersona:
 class TestLasActasManuscritasDeExamen:
     """Los libros de exámenes de grado de 1924-1946 (caja 00C003362, Medicina).
 
-    Un acta por alumno y por hoja, sin número ni cédula. El operador eligió el
-    2026-11-04 el asunto «ACTA DE EXAMEN PREPARATORIO DE GRADO - QUINTO
-    PREPARATORIO - NOMBRE» y, en desde y hasta, el folio del libro.
+    Un acta por alumno y por hoja, sin número ni cédula. Su asunto y su PDF
+    siguen el estándar único desde el 2026-11-27 -- «NOMBRE - QUINTO
+    PREPARATORIO» -- (ver ``TestElFuidDeLosExamenes``).
     """
 
     PREPARATORIO = (
@@ -1324,7 +1324,13 @@ class TestLasActasManuscritasDeExamen:
 
 
 class TestElFuidDeLosExamenes:
-    """El asunto que eligió el operador y el folio del libro en desde y hasta (2026-11-04)."""
+    """El examen como cualquier persona: «NOMBRE - TITULO» (el estándar único, 2026-11-27).
+
+    Reemplaza el asunto del 2026-11-04 («ACTA DE EXAMEN PREPARATORIO DE GRADO -
+    QUINTO PREPARATORIO - NOMBRE», con el folio en desde y hasta): desde es el
+    número del acta si el papel lo trae y si no el folio del libro; hasta, la
+    cédula o N/A.
+    """
 
     def fila(self, **cambios):
         fila = {
@@ -1340,8 +1346,9 @@ class TestElFuidDeLosExamenes:
         from resolutions.adapters.fuid_actas_de_grado import fila_del_fuid
 
         fila = fila_del_fuid(self.fila())
-        assert fila.asunto == "ACTA DE EXAMEN PREPARATORIO DE GRADO - QUINTO PREPARATORIO - JESUS MA BARRIOS"
-        assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("1", "1")
+        assert fila.asunto == "JESUS MA BARRIOS - QUINTO PREPARATORIO"
+        # Sin número en el papel (la 3362), el folio del libro; sin cédula, N/A.
+        assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("1", "N/A")
         assert (fila.fecha_inicial, fila.fecha_final, fila.carpeta) == ("24/02/1926", "24/02/1926", "UPD3859999")
 
     def test_el_final_y_un_acta_de_dos_folios(self):
@@ -1353,15 +1360,50 @@ class TestElFuidDeLosExamenes:
                 titulo="DOCTOR EN MEDICINA Y CIRUGIA", folio_inicial=44, folio_final=45, pagina_final=5,
             )
         )
-        assert fila.asunto == "ACTA DE EXAMEN FINAL DE GRADO - RAMON BENITO PEROLFO VIANA - DOCTOR EN MEDICINA Y CIRUGIA"
-        assert (fila.consecutivo_inicial, fila.consecutivo_final, fila.folios) == ("44", "45", 2)
+        assert fila.asunto == "RAMON BENITO PEROLFO VIANA - DOCTOR EN MEDICINA Y CIRUGIA"
+        assert (fila.consecutivo_inicial, fila.consecutivo_final, fila.folios) == ("44", "N/A", 2)
 
     def test_sin_cual_preparatorio_ni_folio(self):
         from resolutions.adapters.fuid_actas_de_grado import fila_del_fuid
 
         fila = fila_del_fuid(self.fila(titulo="", folio_inicial="N/A", folio_final="N/A"))
-        assert fila.asunto == "ACTA DE EXAMEN PREPARATORIO DE GRADO - N/A - JESUS MA BARRIOS"
+        assert fila.asunto == "JESUS MA BARRIOS"
         assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("N/A", "N/A")
+
+    def test_el_examen_de_odontologia_con_su_numero(self):
+        """«Acta No 132» (Odontología 1952-1971): el número del acta en desde, no el folio."""
+        from resolutions.adapters.fuid_actas_de_grado import fila_del_fuid
+
+        fila = fila_del_fuid(
+            self.fila(
+                acta="ACTA DE EXAMEN FINAL DE GRADO", numero="132", nombre="RODRIGO ANDRES PALACIO RUIZ",
+                titulo="DOCTOR EN ODONTOLOGIA", folio_inicial=79, folio_final=79, fecha="20-11-1962",
+            )
+        )
+        assert fila.asunto == "RODRIGO ANDRES PALACIO RUIZ - DOCTOR EN ODONTOLOGIA"
+        assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("132", "N/A")
+        assert (fila.fecha_inicial, fila.fecha_final) == ("20/11/1962", "20/11/1962")
+
+    def test_el_pdf_del_examen_se_llama_como_su_asunto(self):
+        from resolutions.adapters.fuid_actas_de_grado import fila_del_fuid
+        from resolutions.application.acta_consejo import (
+            _con_nombre_literal,
+            nombre_de_la_sesion,
+        )
+
+        datos = self.fila()
+        fila = FilaDeActa(
+            archivo=datos["archivo"], acta=datos["acta"], fecha=datos["fecha"], folio_inicial=1, folio_final=1,
+            folios=1, resumen="N/A", tipo="ACTA DE GRADO", nombre=datos["nombre"], titulo=datos["titulo"],
+        )
+        assert nombre_de_la_sesion(fila) == fila_del_fuid(datos).asunto == "JESUS MA BARRIOS - QUINTO PREPARATORIO"
+        assert _con_nombre_literal(fila)
+        sin_nombre = FilaDeActa(
+            archivo="x.pdf", acta="ACTA DE EXAMEN FINAL DE GRADO", fecha="N/A", folio_inicial=12, folio_final=12,
+            folios=1, resumen="N/A", tipo="ACTA DE GRADO", numero="",
+        )
+        # Sin nombre legible, el examen con su folio: nunca un nombre genérico.
+        assert nombre_de_la_sesion(sin_nombre) == "ACTA DE EXAMEN FINAL DE GRADO FOLIO 12"
 
     def test_el_acta_de_grado_va_con_su_numero_y_su_cedula(self):
         """Las de examen no cambian; la de grado (2026-11-05): número en desde, cédula en hasta."""

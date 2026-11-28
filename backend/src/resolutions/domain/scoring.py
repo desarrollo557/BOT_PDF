@@ -55,8 +55,15 @@ _PALABRAS_DE_ENCABEZADO = frozenset(
         "ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
         "JULIO", "AGOSTO", "SEPTIEMBRE", "SETIEMBRE", "OCTUBRE",
         "NOVIEMBRE", "DICIEMBRE",
+        # «Resolución No. 016 Hola No. 1»: la hoja en el renglón del número, como
+        # la escriben las de decanatura de 2003 a 2010 (el OCR lee «Hola»).
+        # Desde la hoja 2 la página sigue y no abre (``opens_a_resolution``).
+        "HOJA", "HOLA",
     }
 )
+
+#: Desde qué hoja una página es la continuación de su resolución y no la abre.
+HOJA_QUE_SIGUE = 2
 
 #: Puntuación que el escáner cuelga de los extremos de una palabra y que no
 #: cambia cuál es esa palabra.
@@ -213,9 +220,18 @@ def opens_a_resolution(candidate: RawCandidate) -> bool:
     sobre las 545 páginas de los dos libros: la condición de columna cero
     bloqueaba 79 candidatas de forma oficial, y de esas 79 sólo tres no tenían
     ninguna letra delante. Una era la 00964 que faltaba.
+
+    Y la hoja manda sobre todo lo demás (2026-11-27): una página que dice «Hoja
+    2» en su cabecera -- «Resolución 03 · 2 de febrero de 1995 · Hoja 2»,
+    «Resolución No. 001 de 1.9 Hoja 2» -- es la continuación de su resolución.
+    Sigue a la abierta si repite su número, y nunca abre otra: en los tomos de
+    decanatura de Odontología las hojas siguientes repiten el encabezado
+    entero, con el número, y abrían su propia resolución cuando la primera
+    hoja se leyó con otro número.
     """
     return (
         candidate.official_form
+        and (candidate.hoja is None or candidate.hoja < HOJA_QUE_SIGUE)
         and _nothing_but_ink_before(candidate)
         and _nothing_but_a_date_after(candidate)
         and _where_a_header_goes(candidate)
@@ -295,6 +311,10 @@ def _nothing_but_a_date_after(candidate: RawCandidate) -> bool:
 
 def _acompana_a_un_numero(word: str) -> bool:
     if word in _PALABRAS_DE_ENCABEZADO:
+        return True
+    # El número mismo, leído en letras por el OCR: «RESOLUCIÓN loo» es la 100
+    # (``extraction._cifras_del_ocr``, 2026-11-27).
+    if len(word) <= 3 and set(word) <= set("OIL"):
         return True
     return any(
         damerau_levenshtein(word, permitida, ceiling=_MAX_WORD_DISTANCE)
@@ -454,11 +474,13 @@ def _continues(
             runner_up=rejected.code,
             signals=signals_for(rejected),
         )
+    # La hoja 2 de otra resolución tampoco es discutible: la página lo dice.
     debatable = (
         rejected_score >= CONFIDENT_FLOOR
         and rejected.anchor.start == 0
         and _where_a_header_goes(rejected)
         and not _is_citation(rejected)
+        and (rejected.hoja is None or rejected.hoja < HOJA_QUE_SIGUE)
     )
     return Selection(
         code=previous_code,

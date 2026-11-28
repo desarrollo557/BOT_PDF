@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pymupdf
 
+from ..application import latido
 from ..domain.conciliacion import Huella
 from .mupdf_messages import drenar
 from .pymupdf_source import _abrir
@@ -33,6 +34,9 @@ def _resumen(datos: bytes) -> str:
 
 
 def huella_de(page: pymupdf.Page) -> Huella:
+    # Una página más mirada: el trabajo sigue vivo (2026-11-27). En el servicio,
+    # sin latido encendido, no hace nada.
+    latido.pulso()
     texto = " ".join(page.get_text().split())
     if len(texto) >= TEXTO_QUE_DISTINGUE:
         return Huella(texto=_resumen(texto.encode("utf-8")))

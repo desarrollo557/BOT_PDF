@@ -25,6 +25,7 @@ from .boundary_prompt import (
     describe_unusable,
     parse_answer,
 )
+from .claude_vision import REINTENTOS, SEGUNDOS_POR_PETICION
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,9 @@ class ClaudeBoundaryOracle:
         config: ClaudeBoundaryConfig | None = None,
         consumo: Consumo | None = None,
     ) -> None:
-        self._client = client or Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        self._client = client or Anthropic(
+            api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=SEGUNDOS_POR_PETICION, max_retries=REINTENTOS
+        )
         self._config = config or ClaudeBoundaryConfig()
         self._consumo = consumo
 

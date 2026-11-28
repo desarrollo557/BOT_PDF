@@ -228,7 +228,12 @@ def _la_fila_de(pdf: str, candidatas: list, usadas: set[int]) -> int | None:
     -- la de VILLALOBOS GARI también en CONDE DIAZ, 2026-11-06 -- el PDF de
     CONDE se casaba con la fila de VILLALOBOS.
     """
-    base = re.sub(r"^\d{1,4}_", "", pdf.rsplit("/", 1)[-1].rsplit(".", 1)[0]).upper()
+    # El nombre del PDF en la misma forma que el de la fila (``plano``: guiones
+    # entre palabras): el estándar de la Universidad (2026-11-27) lo escribe con
+    # espacios y la especialidad detrás -- «ALFARO ZOLA LIZELIA M. - ODONTOLOGIA»
+    # --, y comparado tal cual con «ALFARO-ZOLA-LIZELIA-M» ningún PDF encontraba
+    # su fila. La especialidad sobra al final: el nombre esperado es su comienzo.
+    base = plano(re.sub(r"^\d{1,4}_", "", pdf.rsplit("/", 1)[-1].rsplit(".", 1)[0]))
     numero = hallado.group(1) if (hallado := re.search(r"-(\d{4,})$", base)) else ""
     nombre = base.removesuffix(f"-{numero}") if numero else base
     libres = [i for i in range(len(candidatas)) if i not in usadas]
@@ -256,7 +261,7 @@ def _la_fila_de(pdf: str, candidatas: list, usadas: set[int]) -> int | None:
 
 
 #: Cómo se llama el PDF de un estudiante cuyo nombre no se leyó (``historias._nombre_del_pdf``).
-_SIN_NOMBRE = re.compile(r"^(?:PAGINAS-\d+-\d+|NOMBRE-POR-REVISAR)$")
+_SIN_NOMBRE = re.compile(r"^(?:PAGINAS-\d+-\d+|NOMBRE-POR-REVISAR)(?:-|$)")
 
 
 def _paginas(fila: Mapping[str, object]) -> str:

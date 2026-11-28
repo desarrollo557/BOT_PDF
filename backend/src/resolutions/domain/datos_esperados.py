@@ -384,6 +384,14 @@ def _el_archivo(archivo: str, nombre: str, numero: str) -> list[Hallazgo]:
     """Si el PDF entregado lleva el nombre y la identificación de su fila del FUID."""
     base = re.sub(r"^\d{1,4}_", "", archivo.rsplit("/", 1)[-1].removesuffix(".pdf").removesuffix(".PDF"))
     hallazgos = []
+    if " - " in base:
+        # El estándar de la Universidad (2026-11-27): «NOMBRE - ESPECIALIDAD»,
+        # con la identificación en su columna del FUID y no en el nombre. Basta
+        # con que empiece por el nombre de la fila, comparados en la misma forma.
+        esperado, lleva = plano(nombre or ""), plano(base.rpartition(" - ")[0])
+        if esperado and not (lleva and (esperado.startswith(lleva) or lleva.startswith(esperado))):
+            hallazgos.append(Hallazgo(ARCHIVO, ERROR, f"«{archivo}» no lleva el nombre «{nombre}» de su fila"))
+        return hallazgos
     if numero and not base.endswith(numero):
         hallazgos.append(
             Hallazgo(ARCHIVO, ERROR, f"«{archivo}» no lleva la identificación {numero} de su fila")

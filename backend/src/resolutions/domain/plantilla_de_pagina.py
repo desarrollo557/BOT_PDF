@@ -39,6 +39,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
+from .anchor import find_anchors, normalize
+from .extraction import es_emisor_de_facultad
+
 
 class Plantilla(StrEnum):
     RESOLUCION_DE_RECTORIA = "resolución de rectoría"
@@ -88,6 +91,17 @@ _DECANO = re.compile(
     r"^\W{0,4}((EL|LA)\s+DECAN[OA]|EL\s+CONSEJO\s+DE\s+(LA\s+)?FACULTAD|LA\s+DIRECTORA?\s+DEL?\s+PROGRAMA"
     r"|EL\s+DIRECTOR\s+DEL?\s+PROGRAMA)\b"
 )
+#: Lo que sigue al ancla en un encabezado que el patrón estricto no reconoce
+#: (2026-11-27, decanatura de Odontología): la palabra dañada por el OCR con su
+#: partícula y su número («RESOLlíCION No. 004»), el «#» («RESOLUCION #001»),
+#: el número sin partícula («RESOLUCION 03», «Resolución 001») y la partícula
+#: sin número, que se escribió a máquina y la capa no trae («Resolución No.»).
+_CON_NUMERO = re.compile(r"^(?:N\W{0,3}[O0Rº°]?\W{0,3}|#)\s*\d")
+#: El número solo, también con las letras que el OCR pone por cifras («o84», «lo8»).
+_SIN_PARTICULA = re.compile(r"^(?=[0-9OQILSBZ]*\d)[0-9OQILSBZ]{2,6}\b")
+_SIN_NUMERO = re.compile(r"^(?:N\W{0,3}[O0Rº°]?|#)\W*(?:$|DE\b|HOJ|HOL)")
+#: Cómo trae el número el encabezado de la cabecera.
+CON_NUMERO, SIN_PARTICULA, SIN_NUMERO = "con número", "sin partícula", "sin número"
 _OFICIO = (
     ("saludo", re.compile(r"\bCORDIAL(ES)?\s+SALUDOS?\b")),
     ("despedida", re.compile(r"^\W{0,4}(ATENTAMENTE|CORDIALMENTE|FRATERNALMENTE)\b")),
@@ -128,6 +142,31 @@ def _es_un_campo(renglones: list[str], encabezado: int) -> bool:
     return con_codigo and rotulos >= 2
 
 
+def _el_encabezado(renglones: list[str]) -> tuple[int | None, str | None]:
+    """El renglón del encabezado en la cabecera y cómo trae el número, o ``(None, None)``.
+
+    Primero el patrón estricto, que es el de siempre. Si no, el ancla tolerante
+    al OCR (``find_anchors``) al principio del renglón, con lo que la siga:
+    partícula y número (``CON_NUMERO``), el número solo (``SIN_PARTICULA``) o
+    la partícula sola (``SIN_NUMERO``). Las dos últimas sólo valen como
+    encabezado si debajo dice quién la expide; lo decide ``plantilla_de``.
+    """
+    for indice, renglon in enumerate(renglones[:RENGLONES_DE_CABECERA]):
+        if _ENCABEZADO.match(renglon):
+            return indice, CON_NUMERO
+        anclas = find_anchors(renglon)
+        if not anclas:
+            continue
+        plano = normalize(renglon)
+        if any(c.isalpha() for c in plano[: anclas[0].start]):
+            continue
+        resto = plano[anclas[0].end :].strip()
+        for patron, como in ((_CON_NUMERO, CON_NUMERO), (_SIN_PARTICULA, SIN_PARTICULA), (_SIN_NUMERO, SIN_NUMERO)):
+            if patron.match(resto):
+                return indice, como
+    return None, None
+
+
 def plantilla_de(texto: str) -> Evidencia:
     """La plantilla más evidente de la página, o «cuerpo» si ninguna lo es."""
     if len(texto.strip()) < CARACTERES_LEGIBLES:
@@ -136,10 +175,8 @@ def plantilla_de(texto: str) -> Evidencia:
     renglones = [_plegado(r).strip() for r in texto.splitlines() if r.strip()]
     evidencias: list[Evidencia] = []
 
-    encabezado = next(
-        (i for i, r in enumerate(renglones[:RENGLONES_DE_CABECERA]) if _ENCABEZADO.match(r)), None
-    )
-    if encabezado is not None and _es_un_campo(renglones, encabezado):
+    encabezado, como = _el_encabezado(renglones)
+    if encabezado is not None and como == CON_NUMERO and _es_un_campo(renglones, encabezado):
         # «Resolución No.002086 de 1984» debajo del código del formato y de sus
         # rótulos no encabeza nada: es lo que se escribió en un campo.
         encabezado = None
@@ -147,12 +184,17 @@ def plantilla_de(texto: str) -> Evidencia:
         # Lo que abre la hoja manda: una resolución impresa sobre un formato o
         # que cita un oficio sigue siendo una resolución.
         debajo = renglones[encabezado + 1 : encabezado + 1 + RENGLONES_HASTA_EL_EMISOR]
-        decano = next((r for r in debajo if _DECANO.match(r)), None)
+        decano = next((r for r in debajo if _DECANO.match(r) or es_emisor_de_facultad(r)), None)
         rector = next((r for r in debajo if _RECTOR.match(r)), None)
         if decano is not None and rector is None:
-            return Evidencia(Plantilla.RESOLUCION_DE_FACULTAD, 3, ("encabezado", decano[:60]))
-        senales = ("encabezado", rector[:60]) if rector else ("encabezado",)
-        return Evidencia(Plantilla.RESOLUCION_DE_RECTORIA, 3 if rector else 2, senales)
+            senales = ("encabezado", decano[:60]) if como == CON_NUMERO else ("encabezado", como, decano[:60])
+            return Evidencia(Plantilla.RESOLUCION_DE_FACULTAD, 3, senales)
+        if como == CON_NUMERO:
+            senales = ("encabezado", rector[:60]) if rector else ("encabezado",)
+            return Evidencia(Plantilla.RESOLUCION_DE_RECTORIA, 3 if rector else 2, senales)
+        # Sin partícula o sin número, y sin quien la expida debajo, el renglón
+        # puede ser una frase o la hoja siguiente: la página se juzga por lo
+        # demás, como antes.
 
     codigo = any(_CODIGO_DE_FORMATO.match(r) for r in renglones[:RENGLONES_DE_CABECERA])
     version = any(_VERSION_DEL_FORMATO.match(r) for r in renglones[:RENGLONES_DE_CABECERA])

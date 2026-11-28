@@ -63,6 +63,11 @@ class RawCandidate:
     #: exact shape the official header uses. Read by scoring, so a title-cased
     #: header is recognised on its structure rather than on its capitals.
     official_form: bool = False
+    #: La hoja que dice la cabecera de la página -- «Hoja 2», «Hola No. 1»,
+    #: «Hoja No: 3» --, o ``None`` si no dice ninguna. Desde la 2 es la
+    #: continuación de una resolución: sigue, nunca abre (2026-11-27,
+    #: resoluciones de decanatura de Odontología).
+    hoja: int | None = None
 
 
 def _looks_like_a_code(token: str) -> bool:
@@ -112,6 +117,7 @@ def _first_code(segment: str) -> tuple[ResolutionCode, bool] | None:
         if cleaned in _SEPARATOR_TOKENS or cleaned.rstrip(".:") in _SEPARATOR_TOKENS:
             numbered = True
             continue
+        cleaned = _cifras_del_ocr(cleaned)
         cleaned = _unido_si_el_ocr_lo_partio(cleaned, tokens[indice + 1 : indice + 2])
         # "No.00086" glues the token to the number; the prefix is stripped
         # while parsing, so the announcement still counts.
@@ -192,6 +198,161 @@ def _unido_si_el_ocr_lo_partio(numero: str, siguiente: list[str]) -> str:
     return numero
 
 
+#: Las letras que el OCR pone por una cifra dentro de un número: «RESOLUCIÓN
+#: o84», «RESOLUCIÓN lo8», «RESOLUCIÓN oS6» (tomos de decanatura de
+#: Odontología, 2026-11-27). Sólo en un token que ya trae alguna cifra y nada
+#: más que cifras y estas letras: «LOS» o «SOLO» no se tocan.
+_LETRAS_COMO_CIFRAS = str.maketrans({"O": "0", "Q": "0", "I": "1", "L": "1", "S": "5", "B": "8", "Z": "2"})
+_CIFRAS_O_LETRAS = frozenset("0123456789OQILSBZ")
+
+
+def _cifras_del_ocr(token: str) -> str:
+    """El número con las letras que el OCR confundió vueltas cifras, o el token tal cual.
+
+    Sin ninguna cifra, sólo las tres letras que no forman palabra con «O», «I»
+    y «L»: «RESOLUCIÓN loo» y «RESOLUCIÓN loi» son la 100 y la 101 (07-115 TOMO
+    1, págs. 179-180); «LOS» o «SOL» no son números.
+    """
+    if len(token) == 3 and all(c in "OIL" for c in token):
+        return token.translate(_LETRAS_COMO_CIFRAS)
+    if not 2 <= len(token) <= 6 or not any(c.isdigit() for c in token):
+        return token
+    if any(c.isalpha() for c in token) and all(c in _CIFRAS_O_LETRAS for c in token):
+        return token.translate(_LETRAS_COMO_CIFRAS)
+    return token
+
+
+# -- quién expide, la hoja y el número escrito aparte -----------------------------
+
+#: Quien expide una resolución de facultad, al principio de su renglón y en
+#: mayúsculas sin tildes: «EL DECANO DE LA FACULTAD…», «LA DECANA (E) DE…»,
+#: «EL DECANO, LAS DIRECTIVAS, LOS DOCENTES…» (las de condolencia), «EL
+#: CONSEJO DE (LA) FACULTAD…», «EL/LA DIRECTOR(A) DEL PROGRAMA». El artículo se
+#: admite dañado por el OCR («SL DECANO», «P DECANO DE L..\ FACUJ.TAD»), pero
+#: detrás de «DECANO» tiene que seguir la frase -- «DE» o una coma --: la firma
+#: «Decano» sola, al pie de la última hoja, no expide nada. «Que el decano de
+#: la FACULTAD…» del CONSIDERANDO no empieza así y no cuenta.
+EMISOR_DE_FACULTAD = re.compile(
+    r"^\W{0,4}(?:(?:[A-Z]{1,2}\s+)?DECAN[OA](?:\s*\(E\))?\s*(?:DE\b|,)"
+    r"|EL\s+CONSEJO\s+DE\s+(?:LA\s+)?FACULTAD|LA\s+DIRECTORA?\s+DEL?\s+PROGRAMA"
+    r"|EL\s+DIRECTOR\s+DEL?\s+PROGRAMA)"
+)
+#: Cuántos renglones debajo del encabezado puede estar quien la expide.
+RENGLONES_HASTA_EL_EMISOR = 5
+#: «Hoja 2», «Hola No. 1» (el OCR lee «Hola»), «Hoja No: 3», en la cabecera.
+_HOJA = re.compile(r"\bHO[JL]A\s*(?:N\W{0,2}[O0°º]?\W{0,2})?\s*(\d{1,2})\b")
+#: Cuántos renglones de arriba son la cabecera donde se escribe la hoja.
+RENGLONES_DE_LA_HOJA = 15
+#: El número que el formato deja en su propio renglón, debajo de «Resolución
+#: No.»: «Resolución No. / de 1.9 / 001» (tomos de 2003, Odontología).
+_NUMERO_SOLO = re.compile(r"^\W*(\d{2,3})\W*$")
+#: Hasta dónde se busca ese número; un renglón con una palabra corta la búsqueda.
+RENGLONES_HASTA_EL_NUMERO = 5
+_UNA_PALABRA = re.compile(r"[A-Z]{3,}")
+#: Lo que sigue al número de una resolución que se abre: su asunto, «Por la
+#: cual…», «Por medio de la cual…», «Mediante la cual…» (también «Por ia cual»).
+_ASUNTO = re.compile(r"^\W*(?:POR|MEDIANTE)\b.{0,25}\b[CE]UA[LI1]\b")
+#: Cuántos renglones con palabras se miran detrás del número.
+RENGLONES_DEL_ASUNTO = 2
+_PARTICULAS = frozenset({"N", "NO", "NRO", "NUM", "NUMERO", "#", "N°", "Nº"})
+
+
+def es_emisor_de_facultad(renglon: str) -> bool:
+    """Si el renglón (ya normalizado: mayúsculas sin tildes) dice quién expide una de facultad."""
+    return bool(EMISOR_DE_FACULTAD.match(renglon))
+
+
+def hoja_de(texto: str) -> int | None:
+    """La hoja que dice la cabecera de la página, o ``None``."""
+    for renglon in normalized_lines(texto)[:RENGLONES_DE_LA_HOJA]:
+        if hallada := _HOJA.search(renglon):
+            return int(hallada.group(1))
+    return None
+
+
+def _con_su_emisor(lines: list[str], indice: int) -> bool:
+    """Si quien expide una de facultad está en los renglones de debajo del encabezado."""
+    return any(es_emisor_de_facultad(r) for r in lines[indice + 1 : indice + 1 + RENGLONES_HASTA_EL_EMISOR])
+
+
+def _solo_la_particula(resto: str) -> bool:
+    """Si detrás del ancla sólo va la partícula de numeración: «RESOLUCIÓN No.» con el número en blanco."""
+    tokens = [t.strip(".,:;_*?") for t in resto.split()]
+    return bool(tokens) and tokens[0] in _PARTICULAS and not any(
+        sum(c.isdigit() for c in t) >= 2 for t in tokens[1:] if not t.startswith("1.9")
+    )
+
+
+def _numero_debajo(lines: list[str], indice: int) -> ResolutionCode | None:
+    """El número que el formato escribe en su renglón, debajo de «Resolución No.» en blanco.
+
+    Sólo si detrás viene lo que abre una resolución -- «Por la cual…» o quien
+    la expide --: debajo de «Resolución No.» la hoja siguiente de la 150 trae
+    la lista de graduandos, «28. IRIARTE MARTINEZ…», y el 28 no es un número
+    de resolución (088-173 TOMO 2, pág. 158).
+    """
+    renglones = lines[indice + 1 : indice + 1 + RENGLONES_HASTA_EL_NUMERO]
+    for posicion, renglon in enumerate(renglones):
+        if hallado := _NUMERO_SOLO.match(renglon):
+            detras = [r for r in lines[indice + 2 + posicion :] if _UNA_PALABRA.search(r)][:RENGLONES_DEL_ASUNTO]
+            if any(_ASUNTO.match(r) or es_emisor_de_facultad(r) for r in detras):
+                return ResolutionCode.try_parse(f"{int(hallado.group(1)):03d}")
+            return None
+        if _UNA_PALABRA.search(renglon):
+            return None
+    return None
+
+
+def encabezado_sin_numero(texto: str) -> bool:
+    """Si la cabecera trae «Resolución No.» sin número legible en la capa de texto.
+
+    Es la resolución de los tomos de 1999 de Odontología: el formato imprime
+    «Resolución No. ____ de 1.9__» y el número se escribió después, a
+    máquina, y la capa de texto no lo trae (01-046 TOMO 3: 45 de 101 hojas).
+    Quien la lee tiene que mirar la imagen de la banda del encabezado.
+    """
+    return _el_encabezado_en_blanco(texto) is not None
+
+
+def abre_sin_numero(texto: str) -> bool:
+    """Si la página abre una resolución -- su encabezado, y debajo su asunto o quien la expide -- sin número legible.
+
+    Es la primera hoja de una resolución cuyo número no se dejó leer ni en la
+    capa ni en la banda: «Resolución No. ____» con «EL CONSEJO DE LA FACULTAD…»
+    debajo (07-115 TOMO 1, pág. 174). No la hoja 2, que repite el encabezado
+    sin asunto ni emisor.
+    """
+    indice = _el_encabezado_en_blanco(texto)
+    if indice is None or (hoja_de(texto) or 1) >= 2:
+        return False
+    lines = normalized_lines(texto)
+    return any(
+        _ASUNTO.match(r) or es_emisor_de_facultad(r)
+        for r in lines[indice + 1 : indice + 1 + RENGLONES_HASTA_EL_EMISOR + 1]
+    )
+
+
+def _el_encabezado_en_blanco(texto: str) -> int | None:
+    """El renglón de la cabecera con «Resolución No.» -- o «RESOLUCIÓN» sola -- sin número, o ``None``.
+
+    «RESOLUCIÓN» sola, con el número en blanco y sin partícula (07-115 TOMO 1,
+    pág. 100), sólo si debajo dice quién la expide: sin él puede ser cualquier
+    renglón que empiece por la palabra.
+    """
+    lines = normalized_lines(texto)
+    con_numero = {c.line_index for c in extract_candidates(texto)}
+    for anchor in find_anchors(texto):
+        if anchor.line_index >= RENGLONES_DE_LA_HOJA or anchor.line_index in con_numero:
+            continue
+        line = lines[anchor.line_index]
+        if any(c.isalpha() for c in line[: anchor.start]):
+            continue
+        resto = line[anchor.end :].strip(" .,:;_*?-")
+        if _solo_la_particula(line[anchor.end :]) or (not resto and _con_su_emisor(lines, anchor.line_index)):
+            return anchor.line_index
+    return None
+
+
 def extract_candidates(
     page_text: str, geometry: Sequence[tuple[float, float]] | None = None
 ) -> list[RawCandidate]:
@@ -201,10 +362,18 @@ def extract_candidates(
     borde superior en fracciones de página. Es opcional porque el OCR entrega
     texto sin coordenadas; cuando llega, es lo que permite exigirle a un
     encabezado que esté donde va un encabezado.
+
+    Dos formas más de encabezado (2026-11-27, decanatura de Odontología): el
+    número sin partícula -- «RESOLUCION 03», «Resolución 001 / Hola No. 1»,
+    «RESOLUCIÓN 130» -- vale como forma oficial si debajo dice quién lo expide
+    (``EMISOR_DE_FACULTAD``), porque sin partícula una cita también se escribe
+    así; y «Resolución No.» con el número escrito en su propio renglón
+    (``_numero_debajo``).
     """
     lines = normalized_lines(page_text)
     original = page_text.splitlines()
     total = len(lines)
+    hoja = hoja_de(page_text)
 
     candidates: list[RawCandidate] = []
     for anchor in find_anchors(page_text):
@@ -214,10 +383,20 @@ def extract_candidates(
             # Centred headers wrap: the word ends the line and the number starts
             # the next one.
             found = _first_code(lines[anchor.line_index + 1])
+        sin_letras_delante = not any(c.isalpha() for c in line[: anchor.start])
+        if (
+            found is None
+            and sin_letras_delante
+            and _solo_la_particula(line[anchor.end :])
+            and (debajo := _numero_debajo(lines, anchor.line_index)) is not None
+        ):
+            found = (debajo, True)
         if found is None:
             continue
 
         code, announced = found
+        if not announced and sin_letras_delante and _con_su_emisor(lines, anchor.line_index):
+            announced = True
         sitio = (
             geometry[anchor.line_index]
             if geometry is not None and anchor.line_index < len(geometry)
@@ -235,6 +414,7 @@ def extract_candidates(
                 official_form=announced and bool(_OFFICIAL_NUMBER.match(code.value)),
                 center_x=sitio[0] if sitio else None,
                 top=sitio[1] if sitio else None,
+                hoja=hoja,
             )
         )
     return candidates

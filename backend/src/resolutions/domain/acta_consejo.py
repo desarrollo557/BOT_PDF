@@ -1630,8 +1630,11 @@ _DEL_ORDEN_DEL_DIA = re.compile(
 )
 
 
-#: Los puntos suspensivos al final: «…», «...» o «. . .».
-_SUSPENSIVOS_AL_FINAL = re.compile(r"\s*(?:…|\.(?:\s?\.){2,})+\s*$")
+#: Los puntos suspensivos al final: «…», «...» o «. . .». Con cuantificadores
+#: posesivos (2026-11-27): la forma de antes retrocedía sin fin con una racha de
+#: puntos -- las líneas de un formulario que lee la IA --: 48 puntos tardaban 40 s
+#: y cada punto más multiplicaba por 1,5, con el proceso congelado y sin latido.
+_SUSPENSIVOS_AL_FINAL = re.compile(r"\s*+(?:…|\.(?:\s?\.){2,}+)++\s*+$")
 
 
 def sin_cortes(texto: str, *, cortado: bool = False) -> str:

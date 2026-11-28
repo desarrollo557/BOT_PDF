@@ -3641,7 +3641,7 @@ class FolderRunner:
                     _copiar(desde, hasta, self._al_entregar(run, origin))
                 except OSError as error:
                     quedan.append((desde, hasta, reemplaza))
-                    fallos.append(f"«{hasta.name}»: {explicar_fallo(error)}")
+                    fallos.append(f"«{hasta.name}»: {_explicar_la_entrega(error, hasta)}")
                     continue
                 if entrega.archivos is not None and hasta not in entrega.archivos:
                     entrega.archivos.append(hasta)
@@ -4718,6 +4718,13 @@ class FolderRunner:
         operador lo corrigió el 2026-10-13: el destino salía mezclado -- unas
         carpetas «UPD…» y otras «1012408» -- y la caja se busca por su UPD, que
         es también el nombre del expediente en su Índice Electrónico.
+
+        Con el destino de la corrida («<elegida> - PROCESADO») es el espejo de
+        la fuente con una carpeta por libro, el árbol que eligió el operador el
+        2026-11-27 viendo los dos («lo deje como está en la fuente, pero
+        dividido»): la misma ruta que ``_espejo`` más el nombre del PDF, igual
+        que dejan sus libros las actas y las historias (``document_folder``).
+        Lo fija ``test_entrega_espejo_por_libro.py``.
         """
         relativa = FolderRunner._relative(run, origin)
         if FolderRunner._plana(run):
@@ -5145,7 +5152,9 @@ class FolderRunner:
             # Ya no se entrega en la raíz del destino: lo que se dejaba ahí no
             # lo encontraba nadie, ni la corrida siguiente.
             logger.warning("no se pudo crear %s: %s", carpeta, error)
-            entrega.fallos.append(f"no se pudo crear la carpeta «{carpeta.name}»: {explicar_fallo(error)}")
+            entrega.fallos.append(
+                f"no se pudo crear la carpeta «{carpeta.name}»: {_explicar_la_entrega(error, carpeta)}"
+            )
             return entrega
 
         rehacer = run.a_rehacer.pop(str(origin), None)
@@ -5260,7 +5269,9 @@ class FolderRunner:
                     entrega.archivos.append(target)
             except OSError as error:
                 logger.warning("could not deliver %s: %s", source_file.name, error)
-                entrega.fallos.append(f"«{source_file.name}»: {explicar_fallo(error)}")
+                entrega.fallos.append(
+                    f"«{source_file.name}»: {_explicar_la_entrega(error, target or carpeta / name)}"
+                )
                 # Se puede reintentar tal cual, salvo que el FUID del libro ya
                 # se escribió sin conocer el nombre que le tocó.
                 if target is not None and (
@@ -5713,7 +5724,7 @@ class FolderRunner:
                 _copiar(desde, hasta, self._al_entregar(run, origin))
             except OSError as error:
                 logger.warning("no se pudo entregar %s: %s", hasta.name, error)
-                entrega.fallos.append(f"«{hasta.name}»: {explicar_fallo(error)}")
+                entrega.fallos.append(f"«{hasta.name}»: {_explicar_la_entrega(error, hasta)}")
                 # El espejo se reemplaza al copiar: se reintenta al mismo nombre.
                 entrega.pendientes.append((desde, hasta, True))
                 continue
@@ -7112,6 +7123,71 @@ def _mover(desde: Path, hasta: Path) -> None:
         time.sleep(espera)
 
 
+#: Lo más largo que Windows deja abrir sin las rutas largas activadas
+#: (``LongPathsEnabled``, apagado en los equipos del archivo): MAX_PATH son 260
+#: con el cero del final, y una carpeta 12 menos, para que quepa dentro un
+#: nombre corto 8.3.
+LARGO_DE_RUTA_EN_WINDOWS = 259
+LARGO_DE_CARPETA_EN_WINDOWS = 247
+
+
+def _parcial_de(hasta: Path) -> Path:
+    """El «.part» de una copia: «<nombre>.<marca>.part», o «.<marca>.part» si con su nombre no cabe en Windows.
+
+    El destino espejo de una carpeta con subcarpetas anidadas y un libro
+    dividido por carpeta -- «… - PROCESADO\\RESOLUCIONES\\RESOLUCIONES
+    DECANATURA 1995-2002\\RESOLUCIONES DECANATURA 1995-2002 TOMO 2\\1992-2002-
+    tomo 2\\01_RESOLUCION….pdf» (Odontología, 2026-11-27) -- deja PDF cuya ruta
+    cabe justa en el límite, y los 14 caracteres del «.part» la sacaban de él:
+    la copia fallaba sin que el PDF final pasara del límite. Con la marca
+    única igual, para que dos equipos no compartan el «.part».
+    """
+    marca = uuid4().hex[:8]
+    parcial = hasta.with_name(f"{hasta.name}.{marca}.part")
+    if os.name == "nt" and len(str(parcial)) > LARGO_DE_RUTA_EN_WINDOWS:
+        return hasta.with_name(f".{marca}.part")
+    return parcial
+
+
+def _por_lo_largo(error: BaseException, ruta: Path) -> str | None:
+    """Si una entrega falló porque su ruta no cabe en Windows, dicho para el operador; si no, ``None``.
+
+    Sin las rutas largas activadas, Windows contesta a una ruta de más de 259
+    caracteres «no se encuentra la ruta», y ``explicar_fallo`` decía «se movió,
+    se renombró o se borró»: el operador habría buscado un archivo que nadie
+    tocó. Con el destino espejo y una carpeta por libro, el árbol real de
+    Odontología deja de 28 a 102 caracteres para el nombre de cada PDF en
+    ``C:\\Users\\…\\Desktop\\PROCESADOS`` (medido el 2026-11-27). Sólo si lo
+    que falló es la ruta larga: un origen que de verdad desapareció sigue con
+    su explicación de siempre.
+    """
+    if os.name != "nt" or not isinstance(error, OSError) or isinstance(error, PermissionError):
+        return None
+    fallidas = [str(nombre) for nombre in (error.filename, getattr(error, "filename2", None)) if nombre]
+    largo = max([len(str(ruta)), *map(len, fallidas)])
+    # «El nombre del archivo o la extensión es demasiado largo» (WinError 206):
+    # una carpeta de 248 a 259 caracteres, que como archivo cabría (medido).
+    if not (getattr(error, "winerror", None) == 206 or error.errno == errno.ENAMETOOLONG):
+        if not isinstance(error, FileNotFoundError):
+            return None
+        if fallidas and all(len(nombre) <= LARGO_DE_RUTA_EN_WINDOWS for nombre in fallidas):
+            # Lo que falló cabe: no es el largo (un origen que se borró, por ejemplo).
+            return None
+        if largo <= LARGO_DE_RUTA_EN_WINDOWS and len(str(ruta.parent)) <= LARGO_DE_CARPETA_EN_WINDOWS:
+            return None
+    return (
+        f"la ruta en el destino tiene {largo} caracteres y Windows no deja pasar de "
+        f"{LARGO_DE_RUTA_EN_WINDOWS} sin las rutas largas activadas. Elija un destino más cerca de la "
+        "raíz del disco, o active las rutas largas de Windows, y vuelva a lanzar la carpeta: sólo se "
+        "procesa lo que falte."
+    )
+
+
+def _explicar_la_entrega(error: BaseException, ruta: Path) -> str:
+    """``explicar_fallo``, salvo que lo que falló sea el largo de la ruta en Windows (``_por_lo_largo``)."""
+    return _por_lo_largo(error, ruta) or explicar_fallo(error)
+
+
 def _copiar(desde: Path, hasta: Path, medir: Callable[[int, float, float], None] | None = None) -> None:
     """Copia entera o nada: primero a «.part» y luego, comprobada, a su nombre.
 
@@ -7123,7 +7199,7 @@ def _copiar(desde: Path, hasta: Path, medir: Callable[[int, float, float], None]
     """
     # Con nombre único: dos equipos que entregan a la misma carpeta no
     # comparten el «.part» (2026-11-25, varios PC en un destino).
-    parcial = hasta.with_name(f"{hasta.name}.{uuid4().hex[:8]}.part")
+    parcial = _parcial_de(hasta)
     for espera in (*ESPERAS_SI_ESTA_EN_USO, None):
         try:
             inicio = time.monotonic()

@@ -38,6 +38,7 @@ from io import BytesIO
 
 from PIL import Image, ImageFilter, ImageOps
 
+from ..application import latido
 from ..application.ports import OcrResult
 
 try:  # Linux: el contenedor, que es donde corre la corrida
@@ -480,6 +481,9 @@ class TesseractOcr:
                 raise TesseractError(
                     f"Tesseract superó {self._config.timeout_seconds * imagenes:g} s"
                 ) from error
+            finally:
+                # Una lectura terminada, bien o mal: el trabajo sigue vivo (2026-11-27).
+                latido.pulso()
         if completed.returncode != 0:
             motivo = completed.stderr.decode("utf-8", "replace").strip()
             raise TesseractError(motivo or f"tesseract terminó con código {completed.returncode}")

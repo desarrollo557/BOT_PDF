@@ -6,6 +6,7 @@ from pathlib import Path
 import pymupdf
 from PIL import Image
 
+from ..application import latido
 from ..application.ports import Band, LineBox
 from ..domain.diploma import TextLine
 from ..domain.formulario import Trozo
@@ -204,6 +205,7 @@ class PyMuPDFPageSource:
         el coste es de esta implementación, no del caso de uso, y así ninguna
         firma de `application/` cambia para resolverlo.
         """
+        latido.pulso()
         guardado = self._textos.get(page_number)
         if guardado is None:
             guardado = self._document[page_number - 1].get_text("text")
@@ -323,6 +325,7 @@ class PyMuPDFPageSource:
         hay algo escrito. A esa escala la banda del folio son unos cuarenta mil
         píxeles y el libro entero se mide en once segundos.
         """
+        latido.pulso()
         page = self._document[page_number - 1]
         rect = page.rect
         clip = pymupdf.Rect(
@@ -424,6 +427,9 @@ class PyMuPDFPageSource:
             colorspace=pymupdf.csGRAY,
             alpha=False,
         )
+        # Una página más rasterizada: el trabajo sigue vivo (2026-11-27). Cubre
+        # los bucles que sólo renderizan, sin pedirle nada a nadie.
+        latido.pulso()
         if formato == "jpeg":
             # Con PIL y no con MuPDF: el codificador de MuPDF tarda 160 ms en
             # una cara de 300 ppp y el de PIL -- libjpeg-turbo -- catorce, y

@@ -185,6 +185,42 @@ def anios_del_nombre(archivo: str) -> tuple[int | None, int | None]:
     return min(anios), max(anios)
 
 
+#: «TOMO I», «TOMO 2», «tomo 2», «-TOMO 1», «TOMO N° 3»: el número del tomo, en
+#: cifras o en romanos. Un año pegado («TOMO 2003») no es un tomo, y un romano
+#: tiene que ser uno válido: «TOMO CIVIL» no dice ninguno.
+_TOMO = re.compile(
+    r"(?<![A-Z0-9])TOMO[\s._#:-]*(?:N[°ºO]\.?\s*)?"
+    r"(?P<tomo>\d{1,3}(?!\d)|(?=[IVXLC])C{0,3}(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3}))"
+    r"(?![A-Z0-9])",
+    re.IGNORECASE,
+)
+
+
+def tomo_de_la_ruta(carpeta: str, archivo: str) -> str:
+    """El tomo que dice el nombre del PDF o, si no, su carpeta; vacío si ninguno lo dice.
+
+    El operador, 2026-11-27, sobre «8. ACTA 9 FACULTAD DE ODONTOLOGIA
+    CALIFICACIONES 3194 - 3198»: la columna «Tomo» del FUID lleva el tomo que
+    dice la ruta del libro. «ACTAS DECADA. 1990-1994 TOMO II.pdf» → «II»,
+    «1992-2002- tomo 2.pdf» → «2», «TOMO 1 2003-2010.pdf» → «1», y en
+    «RESOLUCIONES DECANATURA 2003-2010 TOMO 1\\…» la carpeta dice «1». Se
+    escribe como lo dice la ruta -- romano o en cifras, sin pasar de uno a
+    otro --, en mayúsculas y sin ceros delante («TOMO 05» → «5»). Primero el
+    nombre del PDF, que es lo más cercano al libro;
+    después sus carpetas, de la más honda a la elegida. **Nada inventado**: si
+    ninguna lo dice, vacío, como las demás columnas que la Universidad deja en
+    blanco (caja y UPD también salen sólo de la ruta, ``ubicacion``).
+    """
+    partes = [parte for parte in re.split(r"[\\/]", str(archivo or "")) if parte]
+    sitios = partes[-1:] + partes[-2::-1]
+    sitios += [parte for parte in reversed(re.split(r"[\\/]", str(carpeta or ""))) if parte]
+    for sitio in sitios:
+        if hallado := _TOMO.search(sitio):
+            tomo = hallado.group("tomo").upper()
+            return str(int(tomo)) if tomo.isdigit() else tomo
+    return ""
+
+
 def _fechas_del_nombre(archivo: str) -> tuple[str, str]:
     inicial, final = anios_del_nombre(archivo)
     return (
@@ -294,6 +330,10 @@ CONVERSORES: dict[str, Callable[[Mapping[str, object]], FuidRow | None]] = {
     # ceremonia, no (2026-11-12).
     fuid_actas_de_grado.CEREMONIA: fuid_actas_de_grado.fila_de_la_ceremonia,
     HISTORIA_ACADEMICA: fuid_historias.fila_del_fuid,
+    # Los libros de calificaciones (2026-11-27): el alumno y la lista de la
+    # promoción, que sí lleva fila, con el estándar único de la Universidad.
+    fuid_historias.CALIFICACIONES: fuid_historias.fila_del_fuid,
+    fuid_historias.LISTA_DE_ALUMNOS: fuid_historias.fila_del_fuid,
     NOMINA: fuid_nominas.fila_del_fuid,
     SIN_ESTUDIANTE: _sin_fila,
     FILA_HECHA: fila_hecha,
@@ -327,6 +367,14 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
     # GRADO 3362» trae sus PDF sueltos, sin subcarpeta de caja (2026-10-30).
     if convertida.caja in ("", NO_LEIDO) and fila.get("caja_del_cliente"):
         convertida = replace(convertida, caja=str(fila["caja_del_cliente"]))
+    # El tomo que dice la ruta del PDF, en todas las habilidades (2026-11-27);
+    # el que su conversor ya sacó del papel, si sacó uno, se respeta. Sin tomo
+    # en la ruta queda vacío también en las filas hechas que traían «N/A»: la
+    # columna del tomo no mezcla las dos formas en un mismo FUID.
+    if str(convertida.tomo or "").strip() in ("", NO_LEIDO):
+        convertida = replace(
+            convertida, tomo=tomo_de_la_ruta(str(fila.get("carpeta") or ""), str(fila.get("archivo") or ""))
+        )
     archivo = archivo_de(fila)
     # Una fila hecha que ya dice su archivo -- la resolución partida en
     # «03_RESOLUCION-00031.pdf» -- no lleva además el del original.

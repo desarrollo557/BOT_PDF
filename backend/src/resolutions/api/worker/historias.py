@@ -10,6 +10,12 @@ pidió, lee la ficha y la primera hoja de notas de cada estudiante -- dos págin
 facturadas -- y concilia su nombre entre todo lo leído; ninguna por los
 certificados. Lo pidió el operador el 2026-10-30: el nombre, la cédula y las
 fechas, perfectos y del papel.
+
+Los libros de calificaciones de Odontología (2026-11-27) pasan también por
+aquí: si la capa de texto dice que el PDF es uno (``es_libro_de_calificaciones``),
+se reparte con ``domain/calificaciones.py`` -- cada lista y cada alumno, un PDF
+«NN_<asunto>.pdf» y una fila -- y se asegura con las mismas piezas
+(``_libro_de_calificaciones``); el informe dice ``habilidad = "Calificaciones"``.
 """
 
 from __future__ import annotations
@@ -136,11 +142,27 @@ def historias_academicas_job(payload: dict) -> dict:
         # Cuántas páginas trae, para que la pantalla dibuje sus cuadritos; y
         # luego cada una al leerla, con de dónde salió su texto.
         _anunciar(payload, Stage.OPENED, page_count=total)
+        # La capa de texto de todas las páginas, gratis, antes de releer nada:
+        # con ella se decide si el PDF es un libro de calificaciones
+        # (2026-11-27), que se lee y se reparte con sus propias reglas.
+        capas: list[str] = []
+        for numero in range(1, total + 1):
+            taller.control.check()
+            capas.append(source.text_of(numero) or "")
+        de_calificaciones = _es_libro_de_calificaciones(payload, taller, capas, nombre)
         textos: list[str] = []
         for numero in range(1, total + 1):
             taller.control.check()
-            texto = source.text_of(numero) or ""
+            texto = capas[numero - 1]
             procedencia = "text_layer"
+            if de_calificaciones:
+                texto, procedencia = _hoja_de_calificaciones(source, local, numero, texto, nombre)
+                textos.append(texto)
+                _anunciar(
+                    payload, Stage.PAGE, page_count=total, detail="leyendo cada página", done=numero, total=total,
+                    page_number=numero, provenance=procedencia,
+                )
+                continue
             if al_reves(texto):
                 # Una hoja de Medicina escaneada cabeza abajo: se endereza, y su
                 # texto es el de Tesseract leyéndola derecha. Gratis.
@@ -169,6 +191,11 @@ def historias_academicas_job(payload: dict) -> dict:
             _anunciar(
                 payload, Stage.PAGE, page_count=total, detail="leyendo cada página", done=numero, total=total,
                 page_number=numero, provenance=procedencia,
+            )
+
+        if de_calificaciones:
+            return _libro_de_calificaciones(
+                payload, taller, source, de_pago, textos, nombre, carpeta, total, conocidas, padron, local=local
             )
 
         # Medicina se corta por el nombre de cada ficha y de cada hoja de notas,
@@ -1598,6 +1625,585 @@ def _nombre_por_la_ia(nombrador, texto: str, nombre: str) -> str | None:
         logger.warning("la IA no nombró a un estudiante de %s: %s", nombre, error)
         return None
     return nombre_de_la_ia(respuesta, texto)
+
+
+# -- los libros de calificaciones (2026-11-27) ---------------------------------------
+#
+# El operador, sobre «8. ACTA 9 FACULTAD DE ODONTOLOGIA CALIFICACIONES 3194 -
+# 3198»: dividir e inventariar cada libro, un PDF y una fila por alumno con «el
+# nombre y la especialidad», y la lista de la promoción «su PDF y su fila».
+# Las reglas del papel viven en ``domain/calificaciones.py``; aquí se lee, se
+# asegura lo leído con las mismas piezas de las historias y se entrega con el
+# estándar único de la Universidad: «NN_NOMBRE - ODONTOLOGIA.pdf».
+
+#: La habilidad que dice el informe de un libro de calificaciones.
+HABILIDAD_CALIFICACIONES = "Calificaciones"
+#: Lo que se declara en la pantalla para un libro de calificaciones (``TipoPedido.CALIFICACIONES``).
+_DECLARADO_CALIFICACIONES = "calificaciones"
+#: Dónde escribe cada hoja el nombre del alumno, en fracción de la hoja: la
+#: constancia «Que, ____ cursó y aprobó» (a mano en 1995) y la continuación
+#: «Continuación calificaciones de ____». Lo que mira la IA si se eligió.
+_RENGLON_DEL_NOMBRE = {"CONSTANCIA": (0.14, 0.32), "CONTINUACION": (0.06, 0.22)}
+
+
+def _es_libro_de_calificaciones(payload: dict, taller, capas: list[str], nombre: str) -> bool:
+    """Si el PDF es un libro de calificaciones, por su capa de texto y su ruta.
+
+    El nombre del PDF y el de su carpeta desempatan cuando la capa no deja leer
+    la lista («CALIFICACIONES», «PROMOCION»), y también lo que declaró el
+    operador. Que el papel diga otra cosa manda: el dominio exige igual las
+    hojas de cada alumno.
+    """
+    from ...domain.calificaciones import es_libro_de_calificaciones
+
+    pista = f"{taller.source.parent.name} {nombre}"
+    if str(payload.get("tipo") or "").strip().lower() == _DECLARADO_CALIFICACIONES:
+        pista += " CALIFICACIONES"
+    try:
+        return es_libro_de_calificaciones(capas, pista)
+    except Exception:  # noqa: BLE001 - si el reconocedor falla, el PDF sigue como historia
+        logger.warning("no se pudo decidir si %s es un libro de calificaciones", nombre, exc_info=True)
+        return False
+
+
+def _hoja_de_calificaciones(source, local, numero: int, texto: str, nombre: str) -> tuple[str, str]:
+    """El texto de una hoja de un libro de calificaciones y de dónde salió.
+
+    * **De cabeza** (1995, pág. 81): se endereza, como en Medicina, y su texto es
+      el de Tesseract leyéndola derecha.
+    * **La lista**: Tesseract la relee y se queda la lectura con más filas
+      legibles; la capa de 2003 separa las letras («ARAN DA 8 E TAN C O U R T»)
+      y Tesseract lee «ARANDA BETANCOURT MILENA».
+    * **Lo que no es ninguna hoja del libro** -- un anexo, o una hoja con la capa
+      rota --: Tesseract decide, como en las historias.
+    * Lo demás, su capa: gratis.
+    """
+    from ...domain.calificaciones import (
+        LISTA,
+        LISTA_SIGUE,
+        de_cabeza,
+        filas_legibles,
+        plantilla_de_calificaciones,
+    )
+    from ...domain.historia_academica import plano
+    from ...domain.historia_medicina import al_reves
+
+    def releer(dpi: int = 200) -> str | None:
+        try:
+            return local.read(source.render(numero, dpi=dpi)).text
+        except Exception:  # noqa: BLE001 - una página que no se deja leer sigue con su capa
+            logger.debug("no se pudo releer la página %s de %s", numero, nombre, exc_info=True)
+            return None
+
+    if de_cabeza(texto) or al_reves(texto):
+        source.enderezar(numero)
+        if (leido := releer()) is not None:
+            return leido, "ocr_full_page"
+        return texto, "text_layer"
+    cual = plantilla_de_calificaciones(texto)
+    if cual in (LISTA, LISTA_SIGUE) or (cual is None and filas_legibles(texto)):
+        # A dos resoluciones, y gana la que más filas deja leer: en la tabla de
+        # 2003 Tesseract lee 29 filas a 200 ppp y 10 a 300, que en cambio leen
+        # mejor la letra pequeña de otras listas (2026-11-27).
+        mejor, de_donde = texto, "text_layer"
+        for dpi in DPI_DE_LA_LISTA:
+            leido = releer(dpi)
+            if leido and filas_legibles(leido) > filas_legibles(mejor):
+                mejor, de_donde = leido, "ocr_full_page"
+        return mejor, de_donde
+    if cual is None:
+        # Un anexo, o una hoja con la capa rota. La relectura no convierte un
+        # anexo con capa en una hoja del libro: la copia de la cédula de 2003,
+        # pág. 84, releída, pasaba por un record y abría un alumno de más. Sólo
+        # una capa casi vacía cede a lo que diga Tesseract.
+        leido = releer()
+        if leido and (
+            (plantilla_de_calificaciones(leido) is None and len(plano(leido)) > len(plano(texto)) // 2)
+            or (len(plano(texto)) < CAPA_ROTA and plantilla_de_calificaciones(leido) is not None)
+        ):
+            return leido, "ocr_full_page"
+    return texto, "text_layer"
+
+
+#: Desde cuántas letras de capa una hoja no está rota: menos, y lo que diga Tesseract manda.
+CAPA_ROTA = 80
+#: A qué resoluciones relee Tesseract la lista de la promoción.
+DPI_DE_LA_LISTA = (200, 300)
+
+
+def _nombre_del_pdf_estandar(orden: int, asunto: str, *, carpeta: Path | None = None) -> str:
+    """«03_ALFARO ZOLA LIZELIA M - ODONTOLOGIA.pdf»: el orden y el asunto de su fila, en mayúsculas.
+
+    El estándar único de la Universidad (2026-11-27): el nombre del PDF es el
+    asunto de su fila, con espacios; sin los caracteres que Windows no admite
+    y recortado para no pasar el límite de ruta. Lo que se recorta es el
+    nombre, nunca la especialidad que va detrás del último « - ».
+    """
+    from ...domain.naming import WINDOWS_PATH_LIMIT
+
+    limpio = unicodedata.normalize("NFD", asunto).encode("ascii", "ignore").decode().upper()
+    limpio = " ".join(re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", limpio).split()).strip(" .")
+    prefijo = f"{orden:02d}_"
+    cabe = LARGO_DEL_NOMBRE + 20
+    if carpeta is not None:
+        cabe = min(cabe, WINDOWS_PATH_LIMIT - len(str(carpeta)) - 1 - len(".pdf"))
+    cabe = max(cabe - len(prefijo), 16)
+    if len(limpio) > cabe:
+        cabeza, separador, cola = limpio.rpartition(" - ")
+        if separador and len(cola) + 3 < cabe:
+            limpio = cabeza[: cabe - len(cola) - 3].rstrip(" .-") + " - " + cola
+        else:
+            limpio = limpio[:cabe].rstrip(" .-")
+    return f"{prefijo}{limpio}.pdf"
+
+
+def _paginas_en_su_orden(unidad) -> list[int]:
+    """La hoja A primero y la B detrás, aunque se escanearan al revés; luego lo demás en el orden del escaneo.
+
+    El operador (2026-11-03): «la primera página del PDF dividido debe ser la
+    página principal del estudiante».
+    """
+    primero = [*unidad.hojas_a, *unidad.hojas_b]
+    return primero + [numero for numero in unidad.paginas if numero not in primero]
+
+
+def _imagen_del_renglon_de_calificaciones(source, unidad) -> bytes | None:
+    """El renglón del nombre del alumno, para la IA que lo mira: la ficha del record o la constancia y su continuación."""
+    import io
+
+    from PIL import Image
+
+    from ...application.ports import Band
+    from .nombres_asegurados import apilar
+
+    if unidad.plantilla == "RECORD":
+        return _imagen_del_nombre(source, unidad)
+    piezas = [(pagina, _RENGLON_DEL_NOMBRE["CONSTANCIA"]) for pagina in unidad.hojas_a[:1]]
+    piezas += [(pagina, _RENGLON_DEL_NOMBRE["CONTINUACION"]) for pagina in unidad.hojas_b[:1]]
+    try:
+        recortes = [
+            Image.open(io.BytesIO(source.render(pagina, Band(0.0, arriba, 1.0, abajo), 200))).convert("RGB")
+            for pagina, (arriba, abajo) in piezas
+        ]
+    except Exception:  # noqa: BLE001 - sin imagen, el nombre queda votado
+        logger.debug("no se pudo recortar el nombre de la página %s", unidad.pagina_de_la_ficha, exc_info=True)
+        return None
+    return apilar(recortes) if recortes else None
+
+
+#: La franja del record donde va la casilla «C.C. #», en fracción de la hoja,
+#: y a qué resolución se relee: en 1998 va hacia el 27 % de la altura.
+FRANJA_DE_LA_CEDULA_DEL_RECORD = (0.20, 0.34)
+DPI_DE_LA_CEDULA = 300
+
+
+def _cedulas_releidas(source, local, records, nombre: str) -> None:
+    """La cédula de cada record, releída gratis en su franja ampliada y contrastada con la capa.
+
+    La capa del record de ARRIETA VERGARA (1998, pág. 7) dice «C.C. #
+    46.766 044» y el papel 45.766.044; la de ALCALA REVOLLEDO (pág. 3),
+    «73.141.^30». Sin la IA nadie lo cruzaba. Tesseract relee la franja de la
+    casilla a 300 ppp. Medido en los 62 records de 1998: 7 iguales, 1 distinta
+    (la de ARRIETA, bien releída), 10 sólo en la capa, 5 sólo releídas (la de
+    ALCALA, bien) y 39 sin cédula escrita a máquina.
+
+    * **Distintas**: queda la de la capa y la fila va a Revisión con las dos.
+    * **Sólo releída**: no se toma; va a Revisión con lo que se lee. Medido en
+      el papel: la casilla escrita a mano «72.229.333» (1998, pág. 89) y
+      «73.557.786» (1999, pág. 53) Tesseract las lee 92229333 y 92559786 --el
+      7 a mano por un 9--, como cambiaba cifras en Medicina (UPD 3859597). Una
+      cédula equivocada es peor que una por revisar; con «OCR + IA» la asegura
+      el agente.
+    """
+    from ...application.ports import Band
+    from ...domain.calificaciones import cedula_del_record
+
+    for unidad in records:
+        try:
+            arriba, abajo = FRANJA_DE_LA_CEDULA_DEL_RECORD
+            imagen = source.render(unidad.pagina_de_la_ficha, Band(0.0, arriba, 1.0, abajo), DPI_DE_LA_CEDULA)
+            releida = cedula_del_record(local.read(imagen).text)
+        except Exception:  # noqa: BLE001 - sin la relectura queda la de la capa
+            logger.debug("no se pudo releer la cédula de la página %s de %s", unidad.pagina_de_la_ficha, nombre, exc_info=True)
+            continue
+        if not releida or releida == unidad.ficha.cedula:
+            continue
+        if unidad.ficha.cedula:
+            unidad.dudas.append(f"la cédula se leyó {unidad.ficha.cedula} en la capa y {releida} releída con zoom")
+        else:
+            unidad.dudas.append(
+                f"la casilla de la cédula se lee {releida} releída con zoom y la capa no la trae (puede ir a mano)"
+            )
+
+
+def _libro_de_calificaciones(payload, taller, source, de_pago, textos, nombre, carpeta, total, conocidas, padron, local=None) -> dict:
+    """Divide e inventaría un libro de calificaciones: cada lista y cada alumno, un PDF y una fila.
+
+    El reparto es el del dominio (``unidades_del_libro``). Luego, lo mismo que
+    las historias para leer bien:
+
+    * **la IA, si se pidió**, lee la hoja A de cada alumno (la constancia o el
+      record) y su hoja B, y concilia el nombre; esa lectura entra en el
+      nombre completo y se vota contra la lista;
+    * **el revisor de nombres** vota cada nombre entre la lista, la hoja y la IA,
+      con la lista de la promoción como padrón adicional, y lleva a Revisión
+      lo que no se confirma;
+    * **el asegurador de números** (cédula y código) en los records;
+      la constancia no trae cédula: queda «no aparece»;
+    * **los apellidos al derecho** por el orden alfabético del libro;
+    * **el revisor de cortes**, la **comprobación del disco**, **el revisor de
+      fechas** y **el agente de los datos**.
+
+    El informe dice el cuadre de la lista contra los PDF de alumnos y cada
+    nombre tomado de la lista o que no cuadra con la hoja.
+    """
+    from dataclasses import replace
+
+    import pymupdf
+
+    from ...adapters.huellas_pdf import huellas_de
+    from ...application.entrega import comprobar_archivos
+    from ...application.integridad_de_los_datos import revisar_los_datos
+    from ...application.perfiles_de_revision import GENERICO, perfil_de
+    from ...application.revisor_de_cortes import anotar_en_el_informe, revisar_sin_romper
+    from ...application.revisor_de_nombres import PorRevisar
+    from ...application.task import TaskKind
+    from ...domain import calificaciones as cal
+    from ...domain.datos_esperados import (
+        apellidos_al_derecho,
+        codigo_por_el_patron,
+        patron_de_los_codigos,
+    )
+    from ...domain.historia_academica import NO_APARECE, ventana_de_anios
+    from ...domain.naming import document_folder
+    from ...domain.padron import IndiceDelPadron, Persona
+    from ...domain.revision_de_nombres import A_REVISION
+    from .nombres_asegurados import asegurar_los_nombres
+    from .nominas import asegurar_las_fechas, el_papel_de_la_fila, escribir_paginas
+
+    _anunciar(payload, Stage.IDENTIFYING, detail="libro de calificaciones: cada lista y cada alumno")
+    unidades = cal.unidades_del_libro(textos)
+    alumnos = [unidad for unidad in unidades if unidad.tipo == cal.CALIFICACIONES]
+    listas = [unidad for unidad in unidades if unidad.tipo == cal.LISTA_DE_ALUMNOS]
+    logger.info("%s: libro de calificaciones, %d listas y %d alumnos", nombre, len(listas), len(alumnos))
+
+    # La lista de la promoción, padrón adicional: sus nombres desempatan el voto
+    # y son candidatos para la IA que mira el renglón.
+    de_la_lista = [
+        Persona(nombre=fila.nombre, fuente="lista de la promoción", documento=nombre)
+        for lista in listas
+        for fila in lista.alumnos
+        if len(fila.nombre.split()) >= 2
+    ]
+    padron_del_libro = IndiceDelPadron([*getattr(padron, "personas", []), *de_la_lista])
+    conocidas = set(conocidas) | {p for persona in de_la_lista for p in persona.nombre.split() if len(p) >= 3}
+
+    # La IA, si se pidió: la hoja A y la B de cada alumno, y su nombre conciliado.
+    textos_de_la_ficha: dict[int, str] = {}
+    notas_de_la_ia: dict[int, str] = {}
+    if de_pago is not None and alumnos:
+        antes = {unidad.paginas[0]: unidad.ficha.nombre for unidad in alumnos}
+        _leer_las_fichas_con_la_ia(
+            payload, taller, source, de_pago, alumnos, textos_de_la_ficha, notas_de_la_ia, nombre
+        )
+        for unidad in alumnos:
+            nuevas = [
+                leida
+                for leida in (
+                    unidad.ficha.nombre if unidad.ficha.nombre != antes[unidad.paginas[0]] else None,
+                    cal.nombre_de_la_hoja(textos_de_la_ficha.get(unidad.pagina_de_la_ficha, ""), unidad.plantilla),
+                    cal.nombre_de_la_hoja(notas_de_la_ia.get(unidad.pagina_de_la_ficha, "")),
+                )
+                if leida
+            ]
+            if nuevas:
+                # Lo que leyó la IA entra en el nombre completo y se vota contra la lista.
+                unidad.lecturas_de_la_hoja = [*dict.fromkeys([*nuevas, *unidad.lecturas_de_la_hoja])]
+                unidad.ficha = replace(unidad.ficha, nombre=antes[unidad.paginas[0]])
+                cal.datos_del_alumno(unidad, textos)
+
+    # El revisor de nombres, el mismo de todas las habilidades.
+    notas_del_nombre: dict[int, str] = {}
+    detalle_del_nombre: dict[int, dict] = {}
+    personas = [
+        PorRevisar(
+            clave=unidad.paginas[0],
+            lecturas=[
+                unidad.ficha.nombre,
+                *([unidad.de_la_lista.nombre] if unidad.de_la_lista else []),
+                *unidad.lecturas_de_la_hoja,
+            ],
+            cedula=unidad.ficha.cedula,
+            imagen=(lambda unidad=unidad: _imagen_del_renglon_de_calificaciones(source, unidad)),
+            pagina=unidad.pagina_de_la_ficha,
+        )
+        for unidad in alumnos
+        if unidad.ficha is not None and unidad.ficha.nombre
+    ]
+    revisados = asegurar_los_nombres(
+        None, personas, taller=taller, documento=nombre, conocidas=conocidas, padron=padron_del_libro,
+        de_pago=de_pago is not None, mirar=de_pago is not None, releer=None, a_revision=True,
+    )
+    por_clave = {unidad.paginas[0]: unidad for unidad in alumnos}
+    for clave, revisado in revisados.items():
+        unidad = por_clave[clave]
+        if revisado.nombre:
+            if revisado.cambio:
+                notas_del_nombre[clave] = f"nombre corregido; se leyó «{revisado.leido}»"
+            unidad.ficha = replace(unidad.ficha, nombre=revisado.nombre)
+        if revisado.estado == A_REVISION and revisado.motivo:
+            unidad.dudas.append(revisado.motivo)
+        detalle_del_nombre[clave] = revisado.detalle
+
+    # Los números: el asegurador en los records; la constancia no trae cédula.
+    candado = threading.Lock()
+
+    def leer_la_ficha(numero: int) -> str:
+        if de_pago is None:
+            return ""
+        try:
+            with candado:
+                imagen = source.render(numero, dpi=200, formato="jpeg")
+            return de_pago.read(imagen).text or ""
+        except Exception:  # noqa: BLE001 - sin la lectura, la casilla queda sin verificar
+            logger.warning("la IA no pudo leer el record de la página %s de %s", numero, nombre, exc_info=True)
+            return ""
+
+    asegurador = _Asegurador(taller, textos, textos_de_la_ficha, notas_de_la_ia, leer_pagina=leer_la_ficha)
+    records = [unidad for unidad in alumnos if unidad.plantilla == cal.RECORD]
+    if local is not None:
+        _anunciar(payload, Stage.IDENTIFYING, detail="releyendo con zoom la cédula de cada record")
+        _cedulas_releidas(source, local, records, nombre)
+    _sin_numeros_ajenos(alumnos, asegurador)
+    asegurador.numeros(payload, records)
+    for unidad in alumnos:
+        if unidad.plantilla == cal.CONSTANCIA and not unidad.ficha.identificacion:
+            asegurador.estados[unidad.paginas[0]] = {casilla: NO_APARECE for casilla in ("cedula", "tarjeta", "libreta")}
+    _sin_numeros_ajenos(alumnos, asegurador)
+    _nombres_del_operador(alumnos, padron, notas_del_nombre, detalle_del_nombre)
+    for indice, corregido in apellidos_al_derecho([unidad.ficha.nombre for unidad in alumnos]).items():
+        unidad = alumnos[indice]
+        unidad.dudas.append(
+            f"nombre «{unidad.ficha.nombre}» ordenado como «{corregido}» por el orden alfabético del libro: "
+            "revise los apellidos en el papel"
+        )
+        unidad.ficha = replace(unidad.ficha, nombre=corregido)
+    patron = patron_de_los_codigos([unidad.ficha.codigo for unidad in alumnos])
+    for unidad in alumnos:
+        if corregido := codigo_por_el_patron(unidad.ficha.codigo, patron, unidad.anio_inicial):
+            unidad.dudas.append(
+                f"código {unidad.ficha.codigo} corregido a {corregido} por el patrón del libro ({patron}…): revíselo en el papel"
+            )
+            unidad.ficha = replace(unidad.ficha, codigo=corregido)
+        if unidad.nombre_de_la_lista and unidad.de_la_lista is not None:
+            unidad.dudas.append(
+                f"nombre tomado de la fila {unidad.de_la_lista.orden} de la lista de la promoción: la hoja no deja "
+                "leerlo (a mano); revíselo en el papel o léalo con «OCR + IA»"
+            )
+
+    # El revisor de cortes: cada costura entre documentos contra el papel.
+    del_revisor = perfil_de("calificaciones")
+    if del_revisor is GENERICO:
+        del_revisor = perfil_de("historias")
+    por_pagina = dict(enumerate(textos, start=1))
+    revision, aviso_del_revisor = revisar_sin_romper(
+        _reparto(unidades), por_pagina, del_revisor.patrones(por_pagina), juez=taller.juez_de_costuras()
+    )
+
+    pidio_dividir = payload.get("task") in (str(TaskKind.SPLIT), str(TaskKind.BOTH))
+    carpeta_de_salida = taller.destination / document_folder(nombre)
+    if pidio_dividir:
+        carpeta_de_salida.mkdir(parents=True, exist_ok=True)
+    # Los años posibles del libro: los de la carrera de la promoción, del
+    # periodo de sus listas. Con la ventana de las historias (de las hojas que
+    # no son ficha) el «1ER AÑO 1990» del record de 1998 caía fuera (1992-2000)
+    # y 55 de 63 alumnos iban a Revisión.
+    periodos = [unidad.titulo.anio for unidad in listas if unidad.titulo and unidad.titulo.anio]
+    ventana = (
+        (min(periodos) - cal.ANIOS_DE_CARRERA - 2, max(periodos) + 1)
+        if periodos
+        else ventana_de_anios(textos, nombre=nombre)
+    )
+    esperado: dict[str, list[int]] = {}
+    salidas: list[str] = []
+    filas: list[dict] = []
+    textos_de_las_filas: list[list[str]] = []
+    derivadas: list[tuple[bool, bool]] = []
+    _anunciar(payload, Stage.ASSEMBLING, detail=f"escribiendo {len(unidades)} PDF", done=0, total=len(unidades))
+    comprobacion = None
+    with pymupdf.open(taller.source) as original:
+        for orden, unidad in enumerate(unidades, start=1):
+            taller.control.check()
+            fila = _fila_de_calificaciones(unidad, nombre, carpeta, asegurador, notas_del_nombre, detalle_del_nombre)
+            archivo = _nombre_del_pdf_estandar(orden, fila["asunto"], carpeta=carpeta_de_salida)
+            if pidio_dividir:
+                en_orden = _paginas_en_su_orden(unidad) if unidad.tipo == cal.CALIFICACIONES else list(unidad.paginas)
+                escribir_paginas(original, taller.source, en_orden, carpeta_de_salida / archivo)
+                esperado[archivo] = en_orden
+                salidas.append((carpeta_de_salida / archivo).relative_to(taller.destination).as_posix())
+            fila["archivo_generado"] = archivo if pidio_dividir else None
+            filas.append(fila)
+            # El papel de sus años: sus hojas, también el record, que escribe
+            # el año de cada semestre («ASIGNATURAS Sem 1er Año 1990»). Los
+            # años del alumno sólo salen de esas marcas (``anios_de_las_notas``),
+            # nunca de la fecha de nacimiento ni de la del grado.
+            textos_de_las_filas.append(
+                el_papel_de_la_fila(
+                    [
+                        notas_de_la_ia.get(unidad.pagina_de_la_ficha) or "",
+                        *(textos[n - 1] for n in unidad.paginas if n not in unidad.anexos),
+                    ],
+                    ventana,
+                )
+            )
+            derivadas.append((unidad.inicial_del_codigo, unidad.final_de_la_lista))
+            _anunciar(payload, Stage.ASSEMBLING, detail=f"escribiendo {len(unidades)} PDF", done=orden, total=len(unidades))
+    if pidio_dividir:
+        comprobacion = comprobar_archivos(
+            taller.source, esperado, carpeta_de_salida, huellas_de, paginas_del_original=total
+        )
+
+    cuadre = cal.cuadre_con_la_lista(unidades)
+    report: dict = {
+        "document": nombre,
+        "page_count": total,
+        "tipo": "historia-academica",
+        "habilidad": HABILIDAD_CALIFICACIONES,
+        "task": str(TaskKind.INVENTORY_FILE),
+        "inventario_actas": filas,
+        "historias": len(alumnos),
+        "calificaciones": {
+            "listas": len(listas),
+            "alumnos": len(alumnos),
+            "cuadre_de_la_lista": cuadre,
+            "nombres_de_la_lista": [
+                fila["archivo_generado"] or fila["nombre"] for fila in filas if fila.get("nombre_de_la_lista")
+            ],
+            "nombres_que_no_cuadran": [
+                fila["archivo_generado"] or fila["nombre"] for fila in filas if fila.get("no_cuadra_con_la_lista")
+            ],
+        },
+        "groups": [{"code": fila["archivo_generado"] or str(orden)} for orden, fila in enumerate(filas, start=1)],
+        "review_queue": [
+            {"page": unidad.pagina_de_la_ficha or unidad.paginas[0], "reason": duda}
+            for unidad in unidades
+            for duda in unidad.dudas
+        ],
+    }
+    if cuadre["en_la_lista"] != cuadre["alumnos"]:
+        aviso = (
+            f"La lista de la promoción trae {cuadre['en_la_lista']} filas legibles y salieron "
+            f"{cuadre['alumnos']} PDF de alumnos ({cuadre['emparejados']} emparejados con su fila): revise el cuadre."
+        )
+        report["notices"] = [aviso]
+        report["review_queue"].append({"page": listas[0].paginas[0] if listas else 1, "reason": aviso})
+    if revisados:
+        from ...application.revisor_de_nombres import (
+            anotar_en_el_informe as anotar_los_nombres,
+        )
+
+        anotar_los_nombres(report, revisados, nombre, a_la_cola=False)
+    if pidio_dividir:
+        report["outputs"] = salidas
+        report["dividido"] = True
+    asegurar_las_fechas(
+        report, filas, textos_de_las_filas, habilidad="historias", taller=taller, ventana=ventana, derivadas=derivadas
+    )
+    integridad = revisar_los_datos(filas, del_revisor.datos, aceptable=del_revisor.margen) if del_revisor.datos else None
+    if revision is not None or aviso_del_revisor or comprobacion or integridad is not None:
+        anotar_en_el_informe(
+            report, revision, aviso_del_revisor, comprobacion, perfil=del_revisor.as_dict(), integridad=integridad
+        )
+    _escribir_el_fuid(payload, taller, nombre, filas, report)
+    return report
+
+
+def _fila_de_calificaciones(unidad, nombre: str, carpeta: str, asegurador, notas_del_nombre, detalle_del_nombre) -> dict:
+    """La fila de una lista o de un alumno, con la estructura del estándar único (``fuid_historias``)."""
+    from ...domain import calificaciones as cal
+
+    primera, ultima = unidad.paginas[0], unidad.paginas[-1]
+    donde = f"la página {primera}" if primera == ultima else f"las páginas {primera} a {ultima}"
+    comun = {
+        "folios": len(unidad.paginas),
+        "pagina_inicial": primera,
+        "pagina_final": ultima,
+        "archivo": nombre,
+        "carpeta": carpeta,
+        "especialidad": cal.ODONTOLOGIA,
+    }
+    if unidad.tipo == cal.LISTA_DE_ALUMNOS:
+        titulo = unidad.titulo or cal.TituloDeLaLista("LISTA DE ALUMNOS DE ODONTOLOGIA")
+        return {
+            **comun,
+            "tipo": cal.LISTA_DE_ALUMNOS,
+            "asunto": titulo.titulo,
+            "nombre": None,
+            "anio_inicial": titulo.anio,
+            "anio_final": titulo.anio,
+            "fecha_exacta": titulo.fecha,
+            "alumnos_en_la_lista": len(unidad.alumnos),
+            "observaciones": "; ".join(
+                [
+                    f"{len(unidad.alumnos)} filas legibles en la lista",
+                    *([] if titulo.anio else [f"no se leyó el año de la lista en {donde} del PDF: revíselo en el papel"]),
+                ]
+            ),
+        }
+    ficha = unidad.ficha
+    persona = ficha.nombre or f"PAGINAS {primera}-{ultima}"
+    faltan = []
+    if not ficha.nombre:
+        faltan.append("el nombre")
+    if not ficha.codigo:
+        faltan.append("el código")
+    if unidad.plantilla == cal.RECORD and not ficha.identificacion:
+        # El record trae la casilla «C.C. #»; la constancia, no.
+        faltan.append("la cédula")
+    if unidad.anio_inicial is None:
+        faltan.append("el primer año de las notas")
+    return {
+        **comun,
+        "tipo": cal.CALIFICACIONES,
+        "asunto": cal.asunto_de_calificaciones(persona),
+        "nombre": ficha.nombre,
+        "cedula": ficha.cedula,
+        "codigo": ficha.codigo,
+        "tarjeta": ficha.tarjeta,
+        "libreta": ficha.libreta,
+        "verificado": asegurador.estados.get(unidad.paginas[0], {}),
+        "anio_inicial": unidad.anio_inicial,
+        "anio_final": unidad.anio_final,
+        "clase": None,
+        "fecha_exacta": None,
+        "fila_de_la_lista": unidad.de_la_lista.orden if unidad.de_la_lista else None,
+        "nombre_de_la_lista": unidad.nombre_de_la_lista,
+        "no_cuadra_con_la_lista": unidad.no_cuadra,
+        **(
+            {"revision_del_nombre": detalle_del_nombre[unidad.paginas[0]]}
+            if unidad.paginas[0] in detalle_del_nombre
+            else {}
+        ),
+        "observaciones": "; ".join(
+            [
+                *([f"no se leyó {', '.join(faltan)} en {donde} del PDF: revíselo en el papel"] if faltan else []),
+                *(
+                    [f"fecha inicial {unidad.anio_inicial}: el año de ingreso que dice el código {ficha.codigo}"]
+                    if unidad.inicial_del_codigo
+                    else []
+                ),
+                *(
+                    [f"fecha final {unidad.anio_final}: el periodo de la lista de la promoción"]
+                    if unidad.final_de_la_lista
+                    else []
+                ),
+                *([nota] if (nota := notas_del_nombre.get(unidad.paginas[0])) else []),
+                *unidad.notas,
+                *asegurador.notas.get(unidad.paginas[0], []),
+                *(f"{duda}: revísela" for duda in unidad.dudas),
+            ]
+        ),
+    }
 
 
 def _escribir_el_fuid(payload: dict, taller: Taller, nombre: str, filas: list[dict], report: dict) -> None:

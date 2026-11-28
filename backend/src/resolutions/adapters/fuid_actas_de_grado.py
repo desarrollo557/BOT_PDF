@@ -28,10 +28,18 @@ del rango y su cédula, todas con el mismo archivo. Los folios del acta van en
 la fila del primero; en las demás, 0 (``folios_en``), con la nota de dónde
 están.
 
-Las actas manuscritas de examen de 1924-1946 (caja 00C003362) no traen número
-ni cédula: su asunto es el examen y el alumno -- «ACTA DE EXAMEN PREPARATORIO
-DE GRADO - QUINTO PREPARATORIO - NOMBRE» -- y desde y hasta, el folio del libro
-(lo eligió el operador el 2026-11-04).
+Las actas manuscritas de examen -- las de 1924-1946 de la caja 00C003362 y las
+de Odontología de 1952-1971 -- van como cualquier persona desde el 2026-11-27
+(el estándar único de la Universidad): «NOMBRE - DOCTOR EN ODONTOLOGIA»,
+«NOMBRE - QUINTO PREPARATORIO»; desde, el número del acta si el papel lo trae y
+si no el folio del libro; hasta, la cédula o N/A. Antes (2026-11-04) eran «ACTA
+DE EXAMEN PREPARATORIO DE GRADO - QUINTO PREPARATORIO - NOMBRE» con el folio en
+desde y hasta.
+
+Lo que el libro trae cosido entre las actas y no es una hoja de la ceremonia --
+la lista de alumnos o de la promoción, la carta con que un graduado autoriza a
+otro a recibir su diploma, la constancia de paz y salvo -- lleva su fila con su
+título (``fila_de_la_ceremonia``, 2026-11-27).
 
 La cabecera -- entidad, unidad administrativa, oficina productora, objeto -- es
 la de la plantilla y no se toca: el operador la dio por fija.
@@ -47,7 +55,15 @@ from pathlib import Path
 
 from ..application.fuid import FuidRow
 from ..application.inventory_document import template_for
-from ..domain.acta_grado import asunto_del_graduado, es_acta_de_examen
+from ..domain.acta_grado import (
+    asunto_del_examen,
+    asunto_del_graduado,
+    es_acta_de_examen,
+    es_encabezado_con_fila,
+    es_encabezado_de_lista,
+    fecha_de_la_lista,
+    fechas_extremas_de_la_lista,
+)
 from ..domain.doctype import DocumentType
 from .fuid_inventory import FuidInventory
 
@@ -173,23 +189,6 @@ def _numero_del_acta(fila: Mapping[str, object]) -> str:
     return _leido(fila.get("numero")) or NO_LEIDO
 
 
-#: «QUINTO EXAMEN PREPARATORIO DE GRADO»: cuál preparatorio, para el asunto.
-_CUAL_PREPARATORIO = re.compile(r"^(\w+) EXAMEN PREPARATORIO")
-
-
-def _asunto_del_examen(acta: str, nombre: str, titulo: str) -> str:
-    """El asunto de un acta manuscrita de examen, como lo eligió el operador el 2026-11-04.
-
-    «ACTA DE EXAMEN PREPARATORIO DE GRADO - QUINTO PREPARATORIO - JESUS MARIA
-    BARRIOS» y «ACTA DE EXAMEN FINAL DE GRADO - LUIS MARIA MERLANO - DOCTOR EN
-    MEDICINA Y CIRUGIA»: qué examen y de quién.
-    """
-    if "PREPARATORIO" in acta:
-        cual = _CUAL_PREPARATORIO.match(titulo)
-        return f"{acta} - {cual.group(1) + ' PREPARATORIO' if cual else NO_LEIDO} - {nombre}"
-    return f"{acta} - {nombre} - {titulo}"
-
-
 def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
     """La fila del FUID de un graduado, o ``None`` para las hojas de su ceremonia.
 
@@ -200,8 +199,6 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
     caja, upd = ubicacion(str(fila.get("carpeta") or ""), str(fila.get("archivo") or ""))
     acta = str(fila.get("acta") or NO_LEIDO)
     examen = es_acta_de_examen(acta)
-    nombre = _leido(fila.get("nombre")) or NO_LEIDO
-    titulo = _leido(fila.get("titulo")) or NO_LEIDO
     cedula = _leido(fila.get("cedula")) or NO_LEIDO
     fecha = _fecha_del_fuid(fila.get("fecha"))
     # Cuántos folios tiene el acta y cuántas páginas se escanearon: no el
@@ -230,14 +227,16 @@ def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
         # 2026-11-12). Su nota dice en qué fila están.
         folios = paginas = 0
     if examen:
-        # El acta de examen no trae número ni cédula: desde y hasta, el folio
-        # del libro en que está, y el examen primero en el asunto (lo eligió el
-        # operador el 2026-11-04).
-        asunto = _asunto_del_examen(acta, nombre, titulo)
-        desde_hasta = (
-            str(inicial) if _es_numero(inicial) else NO_LEIDO,
-            str(final) if _es_numero(final) else NO_LEIDO,
+        # El examen, como cualquier persona (el estándar único, 2026-11-27):
+        # «NOMBRE - DOCTOR EN ODONTOLOGIA», «NOMBRE - QUINTO PREPARATORIO», el
+        # mismo texto que su PDF. Desde, el número del acta si el papel lo trae
+        # -- Odontología, «Acta No 132» -- y si no el folio del libro (la 3362
+        # no lo trae); hasta, la cédula o N/A.
+        numero = _leido(fila.get("numero"))
+        asunto = asunto_del_examen(
+            _leido(fila.get("nombre")), _leido(fila.get("titulo")), acta=acta, numero=numero, folio=inicial
         )
+        desde_hasta = (numero or (str(inicial) if _es_numero(inicial) else NO_LEIDO), cedula)
     elif acta.endswith(ANULADA):
         # El acta anulada no gradúa a nadie (UPD3859802, 2026-11-13): su fila
         # es la del acta, que lo dice, y no la de un graduado en blanco. Con el
@@ -294,15 +293,65 @@ def _asunto_como_su_pdf(acta: str, pdf: str | None) -> str:
     return pdf or acta
 
 
+def _fecha_del_fuid_de(fecha: object) -> str:
+    return fecha.strftime("%d/%m/%Y") if fecha is not None else NO_LEIDO  # type: ignore[attr-defined]
+
+
+def _fila_de_lo_cosido(fila: Mapping[str, object], acta: str) -> FuidRow:
+    """La fila de una lista, una carta o una constancia cosida entre las actas (2026-11-27).
+
+    El asunto es su título, el mismo que su PDF; desde y hasta, N/A en la lista
+    y en el documento de una persona la cédula de quien lo firma en hasta. La
+    lista lleva las fechas de su promoción, o del 1 de enero al 31 de diciembre
+    del año de su periodo; el documento, la suya.
+    """
+    caja, upd = ubicacion(str(fila.get("carpeta") or ""), str(fila.get("archivo") or ""))
+    desde, hasta = fila.get("pagina_inicial"), fila.get("pagina_final")
+    paginas = hasta - desde + 1 if isinstance(desde, int) and isinstance(hasta, int) and hasta >= desde else 1
+    if es_encabezado_de_lista(acta):
+        texto = str(fila.get("fecha") or "")
+        leida = fecha_de_la_lista(texto) if re.fullmatch(r"\d{2}-\d{2}-\d{4}", texto) else None
+        inicial, final = fechas_extremas_de_la_lista(acta, leida)
+        fechas = (_fecha_del_fuid_de(inicial), _fecha_del_fuid_de(final))
+        consecutivos = (NO_LEIDO, NO_LEIDO)
+    else:
+        fecha = _fecha_del_fuid(fila.get("fecha"))
+        fechas = (fecha, fecha)
+        consecutivos = (NO_LEIDO, _leido(fila.get("cedula")) or NO_LEIDO)
+    return FuidRow(
+        orden=0,
+        asunto=_asunto_como_su_pdf(acta, nombre_del_pdf(fila)),
+        codigo_trd="",
+        consecutivo_inicial=consecutivos[0],
+        consecutivo_final=consecutivos[1],
+        fecha_inicial=fechas[0],
+        fecha_final=fechas[1],
+        caja=caja,
+        carpeta=upd,
+        tomo="",
+        otro="",
+        folios=max(1, (paginas + 1) // 2),
+        folios_siar=paginas,
+        soporte="",
+        frecuencia="",
+        notas=str(fila.get("observaciones") or ""),
+        pagina_inicial=fila.get("pagina_inicial"),  # type: ignore[arg-type]
+    )
+
+
 def fila_de_la_ceremonia(fila: Mapping[str, object]) -> FuidRow | None:
-    """La fila de la resolución que autoriza los grados; ``None`` para las demás hojas de la ceremonia.
+    """La fila de la resolución que autoriza los grados y de lo cosido entre las actas; ``None`` para las hojas de la ceremonia.
 
     Lo pidió el operador el 2026-11-12 (Odontología): la «RESOLUCIÓN No. 01633,
     por medio de la cual se autorizan grados secretariales», con su lista de
     egresados, es un documento del libro y va al FUID con su número; la hoja de
-    la ceremonia que sólo lista a los graduados, no.
+    la ceremonia que sólo lista a los graduados, no. Y el 2026-11-27: la lista
+    de alumnos o de la promoción, «su PDF y su fila», y la carta o la
+    constancia de una persona, la suya; la portada «ACTAS», ninguna.
     """
     acta = str(fila.get("acta") or "")
+    if es_encabezado_con_fila(acta):
+        return _fila_de_lo_cosido(fila, acta)
     if not acta.startswith("RESOLUCION"):
         return None
     numero = re.search(r"\d{3,6}", acta)

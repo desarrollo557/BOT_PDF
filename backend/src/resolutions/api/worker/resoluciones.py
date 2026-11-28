@@ -14,14 +14,32 @@ from .taller import Taller, _anunciar
 
 
 def _split_job(payload: dict, task) -> dict:
-    """Partir el documento en uno por resolución, y dejar su FUID si se pidió."""
+    """Partir el documento en uno por resolución, y dejar su FUID si se pidió.
+
+    El texto de las páginas da el asunto de cada resolución -- lo que ordena su
+    RESUELVE --, que es a la vez el nombre de su PDF y su fila del FUID (el
+    estándar único de la UdeC, 2026-11-27). Por eso la fuente se abre antes de
+    escribir y se cierra al terminar, y las dos cosas lo piden a la misma
+    función, ``asunto_del_grupo``: no pueden decir dos cosas distintas.
+    """
+    from ...adapters.pymupdf_source import PyMuPDFDocumentStore
+
+    taller = Taller.desde(payload)
+    fuente = PyMuPDFDocumentStore(taller.name).open(taller.source)
+    try:
+        return _partir_y_fichar(payload, task, taller, fuente)
+    finally:
+        fuente.close()
+
+
+def _partir_y_fichar(payload: dict, task, taller: Taller, fuente) -> dict:
+    """La división y el FUID de ``_split_job``, con la fuente de los asuntos abierta."""
     from ...adapters.file_inventory import FileInventoryStore
     from ...adapters.huellas_pdf import huellas_de
     from ...adapters.pymupdf_assembler import PyMuPDFAssembler
     from ...adapters.pymupdf_source import PyMuPDFDocumentStore
     from ...application.process_document import ProcessDocument
-
-    taller = Taller.desde(payload)
+    from ...application.resolution_fuid import asunto_del_grupo
 
     # 1. Decidir los grupos: la cascada lee el número de cada página y el
     #    agrupador decide quién manda sobre quién. Lo demás -- describir,
@@ -30,7 +48,15 @@ def _split_job(payload: dict, task) -> dict:
     use_case = ProcessDocument(
         store=PyMuPDFDocumentStore(taller.name),
         pipeline=taller.pipeline(taller.ocr()),
-        assembler=PyMuPDFAssembler(control=taller.control, nombre=taller.name),
+        assembler=PyMuPDFAssembler(
+            control=taller.control,
+            nombre=taller.name,
+            # Cada PDF se llama como su fila del FUID, con el orden delante:
+            # «01_RESOLUCION 007-1998 - FIJAR LA FECHA….pdf».
+            asunto_de=lambda grupo: asunto_del_grupo(grupo, fuente.text_of, nombre_del_archivo=taller.name),
+            # Y recortado para caber en la carpeta a la que la corrida lo copia.
+            entregado_en=taller.delivered_to,
+        ),
         inventory=FileInventoryStore(),
         progress=taller.progress,
         control=taller.control,
@@ -64,33 +90,28 @@ def _split_job(payload: dict, task) -> dict:
             if resultado.inventory is not None
             else {}
         )
-        # El texto de las páginas, para el asunto: lo que ordena el RESUELVE.
-        fuente = PyMuPDFDocumentStore(taller.name).open(taller.source)
-        try:
-            filas = filas_de_resoluciones(
-                resultado.grouping.groups,
-                nombre_del_archivo=taller.name,
-                ubicacion=taller.ubicacion(),
-                texto_de=fuente.text_of,
-            )
-            # El revisor de fechas (2026-11-10), con la fuente todavía abierta:
-            # la fecha de cada resolución contra su fórmula «Dada en…», en el
-            # mismo texto de sus páginas con que se fechó y se le leyó el
-            # asunto (la fuente lo guarda: no se relee). La de la serie, que no
-            # está en su papel, va a Revisión con su motivo.
-            filas = asegurar_las_filas_del_fuid(
-                report,
-                filas,
-                resultado.grouping.groups,
-                fuente.text_of,
-                regla=regla_de("resoluciones", EXPEDICION),
-                juez=juez_del_trabajo(taller),
-                # «Detener» entre una fila y la siguiente (2026-11-10).
-                control=taller.control,
-                archivos=archivos,
-            )
-        finally:
-            fuente.close()
+        filas = filas_de_resoluciones(
+            resultado.grouping.groups,
+            nombre_del_archivo=taller.name,
+            ubicacion=taller.ubicacion(),
+            texto_de=fuente.text_of,
+        )
+        # El revisor de fechas (2026-11-10), con la fuente todavía abierta: la
+        # fecha de cada resolución contra su fórmula «Dada en…», en el mismo
+        # texto de sus páginas con que se fechó y se le leyó el asunto (la
+        # fuente lo guarda: no se relee). La de la serie, que no está en su
+        # papel, va a Revisión con su motivo.
+        filas = asegurar_las_filas_del_fuid(
+            report,
+            filas,
+            resultado.grouping.groups,
+            fuente.text_of,
+            regla=regla_de("resoluciones", EXPEDICION),
+            juez=juez_del_trabajo(taller),
+            # «Detener» entre una fila y la siguiente (2026-11-10).
+            control=taller.control,
+            archivos=archivos,
+        )
         # Cada fila diciendo cómo se llama su archivo, cuando se escribió alguno.
         # El inventario y la carpeta son las dos mitades de la misma entrega, y
         # esto es lo que permite cruzarlas sin contar filas.

@@ -112,6 +112,10 @@ def habilidad_del_proceso(job) -> str:
     tipo = str((informe.get("stats") or {}).get("document_type") or "")
     if informe.get("indice_electronico") or informe.get("agrupar") or job.task == "segment":
         return "Caja de correspondencia"
+    # Un libro de calificaciones lo parte la habilidad de las historias, y su
+    # informe lo dice (2026-11-27): se revisa y se audita con su propio perfil.
+    if informe.get("habilidad") == "Calificaciones":
+        return "Calificaciones"
     if informe.get("tipo") == "historia-academica":
         return "Historias académicas"
     if informe.get("tipo") == "nomina":

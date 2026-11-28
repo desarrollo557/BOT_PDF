@@ -420,6 +420,19 @@ def test_que_habilidad_le_toca_a_cada_pdf():
     assert familia_de_historias([]) is None
 
 
+def test_un_tomo_de_resoluciones_con_fichas_de_soporte_no_es_de_historias():
+    """«001-029 TOMO 2» (Decanatura de Odontología 2003-2010, 2026-11-27): tres fichas y
+    decenas de hojas de asignaturas entre sus resoluciones llegaban al 32 % de fichas y notas."""
+    ficha = "Nombre del estudiante Dirección Actual Lugar de Nacimiento Estado Civil Cédula No."
+    notas = "REGISTRO ACADEMICO ASIGNATURA NOTA DEFINITIVA AÑO: 93"
+    resolucion = "RESOLUCION No. 016 Por la cual se fija el Calendario Académico EL CONSEJO DE LA FACULTAD RESUELVE:"
+    tomo = [resolucion] * 9 + [ficha] * 3 + [notas] * 3
+    assert familia_de_historias(tomo) is None
+    # Las historias que traen alguna resolución archivada siguen siendo historias.
+    historias = [ficha, notas] * 6 + [resolucion] * 2
+    assert familia_de_historias(historias) == HISTORIAS_DE_FICHA
+
+
 def test_el_nombre_de_un_pdf_de_historias():
     """Lo que se mira de un PDF de red de más de 25 MB, que no se baja para sugerir."""
     for nombre in (

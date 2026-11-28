@@ -252,6 +252,24 @@ class TestAlAuditar:
         errores, _ = auditar_los_datos(["UPD/03_PAGINAS-5-6-33217278.pdf"], fuid, DE_UNA_HISTORIA)
         assert errores == ["«03_PAGINAS-5-6-33217278.pdf»: no se leyó el nombre del estudiante"]
 
+    def test_el_pdf_con_el_nombre_del_estandar_encuentra_su_fila(self):
+        """El estándar de la Universidad (2026-11-27): «NN_NOMBRE - ESPECIALIDAD.pdf», con
+        espacios y la especialidad detrás. Comparado tal cual con el nombre de la fila
+        («AGUAS-GARRIDO-CLARENA-LUCIA») ningún PDF encontraba la suya."""
+        errores, _ = auditar_los_datos(
+            ["UPD/02_AGUAS GARRIDO CLARENA LUCIA - ENFERMERIA.pdf"], self.FUID, DE_UNA_HISTORIA
+        )
+        assert errores == []
+        # El nombre de otra persona con el estándar sí es un error.
+        errores, _ = auditar_los_datos(
+            ["UPD/02_AGUAS GARRIDO CLARA - ENFERMERIA.pdf"], [_del_fuid("AGUAS GARRIDO CLARENA LUCIA")], DE_UNA_HISTORIA
+        )
+        assert errores
+        errores, _ = auditar_los_datos(["UPD/07_PAGINAS-5-6 - ODONTOLOGIA.pdf"], [
+            _del_fuid("N/A", inicial="N/A", final="N/A", desde="01/01/2000", hasta="31/12/2001")
+        ], DE_UNA_HISTORIA)
+        assert errores == ["«07_PAGINAS-5-6 - ODONTOLOGIA.pdf»: no se leyó el nombre del estudiante"]
+
     def test_el_pdf_sin_fila_es_un_error(self):
         errores, _ = auditar_los_datos(["UPD/05_OTRA-PERSONA-99887766.pdf"], self.FUID, DE_UNA_HISTORIA)
         assert errores == ["«05_OTRA-PERSONA-99887766.pdf» no tiene su fila en el FUID (ni por su identificación ni por su nombre)"]

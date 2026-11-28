@@ -29,6 +29,8 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 
+from . import latido
+
 
 @dataclass
 class ConsumoDeProveedor:
@@ -122,21 +124,28 @@ class Consumo:
             cuenta.tokens_entrada += max(0, int(tokens_entrada or 0))
             cuenta.tokens_salida += max(0, int(tokens_salida or 0))
             cuenta.tokens_cache += max(0, int(tokens_cache or 0))
+        # Cada petición que vuelve dice que el trabajo sigue vivo (2026-11-27):
+        # los bucles de cientos de lecturas de la IA no anunciaban nada más y el
+        # vigilante los daba por atascados (``application.latido``).
+        latido.pulso()
 
     def rechazo(self, proveedor: str) -> None:
         """Un "más despacio" que se va a reintentar. No cobra, pero cuenta."""
         with self._candado:
             self._de(proveedor).rechazos += 1
+        latido.pulso()
 
     def fallo(self, proveedor: str) -> None:
         """Una petición que se dio por perdida."""
         with self._candado:
             self._de(proveedor).fallos += 1
+        latido.pulso()
 
     def fallo_del_ocr_local(self) -> None:
         """Una página que el OCR local no pudo leer y se escala al de pago."""
         with self._candado:
             self.ocr_local_fallido += 1
+        latido.pulso()
 
     @property
     def vacio(self) -> bool:

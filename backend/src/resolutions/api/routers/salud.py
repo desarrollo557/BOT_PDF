@@ -20,7 +20,7 @@ router = APIRouter()
 #: running across an update answers 404 to every new route and 405 to every new
 #: method -- which reads as a broken request rather than as a stale service.
 #: The screen compares this against what it was built for and says so plainly.
-API_REVISION = 27
+API_REVISION = 28
 
 #: What this revision can do, so the screen can name what is missing rather than
 #: only that something is.
@@ -116,6 +116,14 @@ API_FEATURES = (
     # y la acumulada, de cada PC, en total y por PC activo. La pantalla exige la
     # revisión 27 (REQUIRED_API_REVISION) para pintarlas.
     "velocidad-por-minuto",
+    # La habilidad «Calificaciones», declarable (``tipo=calificaciones``): un
+    # libro de calificaciones de una promoción, un PDF por alumno y la lista
+    # con su fila (2026-11-27). La pantalla exige la revisión 28.
+    "calificaciones",
+    # Cada PDF a su habilidad por su papel, sobre su capa de texto entera,
+    # también contra lo declarado y a mitad de corrida, con el aviso y
+    # ``reconocimiento.declarado`` en su informe (2026-11-27).
+    "clasificador-por-pdf",
 )
 
 @router.get("/api/health")

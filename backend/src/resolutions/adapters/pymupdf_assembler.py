@@ -18,8 +18,14 @@ from ..application.progress import (
     ProgressReporter,
     Stage,
 )
-from ..domain.grouping import GroupingResult
-from ..domain.naming import RESOLUTION_PREFIX, output_filename
+from ..domain.grouping import GroupingResult, PageGroup
+from ..domain.naming import (
+    MIN_DOCUMENT_STEM,
+    PREFIX_SEPARATOR,
+    RESOLUTION_PREFIX,
+    literal_fragment,
+    output_filename,
+)
 from .mupdf_messages import drenar, explicar
 
 logger = logging.getLogger(__name__)
@@ -120,6 +126,41 @@ def name_budget(destination: Path) -> int:
     # is a problem the operator has to solve, not one to silently mangle names
     # over.
     return max(room, 24)
+
+
+#: Lo más largo que se deja ser al asunto en el nombre de un PDF. El asunto de
+#: una resolución es lo que ordena su RESUELVE y llega a 200 caracteres; la
+#: entrega espejo lo copia después bajo una ruta más honda que la de trabajo
+#: («…\RESOLUCIONES DECANATURA 1995-2002\UPD3860101\07-115 TOMO 1\»), y
+#: Windows no deja pasar de 260 la ruta entera (2026-11-27).
+MAX_ASUNTO_EN_EL_NOMBRE = 120
+
+
+def nombre_por_su_asunto(indice: int, asunto: str, budget: int, extension: str = ".pdf") -> str:
+    """«01_RESOLUCION 007-1998 - FIJAR LA FECHA….pdf»: el orden y el asunto de su fila, con espacios.
+
+    El estándar único de la Universidad (2026-11-27): el nombre del PDF es el
+    asunto de su fila del FUID, en mayúsculas y con el orden delante. Sin lo
+    que Windows no admite (``literal_fragment``) y recortado por una palabra
+    entera para caber en la ruta.
+    """
+    prefijo = f"{indice:02d}{PREFIX_SEPARATOR}"
+    cabe = max(MIN_DOCUMENT_STEM, min(MAX_ASUNTO_EN_EL_NOMBRE, budget - len(prefijo) - len(extension)))
+    texto = literal_fragment(asunto.upper())
+    if len(texto) > cabe:
+        recortado = texto[:cabe]
+        texto = (recortado.rsplit(" ", 1)[0] if " " in recortado else recortado).rstrip(" .,;-–—")
+    return f"{prefijo}{texto}{extension}"
+
+
+def presupuesto_en(carpeta: str) -> int:
+    """Cuántos caracteres puede usar un nombre de archivo en ``carpeta``, escrita como la ve el operador.
+
+    Sin resolverla: puede ser la ruta de Windows del operador vista desde el
+    servicio en Docker («C:\\Users\\…\\PROCESADOS\\…»), y lo que cuenta es su
+    largo allí. Nunca menos de lo que pide un número con su extensión.
+    """
+    return max(MAX_PATH - len(carpeta.rstrip("\\/")) - 1 - PATH_MARGIN, 24)
 
 
 def _sin_pisar(nombre: str, pagina: int, usados: set[str]) -> str:
@@ -338,6 +379,12 @@ class PyMuPDFAssembler:
         sin_radicado: bool = False,
         # Salvo estos tipos, que lo llevan detrás: «01_RECLAMO-RE2310….pdf».
         radicado_en: Collection[str] = (),
+        # El asunto de la fila de cada unidad, si su PDF se llama como ella:
+        # «01_RESOLUCION 007-1998 - FIJAR LA FECHA….pdf» (``nombre_por_su_asunto``).
+        asunto_de: Callable[[PageGroup], str | None] | None = None,
+        # La carpeta a la que la corrida copiará estos PDF, como la ve el
+        # operador: el nombre tiene que caber también allí (``name_budget``).
+        entregado_en: str | None = None,
     ) -> None:
         #: Escribir cuatrocientos archivos tarda tanto como leerlos. Sin un punto
         #: de parada aquí, una cancelación pedida durante la escritura se
@@ -356,6 +403,8 @@ class PyMuPDFAssembler:
         self._mayusculas = mayusculas
         self._sin_radicado = sin_radicado
         self._radicado_en = frozenset(radicado_en)
+        self._asunto_de = asunto_de
+        self._entregado_en = entregado_en
         #: Cómo llamó el operador al documento de origen. Las subidas se guardan
         #: con un nombre generado, y un aviso sobre "6ea93142663d.pdf" no dice
         #: de qué archivo se está hablando.
@@ -372,6 +421,10 @@ class PyMuPDFAssembler:
         names: dict[str, str] = {}
         unwritable: dict[int, str] = {}
         budget = name_budget(destination)
+        if self._entregado_en:
+            # El destino espejo es más hondo que la carpeta de trabajo: el
+            # nombre se recorta para caber en el más largo de los dos.
+            budget = min(budget, presupuesto_en(self._entregado_en))
         #: Los nombres ya escritos en esta entrega, sin distinguir mayúsculas:
         #: Windows no las distingue.
         usados: set[str] = set()
@@ -393,18 +446,23 @@ class PyMuPDFAssembler:
                 # el siguiente aún no existe, así que aquí no se deja nada a
                 # medio escribir.
                 self._control.check()
-                name = output_filename(
-                    group.code,
-                    group.title,
-                    budget=budget,
-                    prefix=self._prefix,
-                    con_titulo=self._con_titulo,
-                    mayusculas=self._mayusculas,
-                    kind=group.kind,
-                    sin_radicado=self._sin_radicado,
-                    radicado_en=self._radicado_en,
-                    literal=group.nombre_literal,
-                    con_su_re=group.re_en_el_nombre,
+                asunto = self._asunto_de(group) if self._asunto_de is not None else None
+                name = (
+                    nombre_por_su_asunto(index, asunto, budget)
+                    if asunto
+                    else output_filename(
+                        group.code,
+                        group.title,
+                        budget=budget,
+                        prefix=self._prefix,
+                        con_titulo=self._con_titulo,
+                        mayusculas=self._mayusculas,
+                        kind=group.kind,
+                        sin_radicado=self._sin_radicado,
+                        radicado_en=self._radicado_en,
+                        literal=group.nombre_literal,
+                        con_su_re=group.re_en_el_nombre,
+                    )
                 )
                 # Dos unidades distintas nunca comparten archivo. El nombre se
                 # recorta para caber en la ruta, y dos graduados leídos con el

@@ -95,10 +95,12 @@ NOMBRES: tuple[tuple[DocumentType, str], ...] = (
     # manuscritos de 1924-1946, «EXAMENES PREPARATORIOS DE GRADO 1924-46»: su
     # capa de texto es basura, nadie los reconocía, e iban por resoluciones
     # (el libro entero en un «RESOLUCION_023», caja 00C003362, 2026-11-04).
+    # Y los tomos de Odontología «ACTAS DECADA. 1980-1984 TOMO I» (cajas
+    # 3194-3198, 2026-11-27): la carpeta los llama actas de grado sin decirlo.
     (
         DocumentType.ACTA,
         r"ACTAS? DE GRADO|(?<!NO )GRADUADOS|ACTAS? DE (?:PRE|POS)T?GRADO"
-        r"|EXAMEN(?:ES)? (?:PREPARATORIOS? |FINAL(?:ES)? )?DE GRADO",
+        r"|EXAMEN(?:ES)? (?:PREPARATORIOS? |FINAL(?:ES)? )?DE GRADO|\bACTAS? DECADA\b",
     ),
     (DocumentType.ACTA_CONSEJO, r"SESION|CONSEJO DE FACULTAD|ACTAS? DE CONSEJO"),
     (DocumentType.DIPLOMA, r"DIPLOMA"),
@@ -238,3 +240,96 @@ def reconocer(
     return Reconocimiento(
         tipo=DocumentType.DESCONOCIDO, por="", motivo="ningún patrón lo reconoce", nucleo=cuenta
     )
+
+
+# -- un PDF entero ---------------------------------------------------------------
+#
+# El operador, 2026-11-27, sobre «8. ACTA 9 FACULTAD DE ODONTOLOGIA CALIFICACIONES
+# 3194 - 3198» (libros de calificaciones, de actas de grado y de resoluciones en
+# la misma carpeta): «que el bot sepa con mucha, pero mucha precisión qué
+# habilidad tomar automáticamente en el medio del proceso». La muestra de
+# veinticuatro hojas basta para reconocer; para **contradecir** al operador se
+# mira el PDF entero, gratis, sobre su capa de texto: una hoja suelta de otro
+# tipo -- un anexo, una cita -- no cambia lo que es el libro.
+
+#: Lo del núcleo de las actas de grado que también escriben otros papeles: la
+#: resolución que autoriza una ceremonia nombra a sus «graduandos» y manda
+#: expedir sus «actas de grado». En «RESOLUCIONES DECANATURA 2003-2010 TOMO 2»
+#: son 18 hojas de 115, y ninguna abre un acta (2026-11-27). Para medir cuánto
+#: de un PDF es de actas de grado, esas dos sólo cuentan en la hoja que abre un
+#: acta (``acta_grado.apertura``).
+_CITAS_DEL_GRADO = frozenset({r"ACTAS? DE GRADO", r"GRADUANDOS?"})
+_GRADO_FUERTE = tuple(
+    re.compile(patron) for patron in NUCLEOS[DocumentType.ACTA] if patron not in _CITAS_DEL_GRADO
+)
+
+#: Cuántas veces más hojas que lo declarado necesita otro tipo para contradecirlo.
+#: Una pieza de otro tipo dentro de un libro -- el acta de soporte de una
+#: resolución, la constancia suelta de un libro de actas -- no llega: en
+#: «RESOLUCIONES DE RECTORIA 03272-03275» (2026-10-29) son 48 hojas de actas de
+#: consejo contra 50 de resoluciones, sobre el PDF entero (2026-11-27).
+VECES_PARA_CONTRADECIR = 3
+
+#: Con cuántos caracteres una hoja trae capa de texto (el mismo umbral con que
+#: el orquestador decide pasarla por Tesseract, ``MIN_SAMPLE_CHARS``).
+CARACTERES_DE_CAPA = 80
+#: Qué parte de las hojas tiene que traer capa para que su silencio sea del
+#: papel -- un manuscrito que el escáner leyó como basura -- y no de un escaneo
+#: sin capa, que sí se lee con Tesseract.
+PARTE_CON_CAPA = 0.5
+
+
+def hojas_de_cada_tipo(paginas: Sequence[str]) -> Counter[DocumentType]:
+    """En cuántas hojas de un PDF entero hay evidencia fuerte de cada tipo.
+
+    Es el núcleo de cada hoja (``tipos_de_la_pagina``), salvo en las actas de
+    grado: la hoja cuenta como suya si abre un acta o trae lo que sólo un acta
+    dice -- la ceremonia, el juramento, «otorga el título de» --, no si sólo
+    cita las actas o a los graduandos.
+    """
+    from .acta_grado import apertura
+
+    cuenta: Counter[DocumentType] = Counter()
+    for numero, texto in enumerate(paginas, start=1):
+        texto = texto or ""
+        tipos = tipos_de_la_pagina(texto)
+        if DocumentType.ACTA in tipos:
+            plano = _plano(texto)
+            if not (any(patron.search(plano) for patron in _GRADO_FUERTE) or apertura(texto, numero)):
+                tipos.discard(DocumentType.ACTA)
+        cuenta.update(tipos)
+    return cuenta
+
+
+def lo_que_lo_arrolla(hojas: Counter[DocumentType], declarado: DocumentType | None) -> DocumentType | None:
+    """El tipo que arrolla a lo declarado en un PDF entero, o ``None`` si ninguno.
+
+    Lo declarado manda salvo que otro tipo tenga el triple de sus hojas y dos
+    por lo menos. Sin una sola hoja de lo declarado bastan las dos: un tomo de
+    resoluciones declarado como actas de grado no trae ninguna hoja que abra un
+    acta (las que citan a los graduandos no cuentan, ``hojas_de_cada_tipo``).
+    """
+    propio = hojas[declarado] if declarado is not None else 0
+    rivales = [
+        (veces, str(tipo), tipo)
+        for tipo, veces in hojas.items()
+        if tipo is not declarado
+        and veces >= PAGINAS_PARA_VETAR
+        and veces >= VECES_PARA_CONTRADECIR * propio
+    ]
+    return max(rivales)[2] if rivales else None
+
+
+def capa_que_no_dice_nada(paginas: Sequence[str], hojas: Counter[DocumentType]) -> bool:
+    """Si el PDF trae capa de texto y en ella ningún tipo tiene evidencia: la basura de un manuscrito.
+
+    Los libros de actas de grado manuscritos de Odontología (1952-1959 y
+    1960-1965, 2026-11-27) y los exámenes de la caja 3362 tienen capa en casi
+    todas las hojas, y ninguna dice nada: el escáner leyó la cursiva como
+    «cmmjG mmcTWO tt tá ubh». Un escaneo sin capa no es esto: ése se lee con
+    Tesseract.
+    """
+    if not paginas:
+        return False
+    con_capa = sum(1 for texto in paginas if len((texto or "").strip()) >= CARACTERES_DE_CAPA)
+    return con_capa >= PARTE_CON_CAPA * len(paginas) and max(hojas.values(), default=0) < PAGINAS_PARA_VETAR

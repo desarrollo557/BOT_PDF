@@ -43,6 +43,7 @@ HABILIDADES = (
     "Actas de grado",
     "Actas de consejo",
     "Historias académicas",
+    "Calificaciones",
     "Nóminas",
     "Certificados de tiempo de servicio",
     "Legajo de resoluciones",
@@ -69,6 +70,7 @@ class TestElRegistro:
             ("acta-consejo", "actas-de-consejo"),
             ("ACTA DE CONSEJO", "actas-de-consejo"),
             ("historia-academica", "historias"),
+            ("calificaciones", "calificaciones"),
             ("nomina", "nominas"),
             ("certificado-tiempo", "certificados"),
             ("resolucion", "resoluciones"),
@@ -91,8 +93,51 @@ class TestElRegistro:
             "diplomas",
             "actas-de-grado",
             "historias",
+            "calificaciones",
             "matriculas",
         }
+
+    def test_un_libro_de_calificaciones_se_revisa_con_el_suyo(self):
+        """2026-11-27: lo parte la habilidad de las historias, y su informe dice «Calificaciones»."""
+        hecho = SimpleNamespace(report={"habilidad": "Calificaciones", "tipo": "historia-academica"}, tipo="auto", task="both")
+        assert habilidad_del_proceso(hecho) == "Calificaciones"
+        assert perfil_de(habilidad_del_proceso(hecho)).clave == "calificaciones"
+        # Declarado y cancelado antes de informar: la habilidad que se pidió.
+        cancelado = SimpleNamespace(report=None, tipo="calificaciones", task="both")
+        assert habilidad_del_proceso(cancelado) == "Calificaciones"
+        # Las historias de siempre siguen siendo historias.
+        historias = SimpleNamespace(report={"tipo": "historia-academica"}, tipo="auto", task="both")
+        assert habilidad_del_proceso(historias) == "Historias académicas"
+
+    def test_los_datos_de_un_alumno_de_un_libro_de_calificaciones(self):
+        """Nombre, código y años; la cédula si su hoja la trae (la constancia de 1995 no)."""
+        from resolutions.application.fuid import FuidRow
+        from resolutions.application.perfiles_de_revision import DE_UNAS_CALIFICACIONES
+        from resolutions.domain.datos_esperados import IDENTIFICACION
+
+        datos = DE_UNAS_CALIFICACIONES
+        fila = {"tipo": "CALIFICACIONES", "nombre": "ALVAREZ ZAPATA LIZETH MARIA", "codigo": "9010072",
+                "anio_inicial": 1990, "anio_final": 1995}
+        alumno = datos.de_la_fila(fila)
+        assert (alumno.nombre, alumno.codigo, alumno.identificacion) == ("ALVAREZ ZAPATA LIZETH MARIA", "9010072", None)
+        assert not [h for h in datos.revisar(alumno) if h.campo == IDENTIFICACION]
+        # La fila de la lista y la de una historia no son de un alumno de este libro.
+        assert datos.de_la_fila({"tipo": "LISTA DE ALUMNOS", "nombre": "LISTA DE ALUMNOS X SEMESTRE"}) is None
+        assert datos.de_la_fila({"tipo": "HISTORIA ACADEMICA", "nombre": "X"}) is None
+
+        # En el FUID, con el estándar de la Universidad: D el código, E la cédula.
+        del_fuid = datos.del_fuid(
+            FuidRow(orden=2, asunto="ALCALA REVOLLEDO LUIS ALBERTO - ODONTOLOGIA", consecutivo_inicial="529010027",
+                    consecutivo_final="73141230", fecha_inicial="01/01/1990", fecha_final="31/12/1998")
+        )
+        assert (del_fuid.nombre, del_fuid.codigo, del_fuid.identificacion) == (
+            "ALCALA REVOLLEDO LUIS ALBERTO", "529010027", "73141230"
+        )
+        assert (del_fuid.anio_inicial, del_fuid.anio_final) == (1990, 1998)
+        assert datos.del_fuid(FuidRow(orden=1, asunto="LISTA DE ALUMNOS X SEMESTRE DE ODONTOLOGIA - 2 PERIODO 1995")) is None
+        assert datos.sin_datos("CALIFICACIONES/1995/01_LISTA DE ALUMNOS X SEMESTRE DE ODONTOLOGIA - 2 PERIODO 1995.pdf")
+        assert datos.sin_datos("1996/01_PROMOCION 20-12-1996.pdf")
+        assert not datos.sin_datos("1995/02_ALVAREZ ZAPATA LIZETH MARIA - ODONTOLOGIA.pdf")
 
     def test_cada_perfil_trae_sus_reglas_para_la_ia(self):
         assert all(p.reglas for p in PERFILES)

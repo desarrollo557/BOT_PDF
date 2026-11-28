@@ -63,6 +63,13 @@ class TipoPedido(StrEnum):
     #: entregaba 9 PDF donde había 60 estudiantes.
     HISTORIA = "historia-academica"
 
+    #: Libros de calificaciones de una promoción: la lista de sus alumnos y dos
+    #: hojas por alumno -- la constancia de calificaciones y su continuación, o
+    #: el record académico y sus asignaturas --. Los parte la habilidad de las
+    #: historias, un PDF por alumno y la lista con su fila. Lo pidió el operador
+    #: el 2026-11-27 para «8. ACTA 9 FACULTAD DE ODONTOLOGIA CALIFICACIONES».
+    CALIFICACIONES = "calificaciones"
+
     #: Libros de nómina de la Universidad: tarjetas de la Oficina de Personal,
     #: hojas de anotaciones a mano, relaciones de empleados y comprobantes de
     #: pago. Un PDF por persona o por paquete y su fila en el FUID FO-GD-008.
@@ -115,6 +122,7 @@ _LABELS = {
     TipoPedido.ACTA_CONSEJO: "Actas de consejo",
     TipoPedido.RESOLUCION: "Legajo de resoluciones",
     TipoPedido.HISTORIA: "Historias académicas",
+    TipoPedido.CALIFICACIONES: "Calificaciones",
     TipoPedido.NOMINA: "Nóminas",
     TipoPedido.CERTIFICADO_TIEMPO: "Certificados de tiempo de servicio",
 }

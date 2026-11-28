@@ -331,8 +331,10 @@ class TestLaFilaDelFuid:
         fila = filas_de_resoluciones(
             [grupo], nombre_del_archivo="3220\\UPD3859348\\1 RESOLUCIONES 00001 A 00011.pdf"
         )[0]
+        # Sin RESUELVE legible, el título con la forma del estándar único de la
+        # UdeC: «RESOLUCION NNN - …» (2026-11-27).
         assert fila.asunto == (
-            "RESOLUCION 00002 POR MEDIO DE LA CUAL SE FIJA CRONOGRAMA DE CEREMONIA DE GRADO PARA CARTAGENA"
+            "RESOLUCION 00002 - POR MEDIO DE LA CUAL SE FIJA CRONOGRAMA DE CEREMONIA DE GRADO PARA CARTAGENA"
         )
         assert (fila.consecutivo_inicial, fila.consecutivo_final) == ("00002", "00002")
         assert (fila.fecha_inicial, fila.fecha_final) == ("16-01-2025", "16-01-2025")
@@ -460,7 +462,7 @@ class TestLasResolucionesInternas:
             nombre_del_archivo="x.pdf",
             texto_de=lambda _numero: "RESOLUCIÓN No. 010\nCierre proceso disciplinario",
         )
-        assert filas[0].asunto == "RESOLUCION 010 CIERRE PROCESO DISCIPLINARIO"
+        assert filas[0].asunto == "RESOLUCION 010 - CIERRE PROCESO DISCIPLINARIO"
 
 
 INTERNA_026_SIN_ANIO = "UNIVERSIDAD DE CARTAGENA\nRESOLUCIÓN No. 026\nPor la cual se aprueba el plan de estudios del programa"

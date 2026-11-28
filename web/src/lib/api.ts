@@ -649,7 +649,7 @@ export async function documentFuidStatus(jobId: string): Promise<FuidStatus> {
  * depending on a new endpoint. A service older than this is not broken, it is
  * stale, and saying which is the difference between a restart and a bug hunt.
  */
-export const REQUIRED_API_REVISION = 27;
+export const REQUIRED_API_REVISION = 28;
 
 export interface Health {
   status: string;

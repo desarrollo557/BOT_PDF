@@ -9,6 +9,7 @@ para elegir la habilidad, no el trabajo.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections import Counter
 from collections.abc import Iterator
@@ -42,7 +43,10 @@ MAXIMO_DE_LA_CARPETA = 400
 #: por matrículas --: la sugerencia las dice con su nombre, que es el de la
 #: habilidad que las parte (2026-11-03).
 HISTORIA_ACADEMICA = "historia-academica"
-_ETIQUETAS = {HISTORIA_ACADEMICA: "Historias académicas"}
+#: Ni los libros de calificaciones, que parte la misma habilidad con su lista y
+#: un PDF por alumno (2026-11-27).
+CALIFICACIONES = "calificaciones"
+_ETIQUETAS = {HISTORIA_ACADEMICA: "Historias académicas", CALIFICACIONES: "Calificaciones"}
 #: Cuántas páginas se leen para saber si un PDF es de historias: sobra para
 #: ver sus fichas y sus notas, y un libro de 300 no deja esperando la pantalla.
 PAGINAS_PARA_LA_FAMILIA = 60
@@ -54,13 +58,23 @@ def _etiqueta(tipo: str) -> str:
 
 def _sugerencia(ruta: Path, nombre: str) -> dict[str, object]:
     from ...adapters.pymupdf_source import PyMuPDFPageSource
+    from ...domain.calificaciones import es_libro_de_calificaciones
     from ...domain.historia_medicina import familia_de_historias
 
     source = PyMuPDFPageSource(ruta, nombre)
     try:
         paginas = source.page_count
         textos = [source.text_of(numero) or "" for numero in range(1, min(paginas, PAGINAS_PARA_LA_FAMILIA) + 1)]
-        # Lo mismo que hará «Detectar automáticamente» al procesarlo.
+        # Lo mismo que hará «Detectar automáticamente» al procesarlo: primero
+        # un libro de calificaciones, después la familia de las historias.
+        if es_libro_de_calificaciones(textos, nombre):
+            return {
+                "tipo": CALIFICACIONES,
+                "etiqueta": _etiqueta(CALIFICACIONES),
+                "por": "contenido",
+                "motivo": "trae la lista de su promoción y la constancia o el record de cada alumno",
+                "paginas": paginas,
+            }
         if familia := familia_de_historias(textos, nombre):
             return {
                 "tipo": HISTORIA_ACADEMICA,
@@ -226,18 +240,20 @@ def _muy_grande(relativa: str, tamano: int) -> dict[str, object]:
     y la sugerencia salía vacía (2026-11-03). Su nombre -- «HISTORIAS
     ACADEMICAS 1948-1960», «INTERNADOS ROTATORIO» -- sí lo dice; el tipo
     verdadero lo comprueba la corrida al procesarlo.
-    """
-    from ...domain.historia_academica import plano
-    from ...domain.historia_medicina import NOMBRE_DE_HISTORIAS
-    from ...domain.patrones import pista_del_nombre
 
+    Manda el nombre más hondo: el del archivo y, si no dice nada, el de su
+    carpeta, y así hacia arriba (2026-11-27). En «8. ACTA 9 FACULTAD DE
+    ODONTOLOGIA CALIFICACIONES 3194 - 3198» todos los PDF cuelgan de una
+    carpeta que dice «CALIFICACIONES», y los tomos «07-115 TOMO 1» son de
+    «RESOLUCIONES DECANATURA»; la «PROMOCION 2003», en la carpeta de las
+    resoluciones, es un libro de calificaciones.
+    """
     pesa = f"pesa {tamano // (1024 * 1024)} MB"
-    if NOMBRE_DE_HISTORIAS.search(plano(relativa)):
-        tipo, etiqueta = HISTORIA_ACADEMICA, _etiqueta(HISTORIA_ACADEMICA)
-    elif pista := pista_del_nombre(relativa):
-        tipo, etiqueta = str(pista), pista.label
-    else:
+    partes = [parte for parte in relativa.replace("\\", "/").split("/") if parte]
+    dicho = next((tipo for parte in reversed(partes) if (tipo := _lo_que_dice_el_nombre(parte))), None)
+    if dicho is None:
         return {**_sin_abrir(relativa, Exception()), "motivo": f"no se bajó para sugerir el tipo: {pesa}"}
+    tipo, etiqueta = dicho
     return {
         "ruta": relativa,
         "tipo": tipo,
@@ -246,6 +262,31 @@ def _muy_grande(relativa: str, tamano: int) -> dict[str, object]:
         "motivo": f"no se bajó para sugerir el tipo ({pesa}); lo dice su nombre",
         "paginas": 0,
     }
+
+
+#: Lo que dice el nombre de un libro de calificaciones. «CALIFICACIONES» antes
+#: que todo; «PROMOCION» después de las historias y de los demás tipos, porque
+#: una ceremonia de grado también tiene su promoción.
+_DE_CALIFICACIONES = re.compile(r"\bCALIFICACIONES\b")
+_DE_UNA_PROMOCION = re.compile(r"\bPROMOCION\b")
+
+
+def _lo_que_dice_el_nombre(nombre: str) -> tuple[str, str] | None:
+    """El tipo y su etiqueta que dice un nombre de archivo o de carpeta, si dice alguno."""
+    from ...domain.historia_academica import plano
+    from ...domain.historia_medicina import NOMBRE_DE_HISTORIAS
+    from ...domain.patrones import pista_del_nombre
+
+    p = plano(nombre)
+    if _DE_CALIFICACIONES.search(p):
+        return CALIFICACIONES, _etiqueta(CALIFICACIONES)
+    if NOMBRE_DE_HISTORIAS.search(p):
+        return HISTORIA_ACADEMICA, _etiqueta(HISTORIA_ACADEMICA)
+    if pista := pista_del_nombre(nombre):
+        return str(pista), pista.label
+    if _DE_UNA_PROMOCION.search(p):
+        return CALIFICACIONES, _etiqueta(CALIFICACIONES)
+    return None
 
 
 def _resumen(

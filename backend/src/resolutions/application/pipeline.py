@@ -4,22 +4,40 @@ import logging
 import re
 from collections import Counter
 from dataclasses import dataclass, field, replace
+from datetime import date
 
 from ..domain.anchor import normalized_lines
 from ..domain.doctype import DocumentType, TypeVerdict, classify_pages
 from ..domain.extraction import (
     RENGLONES_DE_LA_CABECERA,
+    RENGLONES_DE_LA_HOJA,
     RawCandidate,
+    abre_sin_numero,
+    encabezado_sin_numero,
     extract_candidates,
+    hoja_de,
     siguiente_en_la_cabecera,
 )
+from ..domain.fechas import fecha_de_expedicion
 from ..domain.legibility import garble_score, is_garbled
 from ..domain.page import PageClassification, Provenance
-from ..domain.plantilla_de_pagina import Evidencia, Plantilla, plantilla_de
+from ..domain.plantilla_de_pagina import (
+    CARACTERES_LEGIBLES,
+    Evidencia,
+    Plantilla,
+    plantilla_de,
+)
 from ..domain.resolution_code import ResolutionCode
 from ..domain.scoring import Selection, opens_a_resolution, select_best
-from ..domain.serie_del_legajo import copias_fuera_de_la_serie
+from ..domain.serie_del_legajo import (
+    PREVIAS,
+    anio_de_su_papel,
+    anios_del_legajo,
+    copias_fuera_de_la_serie,
+    numeros_por_la_serie,
+)
 from ..domain.title import extract_title
+from ..domain.titulo_impreso import titulo_impreso
 from .control import Cancelled, NullRunControl, RunControl, hilos, mapear
 from .diagnostico import explicar
 from .ports import HEADER_BAND, Band, Crop, OcrEngine, PageSource, VisionOracle
@@ -29,6 +47,15 @@ from .progress import NullProgressReporter, ProgressEvent, ProgressReporter, Sta
 _DE_RECTORIA = re.compile(r"^\d{5,6}$")
 #: El de una de facultad con su año, en la forma única de ``extraction``: «026-2014».
 _CON_SU_ANIO = re.compile(r"^(\d{3})-(\d{4})$")
+#: El de una de facultad sin su año: «016».
+_SIN_SU_ANIO = re.compile(r"^\d{3}$")
+#: Lo que puede ser el número de una resolución leído en la banda.
+_FORMA_DE_UN_NUMERO = re.compile(r"^(?:\d{3}(?:-\d{4})?|\d{5,6})$")
+#: El consecutivo de una de facultad, con su año o sin él.
+_CONSECUTIVO = re.compile(r"^(\d{3})(?:-\d{4})?$")
+#: Los puntos de la plantilla de rectoría cuando debajo del encabezado firma el
+#: rector (``plantilla_de``): sólo con él es la respuesta de rectoría.
+_CON_EL_RECTOR = 3
 
 
 def _legajo_de_facultad(analyses: list[PageAnalysis]) -> bool:
@@ -52,13 +79,18 @@ def _un_numero_por_resolucion(classifications: list[PageClassification]) -> list
     Unas hojas repiten el número con su año y otras sin él (caja 00C003303,
     2014: «026» en una página y «026-2014» en la siguiente), y la resolución se
     partía en dos archivos. El número sin año toma el del gemelo, si hay uno solo.
+
+    Sólo en un legajo de un solo año (2026-11-27): en un tomo de varios, donde
+    la numeración vuelve a empezar cada año, la «017» de 2009 no es la
+    «017-2002». Ahí el año de cada una lo pone ``_con_su_anio``.
     """
     anios: dict[str, set[str]] = {}
     for clasificacion in classifications:
         if clasificacion.code is not None and (hallado := _CON_SU_ANIO.match(clasificacion.code.value)):
             anios.setdefault(hallado.group(1), set()).add(clasificacion.code.value)
+    del_legajo = {codigo[-4:] for con_anio in anios.values() for codigo in con_anio}
     gemelos = {numero: next(iter(con_anio)) for numero, con_anio in anios.items() if len(con_anio) == 1}
-    if not gemelos:
+    if not gemelos or len(del_legajo) > 1:
         return classifications
     return [
         replace(clasificacion, code=ResolutionCode(value=gemelos[clasificacion.code.value], raw=clasificacion.code.raw))
@@ -66,6 +98,62 @@ def _un_numero_por_resolucion(classifications: list[PageClassification]) -> list
         else clasificacion
         for clasificacion in classifications
     ]
+
+def _corridas(
+    classifications: list[PageClassification], cortes: frozenset[int] = frozenset()
+) -> list[tuple[ResolutionCode, list[int]]]:
+    """Cada resolución como la deja la lectura: su código y los índices de sus páginas, en orden.
+
+    Una corrida empieza en la página que declara un código distinto del
+    abierto y sigue por las que no traen ninguno o repiten el mismo, como las
+    hereda el agrupador. Las páginas de antes del primer código no son de
+    ninguna. ``cortes`` son índices que empiezan corrida aunque repitan el
+    código abierto (``_abre_otra_vez``).
+    """
+    corridas: list[tuple[ResolutionCode, list[int]]] = []
+    abierto: ResolutionCode | None = None
+    for indice, clasificacion in enumerate(classifications):
+        if clasificacion.code is not None and (clasificacion.code != abierto or indice in cortes):
+            abierto = clasificacion.code
+            corridas.append((abierto, [indice]))
+        elif abierto is not None:
+            corridas[-1][1].append(indice)
+    return corridas
+
+
+def _abre_otra_vez(classifications: list[PageClassification], analyses: list[PageAnalysis]) -> frozenset[int]:
+    """Las páginas que abren de nuevo, con su encabezado y su emisor, el número de la resolución abierta.
+
+    Una resolución tiene una sola primera hoja. Otra con el mismo número justo
+    detrás es otra resolución que la capa leyó con ese número: la 043 de 1998
+    lleva el 3 escrito encima del 2 de «042», y la capa dice 042 (07-115 TOMO 1,
+    pág. 68; 2026-11-27). Se marca aquí y ``numeros_por_la_serie`` decide si
+    la serie le da otro; si no, sigue junta: ante la duda se une.
+    """
+    del_analisis = {a.page_number: a for a in analyses}
+    cortes: set[int] = set()
+    abierto: ResolutionCode | None = None
+    for indice, clasificacion in enumerate(classifications):
+        if clasificacion.code is None:
+            continue
+        analisis = del_analisis.get(clasificacion.page_number)
+        # Primera hoja entera: el encabezado, quien la expide y su asunto
+        # («Por la cual…»), que una hoja siguiente nunca repite.
+        if (
+            clasificacion.code == abierto
+            and analisis is not None
+            and analisis.plantilla is not None
+            and analisis.plantilla.plantilla is Plantilla.RESOLUCION_DE_FACULTAD
+            and _ASUNTO_DE_UNA_PRIMERA_HOJA.match(analisis.title or "")
+        ):
+            cortes.add(indice)
+        abierto = clasificacion.code
+    return frozenset(cortes)
+
+
+#: El asunto con que empieza la primera hoja de una resolución.
+_ASUNTO_DE_UNA_PRIMERA_HOJA = re.compile(r"^\W*(?:POR|MEDIANTE)\b", re.IGNORECASE)
+
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +225,12 @@ class PageAnalysis:
     #: componente la atiende: una resolución de facultad o un oficio detrás de
     #: una resolución abierta son su soporte y no abren nada.
     plantilla: Evidencia | None = None
+    #: El número de su encabezado se leyó con OCR en la banda, porque la capa
+    #: de texto traía «Resolución No.» en blanco.
+    por_la_banda: bool = False
+    #: Abre una resolución -- encabezado y, debajo, su asunto o quien la
+    #: expide -- y su número no se dejó leer ni en la capa ni en la banda.
+    sin_numero: bool = False
 
     def is_degraded(self, config: PipelineConfig) -> bool:
         """Whether "no code found" might mean "we could not read the page".
@@ -191,6 +285,22 @@ class PipelineStats:
     #: Páginas que abrieron la resolución siguiente de la serie por su número,
     #: con la palabra «resolución» destrozada por el OCR.
     por_secuencia: list[int] = field(default_factory=list)
+    #: Páginas con «Resolución No.» y el número en blanco en la capa de texto,
+    #: cuyo número se leyó con OCR en la banda del encabezado (2026-11-27).
+    por_la_banda: list[int] = field(default_factory=list)
+    #: Primera página de cada resolución de facultad cuyo año no lo dice su
+    #: papel y se sacó de la serie, y de las que no se pudo saber ni así.
+    anio_por_la_serie: list[int] = field(default_factory=list)
+    sin_anio: list[int] = field(default_factory=list)
+    #: Página -> el número que se leyó en la banda y el que dice la serie,
+    #: cuando el leído era el de otra resolución del mismo año.
+    numero_por_la_serie: dict[int, str] = field(default_factory=dict)
+    #: Las hojas antes de la primera resolución, y qué se hizo con ellas.
+    previas: dict[int, str] = field(default_factory=dict)
+    #: Páginas que abren una resolución sin número legible, y el que les dio
+    #: la serie si el hueco lo decía (``_los_sin_numero``); si no, van con la
+    #: anterior, ante la duda se une.
+    sin_numero: dict[int, str] = field(default_factory=dict)
 
     @property
     def mis_decoded(self) -> int:
@@ -224,6 +334,12 @@ class PipelineStats:
             "plantillas": dict(self.plantillas),
             "soportes": {str(page): cual for page, cual in sorted(self.soportes.items())},
             "por_secuencia": sorted(self.por_secuencia),
+            "por_la_banda": sorted(self.por_la_banda),
+            "anio_por_la_serie": sorted(self.anio_por_la_serie),
+            "sin_anio": sorted(self.sin_anio),
+            "numero_por_la_serie": {str(page): que for page, que in sorted(self.numero_por_la_serie.items())},
+            "previas": {str(page): que for page, que in sorted(self.previas.items())},
+            "sin_numero": {str(page): que for page, que in sorted(self.sin_numero.items())},
         }
 
 
@@ -291,14 +407,21 @@ class PageAnalyzer:
         mal_decodificada = is_garbled(text)
         if len(text) >= config.min_text_layer_chars and not mal_decodificada:
             # Free rung. On digital PDFs this answers the whole document.
+            candidatos = extract_candidates(text, _geometry_of(source, page_number, text))
+            # Si la cabecera no dio número, puede que la capa lo traiga en blanco.
+            en_la_cabecera = any(c.line_index < RENGLONES_DE_LA_HOJA for c in candidatos)
+            de_la_banda = [] if en_la_cabecera else self._numero_en_blanco(source, page_number, text)
+            sin_numero = not en_la_cabecera and not de_la_banda and abre_sin_numero(text)
             return PageAnalysis(
                 page_number=page_number,
-                candidates=extract_candidates(text, _geometry_of(source, page_number, text)),
-                provenance=Provenance.TEXT_LAYER,
+                candidates=candidatos + de_la_banda,
+                provenance=Provenance.OCR_REGION if de_la_banda else Provenance.TEXT_LAYER,
                 text_length=len(text),
                 text=text[: config.sample_chars],
                 title=extract_title(text, titulo_encima=True),
                 plantilla=plantilla_de(text),
+                por_la_banda=bool(de_la_banda),
+                sin_numero=sin_numero,
             )
 
         if mal_decodificada:
@@ -338,6 +461,37 @@ class PageAnalyzer:
             mis_decoded=mal_decodificada,
             plantilla=plantilla_de(full.text),
         )
+
+    def _numero_en_blanco(self, source: PageSource, page_number: int, text: str) -> list[RawCandidate]:
+        """El número de un encabezado que la capa de texto trae en blanco, leído con OCR en su banda.
+
+        Los tomos de decanatura de 1999 imprimen «Resolución No. ____ de 1.9__»
+        y el número se escribió después a máquina: la capa no lo trae y la
+        resolución entera se archivaba dentro de la anterior (01-046 TOMO 3: 15
+        resoluciones de 46, 2026-11-27). Una lectura de OCR de la banda por
+        página así, y sólo por ésas: Tesseract primero. Si falla, la página
+        sigue como antes, sin número: una lectura que no se pudo hacer no tumba
+        la página.
+        """
+        if not encabezado_sin_numero(text):
+            return []
+        try:
+            band = self._ocr.read(source.render(page_number, self._config.header_band, self._config.ocr_dpi))
+        except Cancelled:
+            raise
+        except Exception:  # noqa: BLE001 - una lectura de más no tumba la página
+            logger.debug("no se pudo leer la banda de la página %s", page_number, exc_info=True)
+            return []
+        # La hoja la dice la capa aunque la banda no la recorte entera. Y sólo
+        # números con la forma de uno de verdad -- tres cifras, con su año o
+        # sin él, o las cinco de rectoría --: la banda de la pág. 39 del tomo
+        # 001-061 leyó «7770» y abría una resolución que no existe.
+        hoja = hoja_de(text)
+        return [
+            replace(candidato, hoja=candidato.hoja if candidato.hoja is not None else hoja)
+            for candidato in extract_candidates(band.text)
+            if _FORMA_DE_UN_NUMERO.match(candidato.code.value)
+        ]
 
 
 class ClassificationPipeline:
@@ -387,7 +541,186 @@ class ClassificationPipeline:
             )
         if unresolved:
             classifications = self._escalate(source, classifications, unresolved, stats)
-        return _un_numero_por_resolucion(self._copias_dentro(classifications, stats)), stats
+        classifications = self._copias_dentro(classifications, stats)
+        if _legajo_de_facultad(analyses):
+            # Un legajo de facultad (2026-11-27): la que abre sin número, con el
+            # de la serie si el hueco lo dice; cada resolución con el año de su
+            # papel, y las hojas de antes de la primera, con su dueño.
+            classifications = self._los_sin_numero(classifications, analyses, stats)
+            classifications = self._con_su_anio(classifications, analyses, source, stats)
+            classifications = self._las_previas(classifications, analyses, stats)
+        return _un_numero_por_resolucion(classifications), stats
+
+    @staticmethod
+    def _los_sin_numero(
+        classifications: list[PageClassification], analyses: list[PageAnalysis], stats: PipelineStats
+    ) -> list[PageClassification]:
+        """La resolución que abre sin número legible, con el de la serie cuando el hueco lo dice.
+
+        Su primera hoja trae el encabezado y quien la expide, pero el número va
+        a máquina sobre la raya y ni la capa ni el OCR de la banda lo leen: se
+        archivaba como soporte de la anterior (07-115 TOMO 1: la del Consejo de
+        la pág. 174 dentro de la 097, 2026-11-27). Si entre la resolución que la
+        trae y la siguiente faltan justo tantos números como hojas así hay, son
+        ésos, en orden: la 097, una sin número y la 099 dan la 098. Va a
+        Revisión. Si el hueco no cuadra, sigue con la anterior: ante la duda se
+        une, y queda anotada.
+        """
+        sin_numero = {a.page_number for a in analyses if a.sin_numero}
+        if not sin_numero:
+            return classifications
+        corridas = _corridas(classifications)
+        resultado = list(classifications)
+        for posicion, (codigo, indices) in enumerate(corridas):
+            sueltas = [i for i in indices[1:] if classifications[i].page_number in sin_numero]
+            if not sueltas:
+                continue
+            numero = _CONSECUTIVO.match(codigo.value)
+            siguiente = next(
+                (m for c, _ in corridas[posicion + 1 :] if (m := _CONSECUTIVO.match(c.value))), None
+            )
+            hueco = int(siguiente.group(1)) - int(numero.group(1)) - 1 if numero and siguiente else -1
+            if hueco != len(sueltas):
+                for i in sueltas:
+                    stats.sin_numero[classifications[i].page_number] = (
+                        f"abre una resolución sin número legible; va con la {codigo.value}"
+                    )
+                continue
+            for desplazamiento, i in enumerate(sueltas, start=1):
+                valor = f"{int(numero.group(1)) + desplazamiento:03d}"
+                resultado[i] = replace(
+                    resultado[i], code=ResolutionCode(value=valor, raw=""), ambiguous=True, title=None
+                )
+                stats.sin_numero[classifications[i].page_number] = f"sin número legible; la serie dice {valor}"
+                # Ya no es el soporte de la anterior: abre la suya.
+                stats.soportes.pop(classifications[i].page_number, None)
+        return resultado
+
+    @staticmethod
+    def _con_su_anio(
+        classifications: list[PageClassification],
+        analyses: list[PageAnalysis],
+        source: PageSource,
+        stats: PipelineStats,
+    ) -> list[PageClassification]:
+        """«016» pasa a «016-2008»: el número completo, con el año de la propia resolución.
+
+        En un tomo de varios años la numeración vuelve a empezar cada año, y el
+        agrupador junta por número: la 001 de 2003 se llevaba las hojas de la
+        001 de 2004 y de la de 2005 (TOMO 1 2003-2010: la 001 en las págs. 2-6,
+        153-157 y 199-200; 2026-11-27). Cada resolución -- la página que la
+        abre y las que la siguen sin abrir otra -- toma el año de su papel
+        (``anio_de_su_papel``) o, si no lo dice, el de la serie
+        (``anios_de_la_serie``), y se anota. Las que ya traían el año
+        («017-2002») y las de rectoría no cambian; la que no se puede fechar
+        ni así se queda con su número solo.
+        """
+        texto_leido = {a.page_number: a.text for a in analyses}
+
+        def texto_de(pagina: int) -> str:
+            leido = texto_leido.get(pagina, "")
+            try:
+                capa = source.text_of(pagina)
+            except Exception:  # noqa: BLE001 - el año es un dato más, no un requisito
+                return leido
+            return capa if len(capa.strip()) >= len(leido.strip()) else leido
+
+        otra_vez = _abre_otra_vez(classifications, analyses)
+        corridas = _corridas(classifications, otra_vez)
+        numeros: list[int | None] = []
+        anios: list[int | None] = []
+        fechas: list[date | None] = []
+        for codigo, indices in corridas:
+            fecha = None
+            if (con_anio := _CON_SU_ANIO.match(codigo.value)) is not None:
+                numeros.append(int(con_anio.group(1)))
+                anios.append(int(con_anio.group(2)))
+            elif _SIN_SU_ANIO.match(codigo.value):
+                textos = [texto_de(classifications[i].page_number) for i in indices]
+                fecha = fecha_de_expedicion(textos, numero=codigo.value)
+                numeros.append(int(codigo.value))
+                anios.append(fecha.year if fecha else anio_de_su_papel(textos, numero=codigo.value))
+            else:
+                numeros.append(None)
+                anios.append(None)
+            fechas.append(fecha)
+        completos = anios_del_legajo(numeros, anios, fechas)
+        # El número leído con OCR en la banda, si choca con otra del mismo año,
+        # es el siguiente al de la anterior (``numeros_por_la_serie``).
+        de_la_banda = {a.page_number for a in analyses if a.por_la_banda}
+        renumerados = numeros_por_la_serie(
+            numeros,
+            [anio for anio, _ in completos],
+            [
+                (classifications[indices[0]].page_number in de_la_banda or indices[0] in otra_vez)
+                and bool(_SIN_SU_ANIO.match(codigo.value))
+                for codigo, indices in corridas
+            ],
+        )
+
+        resultado = list(classifications)
+        for (codigo, indices), (anio, por_la_serie), (numero, renumerado) in zip(
+            corridas, completos, renumerados, strict=True
+        ):
+            if not _SIN_SU_ANIO.match(codigo.value):
+                continue
+            primera = classifications[indices[0]].page_number
+            if anio is None:
+                stats.sin_anio.append(primera)
+                continue
+            if por_la_serie:
+                stats.anio_por_la_serie.append(primera)
+            completo = ResolutionCode(value=f"{numero or int(codigo.value):03d}-{anio}", raw=codigo.raw)
+            for indice in indices:
+                if resultado[indice].code == codigo:
+                    resultado[indice] = replace(
+                        resultado[indice],
+                        code=completo,
+                        # El número de la serie no es el que se leyó: a Revisión.
+                        ambiguous=resultado[indice].ambiguous or (renumerado and indice == indices[0]),
+                    )
+            if renumerado:
+                stats.numero_por_la_serie[primera] = f"se leyó {codigo.value} y la serie dice {numero:03d}"
+        return resultado
+
+    @staticmethod
+    def _las_previas(
+        classifications: list[PageClassification], analyses: list[PageAnalysis], stats: PipelineStats
+    ) -> list[PageClassification]:
+        """Las hojas antes de la primera resolución, en su PDF y con su fila, nunca en cuarentena.
+
+        La pág. 1 de «1992-2002- tomo 2» es una SOLICITUD DE EXAMEN que viene
+        antes de la resolución 062 (la de la 061, que quedó en el tomo
+        anterior), y se iba a «_quarantine.pdf» sin fila (2026-11-27). Con
+        algo legible, van juntas en su propio documento, con el título que
+        imprimen (``titulo_impreso``) para nombrarlo: el código
+        «PREVIAS-<página>». Si todas están en blanco -- la hoja de guarda de un
+        tomo --, van con la primera resolución: no traen nada que no sea suyo.
+        La regla de no adivinar sigue: ninguna hoja con texto entra en una
+        resolución que no la nombra.
+        """
+        primera = next((i for i, c in enumerate(classifications) if c.code is not None), None)
+        if not primera:
+            return classifications
+        texto = {a.page_number: a.text for a in analyses}
+        previas = classifications[:primera]
+        legibles = [c for c in previas if len(texto.get(c.page_number, "").strip()) >= CARACTERES_LEGIBLES]
+        resultado = list(classifications)
+        if not legibles:
+            codigo = classifications[primera].code
+            for indice, clasificacion in enumerate(previas):
+                resultado[indice] = replace(clasificacion, code=codigo, title=None, ambiguous=False)
+                stats.previas[clasificacion.page_number] = "en blanco: va con la primera resolución"
+            return resultado
+        titulo = next((t for c in legibles if (t := titulo_impreso(texto.get(c.page_number, "")))), None)
+        codigo = ResolutionCode(value=f"{PREVIAS}-{previas[0].page_number}", raw=titulo or "")
+        for indice, clasificacion in enumerate(previas):
+            # Sin número no hay nada en disputa: no van a Revisión por «códigos en conflicto».
+            resultado[indice] = replace(
+                clasificacion, code=codigo, title=titulo if indice == 0 else None, ambiguous=False
+            )
+            stats.previas[clasificacion.page_number] = f"su propio documento: {titulo or 'sin título impreso'}"
+        return resultado
 
     @staticmethod
     def _copias_dentro(
@@ -519,6 +852,8 @@ class ClassificationPipeline:
             stats.by_provenance[str(analysis.provenance)] += 1
             if analysis.plantilla is not None:
                 stats.plantillas[str(analysis.plantilla.plantilla)] += 1
+            if analysis.por_la_banda:
+                stats.por_la_banda.append(analysis.page_number)
             if previous is not None and self._es_soporte(
                 analysis, previous, soportes_del_abierto, de_facultad=de_facultad
             ):
@@ -674,6 +1009,20 @@ class ClassificationPipeline:
         que la trae: «00238» se llevaba 40 páginas de las internas de 2016.
         """
         numeros = {candidate.code.value for candidate in analysis.candidates}
+        if (
+            de_facultad
+            and analysis.plantilla is not None
+            and analysis.plantilla.plantilla is Plantilla.RESOLUCION_DE_RECTORIA
+            and analysis.plantilla.puntos >= _CON_EL_RECTOR
+            and abierta.value not in {c.code.value for c in analysis.candidates if opens_a_resolution(c)}
+        ):
+            # La respuesta del rector con su número de cuatro cifras -- la
+            # 3073 de 2009 que exonera la matrícula que pidió la 032 del
+            # decano -- también es soporte de la de facultad que la pidió
+            # (2026-11-27, 2003-2010 TOMO 2, pág. 61): abría su propio PDF.
+            # Aunque nombre a la abierta, que es justo lo que hace al
+            # responderle («mediante Resolución No.032»).
+            return True
         if abierta.value in numeros:
             return False
         if de_facultad and numeros and all(_DE_RECTORIA.match(numero) for numero in numeros):

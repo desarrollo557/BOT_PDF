@@ -683,6 +683,8 @@ def ubicar_encima_de(debajo: Sequence[str], dpi: int = 150) -> Callable:
 #: sola pasada: con tres zonas por ficha eran tres lecturas de la misma hoja.
 _LEIDAS: dict[tuple[int, int, int], list[tuple[str, float]]] = {}
 _LEIDAS_COMO_MUCHO = 400
+#: El tiempo límite de una pasada de Tesseract sobre una página entera.
+_SEGUNDOS_DE_TESSERACT = 60
 
 
 def _palabras_de(source, pagina: int, dpi: int) -> list[tuple[str, float]]:
@@ -696,8 +698,28 @@ def _palabras_de(source, pagina: int, dpi: int) -> list[tuple[str, float]]:
     if clave not in _LEIDAS:
         if len(_LEIDAS) >= _LEIDAS_COMO_MUCHO:
             _LEIDAS.clear()
+        from ..application import latido
+        from .tesseract_ocr import TURNOS
+
         with Image.open(BytesIO(source.render(pagina, dpi=dpi))) as imagen:
-            datos = pytesseract.image_to_data(imagen, lang="spa", output_type=pytesseract.Output.DICT, config="--psm 11")
+            # Con su tiempo límite y su turno, como toda lectura de Tesseract
+            # (2026-11-27): sin ellos una página que Tesseract no soltaba dejaba
+            # el trabajo esperando para siempre, y varias a la vez saturaban el
+            # equipo. Una página que no se lee a tiempo no ubica nada.
+            try:
+                with TURNOS.turno():
+                    datos = pytesseract.image_to_data(
+                        imagen,
+                        lang="spa",
+                        output_type=pytesseract.Output.DICT,
+                        config="--psm 11",
+                        timeout=_SEGUNDOS_DE_TESSERACT,
+                    )
+            except RuntimeError:
+                logger.warning("Tesseract no ubicó la página %s a tiempo (%s s)", pagina, _SEGUNDOS_DE_TESSERACT)
+                datos = {"text": [], "top": []}
+            finally:
+                latido.pulso()
             alto = imagen.height
         _LEIDAS[clave] = [
             (_plano(texto), arriba / alto)

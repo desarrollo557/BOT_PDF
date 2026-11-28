@@ -1026,6 +1026,12 @@ NOMBRE_DE_HISTORIAS = re.compile(
 #: tienen que ser fichas u hojas de notas.
 MINIMO_DE_FICHAS = 2
 PARTE_DE_FICHAS_Y_NOTAS = 0.3
+#: Cuántas veces más hojas con el núcleo de una resolución que fichas hacen de
+#: un PDF un tomo de resoluciones con fichas de soporte, y no unas historias.
+#: Los tomos de Decanatura de Odontología de 2003-2010 traen de 3 a 5 fichas y
+#: decenas de hojas de asignaturas entre 28 a 80 hojas de resoluciones: «001-029
+#: TOMO 2» llegaba al 32 % de fichas y notas (2026-11-27).
+VECES_LAS_RESOLUCIONES = 3
 
 
 def familia_de_historias(textos: Sequence[str], nombre: str = "") -> str | None:
@@ -1041,14 +1047,19 @@ def familia_de_historias(textos: Sequence[str], nombre: str = "") -> str | None:
     * **Historias de Enfermería**: dos fichas de ingreso por lo menos, con dos
       rótulos de datos personales cada una o la ficha de 2003 o la de
       alrededor del 2000, y fichas y notas en un tercio de las páginas.
-      «Nombre del estudiante» solo no basta: lo dicen también los recibos.
+      «Nombre del estudiante» solo no basta: lo dicen también los recibos. Y
+      no si las hojas con el núcleo de una resolución triplican a las fichas
+      (``VECES_LAS_RESOLUCIONES``): eso es un tomo de resoluciones con las
+      fichas y las tablas de asignaturas de sus soportes.
     """
+    from .doctype import DocumentType
     from .historia_academica import (
         FICHA,
         es_de_notas,
         leyendas_de_la_ficha,
         plantilla_de_apertura,
     )
+    from .patrones import tipos_de_la_pagina
 
     if not textos:
         return None
@@ -1067,5 +1078,8 @@ def familia_de_historias(textos: Sequence[str], nombre: str = "") -> str | None:
         elif es_de_notas(texto):
             notas += 1
     if fichas >= MINIMO_DE_FICHAS and fichas + notas >= PARTE_DE_FICHAS_Y_NOTAS * len(textos):
+        resoluciones = sum(1 for texto in textos if DocumentType.RESOLUCION in tipos_de_la_pagina(texto))
+        if resoluciones >= VECES_LAS_RESOLUCIONES * fichas:
+            return None
         return HISTORIAS_DE_FICHA
     return None

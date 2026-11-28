@@ -12,6 +12,13 @@ from anthropic import Anthropic
 from ..application.consumo import Consumo, anotar_uso_anthropic
 from ..application.ports import Crop
 
+#: El tiempo límite de cada petición a Claude y cuántas veces se reintenta
+#: (2026-11-27). Sin ellos el SDK esperaba hasta 600 s por intento y tres
+#: intentos: media hora callada por una llamada que no volvía, más que lo que
+#: el vigilante tolera.
+SEGUNDOS_POR_PETICION = 120.0
+REINTENTOS = 2
+
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
@@ -51,7 +58,9 @@ class ClaudeVisionOracle:
         config: ClaudeVisionConfig | None = None,
         consumo: Consumo | None = None,
     ):
-        self._client = client or Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        self._client = client or Anthropic(
+            api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=SEGUNDOS_POR_PETICION, max_retries=REINTENTOS
+        )
         self._config = config or ClaudeVisionConfig()
         self._consumo = consumo
 

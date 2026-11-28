@@ -416,6 +416,43 @@ export const HABILIDADES: Habilidad[] = [
     }
   },
   {
+    // 2026-11-27, «8. ACTA 9 FACULTAD DE ODONTOLOGIA CALIFICACIONES 3194 - 3198»:
+    // los libros de 1995-1997 no tenían habilidad y los de 1998-2003 salían
+    // como historias, sin su lista. Los parte la habilidad de las historias.
+    id: 'calificaciones',
+    escribeFuid: true,
+    titulo: 'Calificaciones',
+    papel:
+      'Libros de calificaciones de una promoción: la lista de sus alumnos al comienzo y, en su orden, dos hojas por alumno —la constancia «HACE CONSTAR» con su continuación, o el record académico con sus asignaturas—.',
+    corta:
+      'Si lo pides, un PDF por alumno: su constancia o su record abre, y la continuación, las asignaturas y los anexos que lo nombran (su cédula, sus cartas) van con él. La lista de la promoción sale en su propio PDF, con su fila.',
+    nombra:
+      'El inventario es el FUID oficial (FO-GD-008), con el estándar de la Universidad: «NOMBRE - ESPECIALIDAD» como asunto y como nombre del PDF, el código del estudiante y la cédula si su hoja la trae, y el primer y el último año de sus notas. La lista lleva su título impreso. El nombre que no se lee en la hoja sale de su fila en la lista.',
+    nombraConIa: 'Y el nombre escrito a mano sobre la raya de la constancia, leído por la IA y votado contra la lista.',
+    aportaIa:
+      'Lee con la IA el nombre que va a mano en las constancias (los libros de 1995); lo que va a máquina lo lee el OCR local.',
+    tipo: 'calificaciones',
+    task: null,
+    acciones: [
+      {
+        id: 'both',
+        label: 'Dividir e inventariar',
+        hint: 'Un PDF por alumno, la lista en el suyo, y el FUID.'
+      },
+      {
+        id: 'inventory_file',
+        label: 'Solo inventariar',
+        hint: 'Una fila por alumno y una por la lista en el FUID. El PDF queda entero.'
+      }
+    ],
+    requiereTipo: 'calificaciones',
+    pideLectura: {
+      id: 'local',
+      porque:
+        'La lista y las hojas van a máquina: el OCR local las lee, y el nombre de cada alumno se completa con su fila de la lista. Con «OCR + IA» se lee además el nombre escrito a mano en las constancias.'
+    }
+  },
+  {
     // 2026-11-06, «21. NOMINAS» del REPOSITORIO UDC, con los patrones de
     // «ESTRUCTURA LIBROS UNICARTAGENA.pdf» que marcó el operador.
     id: 'nominas',
@@ -509,7 +546,7 @@ export const HABILIDADES: Habilidad[] = [
     titulo: 'Detectar automáticamente',
     papel: 'Cuando no se sabe qué hay, o la caja trae de todo: el bot detecta la habilidad de cada PDF.',
     corta:
-      'Cada PDF va a su habilidad: historias académicas, actas de consejo o de grado, diplomas o resoluciones; lo demás, por continuidad.',
+      'Cada PDF va a su habilidad por lo que dice su papel: calificaciones, historias académicas, actas de consejo o de grado, diplomas o resoluciones; lo demás, por continuidad. Las nóminas y los certificados de tiempo de servicio se declaran.',
     nombra: 'Como lo nombra la habilidad que le toque.',
     aportaIa: 'Lo que corresponda a la habilidad que atienda cada PDF; las historias leen el nombre de cada estudiante.',
     tipo: 'auto',
@@ -576,6 +613,8 @@ const HABILIDAD_DEL_TIPO: Record<string, string> = {
   'acta-consejo': 'actas',
   acta: 'actas-grado',
   'historia-academica': 'historias',
+  // Lo parte la habilidad de las historias, pero tiene su tarjeta (2026-11-27).
+  calificaciones: 'calificaciones',
   nomina: 'nominas',
   'certificado-tiempo': 'certificados',
   // El reconocedor cuenta las historias académicas como matrículas: la

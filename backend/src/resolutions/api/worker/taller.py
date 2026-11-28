@@ -163,8 +163,10 @@ class Taller:
             return NullVisionOracle()
         from anthropic import Anthropic
 
+        from ...adapters.claude_vision import REINTENTOS, SEGUNDOS_POR_PETICION
+
         return ClaudeVisionOracle(
-            client=Anthropic(api_key=api_key),
+            client=Anthropic(api_key=api_key, timeout=SEGUNDOS_POR_PETICION, max_retries=REINTENTOS),
             config=ClaudeVisionConfig(model=self.settings["vision_model"]),
             consumo=self.consumo,
         )
@@ -932,9 +934,12 @@ def _oracle_named(name: str, settings: dict, consumo: Consumo | None = None):
         from anthropic import Anthropic
 
         from ...adapters.claude_boundary import ClaudeBoundaryOracle
+        from ...adapters.claude_vision import REINTENTOS, SEGUNDOS_POR_PETICION
 
         return ClaudeBoundaryOracle(
-            client=Anthropic(api_key=str(settings.get("anthropic_api_key"))),
+            client=Anthropic(
+                api_key=str(settings.get("anthropic_api_key")), timeout=SEGUNDOS_POR_PETICION, max_retries=REINTENTOS
+            ),
             consumo=consumo,
         )
 

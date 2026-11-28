@@ -272,3 +272,250 @@ class TestLosExamenesManuscritos:
             assert pista_del_nombre(nombre) is T.ACTA
             sin_marcadores = TypeVerdict(document_type=T.DESCONOCIDO, confidence=0.0)
             assert reconocer(sin_marcadores, Counter(), nombre).tipo is T.ACTA
+
+
+# -- el clasificador por PDF (2026-11-27) -------------------------------------------------
+#
+# «8. ACTA 9 FACULTAD DE ODONTOLOGIA CALIFICACIONES 3194 - 3198»: libros de
+# calificaciones, de actas de grado (dos manuscritos) y tomos de resoluciones en
+# la misma carpeta, lanzada entera con «Detectar automáticamente» o con una sola
+# habilidad declarada. Nombres inventados, con la forma del papel.
+
+#: La lista de la promoción con que abre el libro.
+LISTA_DE_LA_PROMOCION = (
+    "UNIVERSIDAD DE CARTAGENA\nFACULTAD DE ODONTOLOGIA\nALUMNOS X SEMESTRE DE ODONTOLOGIA 2o. PERIODO 1995\n"
+    + "\n".join(f"{orden}. 90100{70 + orden} APELLIDO{orden} OTRO NOMBRE{orden} M." for orden in range(1, 8))
+)
+ALUMNOS = (
+    "LIZETH M. ALVAREZ ZAPATA",
+    "JUAN C. BARRIOS PEREZ",
+    "ANA M. CASTRO DIAZ",
+    "LUIS A. DURAN GOMEZ",
+    "MARTA E. ESPITIA RUIZ",
+    "CARLOS J. FUENTES MORA",
+)
+
+
+def _constancia(nombre: str) -> str:
+    return (
+        "UNIVERSIDAD DE CARTAGENA\nEL SECRETARIO ACADÉMICO DE LA FACULTAD DE ODONTOLOGIA DE LA UNIVERSIDAD "
+        f"DE CARTAGENA\nHACE CONSTAR\nQue, {nombre}, cursó y aprobó en esta Facultad, el 1o., 2o., 3o. y 10o. "
+        "semestre de Odontología, con las siguientes calificaciones:\n1er. SEMESTRE 1990 - Bioquímica 3.10"
+    )
+
+
+def _continuacion(nombre: str) -> str:
+    return f"Continuación Calificaciones de {nombre}\nX SEMESTRE 1994 - Clínica Integral 4.00 cuatro-cero-cero"
+
+
+LIBRO_DE_CALIFICACIONES = [LISTA_DE_LA_PROMOCION] + [
+    hoja for nombre in ALUMNOS for hoja in (_constancia(nombre), _continuacion(nombre))
+]
+#: Una resolución de Decanatura que pide la ceremonia y nombra a sus graduandos.
+RESOLUCION_DE_DECANATURA = (
+    "Resolución No. 016 Hoja No. 1\nPor la cual se solicita la ceremonia de grado de los graduandos\n"
+    "LA DECANA DE LA FACULTAD DE ODONTOLOGIA\nRESUELVE:\nExpedir las actas de grado de los graduandos.\n"
+    "Comuníquese y cúmplase"
+)
+#: Lo que deja el escáner de un acta manuscrita: ninguna palabra de ningún tipo.
+MANUSCRITO = (
+    "cmmjG mmcTWO tt tá ubh beíiiad im cArnTmmm Sí WJ m ám m Humlta e y cmmmwknmyt I Cmmi lrt etír F ewlttKl é C4a"
+)
+
+
+class TestLoQueDiceUnPdfEntero:
+    def test_las_actas_decada_son_actas_de_grado_por_su_nombre(self):
+        assert pista_del_nombre("ACTAS DE GRADO\\ACTAS DECADA. 1980-1984 TOMO I.pdf") is T.ACTA
+        assert pista_del_nombre("ACTAS DECADA. 1996-1998-1999 TOMO II.pdf") is T.ACTA
+
+    def test_la_resolucion_que_cita_a_los_graduandos_no_es_un_acta_de_grado(self):
+        from resolutions.domain.patrones import hojas_de_cada_tipo
+
+        # Por la hoja, su núcleo lo trae; en el PDF entero no cuenta: no abre ningún acta.
+        assert T.ACTA in tipos_de_la_pagina(RESOLUCION_DE_DECANATURA)
+        assert hojas_de_cada_tipo([RESOLUCION_DE_DECANATURA] * 3) == Counter({T.RESOLUCION: 3})
+        assert hojas_de_cada_tipo([ACTA_DE_GRADO] * 2)[T.ACTA] == 2
+
+    def test_lo_que_arrolla_a_lo_declarado(self):
+        from resolutions.domain.patrones import lo_que_lo_arrolla
+
+        # «RESOLUCIONES DE RECTORIA 03272-03275» (2026-10-29): 48 hojas de actas
+        # de consejo de soporte contra 50 de resoluciones. No se contradice.
+        rectoria = Counter({T.RESOLUCION: 50, T.ACTA_CONSEJO: 48})
+        assert lo_que_lo_arrolla(rectoria, T.RESOLUCION) is None
+        assert lo_que_lo_arrolla(rectoria, T.DIPLOMA) is T.RESOLUCION
+        # Un tomo de resoluciones declarado como actas de grado.
+        assert lo_que_lo_arrolla(Counter({T.RESOLUCION: 28}), T.ACTA) is T.RESOLUCION
+        # Una hoja suelta no arrolla nada.
+        assert lo_que_lo_arrolla(Counter({T.ACTA_CONSEJO: 1}), T.ACTA) is None
+
+    def test_la_capa_de_un_manuscrito_no_dice_nada(self):
+        from resolutions.domain.patrones import capa_que_no_dice_nada, hojas_de_cada_tipo
+
+        basura = [MANUSCRITO] * 9 + [""]
+        assert capa_que_no_dice_nada(basura, hojas_de_cada_tipo(basura))
+        # Un escaneo sin capa no es basura: ése lo lee Tesseract.
+        assert not capa_que_no_dice_nada(["", "", MANUSCRITO], Counter())
+        assert not capa_que_no_dice_nada([ACTA_DE_GRADO] * 3, hojas_de_cada_tipo([ACTA_DE_GRADO] * 3))
+
+
+@pytest.fixture
+def rutas_del_despachador(monkeypatch):
+    """Cada habilidad sustituida por un marcador: a cuál va el PDF, y con qué payload."""
+    from resolutions.api import worker
+    from resolutions.api.worker import historias
+
+    llamadas: list[tuple[str, dict]] = []
+
+    def marca(nombre):
+        def hecho(payload, *_a, **_k):
+            llamadas.append((nombre, payload))
+            return {"ruta": nombre}
+
+        return hecho
+
+    monkeypatch.setattr(
+        worker,
+        "_acta_consejo_job",
+        lambda payload, grado=False: marca("actas-de-grado" if grado else "actas-de-consejo")(payload),
+    )
+    monkeypatch.setattr(worker, "_split_job", marca("resoluciones"))
+    monkeypatch.setattr(worker, "_record_split_job", marca("registros"))
+    monkeypatch.setattr(historias, "historias_academicas_job", marca("historias"))
+    monkeypatch.setattr(worker, "_anunciar", lambda *a, **k: None)
+    monkeypatch.setattr(worker, "_recognise", lambda _p: pytest.fail("el orquestador no hacía falta"))
+    return llamadas
+
+
+def _payload(pdf, nombre, tipo="auto", task="both"):
+    return {"source": str(pdf), "filename": nombre, "task": task, "tipo": tipo, "settings": {"ocr_language": "spa"}}
+
+
+class TestElClasificadorPorPdf:
+    """Cada PDF a su habilidad por su papel, también contra lo declarado (2026-11-27)."""
+
+    @pytest.mark.parametrize("task", ["both", "inventory"])
+    def test_un_libro_de_calificaciones_va_a_calificaciones(self, tmp_path, rutas_del_despachador, task):
+        """Los de 1995-1997 se partían como resoluciones; los de 1998-2003, como historias."""
+        from resolutions.api import worker
+
+        pdf = _pdf(tmp_path / "libro.pdf", LIBRO_DE_CALIFICACIONES)
+        payload = _payload(pdf, "CALIFICACIONES\\1995\\1 CALIFICACIONES ODONTOLOGIA 1995.pdf", task=task)
+
+        assert worker._despachar(payload) == {"ruta": "historias"}
+        assert rutas_del_despachador[0][1]["tipo"] == "calificaciones"
+        assert payload["reconocimiento"]["tipo"] == "calificaciones"
+        assert "6 constancias" in payload["reconocimiento"]["motivo"]
+
+    def test_un_manuscrito_va_a_actas_de_grado_por_su_ruta(self, tmp_path, rutas_del_despachador):
+        """La capa es basura y sólo la ruta lo dice: sin pasar por el orquestador."""
+        from resolutions.api import worker
+
+        pdf = _pdf(tmp_path / "manuscrito.pdf", [MANUSCRITO] * 6)
+        payload = _payload(pdf, "ACTAS DE GRADO\\ACTAS DE GRADO 1952 - 1959.pdf")
+
+        assert worker._despachar(payload) == {"ruta": "actas-de-grado"}
+        assert payload["reconocimiento"]["decidido_por"] == "nombre"
+
+    @pytest.mark.parametrize("declarado", ["resolucion", "acta", "historia-academica", "acta-consejo", "diploma"])
+    def test_un_libro_de_calificaciones_declarado_como_otra_cosa_va_a_lo_suyo(
+        self, tmp_path, rutas_del_despachador, declarado
+    ):
+        """La PROMOCION 2003 vive en la carpeta de las resoluciones."""
+        from resolutions.api import worker
+
+        pdf = _pdf(tmp_path / "promocion.pdf", LIBRO_DE_CALIFICACIONES)
+        nombre = "RESOLUCIONES\\RESOLUCIONES DECANATURA 1995-2002\\UPD3860100\\PROMOCION 2003.pdf"
+
+        informe = worker._despachar(_payload(pdf, nombre, tipo=declarado))
+
+        assert rutas_del_despachador[0][0] == "historias"
+        assert rutas_del_despachador[0][1]["tipo"] == "calificaciones"
+        assert informe["reconocimiento"]["declarado"] == declarado
+        assert informe["reconocimiento"]["tipo"] == "calificaciones"
+        assert any("Calificaciones" in aviso for aviso in informe["notices"])
+
+    def test_un_tomo_de_resoluciones_declarado_como_actas_de_grado_va_a_resoluciones(
+        self, tmp_path, rutas_del_despachador
+    ):
+        """Sus resoluciones nombran a los graduandos, pero ninguna hoja abre un acta."""
+        from resolutions.api import worker
+
+        pdf = _pdf(tmp_path / "tomo.pdf", [RESOLUCION_DE_DECANATURA] * 4)
+
+        informe = worker._despachar(_payload(pdf, "UPD3860107\\001-029 TOMO 2.pdf", tipo="acta"))
+
+        assert informe["ruta"] == "resoluciones"
+        assert informe["reconocimiento"]["declarado"] == "acta"
+
+    def test_un_libro_de_actas_declarado_como_resoluciones_va_a_actas_de_grado(
+        self, tmp_path, rutas_del_despachador
+    ):
+        from resolutions.api import worker
+
+        pdf = _pdf(tmp_path / "actas.pdf", [ACTA_DE_GRADO] * 4)
+        nombre = "ACTAS DE GRADO\\ACTAS DECADA. 1980-1984 TOMO I.pdf"
+        assert worker._despachar(_payload(pdf, nombre, tipo="resolucion"))["ruta"] == "actas-de-grado"
+        # Y el manuscrito, por su ruta.
+        pdf = _pdf(tmp_path / "manuscrito.pdf", [MANUSCRITO] * 4)
+        nombre = "ACTAS DE GRADO\\ACTAS DE GRADO 1960-1965.pdf"
+        assert worker._despachar(_payload(pdf, nombre, tipo="resolucion"))["ruta"] == "actas-de-grado"
+
+    def test_lo_que_lo_declarado_tiene_no_se_desvia(self, tmp_path, rutas_del_despachador):
+        """Un legajo de resoluciones con actas de soporte (2026-10-29), y unas historias declaradas."""
+        from resolutions.api import worker
+
+        legajo = _pdf(tmp_path / "legajo.pdf", [RESOLUCION_INTERNA, ACTA_DE_CONSEJO, SESION, SESION, SESION])
+        nombre = "1RESOLUCIONES DE RECTORIA 03272-03275.pdf"
+        assert worker._despachar(_payload(legajo, nombre, tipo="resolucion")) == {"ruta": "resoluciones"}
+        historias = _pdf(tmp_path / "historias.pdf", [FICHA_DE_MEDICINA, NOTAS_DE_MEDICINA] * 3 + [ACTA_DE_GRADO] * 2)
+        declaradas = _payload(historias, "UPD 3859597.pdf", tipo="historia-academica")
+        assert worker._despachar(declaradas) == {"ruta": "historias"}
+
+    def test_sin_el_nombre_que_lo_confirma_el_acta_de_consejo_que_arrolla_si_se_desvia(
+        self, tmp_path, rutas_del_despachador
+    ):
+        from resolutions.api import worker
+
+        pdf = _pdf(tmp_path / "sesion.pdf", [ACTA_DE_CONSEJO, SESION, SESION, SESION])
+        informe = worker._despachar(_payload(pdf, "UPD3747381.pdf", tipo="resolucion"))
+        assert informe["ruta"] == "actas-de-consejo"
+        assert informe["reconocimiento"]["declarado"] == "resolucion"
+
+    def test_un_papel_sin_evidencia_se_queda_con_lo_declarado(self, tmp_path, rutas_del_despachador):
+        """Nunca por descarte: un escaneo sin capa ni nombre que diga nada."""
+        from resolutions.api import worker
+
+        pdf = _pdf(tmp_path / "escaneo.pdf", ["", "", ""])
+        assert worker._despachar(_payload(pdf, "UPD1.pdf", tipo="calificaciones")) == {"ruta": "historias"}
+
+
+class TestLaSugerenciaDeLasCalificaciones:
+    def test_un_libro_soltado_se_sugiere_como_calificaciones(self, client, tmp_path):
+        pdf = _pdf(tmp_path / "libro.pdf", LIBRO_DE_CALIFICACIONES)
+
+        respuesta = client.post(
+            "/api/reconocer",
+            files={"file": ("1 CALIFICACIONES ODONTOLOGIA 1995.pdf", pdf.read_bytes(), "application/pdf")},
+        )
+
+        assert respuesta.status_code == 200
+        assert (respuesta.json()["tipo"], respuesta.json()["etiqueta"]) == ("calificaciones", "Calificaciones")
+
+    @pytest.mark.parametrize(
+        ("relativa", "tipo"),
+        [
+            ("CALIFICACIONES/FACULTAD DE ODONTOLOGIA CALIFICACIONES 1995/1 CALIFICACIONES ODONTOLOGIA 1995.pdf", "calificaciones"),
+            ("RESOLUCIONES/RESOLUCIONES DECANATURA 1995-2002/UPD3860100/PROMOCION 2003 - FACULTAD DE ODONTOLOGIA.1 - UPD3860100.pdf", "calificaciones"),
+            ("RESOLUCIONES/RESOLUCIONES DECANATURA 1995-2002/UPD3860101/07-115 TOMO 1.pdf", "resolucion"),
+            ("ACTAS DE GRADO/ACTAS DECADA. 1980-1984 TOMO I.pdf", "acta"),
+            ("ACTAS DE GRADO/ACTAS DE GRADO 1952 - 1959.pdf", "acta"),
+            # El nombre más hondo manda: la carpeta de arriba dice «CALIFICACIONES» para los 26.
+            ("8. ACTA 9 FACULTAD DE ODONTOLOGIA CALIFICACIONES 3194 - 3198/ACTAS DE GRADO/ACTAS DECADA. 1990-1994 TOMO II.pdf", "acta"),
+        ],
+    )
+    def test_un_pdf_de_red_muy_grande_se_dice_por_su_nombre_mas_hondo(self, relativa, tipo):
+        """Odontología 3194-3198 (2026-11-27): de 17 a 300 MB, no se bajan para sugerir."""
+        from resolutions.api.routers.reconocer import _muy_grande
+
+        assert _muy_grande(relativa, 60 * 1024 * 1024)["tipo"] == tipo

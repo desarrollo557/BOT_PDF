@@ -32,11 +32,24 @@ se audita con sólo añadir su perfil.
 from __future__ import annotations
 
 import os
+import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import date
 
 from ..domain.auditoria import MARGEN_ACEPTABLE
+from ..domain.datos_esperados import (
+    CAMPOS_DE_UNA_HISTORIA,
+    IDENTIFICACION,
+    DatosDeUnaHistoria,
+    Hallazgo,
+    cifras,
+    plano,
+    revisar_entre_documentos,
+    revisar_una_historia,
+)
+from ..domain.historia_academica import HISTORIA_ACADEMICA
 from ..domain.revision_de_nombres import (
     A_MANO,
     A_MAQUINA,
@@ -45,7 +58,13 @@ from ..domain.revision_de_nombres import (
     NOMBRES_PRIMERO,
     ReglaDelNombre,
 )
-from .integridad_de_los_datos import DE_UNA_HISTORIA, DE_UNA_NOMINA, DatosEsperados
+from .fuid import FuidRow
+from .integridad_de_los_datos import (
+    DE_UNA_HISTORIA,
+    DE_UNA_NOMINA,
+    DatosEsperados,
+    historia_de_la_fila,
+)
 from .revisor_de_cortes import REGLAS_DE_LA_CORRESPONDENCIA, Patrones
 
 
@@ -154,6 +173,78 @@ def _cruces_del_acuerdo(textos: Mapping[int, str]) -> frozenset[int]:
     )
 
 
+# -- los datos de un libro de calificaciones (2026-11-27) ----------------------------------
+#
+# Un alumno por PDF, con su nombre, su código, el primer y el último año de sus
+# notas y la cédula **si su hoja la trae**: el record académico de 1998 en
+# adelante la imprime («C.C. # 73.141.230»); la constancia de 1995-1997 no. La
+# lista de la promoción lleva su PDF y su fila, pero no es de nadie.
+
+#: El asunto de la lista en el FUID y su PDF: «LISTA DE ALUMNOS X SEMESTRE…», «PROMOCION 20-12-1996».
+_DE_LA_LISTA = ("LISTA-DE-ALUMNOS", "PROMOCION")
+
+
+def _anio(valor: object) -> int | None:
+    hallado = re.search(r"\b(1[89]\d\d|20\d\d)\b", str(valor or ""))
+    return int(hallado.group(1)) if hallado else None
+
+
+def calificaciones_de_la_fila(fila: Mapping[str, object]) -> DatosDeUnaHistoria | None:
+    """Los datos de un alumno tal como salieron de leer su libro; ``None`` si la fila no es de un alumno."""
+    from ..domain.calificaciones import CALIFICACIONES
+
+    if fila.get("tipo") != CALIFICACIONES:
+        return None
+    # Los mismos campos que la fila de una historia: el nombre, la cédula, el
+    # código y los años de sus notas.
+    return historia_de_la_fila({**fila, "tipo": HISTORIA_ACADEMICA})
+
+
+def calificaciones_del_fuid(fila: FuidRow) -> DatosDeUnaHistoria | None:
+    """Los datos de un alumno tal como quedaron en el FUID, con el estándar de la Universidad.
+
+    El asunto es «NOMBRE - ESPECIALIDAD»; el consecutivo inicial, el código del
+    estudiante, y el final, la cédula o «N/A». La fila de la lista no es de nadie.
+    """
+    asunto = " ".join((fila.asunto or "").split())
+    if not asunto or plano(asunto).startswith(_DE_LA_LISTA):
+        return None
+    nombre = asunto.rpartition(" - ")[0] or asunto
+    return DatosDeUnaHistoria(
+        nombre=nombre,
+        identificacion=cifras(str(fila.consecutivo_final)) or None,
+        codigo=cifras(str(fila.consecutivo_inicial)) or None,
+        anio_inicial=_anio(fila.fecha_inicial),
+        anio_final=_anio(fila.fecha_final),
+    )
+
+
+def _revisar_unas_calificaciones(datos: DatosDeUnaHistoria) -> list[Hallazgo]:
+    """Lo de una historia, salvo que falte la cédula: la constancia de 1995-1997 no la trae."""
+    hallazgos = revisar_una_historia(datos, este_anio=date.today().year)
+    if not cifras(datos.identificacion):
+        hallazgos = [hallazgo for hallazgo in hallazgos if hallazgo.campo != IDENTIFICACION]
+    return hallazgos
+
+
+def _sin_datos_de_calificaciones(pdf: str) -> bool:
+    """El PDF de la lista de la promoción: lleva su fila pero no es de un alumno."""
+    base = re.sub(r"^\d{1,4}_", "", pdf.replace("\\", "/").rsplit("/", 1)[-1])
+    return plano(base).startswith(_DE_LA_LISTA) or "SIN-FICHA" in base.upper()
+
+
+#: Lo que se espera de un alumno de un libro de calificaciones: nombre, código,
+#: años de sus notas y la cédula si su hoja la trae.
+DE_UNAS_CALIFICACIONES = DatosEsperados(
+    campos=CAMPOS_DE_UNA_HISTORIA,
+    de_la_fila=calificaciones_de_la_fila,
+    del_fuid=calificaciones_del_fuid,
+    revisar=_revisar_unas_calificaciones,
+    entre_documentos=revisar_entre_documentos,
+    sin_datos=_sin_datos_de_calificaciones,
+)
+
+
 PERFILES: tuple[PerfilDeRevision, ...] = (
     PerfilDeRevision(
         clave="correspondencia",
@@ -226,6 +317,27 @@ PERFILES: tuple[PerfilDeRevision, ...] = (
         regla_del_nombre=ReglaDelNombre(
             orden=APELLIDOS_PRIMERO, escritura=A_MANO, zonas=((0.02, 0.26),), zonas_de_la_siguiente=((0.86, 1.0),)
         ),
+    ),
+    PerfilDeRevision(
+        # 2026-11-27, «8. ACTA 9 FACULTAD DE ODONTOLOGIA CALIFICACIONES 3194 -
+        # 3198»: lo parte la habilidad de las historias, y su informe dice
+        # «Calificaciones» (``api/indices.habilidad_del_proceso``).
+        clave="calificaciones",
+        regla_de_fechas="anios",
+        nombre="Calificaciones",
+        reglas=(
+            "Libro de calificaciones de una promoción: la lista de sus alumnos abre el libro y va en su PDF. "
+            "Después, dos hojas por alumno en el orden de la lista: la constancia «HACE CONSTAR Que …» con su "
+            "«Continuación calificaciones de …», o el record académico con su hoja de asignaturas. La constancia "
+            "o el record abren un alumno; la continuación, las asignaturas y los anexos que lo nombran (su "
+            "cédula, sus cartas) son suyos. Dos alumnos nunca van en el mismo PDF."
+        ),
+        una_persona_por_pdf=True,
+        alias=("calificaciones", "libro de calificaciones", "libros de calificaciones"),
+        datos=DE_UNAS_CALIFICACIONES,
+        # Arriba de la hoja: a máquina en el record («Nombre del Estudiante») y
+        # en la continuación; a mano sobre la raya de la constancia de 1995.
+        regla_del_nombre=ReglaDelNombre(orden=NOMBRES_PRIMERO, escritura=MIXTA, zonas=((0.05, 0.4),)),
     ),
     PerfilDeRevision(
         clave="nominas",

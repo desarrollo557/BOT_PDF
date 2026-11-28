@@ -318,6 +318,9 @@ class TrabajoSinAvance(TimeoutError):
 
 #: Cada cuánto se mira, como mucho, si el documento sigue avanzando.
 _VIGILANCIA = 30.0
+#: Cuántas veces el tope sin avance se le da a un documento que todavía espera
+#: un proceso libre en la cola del pool (no ha dado su primer latido).
+_VECES_EN_LA_COLA = 3
 
 
 async def _esperar(ctx: Contexto, job: Job, futuro, pool=None) -> dict:
@@ -339,14 +342,17 @@ async def _esperar(ctx: Contexto, job: Job, futuro, pool=None) -> dict:
             hecho, _ = await asyncio.wait({futuro}, timeout=min(_VIGILANCIA, limite) if limite else None)
             if hecho:
                 return futuro.result()
-            # Desde la última noticia del worker, o desde que empezó si aún no
-            # dio ninguna: uno que se atasca al abrir el PDF no avisa nunca.
-            silencio = (
-                job.progress.silent_seconds
-                if job.progress.last_event_monotonic is not None
-                else time.monotonic() - inicio
-            )
-            if limite and job.state is JobState.RUNNING and silencio >= limite:
+            # Desde la última noticia del worker, o desde que se mandó si aún no
+            # dio ninguna. El worker late en cuanto tiene proceso (2026-11-27):
+            # sin noticia, el documento sigue esperando un proceso libre en la
+            # cola del pool, y eso no es un atasco -- con más PDF que procesos se
+            # cortaban a los 20 minutos sin haber empezado --. A ése se le da
+            # ``_VECES_EN_LA_COLA`` veces el tope: si el pool se congeló y no
+            # arranca nunca, igual se corta.
+            empezado = job.progress.last_event_monotonic is not None
+            silencio = job.progress.silent_seconds if empezado else time.monotonic() - inicio
+            tope = limite if empezado else limite * _VECES_EN_LA_COLA
+            if limite and job.state is JobState.RUNNING and silencio >= tope:
                 ctx.controls[job.id] = str(RunState.CANCELLED)
                 loop.create_task(_soltar(ctx, job, futuro))
                 if _pool_congelado(ctx, job, limite):

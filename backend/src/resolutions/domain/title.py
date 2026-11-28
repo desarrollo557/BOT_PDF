@@ -46,7 +46,15 @@ _FURNITURE_PHRASES = (
     "EL VICERRECTOR",
     "LA VICERRECTORA",
     "HOJA NO",
+    # Y quien expide una de facultad (2026-11-27): «EL DECANO DE LA FACULTAD DE
+    # ODONTOLOGIA…» se colaba en el asunto de la que no deja leer su RESUELVE.
+    "EL DECANO",
+    "LA DECANA",
+    "EL CONSEJO DE FACULTAD",
+    "EL CONSEJO DE LA FACULTAD",
 )
+#: La fecha bajo el número con el mes destrozado: «2 de lebrero de 1995».
+_FECHADO_CON_EL_MES_ROTO = re.compile(r"^\d{1,2}\s+DE\s+[A-Z]{3,}\s+DE\s+(19|20)\d{2}\.?$")
 
 #: Cómo empieza el asunto de una resolución: «Por medio de la cual se designan
 #: los docentes de cátedra», «Por la cual se fija…». Es el nombre del documento,
@@ -130,7 +138,7 @@ def _titulo_impreso_encima(lines: list[str], encabezado: int, max_length: int) -
 
 
 def _looks_like_a_dateline(upper: str) -> bool:
-    if _NUMERIC_DATE.search(upper):
+    if _NUMERIC_DATE.search(upper) or _FECHADO_CON_EL_MES_ROTO.match(upper.strip()):
         return True
     return bool(_YEAR.search(upper)) and any(month in upper for month in _MONTHS)
 
@@ -237,14 +245,19 @@ _RESUELVE = re.compile(r"\bR\s?E\s?S\s?U\s?E\s?L\s?V\s?E\b\s*[:.;]?", re.IGNOREC
 #: El rótulo del artículo con que empieza lo que se ordena: «ARTÍCULO 1°»,
 #: «ARTICULO PRIMERO:», ««ARTÍCULO ÚNICO:», «ARTICUL01°», «PRIMERO.-», y el
 #: de una letra que el OCR deja por el ordinal («ARTICULO F»).
+#: También el ordinal que la capa de los noventa lee «lo» o «Io» por «1o»
+#: («ARTICULO lo.- Fijar…», tomos de decanatura de Odontología, 2026-11-27) y
+#: la palabra dañada por delante («HT’ICULO 1-.-»).
 _ROTULO_DEL_ARTICULO = re.compile(
-    r"[«\"“]?\s*(?:ART[IÍ]CUL[O0]|ART\.)\s*(?:PRIMERO|[UÚ]NICO|1\s*[°º.oO]?|\d?\s*[°º]|[A-Z](?=\s))?"
+    r"[«\"“]?\s*(?:ART[IÍ]CUL[O0]|ART\.|[A-Z’'`]{1,4}[IÍ]CUL[O0])\s*"
+    r"(?:PRIMERO|[UÚ]NICO|[1lI]\s*[°º.oO]?(?![a-záéíóúñ])|\d?\s*[°º]|[A-Z](?=\s))?"
     r"\s*[:.\-–—°º]*\s*|PRIMERO\s*[:.\-–—]+\s*",
     re.IGNORECASE,
 )
 #: El del primero, cuando la capa lo pone detrás de la orden y no delante.
 _PRIMER_ARTICULO = re.compile(
-    r"\b(?:ART[IÍ]CUL[O0]|ART\.)\s*(?:PRIMERO|[UÚ]NICO|1\s*[°º.oO]?)\s*[:.\-–—]*\s*", re.IGNORECASE
+    r"\b(?:ART[IÍ]CUL[O0]|ART\.)\s*(?:PRIMERO|[UÚ]NICO|[1lI]\s*[°º.oO]?(?![a-záéíóúñ]))\s*[:.\-–—]*\s*",
+    re.IGNORECASE,
 )
 #: Donde termina la orden: los dos puntos de una lista («integrado por los
 #: siguientes miembros:»), el punto y seguido, el artículo segundo o la raya
@@ -265,6 +278,23 @@ def _sin_lo_que_va_delante(texto: str) -> str:
 MAX_LENGTH_DE_LO_QUE_RESUELVE = 200
 #: Una orden más corta que esto es un rótulo suelto, no lo que se resolvió.
 _LETRAS_DE_LA_ORDEN = 20
+#: Lo que la capa de texto de las resoluciones de decanatura de los noventa
+#: rompe en la orden, que es el asunto y el nombre del PDF (2026-11-27): «Fijar
+#: ia fecha del JUEVES 26 DE.MARZO DE 1998, a las 15;00 horas». «ia» no es una
+#: palabra; el punto pegado entre dos palabras y el punto y coma entre dos
+#: cifras, tampoco. «e!», «de!» los arregla ``_sin_exclamaciones_del_ocr``.
+_ROTO_POR_EL_OCR = (
+    (re.compile(r"\b[iI]a\b"), "la"),
+    (re.compile(r"(?<=[A-Za-zÁÉÍÓÚÑáéíóúñ]{2})\.(?=[A-Za-zÁÉÍÓÚÑáéíóúñ]{3})"), " "),
+    (re.compile(r"(?<=\d);(?=\d)"), ":"),
+)
+
+
+def _sin_lo_que_rompio_el_ocr(orden: str) -> str:
+    orden = _sin_exclamaciones_del_ocr(orden)
+    for patron, arreglo in _ROTO_POR_EL_OCR:
+        orden = patron.sub(arreglo, orden)
+    return orden
 
 
 def lo_que_resuelve(textos: Iterable[str], max_length: int = MAX_LENGTH_DE_LO_QUE_RESUELVE) -> str | None:
@@ -276,34 +306,58 @@ def lo_que_resuelve(textos: Iterable[str], max_length: int = MAX_LENGTH_DE_LO_QU
     por los siguientes miembros», sin el rótulo del artículo y hasta donde
     termina la orden. Se busca en las páginas en orden y gana el primer
     RESUELVE: el de la resolución, antes que el de una copia que traiga detrás.
+
+    Si ninguna página deja leer el RESUELVE, el artículo primero que abre su
+    renglón (2026-11-27): en las de coordinadores de 2003 a 2008 de Odontología
+    la capa pierde la palabra y conserva «ARTICULO 1o.- Nombrar coordinadores
+    de las diferentes asignaturas…».
     """
-    for texto in textos:
-        hallado = _RESUELVE.search(texto or "")
+    paginas = [texto or "" for texto in textos]
+    for texto in paginas:
+        hallado = _RESUELVE.search(texto)
         if hallado is None:
             continue
-        resto = _sin_lo_que_va_delante(texto[hallado.end() : hallado.end() + 1500])
-        if rotulo := _ROTULO_DEL_ARTICULO.match(resto):
-            resto = resto[rotulo.end() :]
-        else:
-            resto = _PRIMER_ARTICULO.sub(" ", resto, count=1)
-        resto = _sin_lo_que_va_delante(resto)
-        # Los dos puntos tras «de» no cierran la orden: «Otorgar el título de:
-        # ENFERMERO (A), a través de la Secretaría General, a los siguientes
-        # egresados:» (la resolución de grados secretariales, 2026-11-12).
-        fin = next(
-            (
-                f
-                for f in _FIN_DE_LA_ORDEN.finditer(resto, _LETRAS_DE_LA_ORDEN)
-                if not (f.group(0).startswith(":") and re.search(r"\bDE\s*$", resto[: f.start()], re.IGNORECASE))
-            ),
-            None,
-        )
-        orden = (resto[: fin.start()] if fin else resto).strip(" ,.-–—_«»\"“”")
-        if len(orden) > max_length:
-            orden = orden[:max_length].rsplit(" ", 1)[0].rstrip(" ,.-–—") + "…"
-        if len(orden.split()) >= 3:
+        if orden := _la_orden(texto[hallado.end() : hallado.end() + 1500], max_length):
+            return orden
+    for texto in paginas:
+        hallado = _PRIMER_ARTICULO_EN_SU_RENGLON.search(texto)
+        if hallado is None:
+            continue
+        if orden := _la_orden(texto[hallado.start() : hallado.start() + 1500], max_length):
             return orden
     return None
+
+
+#: El artículo primero al principio de su renglón, para cuando no hay RESUELVE.
+_PRIMER_ARTICULO_EN_SU_RENGLON = re.compile(
+    r"^\W{0,3}(?:ART[IÍ]CUL[O0]|ART\.)\s*(?:PRIMERO|[UÚ]NICO|[1lI]\s*[°º.oO]?(?![a-záéíóúñ]))",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _la_orden(resto: str, max_length: int) -> str | None:
+    """La orden que empieza en ``resto`` (detrás del RESUELVE), sin su rótulo y hasta donde termina."""
+    resto = _sin_lo_que_va_delante(resto)
+    if rotulo := _ROTULO_DEL_ARTICULO.match(resto):
+        resto = resto[rotulo.end() :]
+    else:
+        resto = _PRIMER_ARTICULO.sub(" ", resto, count=1)
+    resto = _sin_lo_que_va_delante(resto)
+    # Los dos puntos tras «de» no cierran la orden: «Otorgar el título de:
+    # ENFERMERO (A), a través de la Secretaría General, a los siguientes
+    # egresados:» (la resolución de grados secretariales, 2026-11-12).
+    fin = next(
+        (
+            f
+            for f in _FIN_DE_LA_ORDEN.finditer(resto, _LETRAS_DE_LA_ORDEN)
+            if not (f.group(0).startswith(":") and re.search(r"\bDE\s*$", resto[: f.start()], re.IGNORECASE))
+        ),
+        None,
+    )
+    orden = _sin_lo_que_rompio_el_ocr((resto[: fin.start()] if fin else resto).strip(" ,.-–—_«»\"“”"))
+    if len(orden) > max_length:
+        orden = orden[:max_length].rsplit(" ", 1)[0].rstrip(" ,.-–—") + "…"
+    return orden if len(orden.split()) >= 3 else None
 
 
 def slugify(value: str, max_length: int = DEFAULT_SLUG_LENGTH) -> str:

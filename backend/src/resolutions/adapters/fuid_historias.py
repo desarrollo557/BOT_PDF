@@ -27,6 +27,10 @@ Las hojas sueltas de Medicina -- una matrícula, un certificado o un recibo por
 estudiante (cajas 00C003267 y 00C003268) -- van por aquí también, con el tipo
 de hoja en el asunto (``clase``) y, si la hoja trae su fecha entera, esa fecha
 en los dos extremos (``fecha_exacta``).
+
+Y los libros de calificaciones de Odontología (2026-11-27): una fila por alumno
+y una por cada lista de la promoción, con el estándar único de la Universidad
+(ver ``fila_del_fuid``).
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
 from ..application.fuid import FuidRow
+from ..domain.calificaciones import CALIFICACIONES, LISTA_DE_ALUMNOS, ODONTOLOGIA
 from ..domain.historia_academica import HISTORIA_ACADEMICA
 from .fuid_actas_de_grado import NO_LEIDO, ubicacion
 
@@ -63,27 +68,54 @@ def _identificacion(fila: Mapping[str, object]) -> str:
     return NO_LEIDO
 
 
+def _asunto_del_alumno(fila: Mapping[str, object]) -> str:
+    """«NOMBRE - ODONTOLOGIA»: el asunto que ya trae la fila, o el nombre y la especialidad."""
+    if asunto := str(fila.get("asunto") or "").strip():
+        return asunto
+    nombre = str(fila.get("nombre") or "") or NO_LEIDO
+    return f"{nombre} - {fila.get('especialidad') or ODONTOLOGIA}"
+
+
 def fila_del_fuid(fila: Mapping[str, object]) -> FuidRow | None:
     """La fila del FUID de un estudiante, o ``None`` si las páginas no son de nadie.
 
     El número de orden lo pone quien junta las filas (``fuid_de_la_entrega``).
+
+    Los libros de calificaciones (2026-11-27) van con el estándar único de la
+    Universidad: el alumno (``CALIFICACIONES``) con su asunto «NOMBRE -
+    ODONTOLOGIA», el código en el consecutivo inicial y la cédula (o N/A) en el
+    final; la lista de la promoción (``LISTA_DE_ALUMNOS``) con su título impreso
+    en el asunto y N/A en los dos consecutivos. Las historias siguen como
+    estaban: la cédula delante y el código detrás.
     """
-    if fila.get("tipo") != HISTORIA_ACADEMICA:
+    tipo = fila.get("tipo")
+    if tipo not in (HISTORIA_ACADEMICA, CALIFICACIONES, LISTA_DE_ALUMNOS):
         return None
     caja, upd = ubicacion(str(fila.get("carpeta") or ""), str(fila.get("archivo") or ""))
     nombre = str(fila.get("nombre") or "") or NO_LEIDO
     inicial, final = _fechas(fila)
     folios = fila.get("folios")
     folios = folios if isinstance(folios, int) else NO_LEIDO
-    return FuidRow(
-        orden=0,
+    if tipo == CALIFICACIONES:
+        asunto = _asunto_del_alumno(fila)
+        consecutivo_inicial = str(fila.get("codigo") or "") or NO_LEIDO
+        consecutivo_final = _identificacion(fila)
+    elif tipo == LISTA_DE_ALUMNOS:
+        asunto = str(fila.get("asunto") or "").strip() or LISTA_DE_ALUMNOS
+        consecutivo_inicial = consecutivo_final = NO_LEIDO
+    else:
         # Sólo el nombre (2026-11-06). Las hojas sueltas de Medicina dicen
         # además qué hoja son: «… - CERTIFICADO DE MATRICULA», «… - RECIBO DE
         # CAJA» (el operador, 2026-11-03): un estudiante tiene varias.
-        asunto=f"{nombre} - {fila['clase']}" if fila.get("clase") else nombre,
+        asunto = f"{nombre} - {fila['clase']}" if fila.get("clase") else nombre
+        consecutivo_inicial = _identificacion(fila)
+        consecutivo_final = str(fila.get("codigo") or "") or NO_LEIDO
+    return FuidRow(
+        orden=0,
+        asunto=asunto,
         codigo_trd="",
-        consecutivo_inicial=_identificacion(fila),
-        consecutivo_final=str(fila.get("codigo") or "") or NO_LEIDO,
+        consecutivo_inicial=consecutivo_inicial,
+        consecutivo_final=consecutivo_final,
         fecha_inicial=inicial,
         fecha_final=final,
         caja=caja,

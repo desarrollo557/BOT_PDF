@@ -36,6 +36,9 @@ class Stage(StrEnum):
     DELIVERING = "delivering"
     DONE = "done"
     FAILED = "failed"
+    #: No es una etapa: el trabajo sigue vivo (``application.latido``). Refresca
+    #: el reloj del vigilante sin cambiar la etapa ni su detalle en pantalla.
+    LATIDO = "latido"
 
 
 @dataclass(frozen=True, slots=True)

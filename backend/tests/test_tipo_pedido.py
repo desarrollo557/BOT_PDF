@@ -41,6 +41,18 @@ class TestLaDeclaracion:
         assert {"id": "auto", "label": "Detectar automáticamente"} in ofrecidos
         assert {"id": "diploma", "label": "Diplomas"} in ofrecidos
 
+    def test_las_calificaciones_se_declaran(self, client):
+        """2026-11-27: la habilidad «Calificaciones», y el servicio que la anuncia (revisión 28)."""
+        assert TipoPedido.parse("calificaciones") is TipoPedido.CALIFICACIONES
+        assert TipoPedido.CALIFICACIONES.label == "Calificaciones"
+        # No es un tipo del reconocedor general: la parte la habilidad de las historias.
+        assert TipoPedido.CALIFICACIONES.document_type is None
+
+        salud = client.get("/api/health").json()
+        assert salud["api_revision"] >= 28
+        assert {"calificaciones", "clasificador-por-pdf"} <= set(salud["features"])
+        assert {"id": "calificaciones", "label": "Calificaciones"} in salud["document_types"]
+
 
 class TestAQuienLlama:
     """El despachador, sin abrir ningún PDF: sólo a dónde manda el trabajo."""
@@ -87,6 +99,20 @@ class TestAQuienLlama:
 
         assert llamadas == [("resoluciones", "both")]
         assert {"id": "resolucion", "label": "Legajo de resoluciones"} in tipos_declarables()
+
+    @pytest.mark.parametrize("task", ["both", "inventory_file"])
+    def test_declarar_calificaciones_va_a_la_habilidad_de_las_historias(self, monkeypatch, task):
+        """Sin reconocedor y con cualquier acción, como las historias declaradas (2026-11-27)."""
+        import resolutions.api.worker as worker
+        from resolutions.api.worker import historias
+
+        llamadas = []
+        monkeypatch.setattr(historias, "historias_academicas_job", lambda p: llamadas.append(p["tipo"]) or "hecho")
+        monkeypatch.setattr(worker, "_recognise", lambda p: pytest.fail("no debía reconocer nada"))
+        monkeypatch.setattr(worker, "_anunciar", lambda *a, **k: None)
+
+        assert worker.process_document_job(self.payload(tipo="calificaciones", task=task)) == "hecho"
+        assert llamadas == ["calificaciones"]
 
     def test_sin_declarar_se_reconoce_como_siempre(self, monkeypatch):
         import resolutions.api.worker as worker

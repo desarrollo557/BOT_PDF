@@ -29,6 +29,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
 from .rotulo_de_cedula import tiene_rotulo
+from .text_distance import damerau_levenshtein
 
 
 @dataclass(frozen=True, slots=True)
@@ -942,6 +943,99 @@ def titulo_del_vocabulario(titulo: str | None) -> str | None:
         palabras.append(palabra)
     corregido = re.sub(r"\(\s*([AO])\s*$", r"(\1)", " ".join(palabras))
     return titulo if corregido == _clave(titulo) else corregido
+
+
+# -- lo que «Solo OCR» lee del formulario a máquina (Odontología 1980-1999, 2026-11-27) --
+
+#: Las letras que el OCR confunde en los datos escritos a máquina sobre la raya
+#: del formulario: la redonda (O, 0, Q, D, U, C, G, B, 3, 8), la de palo (L, I,
+#: 1, J) y la de dos patas (N, M, H). «QD0NT0U3B0» es ODONTOLOGO.
+_FORMA_DE_LA_LETRA = str.maketrans(
+    {
+        **dict.fromkeys("O0QDUCGB38", "O"),
+        **dict.fromkeys("LI1J|", "L"),
+        **dict.fromkeys("NMH", "N"),
+        "5": "S",
+    }
+)
+
+
+def parecido_de_la_letra(uno: str | None, otro: str | None) -> float:
+    """Cuánto se parecen dos lecturas por la forma de sus letras: «OOONTOLOSO» y ODONTOLOGO, 0,9."""
+    a = re.sub(r"[^A-Z0-9|]", "", _clave(uno or "")).translate(_FORMA_DE_LA_LETRA)
+    b = re.sub(r"[^A-Z0-9|]", "", _clave(otro or "")).translate(_FORMA_DE_LA_LETRA)
+    return difflib.SequenceMatcher(None, a, b).ratio() if a and b else 0.0
+
+
+#: Lo que la raya del formulario deja detrás del nombre cuando el OCR la lee
+#: como letras: «… BALLESTAS EEMANNMEMNON», «… FLOREZ OOAO», «… GARCIA ANN»,
+#: «… LEAL ANN ONO». Medido el 2026-11-27 en los 1.101 graduados de los libros
+#: de Odontología de 1980 a 1999: ningún apellido de verdad termina así.
+_DOBLES_DE_LA_RAYA = ("MM", "NN", "EE", "OO", "AA", "II", "CC")
+#: Las letras de la raya leída: con una doble, sólo éstas. JANNA (la J) y
+#: SAAVEDRA (la V, la D) son apellidos aunque lleven una doble.
+_LETRAS_DE_LA_RAYA_CON_DOBLE = frozenset("EMNAOCIUSRTÑ")
+_LETRAS_DE_LA_RAYA = frozenset("AEIOUMNC")
+_VOCALES = frozenset("AEIOU")
+#: Cuántas palabras le quedan como mínimo al nombre.
+PALABRAS_QUE_QUEDAN = 2
+#: Desde cuántas letras una palabra de las letras de la raya lo es aunque no lleve doble.
+LETRAS_DE_UNA_RAYA_LARGA = 12
+
+
+def _es_la_raya(palabra: str, conocidas: Collection[str]) -> bool:
+    clave = re.sub(r"[^A-Z]", "", _clave(palabra))
+    if not clave or clave in conocidas or clave in ("DE", "DEL", "LA", "LAS", "LOS", "Y"):
+        return False
+    if any(doble in clave for doble in _DOBLES_DE_LA_RAYA) and set(clave) <= _LETRAS_DE_LA_RAYA_CON_DOBLE:
+        return True
+    # La raya larga sin doble: «EREMENENANADAS», «ESOCANECONACA» (1996-1998-1999
+    # TOMO II); ningún apellido de esas letras llega a doce.
+    if len(clave) >= LETRAS_DE_UNA_RAYA_LARGA and set(clave) <= _LETRAS_DE_LA_RAYA_CON_DOBLE | {"D"}:
+        return True
+    if set(clave) <= _LETRAS_DE_LA_RAYA:
+        vocales = sum(1 for letra in clave if letra in _VOCALES)
+        return len(clave) <= 3 or vocales > len(clave) * 0.6
+    return False
+
+
+def sin_el_relleno_del_renglon(nombre: str | None, conocidas: Collection[str] = ()) -> str | None:
+    """El nombre sin las palabras del final que son la raya del formulario leída como letras.
+
+    Sólo del final, y nunca una palabra que la lista de nombres conoce: lo que
+    va delante o en medio es del nombre, aunque esté mal leído.
+    """
+    if not nombre:
+        return nombre
+    palabras = nombre.split()
+    while len(palabras) > PALABRAS_QUE_QUEDAN and _es_la_raya(palabras[-1], conocidas):
+        palabras.pop()
+    # «… PUERTA MEZA DORIDOR DE LA DE OBII»: «portador de la cédula» mal leído
+    # detrás del nombre; lo que sigue ya no es del nombre. Sólo la palabra que
+    # acaba como PORTADOR y lleva su «DE» detrás: TORRADO o AMADOR DE LA HOZ son
+    # apellidos.
+    for indice in range(PALABRAS_QUE_QUEDAN, len(palabras) - 1):
+        palabra = re.sub(r"[^A-Z]", "", _clave(palabras[indice]))
+        detras = [_clave(otra) for otra in palabras[indice + 1 : indice + 4]]
+        # Con «DE LA DE» detrás -- «portador de la cédula de» entero -- basta
+        # menos parecido: DOIDOR (2026-11-27, 1996-1998-1999 TOMO I pág. 163).
+        minimo = PARECIDO_AL_PORTADOR_CON_SU_FRASE if detras == ["DE", "LA", "DE"] else PARECIDO_AL_PORTADOR
+        if (
+            palabra not in conocidas
+            and palabra.endswith(("DOR", "DORA"))
+            and detras[:1] == ["DE"]
+            and 1 - damerau_levenshtein(palabra, "PORTADOR") / len("PORTADOR") >= minimo
+        ):
+            palabras = palabras[:indice]
+            break
+    return " ".join(palabras)
+
+
+#: Cuánto se parece a PORTADOR la palabra que el OCR leyó del formulario --
+#: DORIDOR, NOADOR --: la parte de sus letras que no hay que cambiar. Con 0,5
+#: AMADOR también lo era.
+PARECIDO_AL_PORTADOR = 0.6
+PARECIDO_AL_PORTADOR_CON_SU_FRASE = 0.4
 
 
 #: Lo que en el renglón del nombre ya es la cédula: «No.», «Nº», «C.C.».

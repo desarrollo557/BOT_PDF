@@ -78,6 +78,7 @@ from ..domain.acta_grado import (
     CORREGIDO,
     DEDUCIDO,
     FRANJAS_DE_LA_LISTA,
+    ROTULO_DE_CALIFICACIONES,
     ROTULO_DE_CEREMONIA,
     ActaDelLibro,
     GraduadoDelActa,
@@ -85,7 +86,9 @@ from ..domain.acta_grado import (
     acta_sin_terminar,
     actas_de_grado_del_pdf,
     actas_del_libro_colectivo,
+    asunto_del_examen,
     asunto_del_graduado,
+    calificaciones_del_alumno,
     cedulas_con_zoom,
     completar_acta,
     con_la_franja,
@@ -93,6 +96,8 @@ from ..domain.acta_grado import (
     es_acta_abreviada,
     es_acta_colectiva,
     es_acta_de_examen,
+    es_encabezado_con_fila,
+    es_encabezado_de_lista,
     es_libro_de_actas_colectivas,
     es_un_titulo,
     estudiantes_declarados,
@@ -143,6 +148,8 @@ from ..domain.graduado import (
     nombre_con_la_cola_del_renglon,
     nombre_limpio,
     nombre_y_titulo_separados,
+    parecido_de_la_letra,
+    sin_el_relleno_del_renglon,
     sin_firmantes,
     titulo_del_vocabulario,
     titulo_limpio,
@@ -205,6 +212,19 @@ logger = logging.getLogger(__name__)
 #: de tipo de la pantalla de Archivo, junto a los demás documentos del sistema.
 TIPO_DOCUMENTAL = "ACTA DE CONSEJO"
 TIPO_DE_GRADO = "ACTA DE GRADO"
+#: La fila de un libro que se entrega entero: el manuscrito leído sin la IA
+#: (2026-11-27). Es el ``PDF_ENTERO`` de ``adapters/fuid_de_la_entrega``, que
+#: la convierte con el asunto y los años del nombre del PDF.
+PDF_ENTERO = "PDF ENTERO"
+#: El aviso del libro manuscrito que se leyó sin la IA (2026-11-27).
+SIN_IA_EL_MANUSCRITO = (
+    "Libro manuscrito: con «Solo OCR» no se puede leer la letra a mano. Se entrega entero, con una fila con el "
+    "asunto y los años de su nombre; para dividirlo por acta, procéselo con «OCR + IA»"
+)
+SIN_TEXTO_DE_LA_IA = (
+    "Libro manuscrito: la IA no devolvió su texto y la letra a mano no se puede leer sin ella. Se entrega entero, "
+    "con una fila con el asunto y los años de su nombre; vuelva a procesarlo con «OCR + IA»"
+)
 
 #: A qué resolución se pasa por OCR una página sin capa de texto. La misma que
 #: usa `inventory_file`: el acta es mecanografiada y a 200 ppp se lee entera.
@@ -387,6 +407,18 @@ class FilaDeActa:
     #: Cómo quedó el nombre del graduado y qué se leyó, del revisor de nombres
     #: común (2026-11-17): lo que enseña la Revisión de nombres. No va al FUID.
     revision_del_nombre: dict | None = None
+    #: De la constancia de calificaciones que no es de ningún graduado del libro
+    #: (tipo «CALIFICACIONES», 2026-11-27): lo que lee su FUID, como el de un
+    #: libro de calificaciones -- el programa, el código, los años de sus notas
+    #: y el PDF en que quedó --.
+    especialidad: str = ""
+    codigo: str = ""
+    anio_inicial: int | None = None
+    anio_final: int | None = None
+    archivo_generado: str = ""
+    #: Si la fila es el PDF entero (el libro manuscrito sin la IA): su archivo
+    #: va sin páginas en el FUID.
+    entero: bool = False
 
 
 @dataclass(slots=True)
@@ -425,6 +457,9 @@ class ActaOutcome:
     #: Lo que decidió el revisor de nombres de cada graduado (``NombreRevisado``),
     #: por su sesión: el trabajo lo lleva al informe.
     nombres_revisados: dict = field(default_factory=dict, repr=False)
+    #: Lo que la pantalla tiene que avisar del libro entero: el manuscrito que
+    #: necesita «OCR + IA» (2026-11-27).
+    avisos: list[str] = field(default_factory=list)
 
     @property
     def fila(self) -> FilaDeActa:
@@ -444,7 +479,9 @@ class ActaOutcome:
     def as_dict(self) -> dict[str, object]:
         fecha = self.acta.fecha.strftime("%d-%m-%Y") if self.acta.fecha else NO_APLICA
         libro = self.reparto.es_libro
+        entero = bool(self.filas) and self.filas[0].tipo == PDF_ENTERO
         return {
+            **({"notices": list(self.avisos)} if self.avisos else {}),
             "document": self.document,
             "page_count": self.page_count,
             "records": len(self.filas),
@@ -454,7 +491,7 @@ class ActaOutcome:
             "asunto": (
                 f"LIBRO DE {len(self.filas)} ACTAS: {self.filas[0].acta} a {self.filas[-1].acta}"
                 if libro
-                else self.acta.asunto
+                else (Path(self.document).stem.upper() if entero else self.acta.asunto)
             ),
             "tipo_documental": self.tipo_documental,
             "fecha_inicial": fecha,
@@ -559,6 +596,20 @@ def nombre_de_la_sesion(fila: FilaDeActa) -> str:
         # (el operador, 2026-11-12).
         partes = [fila.acta_colectiva, *([fila.fecha] if fila.fecha != NO_APLICA else [])]
         return _NO_VALE_EN_UNA_CARPETA.sub("-", " - ".join(partes)).strip(" .")
+    if fila.tipo == TIPO_DE_GRADO and es_acta_de_examen(fila.acta):
+        # El examen, como cualquier persona: «NOMBRE - DOCTOR EN ODONTOLOGIA»,
+        # «NOMBRE - QUINTO PREPARATORIO» (el estándar único, 2026-11-27).
+        return asunto_del_examen(
+            _leido(fila.nombre), _leido(fila.titulo), acta=fila.acta, numero=_leido(fila.numero), folio=fila.folio_inicial
+        )
+    if fila.tipo == _tipo_de_calificaciones():
+        # La constancia de calificaciones de un alumno que no es de ningún
+        # graduado del libro: «NOMBRE - ODONTOLOGIA» (2026-11-27).
+        return asunto_del_graduado(_leido(fila.nombre), _leido(fila.especialidad), acta=ROTULO_DE_CALIFICACIONES)
+    if fila.tipo == ROTULO_DE_CEREMONIA and es_encabezado_con_fila(fila.acta):
+        # La lista, la carta, la constancia: su título, el mismo de su fila del
+        # FUID, sin la fecha detrás (2026-11-27).
+        return _NO_VALE_EN_UNA_CARPETA.sub("-", fila.acta).strip(" .")
     if fila.tipo == TIPO_DE_GRADO:
         # El graduado: «MARTHA LUCIA HERRERA VILLAMIZAR - ESPECIALISTA EN
         # GESTION DE LA CALIDAD…», el nombre como va en el acta y el título que
@@ -592,6 +643,18 @@ def nombre_de_la_sesion(fila: FilaDeActa) -> str:
     return _NO_VALE_EN_UNA_CARPETA.sub("-", " - ".join(partes)).strip(" .")
 
 
+def _leido(valor: object) -> str | None:
+    texto = str(valor or "").strip()
+    return texto if texto and texto != NO_APLICA else None
+
+
+def _tipo_de_calificaciones() -> str:
+    """El tipo de fila de las calificaciones de un alumno, el mismo que el del libro de calificaciones."""
+    from ..domain.calificaciones import CALIFICACIONES
+
+    return CALIFICACIONES
+
+
 def _con_nombre_literal(fila: FilaDeActa) -> bool:
     """Si el PDF de esta fila se llama con su nombre tal cual, con espacios y no en guiones.
 
@@ -599,12 +662,12 @@ def _con_nombre_literal(fila: FilaDeActa) -> bool:
     HERRERA - ENFERMERA.pdf» (2026-11-05), y la ceremonia de su libro, con el
     mismo formato. El acta de consejo, como el comienzo de su fila del FUID,
     «01_ACTA DE CONSEJO DE FACULTAD - ORDINARIA - 022 - 17-12-2012.pdf»
-    (2026-11-13). El acta manuscrita de examen (caja 3362) sigue como se
-    entregó: su asunto en el FUID es otro, el examen primero.
+    (2026-11-13). El acta manuscrita de examen, también: desde el 2026-11-27
+    su PDF es su asunto, «NOMBRE - DOCTOR EN ODONTOLOGIA», como el de todos.
     """
-    if fila.tipo in (ROTULO_DE_CEREMONIA, TIPO_DOCUMENTAL) or fila.acta_colectiva:
+    if fila.tipo in (ROTULO_DE_CEREMONIA, TIPO_DOCUMENTAL, TIPO_DE_GRADO) or fila.acta_colectiva:
         return True
-    return fila.tipo == TIPO_DE_GRADO and not es_acta_de_examen(fila.acta)
+    return fila.tipo == _tipo_de_calificaciones()
 
 
 #: Lo que va delante de la primera sesión de un libro de grado: portada,
@@ -694,6 +757,7 @@ def dividir_actas(
 
 
 YA_ERA_UN_ACTA = "Ya era un acta: inventariada sin dividir"
+SE_ENTREGA_ENTERO = "Se entrega entero: el libro manuscrito necesita «OCR + IA» para dividirse por acta"
 SOLO_INVENTARIADA = "Inventariada"
 #: Lo que sigue a ``YA_ERA_UN_ACTA`` cuando el PDF se entrega con el nombre de
 #: su fila y no con el del cliente: «…; se entrega como 01_ACTA DE….pdf».
@@ -748,10 +812,17 @@ def resultado_de_cada_acta(
     resultados: list[FilaDeActa] = []
     for puesto, fila in enumerate(filas, start=1):
         orden = fila.sesion or puesto
+        if fila.entero:
+            # El libro manuscrito sin la IA: no se partió, y no es un acta.
+            resultados.append(replace(fila, resultado=SE_ENTREGA_ENTERO))
+            continue
         if salidas:
             prefijo = f"{orden:02d}_"
             pdf = next((ruta.rsplit("/", 1)[-1] for ruta in salidas if ruta.rsplit("/", 1)[-1].startswith(prefijo)), None)
             texto = f"Dividido en {pdf}" if pdf else "Dividido: su PDF no se pudo escribir"
+            if pdf and fila.tipo == _tipo_de_calificaciones():
+                # Lo lee el FUID de las calificaciones, como el de su libro.
+                fila = replace(fila, archivo_generado=pdf)
         elif no_se_dividio:
             texto = f"No se pudo dividir: {no_se_dividio}. Inventariada sin dividir"
         elif pidio_dividir:
@@ -851,6 +922,8 @@ class _Lectura:
     anulada: str | None = None
     #: Si no la anuló nadie: quedó sin terminar, y su rótulo no dice ANULADA.
     sin_terminar: bool = False
+    #: El texto de sus hojas, de lo que no es un graduado (2026-11-27).
+    paginas: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -904,13 +977,18 @@ CONSEJO = PerfilDeActas(
     respeta_el_nombre=True,
 )
 
+def _repartir_las_de_grado(paginas: Sequence[str], foliadas: Collection[int] | None = None) -> ActasDelPdf:
+    """El reparto del libro de grados, con los nombres hispanos de la lista para saber de quién es cada carta."""
+    return actas_de_grado_del_pdf(paginas, foliadas, conocidas=nombres_conocidos())
+
+
 #: Las actas de grado: una por graduado, para el FUID de grados -- número del
 #: acta, nombre y título, cédula, fecha --, sin resumen ni folio de pago. Lo
 #: que la capa del escáner no trae se relee con Tesseract y, si se pidió, con
 #: la IA.
 GRADO = PerfilDeActas(
     tipo_documental=TIPO_DE_GRADO,
-    repartir=actas_de_grado_del_pdf,
+    repartir=_repartir_las_de_grado,
     leer=leer_acta_de_grado,
     piezas=None,
     con_resumen=False,
@@ -1030,6 +1108,12 @@ class InventariarActa:
             if self._textos_de_la_ia:
                 paginas = [self._textos_de_la_ia.get(numero) or texto for numero, texto in enumerate(paginas, 1)]
                 reparto = self._perfil.repartir(paginas, foliadas)
+        if self._perfil.reparte_con_folios and not self._textos_de_la_ia and _escrito_a_mano(paginas):
+            # El libro manuscrito sin la IA (Odontología 1952-1959 y 1960-1965,
+            # 2026-11-27): la capa es basura y Tesseract no lee la letra a mano.
+            # Se partía en hojas «CEREMONIA DE GRADO» sin fila; se entrega entero,
+            # con su fila y el aviso de que necesita «OCR + IA».
+            return self._libro_entero(document_name, carpeta, paginas, con_ocr, ilegibles)
         # El libro de actas colectivas manuscrito (Odontología, UPD3859802,
         # 2026-11-12): cada acta gradúa a una promoción y empieza a mitad de la
         # hoja en que acaba la anterior. Se reconoce en lo que leyó la IA -- la
@@ -1088,6 +1172,9 @@ class InventariarActa:
                     acta=self._perfil.leer([paginas[p - 1] for p in tramo.en_el_pdf]),
                     foliadas=[p for p in foliadas if p in tramo.en_el_pdf and p not in portadas],
                     piezas=piezas,
+                    # Las hojas de lo que no es un graduado: su fila las lee (la
+                    # constancia de calificaciones, sus años; 2026-11-27).
+                    paginas=[paginas[p - 1] for p in tramo.en_el_pdf] if tramo.ceremonia else [],
                 )
             )
         for lectura in lecturas:
@@ -1162,7 +1249,11 @@ class InventariarActa:
         # con el orden de su PDF (``sesion``), que es el de su lectura.
         filas = [
             replace(
-                fila if fila.tipo == ROTULO_DE_CEREMONIA else replace(fila, tipo=self._perfil.tipo_documental),
+                # La hoja de la ceremonia y las calificaciones de un alumno
+                # conservan su tipo: su fila del FUID es otra (2026-11-27).
+                fila
+                if fila.tipo in (ROTULO_DE_CEREMONIA, _tipo_de_calificaciones())
+                else replace(fila, tipo=self._perfil.tipo_documental),
                 sesion=orden,
             )
             for orden, lectura in enumerate(lecturas, start=1)
@@ -1199,6 +1290,10 @@ class InventariarActa:
             replace(fila, nombre=nombre) if nombre != fila.nombre else fila
             for fila, nombre in zip(filas, sin_el_pie, strict=True)
         ]
+        if self._perfil.tipo_documental == TIPO_DE_GRADO:
+            # Lo que se sabe por el libro entero (Odontología 3194-3198, 2026-11-27).
+            filas = _con_el_titulo_del_libro(filas)
+            filas = _listas_con_su_anio(filas)
         if reparto.es_libro and self._perfil.tipo_documental != TIPO_DE_GRADO:
             filas = _con_el_numero_de_la_serie(filas)
         if reparto.previas and filas[0].tipo != TIPO_DE_GRADO and filas[0].tipo != ROTULO_DE_CEREMONIA:
@@ -1248,6 +1343,51 @@ class InventariarActa:
             paginas_compartidas=compartidas,
             cruces_por_el_folio=_cruces_por_el_folio(lecturas),
             nombres_revisados=dict(self._nombres_revisados),
+        )
+
+    def _libro_entero(
+        self, document_name: str, carpeta: str, paginas: list[str], con_ocr: int, ilegibles: list[int]
+    ) -> ActaOutcome:
+        """El libro manuscrito que no se pudo leer: una fila para el PDF entero y el aviso (2026-11-27).
+
+        Lo que hace el inventario del cliente -- «ACTAS DE GRADO 1952 - 1959»,
+        sus folios y sus años -- y lo que pide la regla del operador: sin IA un
+        manuscrito no se lee, se entrega entero con su fila y se avisa. Antes
+        salían cientos de hojas como «CEREMONIA DE GRADO», sin fila ni nombre.
+        """
+        total = len(paginas)
+        aviso = SIN_IA_EL_MANUSCRITO if self._relector_de_pago is None else SIN_TEXTO_DE_LA_IA
+        fila = FilaDeActa(
+            archivo=document_name,
+            acta=Path(document_name).stem.upper(),
+            fecha=NO_APLICA,
+            folio_inicial=NO_APLICA,
+            folio_final=NO_APLICA,
+            folios=total,
+            resumen=NO_APLICA,
+            observaciones=aviso,
+            carpeta=carpeta,
+            pagina_inicial=1,
+            pagina_final=total,
+            tipo=PDF_ENTERO,
+            sesion=1,
+            entero=True,
+        )
+        tramo = TramoDeActa(1, total, ceremonia=True, hojas=total)
+        self._report(ProgressEvent(stage=Stage.IDENTIFYING, done=1, total=1, detail=aviso))
+        return ActaOutcome(
+            document=document_name,
+            page_count=total,
+            filas=[fila],
+            acta=ActaDeConsejo(rotulo=ROTULO_DE_CEREMONIA),
+            folios=FoliosDelActa(),
+            reparto=ActasDelPdf(tramos=(tramo,)),
+            ocr_pages=con_ocr,
+            unreadable=list(ilegibles),
+            sesiones=[SesionDeActa(1, Path(document_name).stem.upper(), (PiezaDeActa(ACTA, 1, total),))],
+            tipo_documental=self._perfil.tipo_documental,
+            textos=dict(enumerate(paginas, start=1)),
+            avisos=[aviso],
         )
 
     # -- leer -----------------------------------------------------------------
@@ -3587,6 +3727,11 @@ def _los_examenes(lecturas: list[_Lectura]) -> None:
         fechas[orden] = corregida
 
 
+def _es_lo_cosido(encabezado: object) -> bool:
+    """Si la hoja que no es un acta es una lista, una carta o una constancia cosida en el libro (2026-11-27)."""
+    return es_encabezado_con_fila(encabezado) or str(encabezado or "").startswith(ROTULO_DE_CALIFICACIONES)
+
+
 def _por_la_resolucion_de_la_ceremonia(lecturas: list[_Lectura]) -> None:
     """La fecha de un acta de grado que no se leyó: la de las hojas de su ceremonia.
 
@@ -3598,7 +3743,11 @@ def _por_la_resolucion_de_la_ceremonia(lecturas: list[_Lectura]) -> None:
     de_la_ceremonia = None
     for lectura in lecturas:
         if lectura.tramo.ceremonia:
-            de_la_ceremonia = lectura.acta.fecha or de_la_ceremonia
+            # La lista, la carta, la constancia cosidas en el libro no dicen el
+            # día de la ceremonia: el 01-01-1984 de una lista del periodo o el
+            # 15-04-1999 de una carta no son la fecha de un grado (2026-11-27).
+            if not _es_lo_cosido(lectura.acta.sesion):
+                de_la_ceremonia = lectura.acta.fecha or de_la_ceremonia
             continue
         acta = lectura.acta
         if acta.rotulo != ROTULO_DE_GRADO or acta.fecha is not None or de_la_ceremonia is None:
@@ -3980,6 +4129,165 @@ def _con_las_previas(fila: FilaDeActa, lectura: _Lectura, previas: tuple[int, in
     )
 
 
+def _escrito_a_mano(paginas: Sequence[str]) -> bool:
+    """Si el libro está escrito a mano, por lo que ya se leyó: casi ninguna hoja trae las palabras de un acta impresa.
+
+    La misma medida que ``_es_manuscrito``, pero sobre el texto leído (la capa
+    y, donde no había, Tesseract): un libro a máquina escaneado sin capa no es
+    un manuscrito.
+    """
+    if len(paginas) < PAGINAS_PARA_JUZGAR_LA_LETRA:
+        return False
+    impresas = 0
+    for texto in paginas:
+        plano = unicodedata.normalize("NFD", texto or "").encode("ascii", "ignore").decode().upper()
+        if sum(1 for palabra in _PALABRAS_DE_UN_ACTA_IMPRESA if palabra in plano) >= 2:
+            impresas += 1
+    return impresas < len(paginas) * PARTE_IMPRESA_DE_UN_LIBRO_A_MAQUINA
+
+
+#: Desde cuántas actas el título que más se repite es el del libro, y qué
+#: parte de ellas tiene que llevarlo (2026-11-27: 723 de 1.101 ODONTOLOGO).
+ACTAS_PARA_EL_TITULO_DEL_LIBRO = 5
+PARTE_PARA_EL_TITULO_DEL_LIBRO = 0.5
+#: Cuánto se tiene que parecer, letra por letra y con las confusiones del OCR,
+#: un título mal leído al del libro: «OOONTOLOSO», «QD0NT0U3B0», «COOITOLOCO».
+PARECIDO_AL_TITULO_DEL_LIBRO = 0.6
+#: Qué parte de las actas con título tiene que decir el del libro, bien o mal
+#: leído, para que lo que no es un título se tome por él.
+PARTE_DE_UN_LIBRO_DE_UN_TITULO = 0.8
+
+
+def _con_el_titulo_del_libro(filas: list[FilaDeActa]) -> list[FilaDeActa]:
+    """El título mal leído, o que no es un título, llevado al que confieren las demás actas del libro.
+
+    En los libros de Odontología de 1980 a 1999 todas las actas confieren el
+    de ODONTOLOGO, a máquina sobre la raya del formulario; «Solo OCR» lo leyó
+    de 80 maneras -- «ODCMOLOSO», «QD0NT0U3B0», «ODONTOLOGO DE FECHA»,
+    «CEREMONIA», un apellido -- en 378 de 1.101 actas (2026-11-27). Un título
+    que sí lo es y no se le parece -- «ESPECIALISTA EN ORTODONCIA» -- se queda:
+    puede ser el único de su promoción. Lo hecho se dice en observaciones.
+    """
+    de_grado = [
+        indice
+        for indice, fila in enumerate(filas)
+        if fila.tipo == TIPO_DE_GRADO and not fila.acta_colectiva and not es_acta_de_examen(fila.acta)
+    ]
+    cuenta = Counter(filas[indice].titulo for indice in de_grado if filas[indice].titulo)
+    if not cuenta:
+        return filas
+    del_libro, veces = cuenta.most_common(1)[0]
+    if veces < ACTAS_PARA_EL_TITULO_DEL_LIBRO:
+        return filas
+
+    def mal_leido(titulo: str) -> bool:
+        # No es un título y se le parece letra por letra: «OOONTOLOSO», «QD0NT0U3B0».
+        return not es_un_titulo(titulo) and parecido_de_la_letra(titulo, del_libro) >= PARECIDO_AL_TITULO_DEL_LIBRO
+
+    def lo_lleva(titulo: str) -> bool:
+        # El del libro con una cola del formulario: «ODONTOLOGO DE FECHA».
+        return f" {del_libro} " in f" {titulo} "
+
+    con_titulo = [filas[indice].titulo for indice in de_grado if filas[indice].titulo]
+    # Un libro de un solo título -- casi todas sus actas lo dicen, bien o mal
+    # leído --: lo que no es un título es ése sin leer. En uno con varias
+    # especialidades no se adivina cuál (Secretaría 3292).
+    suyos = sum(1 for t in con_titulo if t == del_libro or mal_leido(t) or lo_lleva(t))
+    if suyos < len(de_grado) * PARTE_PARA_EL_TITULO_DEL_LIBRO:
+        # El título del libro, bien o mal leído, en menos de la mitad: no hay uno.
+        return filas
+    homogeneo = suyos >= len(con_titulo) * PARTE_DE_UN_LIBRO_DE_UN_TITULO
+    resultado = list(filas)
+    for indice in de_grado:
+        fila = filas[indice]
+        leido = fila.titulo
+        if leido == del_libro:
+            continue
+        # Un título de verdad que no es el del libro se queda -- «ODONTOLOGA»,
+        # «MEDICO Y CIRUJANO» (1980-1984 TOMO I pág. 134, de Medicina) --.
+        if not (leido and (lo_lleva(leido) or mal_leido(leido))) and not (homogeneo and not es_un_titulo(leido)):
+            continue
+        nota = (
+            f"el título se leyó «{leido}» y es el de las demás actas del libro ({del_libro}): revíselo en el papel"
+            if leido
+            else f"el título no se leyó: es el de las demás actas del libro ({del_libro}); revíselo en el papel"
+        )
+        # La duda del título leído ya la dice la nota: no se repite.
+        previas = [parte for parte in fila.observaciones.split("; ") if parte and not parte.startswith("el título trae signos")]
+        resultado[indice] = replace(fila, titulo=del_libro, observaciones="; ".join([*previas, nota]))
+    return resultado
+
+
+def _listas_con_su_anio(filas: list[FilaDeActa]) -> list[FilaDeActa]:
+    """La lista de alumnos cuyo año no se lee, con el de la ceremonia que la sigue en el libro.
+
+    «LISTA DEL DECIMO SEMESTRE … AL SEGUNDO PERIODO DE l.SfQ 3» va delante de
+    las actas de su promoción: su año es el de ellas (1980-1984 TOMO I pág. 156,
+    2026-11-27). Lo razonado se dice en observaciones.
+    """
+    resultado = list(filas)
+    for indice, fila in enumerate(filas):
+        if fila.tipo != ROTULO_DE_CEREMONIA or not es_encabezado_de_lista(fila.acta) or fila.fecha != NO_APLICA:
+            continue
+        siguiente = next(
+            (otra for otra in filas[indice + 1 :] if otra.tipo == TIPO_DE_GRADO and otra.fecha != NO_APLICA), None
+        )
+        if siguiente is None:
+            continue
+        anio = siguiente.fecha[-4:]
+        nota = (
+            f"el año de la lista no se lee: es el de las actas que la siguen (pág. {siguiente.pagina_inicial}, "
+            f"{siguiente.fecha}); revíselo en el papel"
+        )
+        resultado[indice] = replace(
+            fila, fecha=f"01-01-{anio}", observaciones="; ".join(parte for parte in (fila.observaciones, nota) if parte)
+        )
+    return resultado
+
+
+def _especialidad_del_papel(paginas: Sequence[str]) -> str:
+    """El programa que dice el papel de una constancia de calificaciones: «semestre de Odontología» es ODONTOLOGIA."""
+    plano = unicodedata.normalize("NFD", " ".join(paginas)).encode("ascii", "ignore").decode().upper()
+    for raiz, programa in (("ODONTOLOG", "ODONTOLOGIA"), ("ENFERMER", "ENFERMERIA"), ("MEDICINA", "MEDICINA")):
+        if raiz in plano:
+            return programa
+    return ""
+
+
+def _fila_de_calificaciones(lectura: _Lectura, *, archivo: str, carpeta: str, ilegibles: list[int]) -> FilaDeActa:
+    """La fila de la constancia de calificaciones de un alumno que no es de ningún graduado del libro (2026-11-27).
+
+    Como la de un alumno del libro de calificaciones: «NOMBRE - ODONTOLOGIA»,
+    los años de sus notas y el programa del papel. La convierte el FUID de las
+    calificaciones (``CONVERSORES``).
+    """
+    tramo = lectura.tramo
+    calificaciones = calificaciones_del_alumno(lectura.paginas)
+    avisos = ["constancia de calificaciones cosida en el libro de actas: no es de ningún graduado del libro"]
+    if calificaciones is None or not calificaciones.anio_inicial:
+        avisos.append("no se leyeron los años de sus notas")
+    if ilegibles:
+        avisos.append(f"{len(ilegibles)} página(s) sin texto legible: " + ", ".join(str(n) for n in ilegibles[:10]))
+    return FilaDeActa(
+        archivo=archivo,
+        acta=lectura.acta.sesion or ROTULO_DE_CALIFICACIONES,
+        fecha=NO_APLICA,
+        folio_inicial=NO_APLICA,
+        folio_final=NO_APLICA,
+        folios=tramo.paginas,
+        resumen=NO_APLICA,
+        observaciones="; ".join(avisos),
+        carpeta=carpeta,
+        pagina_inicial=tramo.desde,
+        pagina_final=tramo.hasta,
+        tipo=_tipo_de_calificaciones(),
+        nombre=(calificaciones.nombre if calificaciones else None) or "",
+        especialidad=_especialidad_del_papel(lectura.paginas),
+        anio_inicial=calificaciones.anio_inicial if calificaciones else None,
+        anio_final=calificaciones.anio_final if calificaciones else None,
+    )
+
+
 def _fila_de_grado(
     lectura: _Lectura, *, archivo: str, carpeta: str, ilegibles: list[int]
 ) -> FilaDeActa:
@@ -3990,6 +4298,8 @@ def _fila_de_grado(
     """
     acta, tramo = lectura.acta, lectura.tramo
     ceremonia = acta.rotulo == ROTULO_DE_CEREMONIA
+    if ceremonia and str(acta.sesion or "").startswith(ROTULO_DE_CALIFICACIONES):
+        return _fila_de_calificaciones(lectura, archivo=archivo, carpeta=carpeta, ilegibles=ilegibles)
     avisos: list[str] = []
     if not ceremonia and acta.examen is not None:
         # El acta manuscrita de examen no trae número ni cédula: no es una falta.
@@ -4068,7 +4378,12 @@ def _fila_de_grado(
         # Y sin la cédula vuelta letras, el lugar de expedición ni la cola del
         # título partida en su renglón; el título con sus palabras del
         # vocabulario (Odontología, 2026-11-12).
-        nombre=nombre_limpio(nombre_separado, titulo_separado, nombres_conocidos()) or "",
+        # Sin la raya del formulario que el OCR leyó como letras detrás del
+        # nombre: «ROCIO CRISTINA MENDOZA BALLESTAS EEMANNMEMNON» (2026-11-27).
+        nombre=sin_el_relleno_del_renglon(
+            nombre_limpio(nombre_separado, titulo_separado, nombres_conocidos()), nombres_conocidos()
+        )
+        or "",
         titulo=titulo_limpio(titulo_del_vocabulario(titulo_separado)) or "",
         cedula=acta.cedula or "",
     )
